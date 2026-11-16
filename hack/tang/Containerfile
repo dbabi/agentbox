@@ -1,0 +1,8 @@
+# Throwaway Tang server for hack/gate.sh tpm2+tang. Test use only: keys live in the container.
+FROM docker.io/library/ubuntu:26.04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tang socat jose curl \
+ && rm -rf /var/lib/apt/lists/* && mkdir -p /var/db/tang \
+ && KG=$(ls /usr/libexec/tangd-keygen /usr/lib/x86_64-linux-gnu/tangd-keygen /usr/lib/aarch64-linux-gnu/tangd-keygen 2>/dev/null | head -1) \
+ && "$KG" /var/db/tang
+EXPOSE 7500
+CMD TD=$(ls /usr/libexec/tangd /usr/lib/*/tangd 2>/dev/null | head -1); exec socat TCP-LISTEN:7500,reuseaddr,fork EXEC:"$TD /var/db/tang"

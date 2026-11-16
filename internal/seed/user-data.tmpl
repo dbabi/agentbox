@@ -122,10 +122,14 @@ autoinstall:
       [ -n "$KV" ]
       [ -f "/mnt/new/boot/initrd.img-$KV" ]
       chroot /mnt/new systemctl mask apt-daily.timer apt-daily-upgrade.timer # no in-place updates outside A/B (§3.3)
+      # dracut hostonly would bake the installer's top-level root flags (subvolid=5) into the initramfs cmdline; GRUB owns them
+      printf '%s\n' 'hostonly_cmdline="no"' > /mnt/new/etc/dracut.conf.d/90-agentbox.conf
 {{- if .Encrypted}}
       # 4. bind LUKS to clevis and rebuild the target initramfs BEFORE the first reboot (clevis-dracut came from packages:)
       chroot /mnt/new clevis luks bind -k /run/agentbox-luks.key -d "$LUKSDEV" {{.ClevisPin}} '{{.ClevisConfig}}'
+{{- end}}
       chroot /mnt/new dracut -f --regenerate-all
+{{- if .Encrypted}}
       # fail the install here, not as a silent reboot loop at first boot (rd.shell=0 rd.emergency=reboot)
       chroot /mnt/new lsinitrd -f etc/crypttab "/boot/initrd.img-$KV" | grep -q '^croot '
       chroot /mnt/new lsinitrd "/boot/initrd.img-$KV" | grep -q clevis-luks-askpass
