@@ -17,6 +17,7 @@
 # AGENTBOX_VM_ID (0-9, default 0) picks the host ports and the Tang container agentbox-tang-ID. Everything else lives in
 # this checkout's .vm, so VMs that run at once need distinct IDs and separate checkouts (git worktrees).
 # AGENTBOX_ISO_DIR (default .vm) holds the stock ISOs, so worktrees can share one copy.
+# AGENTBOX_BLKLOG=<file>: QEMU logs every guest disk write and flush to <file>, dm-log-writes format (hack/powercut.sh).
 # A TPM is attached in both phases whenever the seed is encrypted. Logs go to .vm/<phase>*.log (serial console).
 # Host ports listen on 127.0.0.1 only, but the guest can reach every Mac service on 127.0.0.1 through 10.0.2.2.
 set -eu
@@ -84,8 +85,11 @@ run_qemu() {
       virtio) set -- -drive "if=none,id=d1,format=qcow2,file=$(qopt "$VM/disk2.qcow2")" -device "virtio-blk-pci,drive=d1,serial=$SERIAL" "$@" ;;
     esac
   fi
+  disk="format=qcow2,file=$(qopt "$DISK")"
+  [ -z "${AGENTBOX_BLKLOG:-}" ] ||
+    disk="driver=blklogwrites,file.driver=qcow2,file.file.filename=$(qopt "$DISK"),log.driver=file,log.filename=$(qopt "$AGENTBOX_BLKLOG")"
   set -- -smp 4 -m 4096 -display none \
-    -drive "if=none,id=d0,format=qcow2,file=$(qopt "$DISK")" -device "$dev,drive=d0,serial=$SERIAL" \
+    -drive "if=none,id=d0,$disk" -device "$dev,drive=d0,serial=$SERIAL" \
     -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" -device virtio-net-pci,netdev=n0 \
     -device virtio-rng-pci -device i6300esb -pidfile "$VM/qemu.pid" -qmp "unix:$(qopt "$VM/qmp.sock"),server=on,wait=off" "$@"
   case $ARCH in
