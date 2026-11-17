@@ -1,7 +1,7 @@
 // Command release builds an agentbox release; run it as `make release` from the repo root (PLAN.md milestones row
 // 1–2). It writes agentbox-<ver>.tgz (install.sh, the systemd units, agentbox for linux/arm64 and linux/amd64) and
 // agentbox-<ver>.tgz.minisig. The tarball is reproducible (sorted entries, fixed mtime, root:root), so anyone can
-// rebuild a commit and compare the hash a seed pins with --release-sha256.
+// rebuild a commit with the same Go version and compare the hash a seed pins with --release-sha256.
 package main
 
 import (

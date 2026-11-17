@@ -48,8 +48,16 @@ func TestBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	machine := map[string]elf.Machine{"bin/linux-amd64/agentbox": elf.EM_X86_64, "bin/linux-arm64/agentbox": elf.EM_AARCH64}
-	mode := map[string]int64{"bin/linux-amd64/agentbox": 0o755, "bin/linux-arm64/agentbox": 0o755, "install.sh": 0o755,
-		"systemd/agentbox-reconcile.service": 0o644}
+	mode := map[string]int64{"bin/linux-amd64/agentbox": 0o755, "bin/linux-arm64/agentbox": 0o755, "install.sh": 0o755}
+	want := "bin/linux-amd64/agentbox bin/linux-arm64/agentbox install.sh"
+	units, _ := filepath.Glob("systemd/*") // sorted, and every unit in the repo ships
+	for _, u := range units {
+		mode[u] = 0o644
+		want += " " + u
+	}
+	if !strings.Contains(want, "systemd/agentbox-reconcile.service") {
+		t.Fatal("systemd/agentbox-reconcile.service is missing from the repo")
+	}
 	var names []string
 	for tr := tar.NewReader(zr); ; {
 		h, err := tr.Next()
@@ -70,8 +78,8 @@ func TestBuild(t *testing.T) {
 			}
 		}
 	}
-	if got := strings.Join(names, " "); got != "bin/linux-amd64/agentbox bin/linux-arm64/agentbox install.sh systemd/agentbox-reconcile.service" {
-		t.Errorf("entries: %s", got)
+	if got := strings.Join(names, " "); got != want {
+		t.Errorf("entries: %s, want %s", got, want)
 	}
 	for _, v := range []string{"", "../x", ".hidden", "1 2", "a/b", strings.Repeat("1", 65)} {
 		if _, _, err := build(v, key, out); err == nil {

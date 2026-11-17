@@ -36,4 +36,5 @@ fi
 # PID 1 loads units before /var/lib/agentbox is mounted, so the units are copies on the root file system.
 install -m 0644 "$R/$VER"/systemd/* /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable agentbox-reconcile.service
+# Enables every shipped unit that has an [Install] section; agentbox-firstboot itself starts agentbox-reconcile.service.
+systemctl enable $(grep -l '^\[Install\]' "$R/$VER"/systemd/* | sed 's|.*/||')

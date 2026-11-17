@@ -107,7 +107,7 @@ func TestRenderModes(t *testing.T) {
 		`mount --make-rslave "/mnt/new/$d"`, "set fallback=%s", "sort -V", "insmod gzio", "rm -f /var/log/installer/autoinstall-user-data /var/log/installer/curtin-install*.yaml",
 		`mount -o subvol=@var_log "$DEV" /target/var/log`, "D=/run/agentbox-firstboot", "RuntimeDirectory=agentbox-firstboot", "RuntimeDirectoryMode=0700", "PrivateMounts=yes",
 		"@var_lib_agentbox_data /var/lib/agentbox/data", "mkdir -m 0755 /target/@var_lib_agentbox/data", "ports.ubuntu.com/ubuntu-ports",
-		"systemctl mask apt-daily.timer apt-daily-upgrade.timer", "RuntimeMaxSec=120", "'AGENTBOX_RELEASE_SHA256=" + testSHA + "'"}
+		"systemctl mask apt-daily.timer apt-daily-upgrade.timer", "RuntimeMaxSec=120"}
 	for _, enc := range []string{EncTPM2Tang, EncTPM2, EncNone} {
 		for _, boot := range []string{"uefi", "bios"} {
 			t.Run(enc+"/"+boot, func(t *testing.T) {
@@ -133,7 +133,7 @@ func TestRenderModes(t *testing.T) {
 				last := -1
 				for _, step := range []string{`h=$(sha256sum "$D/ab.tgz")`, `[ "$h" = "$AGENTBOX_RELEASE_SHA256" ] || {`,
 					`minisign -Vm "$D/ab.tgz" -P "$AGENTBOX_MINISIGN_PUBKEY" || {`, `tar -xzf "$D/ab.tgz"`, `"$D/x/install.sh" --from-firstboot`,
-					"systemctl start agentbox-reconcile.service", "touch /var/lib/agentbox/.firstboot-done"} {
+					"systemctl start agentbox-reconcile.service", "touch /var/lib/agentbox/.firstboot-done", "'AGENTBOX_RELEASE_SHA256=" + testSHA + "'"} {
 					i := strings.Index(s, step)
 					if i <= last {
 						t.Errorf("firstboot step %q missing or out of order", step)

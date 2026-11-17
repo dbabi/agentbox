@@ -126,12 +126,11 @@ cut)
   printf '%s\n' '{"execute":"qmp_capabilities"}' '{"execute":"system_reset"}' | nc -w 2 -U "$VM/qmp.sock" >/dev/null
   ;;
 ssh)
-  # Every reinstall makes a new host key, so this throwaway VM never records one. IdentitiesOnly: an agent that holds
-  # other checkouts' VM keys would use up the server's MaxAuthTries before .vm/id_vm is offered. ServerAlive: QEMU's
-  # user network keeps the host side of a session open when the guest reboots, and ssh would wait forever.
-  exec ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
-    -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o AddKeysToAgent=no \
-    -i "$VM/id_vm" -p "$SSH_PORT" "${VM_USER:-boxadmin}@127.0.0.1" "$@"
+  # Every reinstall makes a new host key, so this throwaway VM never records one. IdentitiesOnly: an agent holding
+  # other checkouts' VM keys would otherwise use up sshd's MaxAuthTries before .vm/id_vm is offered.
+  # ServerAlive: QEMU's user network keeps the host side of a session open when the guest reboots; ssh would hang.
+  exec ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o AddKeysToAgent=no -i "$VM/id_vm" -p "$SSH_PORT" "${VM_USER:-boxadmin}@127.0.0.1" "$@"
   ;;
 reset)
   running && die "a VM is running"

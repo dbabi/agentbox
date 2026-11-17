@@ -1,5 +1,5 @@
 // Command agentbox is the single binary for every agentbox service and CLI (ARCHITECTURE.md §2, §14).
-// Week 1 ships the operator-side commands, seed and recovery, plus the reconcile skeleton that agentbox-reconcile.service runs.
+// Week 1 ships the operator-side commands: seed and recovery.
 package main
 
 import (
@@ -23,8 +23,8 @@ const usage = `usage:
                 [--boot uefi|bios] [--hostname agentbox] [--admin boxadmin] [--iso seed.iso] [--dev]
   agentbox recovery keygen --out DIR
   agentbox recovery decrypt --key recovery.key --in recovery.bin --out luks.key
-  agentbox reconcile
   agentbox version
+  agentbox reconcile   (agentbox-reconcile.service, on the box)
 `
 
 type multi []string
@@ -70,11 +70,11 @@ func run(args []string) error {
 		return cmdSeed(args[1:])
 	case "recovery":
 		return cmdRecovery(args[1:])
-	case "reconcile":
-		return cmdReconcile(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
+	case "reconcile":
+		return cmdReconcile(args[1:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
