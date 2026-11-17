@@ -1,0 +1,12 @@
+# Replay host for hack/powercut.sh: xfstests replay-log (src/log-writes) plus the tools that check replayed disks.
+# Runs rootful and privileged in the podman machine (loop devices). Test use only.
+FROM docker.io/library/ubuntu:26.04
+# xfstests-dev tag v2026.11.10. Fetching by commit id pins the source: git checks the object hash.
+ARG XFSTESTS=71641219a506ac62bfa231592394265ca812670e
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      btrfs-progs e2fsprogs util-linux fdisk qemu-utils ca-certificates git gcc libc6-dev linux-libc-dev \
+ && git init -q /src && git -C /src fetch -q --depth 1 https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git "$XFSTESTS" \
+ && git -C /src checkout -q FETCH_HEAD && cd /src/src/log-writes \
+ && gcc -O2 -Wall -o /usr/local/bin/replay-log replay-log.c log-writes.c \
+ && cd / && rm -rf /src && apt-get purge -y --auto-remove git gcc libc6-dev linux-libc-dev ca-certificates \
+ && rm -rf /var/lib/apt/lists/*

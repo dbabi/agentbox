@@ -72,6 +72,11 @@ git worktree add --detach ../agentbox-wt/b main
 cd ../agentbox-wt/b && AGENTBOX_VM_ID=1 AGENTBOX_ISO_DIR=~/workplace/agentbox/.vm hack/gate.sh tpm2+tang
 ```
 
+Power cuts: `hack/powercut.sh log boot` runs the VM with every disk write and flush logged (QEMU blklogwrites), and the
+podman machine replays the log with xfstests `replay-log`. `hack/powercut.sh check` runs `btrfs check --readonly` at
+every flush; `hack/powercut.sh boot <entry>...` boots the disk as it was after those log entries. The script header
+says what this models and what it does not.
+
 ## Test
 ```sh
 go vet ./... && go test ./...

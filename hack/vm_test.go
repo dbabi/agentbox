@@ -10,7 +10,8 @@ import (
 )
 
 // TestVMArgv runs vm.sh boot under dash from a checkout whose path has a space, a comma and glob characters, with fake
-// QEMU and swtpm that record their argv: commas are doubled only inside QEMU key=value options, swtpm gets relative paths.
+// QEMU and swtpm that record their argv: commas are doubled only inside QEMU key=value options, swtpm gets relative paths,
+// and AGENTBOX_BLKLOG logs the disk through blklogwrites.
 func TestVMArgv(t *testing.T) {
 	dash, err := exec.LookPath("dash")
 	if err != nil {
@@ -32,9 +33,9 @@ func TestVMArgv(t *testing.T) {
 	for _, b := range []string{"qemu-system-aarch64", "swtpm"} {
 		os.WriteFile(filepath.Join(bin, b), []byte("#!/bin/sh\n{ pwd; printf '%s\\n' \"$@\"; } > \"$0.argv\"\n"), 0o755)
 	}
-	boot := func(id string) ([]byte, error) {
+	boot := func(id, blklog string) ([]byte, error) {
 		c := exec.Command(dash, filepath.Join(root, "hack", "vm.sh"), "boot")
-		c.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "AGENTBOX_VM_ID="+id)
+		c.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "AGENTBOX_VM_ID="+id, "AGENTBOX_BLKLOG="+blklog)
 		return c.CombinedOutput()
 	}
 	argv := func(b string) []string {
@@ -44,7 +45,7 @@ func TestVMArgv(t *testing.T) {
 		}
 		return strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
 	}
-	if out, err := boot("7"); err != nil {
+	if out, err := boot("7", ""); err != nil {
 		t.Fatalf("vm.sh boot: %v\n%s", err, out)
 	}
 	q, qemu := strings.ReplaceAll(vm, ",", ",,"), argv("qemu-system-aarch64")[1:]
@@ -69,7 +70,17 @@ func TestVMArgv(t *testing.T) {
 		strings.Join(sw[1:], " ") != "socket --tpm2 --tpmstate dir=. --ctrl type=unixio,path=sock,terminate --pid file=pid --daemon" {
 		t.Errorf("swtpm ran as %q", sw)
 	}
-	if out, err := boot("10"); err == nil || !strings.Contains(string(out), "AGENTBOX_VM_ID must be 0-9") {
+	// AGENTBOX_BLKLOG puts QEMU's blklogwrites driver between the device and the qcow2 disk
+	blklog := filepath.Join(root, "log,1.bin")
+	if out, err := boot("7", blklog); err != nil {
+		t.Fatalf("vm.sh boot with AGENTBOX_BLKLOG: %v\n%s", err, out)
+	}
+	want := "if=none,id=d0,driver=blklogwrites,file.driver=qcow2,file.file.filename=" + q + "/disk.qcow2," +
+		"log.driver=file,log.filename=" + strings.ReplaceAll(blklog, ",", ",,")
+	if qemu := argv("qemu-system-aarch64")[1:]; !slices.Contains(qemu, want) {
+		t.Errorf("QEMU argv lacks %q:\n%s", want, strings.Join(qemu, "\n"))
+	}
+	if out, err := boot("10", ""); err == nil || !strings.Contains(string(out), "AGENTBOX_VM_ID must be 0-9") {
 		t.Errorf("AGENTBOX_VM_ID=10 accepted: %v\n%s", err, out)
 	}
 }
