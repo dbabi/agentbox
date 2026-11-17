@@ -61,6 +61,7 @@ func validConfig(t *testing.T, enc, boot string) *Config {
 		Encryption:        enc,
 		MinisignPubKey:    "RWQ" + strings.Repeat("A", 53), // decodes to "Ed..."
 		ReleaseURL:        "https://releases.example.com/agentbox/agentbox-2026.11.1.tgz",
+		ReleaseSHA256:     testSHA,
 	}
 	if enc == EncTPM2Tang {
 		c.TangURL, c.TangThp = "http://192.168.1.10:7500", "_OsIk0T-E2l6qjfdDiwVmidoZjA"
@@ -77,6 +78,8 @@ func validConfig(t *testing.T, enc, boot string) *Config {
 	}
 	return c
 }
+
+const testSHA = "5a4f3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a"
 
 func TestRenderModes(t *testing.T) {
 	encWant := map[string][]string{
@@ -104,7 +107,7 @@ func TestRenderModes(t *testing.T) {
 		`mount --make-rslave "/mnt/new/$d"`, "set fallback=%s", "sort -V", "insmod gzio", "rm -f /var/log/installer/autoinstall-user-data /var/log/installer/curtin-install*.yaml",
 		`mount -o subvol=@var_log "$DEV" /target/var/log`, "D=/run/agentbox-firstboot", "RuntimeDirectory=agentbox-firstboot", "RuntimeDirectoryMode=0700", "PrivateMounts=yes",
 		"@var_lib_agentbox_data /var/lib/agentbox/data", "mkdir -m 0755 /target/@var_lib_agentbox/data", "ports.ubuntu.com/ubuntu-ports",
-		"systemctl mask apt-daily.timer apt-daily-upgrade.timer", "RuntimeMaxSec=120"}
+		"systemctl mask apt-daily.timer apt-daily-upgrade.timer", "RuntimeMaxSec=120", "'AGENTBOX_RELEASE_SHA256=" + testSHA + "'"}
 	for _, enc := range []string{EncTPM2Tang, EncTPM2, EncNone} {
 		for _, boot := range []string{"uefi", "bios"} {
 			t.Run(enc+"/"+boot, func(t *testing.T) {
@@ -125,6 +128,17 @@ func TestRenderModes(t *testing.T) {
 				}
 				if i, j := strings.Index(s, "early-commands:"), strings.Index(s, "need exactly 1"); i < 0 || j < i || strings.Count(s[i:j], "\n    - ") != 1 {
 					t.Error("the disk guard must be early-commands[0]")
+				}
+				// firstboot: the sha256 pin, then minisign, and only then does anything unpack or install
+				last := -1
+				for _, step := range []string{`h=$(sha256sum "$D/ab.tgz")`, `[ "$h" = "$AGENTBOX_RELEASE_SHA256" ] || {`,
+					`minisign -Vm "$D/ab.tgz" -P "$AGENTBOX_MINISIGN_PUBKEY" || {`, `tar -xzf "$D/ab.tgz"`, `"$D/x/install.sh" --from-firstboot`,
+					"systemctl start agentbox-reconcile.service", "touch /var/lib/agentbox/.firstboot-done"} {
+					i := strings.Index(s, step)
+					if i <= last {
+						t.Errorf("firstboot step %q missing or out of order", step)
+					}
+					last = i
 				}
 				if regexp.MustCompile(`clevis luks bind .*(^| )-y( |$)`).MatchString(s) {
 					t.Error("clevis luks bind must not auto-trust Tang (-y)")
@@ -183,6 +197,13 @@ func TestValidateRejects(t *testing.T) {
 		{"impossible hash tail", "password hash", EncNone, func(c *Config) { c.AdminPasswordHash = "$6$saltsalt$" + strings.Repeat("a", 86) }},
 		{"http release", "release url", EncNone, func(c *Config) { c.ReleaseURL = "http://releases.example.com/a.tgz" }},
 		{"query in release url", "release url", EncNone, func(c *Config) { c.ReleaseURL = "https://x.example.com/a.tgz?x=1&y=$(id)" }},
+		{"vm release url without --dev", "release url", EncNone, func(c *Config) { c.ReleaseURL = "http://10.0.2.2:7600/a.tgz" }},
+		{"--dev http url off the vm host", "release url", EncNone, func(c *Config) { c.Dev, c.ReleaseURL = true, "http://192.168.1.5:7600/a.tgz" }},
+		{"--dev url without port", "release url", EncNone, func(c *Config) { c.Dev, c.ReleaseURL = true, "http://10.0.2.2/a.tgz" }},
+		{"--dev url with query", "release url", EncNone, func(c *Config) { c.Dev, c.ReleaseURL = true, "http://10.0.2.2:7600/a.tgz?$(id)" }},
+		{"no release sha256", "release sha256", EncNone, func(c *Config) { c.ReleaseSHA256 = "" }},
+		{"short release sha256", "release sha256", EncNone, func(c *Config) { c.ReleaseSHA256 = testSHA[:63] }},
+		{"release sha256 with shell", "release sha256", EncNone, func(c *Config) { c.ReleaseSHA256 = testSHA[:60] + "$(x)" }},
 		{"tang without thp", "tang thp", EncTPM2Tang, func(c *Config) { c.TangThp = "" }},
 		{"tang url with quote", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "http://x'y" }},
 		{"tang hostname", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "http://tang.lan:7500" }},
@@ -218,6 +239,13 @@ func TestValidateAccepts(t *testing.T) {
 		c.DiskSerial = s
 		if err := c.Validate(); err != nil {
 			t.Errorf("serial %q: %v", s, err)
+		}
+	}
+	for _, u := range []string{"https://releases.example.com/a.tgz", "http://10.0.2.2:7600/agentbox-0.0.1-gate.tgz"} {
+		c := validConfig(t, EncNone, "uefi")
+		c.Dev, c.ReleaseURL = true, u
+		if err := c.Validate(); err != nil {
+			t.Errorf("--dev release url %q: %v", u, err)
 		}
 	}
 	for _, u := range []string{"boxadmin", "ubuntu", "owner"} {
