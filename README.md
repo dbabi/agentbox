@@ -73,6 +73,9 @@ git worktree add --detach ../agentbox-wt/b main
 cd ../agentbox-wt/b && AGENTBOX_VM_ID=1 AGENTBOX_ISO_DIR=~/workplace/agentbox/.vm hack/gate.sh tpm2+tang
 ```
 
+`hack/apply-gate.sh none|tpm2|tpm2+tang [install setup cycles breaks cuts]` runs the `os.apply` gates on the same VM
+(all five scenarios take about 90 minutes); results land in `.vm/apply-gate-<mode>.txt`.
+
 ## Test
 ```sh
 go vet ./... && go test ./...

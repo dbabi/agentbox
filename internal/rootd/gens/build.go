@@ -147,6 +147,7 @@ func MakePlan(req []string, reinstall bool) (*Plan, string, error) {
 	if err := os.RemoveAll(dst); err != nil {
 		return nil, "", err
 	}
+	syscall.Sync() // the dir shows under its hash only once every file in it is on disk
 	if err := os.Rename(w, dst); err != nil {
 		return nil, "", err
 	}
