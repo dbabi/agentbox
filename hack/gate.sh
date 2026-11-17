@@ -112,7 +112,7 @@ check "dracut builds the initramfs"      'dpkg -s dracut | grep -q "Status: inst
 if [ "$ENC" != none ]; then
   check "root on LUKS (croot)"           'findmnt -n -o SOURCE / | grep -q "^/dev/mapper/croot"'
   check "LUKS has a clevis token"        'cryptsetup luksDump "\$(cryptsetup status croot | awk "/device:/{print \\\$2}")" | grep -q ": clevis"'
-  check "unlocked by clevis"             'journalctl -b -o cat | grep -q "Finished systemd-cryptsetup@croot.service"'
+  check "unlocked by clevis"             'journalctl -b -o cat | grep -q "Finished systemd-cryptsetup@croot.service" && journalctl -b -t clevis-luks-askpass -o cat | grep -q "^Unlocked "'
   check "recovery.bin present"           '[ -s /bootpart/agentbox/recovery.bin ]'
   check "installer keyfile gone"         '[ ! -e /run/agentbox-luks.key ]'
 fi
@@ -154,11 +154,11 @@ if [ "$ENC" = tpm2+tang ]; then
   ssh_up 240 || :
   result "typed recovery key unlocks (Tang down, clevis did not)" '! podman container exists "agentbox-tang-${AGENTBOX_VM_ID:-0}" &&
     echo "journalctl -b -o cat" | vmroot | grep -q "Finished systemd-cryptsetup@croot.service" &&
-    ! echo "journalctl -b -o cat" | vmroot | grep -q "clevis-luks-askpass.*Unlocked" && ! grep -aqF -f "$W/luks.key" "$LOG"'
+    ! echo "journalctl -b -t clevis-luks-askpass -o cat" | vmroot | grep -q "^Unlocked " && ! grep -aqF -f "$W/luks.key" "$LOG"'
   echo 'systemctl reboot' | vmroot >/dev/null 2>&1 || :
   seen "$P" 3 300 && hack/vm.sh tang up >/dev/null
   ssh_up 240 || :
-  result "unlocks once Tang is back (clevis, no input, no reboot)" 'echo "journalctl -b -o cat" | vmroot | grep -q "clevis-luks-askpass.*Unlocked" &&
+  result "unlocks once Tang is back (clevis, no input, no reboot)" 'echo "journalctl -b -t clevis-luks-askpass -o cat" | vmroot | grep -q "^Unlocked " &&
     [ "$(grep -ac "reboot: Restarting system" "$LOG")" -eq 2 ]'
   vm_off
 fi
