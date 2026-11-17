@@ -1,13 +1,17 @@
 #!/bin/sh
-# Week-1 install gates (PLAN.md week 1, ARCHITECTURE.md §15) on the local QEMU VM.
-#   hack/gate.sh none|tpm2|tpm2+tang   build and serve test releases, render a test seed, install unattended, boot,
-#                                      check every gate item (bad releases refused, firstboot), reboot, check, power off
-#   hack/gate.sh dup-serial            two disks with the same ID_SERIAL: the install must stop before any disk write
+# Install gates (PLAN.md weeks 1-2, ARCHITECTURE.md §15) on the local QEMU VM.
+#   hack/gate.sh none|tpm2|tpm2+tang [uefi|bios]   build and serve test releases, render a test seed, install unattended,
+#                                                  boot, check every gate item (bad releases refused, firstboot), reboot,
+#                                                  check, power off
+#   hack/gate.sh dup-serial                        two disks with the same ID_SERIAL: the install must stop before any
+#                                                  disk write
+# uefi (default) is the arm64 VM with Secure Boot on (SECUREBOOT=0 turns it off); bios is the amd64 VM under TCG, about
+# five times slower. The installer boots the zero-touch ISO through the firmware unless DIRECT_KERNEL=1 (see vm.sh).
 # tpm2+tang runs a throwaway Tang container (vm.sh tang) on 127.0.0.1:7500+ID; the VM reaches it as 10.0.2.2:7500+ID. It then
 # boots with Tang down: no unlock and a reboot after the LUKS prompt times out, a typed recovery key unlocks, and the box
 # unlocks by itself once Tang is back.
 # hack/release-serve serves the test releases on 127.0.0.1:7600+ID; the --dev seed fetches from 10.0.2.2:7600+ID.
-# AGENTBOX_VM_ID, AGENTBOX_ISO_DIR and DISKBUS (nvme or virtio) pass through to vm.sh: gates that run at once need
+# AGENTBOX_VM_ID, AGENTBOX_ISO_DIR and DISKBUS (nvme, sata or virtio) pass through to vm.sh: gates that run at once need
 # distinct IDs and separate checkouts.
 # Test seeds only: the admin password is "x"; the recovery and release-signing keys live in .vm/keys. Never use them for a real box.
 set -eu
@@ -15,34 +19,40 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 VM="$ROOT/.vm"
 mkdir -p "$VM" # a fresh worktree has no .vm yet
-MODE=${1:?usage: hack/gate.sh none|tpm2|tpm2+tang|dup-serial}
-case "$MODE" in none|tpm2|tpm2+tang|dup-serial) ;; *) echo "usage: hack/gate.sh none|tpm2|tpm2+tang|dup-serial" >&2; exit 2 ;; esac
+MODE=${1:?usage: hack/gate.sh none|tpm2|tpm2+tang [uefi|bios] | dup-serial} BOOT=${2:-uefi}
+case "$MODE/$BOOT" in none/uefi|none/bios|tpm2/uefi|tpm2/bios|tpm2+tang/uefi|tpm2+tang/bios|dup-serial/uefi) ;;
+  *) echo "usage: hack/gate.sh none|tpm2|tpm2+tang [uefi|bios] | dup-serial" >&2; exit 2 ;; esac
 ENC=$MODE; [ "$MODE" = dup-serial ] && ENC=none
 die() { echo "gate.sh: $*" >&2; exit 1; }
 case ${AGENTBOX_VM_ID:-0} in [0-9]) ;; *) die "AGENTBOX_VM_ID must be 0-9" ;; esac
 TANG_URL=http://10.0.2.2:$((7500 + ${AGENTBOX_VM_ID:-0})) # vm.sh tang up serves this instance on 127.0.0.1:7500+ID
 RPORT=$((7600 + ${AGENTBOX_VM_ID:-0})) REL="$VM/release" V=0.0.1-gate V0=0.0.0-gate
 command -v minisign >/dev/null || die "minisign not installed (brew install minisign)"
-# the disk's udev ID_SERIAL, and the loadable modules of its driver chain that the seed records (virtio is built in)
-case ${DISKBUS:-nvme} in
+# vm.sh's default disk per boot mode, and the factor for the waits below
+case $BOOT in uefi) SLOW=1 TAG=$MODE B=${DISKBUS:-nvme} ;; bios) SLOW=5 TAG=$MODE-bios B=${DISKBUS:-sata} ;; esac
+# the disk's udev ID_SERIAL, and the loadable modules of its driver chain that the seed records (virtio_blk is built in;
+# on amd64 sd_mod and libata are too, ahci is not)
+case $B in
   nvme) SER=QEMU_NVMe_Ctrl_QM00001_1 DRV=" nvme" ;;
+  sata) SER=QEMU_HARDDISK_QM00001 DRV=" ahci" ;;
   virtio) SER=QM00001 DRV= ;;
-  *) die "DISKBUS must be nvme or virtio" ;;
+  *) die "DISKBUS must be nvme, sata or virtio" ;;
 esac
+SB=${SECUREBOOT:-1}
 # libxcrypt crypt("x"): yescrypt (Ubuntu's default) and sha512-crypt at the 100000-round floor, so both forms get installed
 PW='$y$j9T$agentboxgatesalt0000$nVjZH1ZaNBH.vEdKjhLQLZVUy6bJDJKQOxEO8qRil23'
 [ "$ENC" = tpm2 ] && PW='$6$rounds=100000$gatesalt$PJzNps4L0wTr6EuAOurqVB/VEVeGKeSEpNIR4BLw3eJyf2vEAyw2ETSqg5VBL1fNrlHAQO7p7ZzCYTHME6iRp1'
-OUT="$VM/gate-$MODE.txt" QEMU=
+OUT="$VM/gate-$TAG.txt" QEMU=
 vmroot() { { echo x; cat; } | hack/vm.sh ssh 'sudo -S -p "" sh -s'; } # stdin runs as root in the VM
 ssh_up() { e=$(( $(date +%s) + $1 )); until hack/vm.sh ssh true 2>/dev/null; do [ "$(date +%s)" -lt "$e" ] || return 1; sleep 3; done; }
-# vm_off: power the VM off; a box stuck in the initrd has no SSH, so kill QEMU after 90 s
+# vm_off: power the VM off; a box stuck in the initrd has no SSH, so kill QEMU after 90 s * SLOW
 vm_off() { echo 'systemctl poweroff' | vmroot >/dev/null 2>&1 || :; i=0
-  while [ -f "$VM/qemu.pid" ] && kill -0 "$(cat "$VM/qemu.pid")" 2>/dev/null; do i=$((i+1)); [ $i -lt 45 ] || kill "$(cat "$VM/qemu.pid")"; sleep 2; done
+  while [ -f "$VM/qemu.pid" ] && kill -0 "$(cat "$VM/qemu.pid")" 2>/dev/null; do i=$((i+1)); [ $i -lt $((45 * SLOW)) ] || kill "$(cat "$VM/qemu.pid")"; sleep 2; done
   [ -z "$QEMU" ] || wait "$QEMU" 2>/dev/null || :; } # not plain wait: release-serve runs until the trap
 # verdict N: no FAIL line, and each of the N check blocks reached fails=0
-verdict() { ! grep -q '^FAIL' "$OUT" || die "gate $MODE failed; see $OUT"
-  [ "$(grep -c '^fails=0$' "$OUT")" -eq "$1" ] || die "gate $MODE did not finish its checks; see $OUT"
-  echo "gate $MODE: all checks passed"; }
+verdict() { ! grep -q '^FAIL' "$OUT" || die "gate $TAG failed; see $OUT"
+  [ "$(grep -c '^fails=0$' "$OUT")" -eq "$1" ] || die "gate $TAG did not finish its checks; see $OUT"
+  echo "gate $TAG: all checks passed"; }
 
 go build -o bin/agentbox ./cmd/agentbox
 go build -o bin/release-serve ./hack/release-serve
@@ -79,9 +89,9 @@ bin/release-serve -dir "$REL/www" -port "$RPORT" 2>"$REL/serve.log" &
 SRV=$!
 i=0; until curl -sf -o /dev/null "http://127.0.0.1:$RPORT/agentbox-$V.tgz.minisig"; do i=$((i+1)); [ $i -lt 20 ] || die "release-serve not answering on 127.0.0.1:$RPORT; see $REL/serve.log"; sleep 0.5; done
 
-SEED="$VM/gate-seed-$MODE"
+SEED="$VM/gate-seed-$TAG"
 [ -d "$SEED" ] && rm -r "$SEED"
-set -- --disk-serial "$SER" --ssh-key "$(cat "$VM/id_vm.pub")" \
+set -- --disk-serial "$SER" --boot "$BOOT" --ssh-key "$(cat "$VM/id_vm.pub")" \
   --password-hash "$PW" --minisign-pubkey "$(sed -n 2p "$VM/keys/minisign.pub")" \
   --dev --release-url "http://10.0.2.2:$RPORT/agentbox-$V.tgz" --release-sha256 "$SHA" --encryption "$ENC" --out "$SEED"
 [ "$ENC" = none ] || set -- "$@" --recovery-pub "$VM/keys/recovery.pub"
@@ -111,7 +121,7 @@ hack/vm.sh boot &
 QEMU=$!
 # booted <boot_id>: wait until SSH answers from any other boot, then print its boot_id
 booted() {
-  end=$(( $(date +%s) + 720 ))
+  end=$(( $(date +%s) + 720 * SLOW ))
   until b=$(hack/vm.sh ssh cat /proc/sys/kernel/random/boot_id 2>/dev/null) && [ "$b" != "$1" ]; do
     [ "$(date +%s)" -lt "$end" ] || die "no SSH after boot (LUKS or boot failure); see $VM/boot-*.log"; sleep 5; done
   echo "$b"
@@ -134,8 +144,8 @@ check "saved_entry is gen-1"             'grub-editenv /boot/grub/grubenv list |
 check "committed names the booted gen-1" '[ "\$(cat /bootpart/agentbox/committed)" = "agentbox-gen-1-\$(uname -r)" ]'
 check "grub.cfg boots committed on an empty grubenv" 'grep -qF "then set default=\"agentbox-gen-1-\$(uname -r)\"; fi" /boot/grub/grub.cfg'
 check "boot deadline armed"              'systemctl is-active agentbox-boot-deadline.service'
-# subiquity writes usr/ and var/ into the top level after late-commands; agentbox-firstboot removes them, so allow it 180 s
-check "top level holds only @* (firstboot cleanup)" 'mkdir -p /run/chk && mount -o subvolid=5 "\$(findmnt -n -v -o SOURCE /)" /run/chk || exit 1; i=0; while ls -A /run/chk | grep -qv "^@"; do i=\$((i+1)); [ \$i -lt 36 ] || { umount /run/chk; exit 1; }; sleep 5; done; umount /run/chk'
+# subiquity writes usr/ and var/ into the top level after late-commands; agentbox-firstboot removes them, so allow it 180 s * SLOW
+check "top level holds only @* (firstboot cleanup)" 'mkdir -p /run/chk && mount -o subvolid=5 "\$(findmnt -n -v -o SOURCE /)" /run/chk || exit 1; i=0; while ls -A /run/chk | grep -qv "^@"; do i=\$((i+1)); [ \$i -lt $((36 * SLOW)) ] || { umount /run/chk; exit 1; }; sleep 5; done; umount /run/chk'
 check "no nested subvolumes"             '[ -z "\$(btrfs subvolume list / | awk "{print \\\$NF}" | grep /)" ]'
 check "initramfs bakes no root flags"    '! journalctl -b -o cat | grep -q "rootflags=[^ ]*subvolid=5"'
 check "zram swap"                        'swapon --show=NAME --noheadings | grep -q zram0'
@@ -157,6 +167,13 @@ check "firstboot script installed from stdin, 0755" '[ "\$(stat -c %a /usr/local
 check "no failed units"                  '[ -z "\$(systemctl --failed --no-legend --plain)" ]'
 check "firstboot leaves no /run copies"  '[ "\$(ls -d /run/agentbox-firstboot* 2>/dev/null | wc -l)" -le 1 ]'
 check "dracut builds the initramfs"      'dpkg -s dracut | grep -q "Status: install ok installed"'
+if [ "$BOOT" = bios ]; then
+  check "booted by BIOS (no EFI)"        '[ ! -d /sys/firmware/efi ]'
+elif [ "$SB" = 1 ]; then
+  check "Secure Boot on (mokutil)"       'mokutil --sb-state | grep -q "SecureBoot enabled"'
+else
+  check "Secure Boot off (mokutil)"      'mokutil --sb-state | grep -q "SecureBoot disabled"'
+fi
 if [ "$ENC" != none ]; then
   check "root on LUKS (croot)"           'findmnt -n -o SOURCE / | grep -q "^/dev/mapper/croot"'
   check "LUKS has a clevis token"        'cryptsetup luksDump "\$(cryptsetup status croot | awk "/device:/{print \\\$2}")" | grep -q ": clevis"'
@@ -183,10 +200,10 @@ if [ "$ENC" != none ]; then # the offline recovery path: recovery.bin -> key -> 
   { echo x; cat "$W/luks.key"; } | hack/vm.sh ssh 'sudo -S -p "" sh -c "umask 077; head -c 48 > /run/rk.key; d=\$(cryptsetup status croot | awk \"/device:/{print \\\$2}\"); cryptsetup open --test-passphrase --key-file /run/rk.key \$d && echo PASS recovery key opens LUKS || echo FAIL recovery key opens LUKS; shred -u /run/rk.key"' | tee -a "$OUT"
 fi
 
-: > "$VM/gate-$MODE.log"
+: > "$VM/gate-$TAG.log"
 # vm_check <name>: run stdin as root in the VM (sudo's password "x" is a test-seed value); PASS if it exits 0
 vm_check() {
-  if vmroot >>"$VM/gate-$MODE.log" 2>&1; then r=PASS; else r=FAIL; fi
+  if vmroot >>"$VM/gate-$TAG.log" 2>&1; then r=PASS; else r=FAIL; fi
   echo "$r $1" | tee -a "$OUT"
 }
 # refused <what> <tgz> <minisig> <journal line>: a firstboot attempt on that release logs the line and installs nothing
@@ -194,7 +211,7 @@ refused() {
   serve "$2" "$3"
   vm_check "firstboot refuses $1" <<EOF
 t=\$(date +%s)
-if timeout 300 systemctl restart agentbox-firstboot.service; then exit 1; fi # returns when this attempt ends
+if timeout $((300 * SLOW)) systemctl restart agentbox-firstboot.service; then exit 1; fi # returns when this attempt ends
 journalctl -u agentbox-firstboot.service --since @\$t -o cat | grep -F "$4" &&
   [ ! -e /var/lib/agentbox/releases ] && [ ! -e /var/lib/agentbox/current ] && [ ! -e /etc/systemd/system/agentbox-reconcile.service ] && [ ! -e /run/agentbox-tampered-ran ]
 EOF
@@ -211,7 +228,7 @@ reboot_vm
 { cat <<EOF; } | vmroot | tee -a "$OUT"
 fails=0
 check() { if (eval "\$2") >/dev/null 2>&1; then echo "PASS \$1"; else echo "FAIL \$1"; fails=\$((fails+1)); fi; }
-check "boot finishes: firstboot's nested reconcile start returned" '[ "\$(timeout 600 systemctl is-system-running --wait)" = running ] && [ "\$(systemctl show -P SubState agentbox-firstboot.service)" != start ]'
+check "boot finishes: firstboot's nested reconcile start returned" '[ "\$(timeout $((600 * SLOW)) systemctl is-system-running --wait)" = running ] && [ "\$(systemctl show -P SubState agentbox-firstboot.service)" != start ]'
 check "firstboot installed release $V"   '[ "\$(readlink /var/lib/agentbox/current)" = releases/$V ] && [ ! -e /var/lib/agentbox/previous ]'
 check "a non-root uid runs current/bin/agentbox" '[ "\$(runuser -u nobody -- /var/lib/agentbox/current/bin/agentbox version)" = $V ]'
 check "reconcile ran, enabled for multi-user.target" '[ "\$(systemctl is-active agentbox-reconcile.service)" = active ] && [ "\$(systemctl is-enabled agentbox-reconcile.service)" = enabled ]'
@@ -233,14 +250,14 @@ echo '# changed' >> "\$x/$V/systemd/agentbox-reconcile.service"
 ! "\$x/$V/install.sh" --from-firstboot && l $V $V0 && [ "\$(ls -A \$A/releases | tr '\n' ' ')" = "$V0 $V " ] && [ -z "\$(ls -A \$A | grep '^\.' | grep -v '^\.firstboot-done\$')" ]
 EOF
 reboot_vm
-vm_check "next boot finishes, reconcile started by multi-user.target, no failed units" <<'EOF'
-[ "$(timeout 600 systemctl is-system-running --wait)" = running ] && [ "$(systemctl is-active agentbox-reconcile.service)" = active ]
+vm_check "next boot finishes, reconcile started by multi-user.target, no failed units" <<EOF
+[ "\$(timeout $((600 * SLOW)) systemctl is-system-running --wait)" = running ] && [ "\$(systemctl is-active agentbox-reconcile.service)" = active ]
 EOF
 vm_check "firstboot does not run again" <<'EOF'
 [ "$(systemctl show -P ConditionResult agentbox-firstboot.service)" = no ]
 EOF
 echo 'journalctl -u agentbox-firstboot.service -u agentbox-reconcile.service -u multi-user.target -o short-precise --no-pager' |
-  vmroot > "$VM/gate-$MODE-journal.txt" 2>&1 || :
+  vmroot > "$VM/gate-$TAG-journal.txt" 2>&1 || :
 vm_off
 
 if [ "$ENC" = tpm2+tang ]; then
@@ -256,17 +273,17 @@ if [ "$ENC" = tpm2+tang ]; then
   QEMU=$!
   until LOG=$(ls -t "$VM"/boot-*.log | head -n 1) && [ "$LOG" != "$last" ]; do sleep 1; done
   t1=0 t2=0
-  seen "$P" 1 180 && t1=$(date +%s) && seen 'reboot: Restarting system' 1 720 && t2=$(date +%s)
+  seen "$P" 1 $((180 * SLOW)) && t1=$(date +%s) && seen 'reboot: Restarting system' 1 $((720 * SLOW)) && t2=$(date +%s)
   result "Tang down: no unlock; the box rebooted $((t2 - t1)) s after the LUKS prompt (timeout=300s, then rd.retry)" \
     '[ "$t1" -gt 0 ] && [ $((t2 - t1)) -ge 300 ] && grep -aq "Could not boot" "$LOG"'
-  if seen "$P" 2 180; then sleep 2; { cat "$W/luks.key"; printf '\r'; sleep 3; } | nc -U "$VM/console.sock" >/dev/null 2>&1 & k=$!; sleep 6; kill "$k" 2>/dev/null || :; fi
-  ssh_up 240 || :
+  if seen "$P" 2 $((180 * SLOW)); then sleep 2; { cat "$W/luks.key"; printf '\r'; sleep 3; } | nc -U "$VM/console.sock" >/dev/null 2>&1 & k=$!; sleep 6; kill "$k" 2>/dev/null || :; fi
+  ssh_up $((240 * SLOW)) || :
   result "typed recovery key unlocks (Tang down, clevis did not)" '! podman container exists "agentbox-tang-${AGENTBOX_VM_ID:-0}" &&
     echo "journalctl -b -o cat" | vmroot | grep -q "Finished systemd-cryptsetup@croot.service" &&
     ! echo "journalctl -b -t clevis-luks-askpass -o cat" | vmroot | grep -q "^Unlocked " && ! grep -aqF -f "$W/luks.key" "$LOG"'
   echo 'systemctl reboot' | vmroot >/dev/null 2>&1 || :
-  seen "$P" 3 300 && hack/vm.sh tang up >/dev/null
-  ssh_up 240 || :
+  seen "$P" 3 $((300 * SLOW)) && hack/vm.sh tang up >/dev/null
+  ssh_up $((240 * SLOW)) || :
   result "unlocks once Tang is back (clevis, no input, no reboot)" 'echo "journalctl -b -t clevis-luks-askpass -o cat" | vmroot | grep -q "^Unlocked " &&
     [ "$(grep -ac "reboot: Restarting system" "$LOG")" -eq 2 ]'
   vm_off
