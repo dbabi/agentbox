@@ -102,3 +102,27 @@ func TestRecoveryHelp(t *testing.T) {
 		}
 	}
 }
+
+// TestOSArgs checks `agentbox os` argument handling before anything touches the box.
+func TestOSArgs(t *testing.T) {
+	t.Setenv("AGENTBOX_OS_NS", "1") // skip the re-exec into a private mount namespace
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"os"}, "expected plan, apply"},
+		{[]string{"os", "apply"}, "--approve needs the plan's sha256"},
+		{[]string{"os", "apply", "--approve", strings.Repeat("A", 64)}, "--approve needs the plan's sha256"},
+		{[]string{"os", "apply", "--approve", strings.Repeat("a", 63)}, "--approve needs the plan's sha256"},
+		{[]string{"os", "plan"}, "at least one --install or --remove"},
+		{[]string{"os", "plan", "--install", "systemd", "stray"}, `unexpected argument "stray"`},
+		{[]string{"os", "frobnicate"}, `unknown subcommand "frobnicate"`},
+	} {
+		if err := run(tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: %v, want %q", tc.args, err, tc.want)
+		}
+	}
+	if err := run([]string{"os", "--help"}); !errors.Is(err, flag.ErrHelp) {
+		t.Errorf("os --help: %v", err)
+	}
+}

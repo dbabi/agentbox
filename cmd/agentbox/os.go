@@ -116,13 +116,13 @@ func cmdOS(args []string) error {
 	return fmt.Errorf("os: unknown subcommand %q", args[0])
 }
 
-// mountTop mounts the btrfs top level at a fixed dir; the mount exists only in this command's namespace.
+// mountTop mounts the btrfs top level at a fixed dir (gens.Mounts); the mounts exist only in this command's namespace.
 func mountTop() (string, error) {
 	top := "/run/agentbox-os"
 	if err := os.MkdirAll(top, 0o700); err != nil {
 		return "", err
 	}
-	return top, gens.Top(top)
+	return top, gens.Mounts(top)
 }
 
 // osHealth runs from agentbox-health.timer. On the booted trial it commits once healthy, and otherwise waits: the
@@ -160,7 +160,13 @@ func osHealth() error {
 		}
 		return gens.Commit(p, top)
 	}
-	if len(bad) > 0 {
+	gen, k, err := gens.Booted()
+	if err != nil {
+		return err
+	}
+	if c, err := gens.CommittedEntry(); err != nil || c != gens.Entry(gen, k) {
+		fmt.Fprintf(os.Stderr, "agentbox: ALERT: booted %s is not the committed %q (%v); the boot deadline returns to it\n", gens.Entry(gen, k), c, err)
+	} else if len(bad) > 0 {
 		fmt.Fprintln(os.Stderr, "agentbox: ALERT: the committed generation is unhealthy (see above)")
 	}
 	return nil

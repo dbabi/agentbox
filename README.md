@@ -14,7 +14,8 @@ A headless home for AI agents on stock Ubuntu Server 26.04. Agents get full free
 | `hack/verify-seed.py` | done: real YAML parse, structure asserts, `dash -n` on every embedded script (also run by `go test`) |
 | QEMU arm64 install, `none` | **passed:** unattended install, boots `@gen-1` through `09_agentbox`, persistent subvolumes, zram, logs in `@var_log` |
 | QEMU arm64 install, `tpm2` (swtpm) | **passed:** LUKS2 unlocks unattended through clevis in the dracut initramfs; `recovery.bin` decrypts to a key that opens LUKS |
-| `tpm2+tang`, BIOS, old x86 PC, `os.apply` | next (needs podman for Tang; week 2 for x86) |
+| `agentbox os plan` / `apply` / `health` / `mark-last-good` / `status` | week-1 `os.apply` on the box (ARCHITECTURE §3.3): closure plan with `.deb` hashes, approval by plan sha256, user-namespaced offline nspawn build, initrd gate, one-time boot, commit by the health timer, retention. Gates: `hack/apply-gate.sh none\|tpm2\|tpm2+tang` |
+| BIOS, old x86 PC | next (week 2) |
 
 ## Quick start (operator machine)
 The install needs wired Ethernet with DHCP and HTTP access to the Ubuntu archive: archive.ubuntu.com and security.ubuntu.com

@@ -35,10 +35,8 @@ const (
 	nspawnUsers = "--private-users=2130706432:65536" // 0x7F000000
 )
 
-// Log receives progress lines; the power-cut driver (hack/apply-gate.sh) cuts on them.
-var Log io.Writer = os.Stderr
-
-func logf(format string, a ...any) { fmt.Fprintf(Log, "os: "+format+"\n", a...) }
+// logf prints a progress line; hack/apply-gate.sh power-cuts the VM on them.
+func logf(format string, a ...any) { fmt.Fprintf(os.Stderr, "os: "+format+"\n", a...) }
 
 func run(name string, args ...string) ([]byte, error) {
 	var stderr bytes.Buffer
@@ -52,11 +50,11 @@ func run(name string, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// stream runs a command with its output on Log (apt and dpkg progress).
+// stream runs a command with its output on stderr (apt and dpkg progress).
 func stream(name string, args ...string) error {
 	c := exec.Command(name, args...)
 	c.Env = append(os.Environ(), "LC_ALL=C", "DEBIAN_FRONTEND=noninteractive")
-	c.Stdout, c.Stderr = Log, Log
+	c.Stdout, c.Stderr = os.Stderr, os.Stderr
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("%s: %v", name, err)
 	}
@@ -247,7 +245,7 @@ func ReadPending() (*Pending, error) {
 
 func bootID() (string, error) { return readTrim("/proc/sys/kernel/random/boot_id") }
 
-// Lock serializes os commands on the box. With wait=false a held lock returns ErrBusy at once.
+// Lock serializes os commands on the box. With wait=false a held lock fails at once.
 func Lock(wait bool) (func(), error) {
 	if err := os.MkdirAll(StateDir, 0o700); err != nil {
 		return nil, err
@@ -302,14 +300,19 @@ func Settle() (*Pending, error) {
 	return nil, nil
 }
 
-// Top mounts the btrfs top level (subvolid=5) of the root filesystem at dir. Callers run in a private mount
-// namespace (cmd/agentbox), so the mount never shows on the host and vanishes with the process.
-func Top(dir string) error {
+// Mounts sets up the view os commands work in. Callers run in a private mount namespace (cmd/agentbox), so none of
+// it shows on the host and it vanishes with the process. top gets the btrfs top level (subvolid=5). /bootpart is
+// shared, so the booted /boot/grub and /boot/efi mounts also show inside gens/<booted>/: a non-recursive bind of
+// /bootpart over itself hides them, so copies and deletes under gens/ never reach /bootpart/grub or the ESP.
+func Mounts(top string) error {
 	src, err := run("findmnt", "-n", "-v", "-o", "SOURCE", "/")
 	if err != nil {
 		return err
 	}
-	_, err = run("mount", "-o", "subvolid=5", strings.TrimSpace(string(src)), dir)
+	if _, err = run("mount", "-o", "subvolid=5", strings.TrimSpace(string(src)), top); err != nil {
+		return err
+	}
+	_, err = run("mount", "--bind", "/bootpart", "/bootpart")
 	return err
 }
 

@@ -6,8 +6,9 @@
 #          systemd/agentbox-health.*, firstboot ended, `os mark-last-good`; a boot deadline of DEADLINE s (default 300).
 # cycles   gen-2 removes the newest kernel, gen-3 brings it back with systemd re-installed (a kernel change whose
 #          initrd dracut builds inside the nspawn), gen-4 prunes gen-1; then current cold-boots and previous boots once.
-# breaks   a trial broken in GRUB, in the initrd (clevis removed; btrfs in none mode), in fstab, and by a unit that
-#          blocks boot forever: each falls back to the committed generation with no console input.
+# breaks   a trial broken in GRUB, in the initrd (clevis removed; btrfs in none mode), in fstab (/boot bound to the
+#          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
+#          the committed generation with no console input. Then an emptied grubenv boots the committed generation.
 # cuts     QMP power cuts (vm.sh cut) at five points of an apply, then a clean apply that commits.
 # Checks print PASS/FAIL to .vm/apply-gate-<mode>.txt, command output goes to .vm/apply-gate-<mode>.log; exit 1 on
 # any FAIL. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
@@ -80,13 +81,30 @@ trial() {
   clean_root "$1"
   status
 }
-# fallback NAME SECONDS: reboot into a broken trial; the box must come back on the committed generation C unattended
+# wait_gen ENTRY OLD SECONDS: until a boot other than OLD runs ENTRY
+wait_gen() {
+  end=$(( $(date +%s) + $3 ))
+  while :; do
+    id=$(bootid)
+    [ -n "$id" ] && [ "$id" != "$2" ] && [ "$(booted 2>/dev/null)" = "$1" ] && return 0
+    [ "$(date +%s)" -lt $end ] || return 1
+    sleep 5
+  done
+}
+# fallback NAME SECONDS: reboot into the broken trial E; within SECONDS, with no console input, the box must run the
+# committed generation C again. A trial that comes up (and so needs health plus the deadline) is logged.
 fallback() {
-  C=$(committed); old=$(bootid); t0=$(date +%s); reboot_vm
-  wait_boot "$old" "$2" || die "$1: no SSH within $2 s"
-  b=$(booted)
-  log "$1: back after $(( $(date +%s) - t0 )) s on $b"
-  check "$1: falls back to the committed $C" "[ '$b' = '$C' ] && [ \"\$(committed)\" = '$C' ]"
+  C=$(committed); old=$(bootid); t0=$(date +%s); seen=; reboot_vm
+  while :; do
+    id=$(bootid) b=
+    [ -z "$id" ] || [ "$id" = "$old" ] || b=$(booted 2>/dev/null) || :
+    [ "$b" = "$C" ] && break
+    if [ "$b" = "$E" ] && [ -z "$seen" ]; then seen=1; log "$1: the trial came up ($(vssh systemctl is-system-running)); health must refuse it"; fi
+    [ $(( $(date +%s) - t0 )) -lt "$2" ] || die "$1: not back on $C within $2 s"
+    sleep 5
+  done
+  log "$1: back on $C after $(( $(date +%s) - t0 )) s"
+  check "$1: falls back to the committed $C" "[ \"\$(committed)\" = '$C' ]"
   settled || :
   check "$1: trial $M marked failed" "echo 'test -e /var/lib/agentbox/os/failed/$M.json && test ! -e /var/lib/agentbox/os/pending.json' | root"
   status
@@ -175,25 +193,43 @@ sc_breaks() {
     echo "dracut --force --omit 'clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2' /bootpart/agentbox/gens/$M/initrd.img-$K $K && ! lsinitrd /bootpart/agentbox/gens/$M/initrd.img-$K | grep -q clevis-luks-askpass" | root >>"$LOG" 2>&1 || die "could not break the initrd"
     fallback "initrd break (clevis removed: LUKS prompt times out)" 1200
   fi
+  # the clone bug the fstab rewrite prevents: systemd mounts the parent's dir (and would mkdir a missing bind source),
+  # so the boot succeeds; health's /boot check refuses it and the deadline falls back
   plan --reinstall --install base-files
   build
-  with_top "sed -i 's|^/bootpart/agentbox/gens/$M /boot |/bootpart/agentbox/gens/gen-0 /boot |' \$T/@$M/etc/fstab && grep -q '^/bootpart/agentbox/gens/gen-0 /boot ' \$T/@$M/etc/fstab" || die "could not break fstab"
-  fallback "fstab break (/boot bind source missing)" 900
+  P=$(vssh findmnt -no FSROOT /); P=${P#/@} # the committed generation the box runs now
+  with_top "sed -i 's|^/bootpart/agentbox/gens/$M /boot |/bootpart/agentbox/gens/$P /boot |' \$T/@$M/etc/fstab && grep -q '^/bootpart/agentbox/gens/$P /boot ' \$T/@$M/etc/fstab" || die "could not break fstab"
+  fallback "fstab break (/boot still bound to the parent's gens/$P)" $((DEADLINE + 900))
+  # a mount that can't happen: local-fs.target fails, and the emergency drop-in reboots after 120 s
+  plan --reinstall --install base-files
+  build
+  with_top "sed -i 's|^/bootpart/agentbox/gens/$M /boot none bind[^ ]*|/dev/disk/by-uuid/00000000-0000-4000-8000-000000000000 /boot ext4 defaults|' \$T/@$M/etc/fstab && grep -q '^/dev/disk/by-uuid/00000000-0000-4000-8000-000000000000 /boot ' \$T/@$M/etc/fstab" || die "could not break fstab"
+  fallback "fstab break (/boot device missing: emergency mode)" 1200
   plan --reinstall --install base-files
   build
   with_top "printf '%s\n' '[Unit]' 'Description=gate: blocks boot forever' '[Service]' 'Type=oneshot' 'ExecStart=/bin/sleep infinity' 'TimeoutStartSec=infinity' > \$T/@$M/etc/systemd/system/agentbox-gate-block.service && ln -s ../agentbox-gate-block.service \$T/@$M/etc/systemd/system/multi-user.target.wants/" || die "could not add the blocking unit"
   C=$(committed); old=$(bootid); reboot_vm
-  wait_boot "$old" 900 || die "blocking unit: no SSH in the trial"
-  check "blocking unit: the trial $M boots and never finishes" "[ \"\$(booted)\" = $E ] && [ \"\$(vssh systemctl is-system-running)\" = starting ]"
+  wait_gen "$E" "$old" 900 || die "blocking unit: the trial never came up"
+  check "blocking unit: the trial $M boots and never finishes" "[ \"\$(vssh systemctl is-system-running)\" = starting ]"
   sleep 90
   check "blocking unit: health does not commit it" "[ \"\$(committed)\" = $C ]"
   old=$(bootid); t0=$(date +%s)
-  wait_boot "$old" $((DEADLINE + 600)) || die "blocking unit: the deadline never rebooted it"
-  log "blocking unit: rebooted by the deadline after $(( $(date +%s) - t0 )) s"
-  check "blocking unit: falls back to the committed $C" "[ \"\$(booted)\" = $C ] && [ \"\$(committed)\" = $C ]"
+  wait_gen "$C" "$old" $((DEADLINE + 600)) || die "blocking unit: the deadline never fell back"
+  log "blocking unit: back on $C $(( $(date +%s) - t0 )) s later (boot deadline)"
+  check "blocking unit: falls back to the committed $C" "[ \"\$(committed)\" = $C ]"
   settled || :
   check "blocking unit: trial $M marked failed" "echo 'test -e /var/lib/agentbox/os/failed/$M.json' | root"
   status
+  # grubenv emptied (what a cut during an in-place grub-editenv leaves): GRUB boots the committed entry through
+  # 09_agentbox's fallback, not entry 0 (the oldest generation), and the deadline keeps that boot up
+  C=$(committed); old=$(bootid)
+  echo ': > /boot/grub/grubenv && sync' | root >>"$LOG" 2>&1
+  reboot_vm; wait_boot "$old" 900 || die "empty grubenv: no SSH"
+  check "empty grubenv: boots the committed $C, not entry 0" "[ \"\$(booted)\" = $C ]"
+  old=$(bootid); sleep $((DEADLINE + 60))
+  check "empty grubenv: the boot deadline leaves the committed boot up" "[ \"\$(bootid)\" = $old ]"
+  echo "$A os mark-last-good" | root >>"$LOG" 2>&1
+  check "empty grubenv: mark-last-good restores saved_entry" "vssh 'grub-editenv /boot/grub/grubenv list' | grep -qx saved_entry=$C"
 }
 
 # cut_at PHASE DELAY: power-cut the VM DELAY s after apply prints "os: PHASE"

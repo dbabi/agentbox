@@ -242,8 +242,17 @@ func Build(hash, top string) (*Pending, error) {
 	if err != nil {
 		return nil, err
 	}
-	if c, err := CommittedEntry(); err != nil || c != Entry(cur, k) {
+	c, err := CommittedEntry()
+	if err != nil || c != Entry(cur, k) {
 		return nil, fmt.Errorf("booted %s is not the committed generation (%q, %v)", Entry(cur, k), c, err)
+	}
+	// 09_agentbox's one-shot fallback is the saved_entry; an emptied grubenv booted through the committed file has none
+	if env, err := ReadGrubEnv(); err != nil {
+		return nil, err
+	} else if env["saved_entry"] != c {
+		if err := SetGrubEnv("saved_entry", c); err != nil {
+			return nil, err
+		}
 	}
 	status, err := os.ReadFile("/var/lib/dpkg/status")
 	if err != nil {
@@ -260,14 +269,14 @@ func Build(hash, top string) (*Pending, error) {
 		}
 		sums = append(sums, d.SHA256+"  "+d.File)
 	}
-	if err := PruneGens(top); err != nil { // failed trials and interrupted builds go before a new one starts
-		return nil, err
-	}
-	all, err := Generations(top)
+	all, err := Generations(top) // before pruning, so a failed trial's number is never reused
 	if err != nil {
 		return nil, err
 	}
 	m := Gen(slices.Max(all) + 1)
+	if err := PruneGens(top); err != nil { // failed trials and interrupted builds go before a new one starts
+		return nil, err
+	}
 	root, boot := filepath.Join(top, "@"+m), filepath.Join(GensDir, m)
 
 	logf("clone %s -> %s", cur, m)
