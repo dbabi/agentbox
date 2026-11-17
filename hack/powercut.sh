@@ -9,10 +9,12 @@
 # TPM state (they keep their end-of-run contents). QEMU 11.1's NVMe controller drops the FUA bit, so a FUA write counts
 # as durable only at the next flush; on DISKBUS=virtio the guest kernel flushes after each FUA write instead. `check`
 # reads plain btrfs only (encryption none); ext4, the ESP, the btrfs log tree and data checksums are left to `boot`.
+# Seen once: QEMU 11.1.3 left a 15.7 MiB hole in a 9.9 GB install log (virtio); marks, check and boot stop there.
 #   hack/powercut.sh log <vm.sh command> [args]  run hack/vm.sh <command> (boot or install) with the log on; the disk as
 #                                                it was before the run is the replay base
 #   hack/powercut.sh writes [rounds]             in the running VM: fsynced atomic replaces and appends on btrfs and
-#                                                ext4, then the grubenv replace of ARCHITECTURE §3.3 step 8 (default 50)
+#                                                ext4, then the grubenv replace of ARCHITECTURE §3.3 step 8 (default 50;
+#                                                once per disk)
 #   hack/powercut.sh marks                       the log's entry count and the entry number of every flush
 #   hack/powercut.sh check [from [to [every]]]   btrfs check --readonly at every flush (or every <every>-th flush) in
 #                                                log entries from..to; default the whole log. Several ranges can
@@ -64,17 +66,20 @@ writes)
   rounds=${1:-50}; num "$rounds"
   # Each step is durable before the next starts, so at any flush: g <= kE <= kB <= g+1, where kB and kE count the
   # records in $B/log and $E/log and g is grubenv's agentbox_powercut; each state file holds k or k+1.
+  # uutils `sync FILE` (Ubuntu 26.04's sync) calls sync(2), not fsync: gnusync fsyncs, so btrfs uses its log tree.
   { echo "R=$rounds"; cat <<'EOF'; } | root_sh
 set -eu
 B=/var/lib/agentbox/powercut E=/bootpart/agentbox/powercut G=/boot/grub/grubenv
 [ ! -e $B ] && [ ! -e $E ] || { echo "writes: already ran on this disk" >&2; exit 1; }
+command -v gnusync >/dev/null || { echo "writes: needs gnusync (gnu-coreutils)" >&2; exit 1; }
 mkdir $B $E
 i=0
 while [ $i -lt $R ]; do i=$((i + 1))
   for d in $B $E; do
-    printf 'gen %06d\n' $i > $d/state.new; sync $d/state.new; mv $d/state.new $d/state; sync $d
-    printf 'rec %06d\n' $i >> $d/log; sync $d/log
+    printf 'gen %06d\n' $i > $d/state.new; gnusync $d/state.new; mv $d/state.new $d/state; gnusync $d
+    printf 'rec %06d\n' $i >> $d/log; gnusync $d/log
   done
+  # ARCHITECTURE §3.3 step 8 as written, with the system's sync
   cp $G $G.new; grub-editenv $G.new set agentbox_powercut=$i; sync $G.new; mv $G.new $G; sync ${G%/*}
 done
 echo "writes: $i rounds"
@@ -126,6 +131,7 @@ writes() {
 }
 g=$(findmnt -n -o FSROOT /); g=${g#/@}
 echo "booted agentbox-$g-$(uname -r); GRUB's $from on the replayed disk: $want; writes: $(writes || :)"
+journalctl -k -b -o cat | grep -E "recovery complete|tree-log replay" | sed 's/^/recovered: /' # a journal the cut left
 check "boots the $from entry" '[ "agentbox-$g-$(uname -r)" = "$want" ]'
 check "/boot is $g's boot dir" '[ "$(findmnt -n -o FSROOT /boot)" = "/agentbox/gens/$g" ]'
 check "no btrfs or ext4 errors in the kernel log" '! journalctl -k -b -o cat | grep -qE "BTRFS (error|critical)|EXT4-fs error"'

@@ -43,8 +43,11 @@ loops() {
 case ${1:-} in
 marks)
   echo "entries $(entries)"
-  # a replay onto /dev/null reads every entry and writes nothing
-  replay-log -v --log "$LOG" --replay /dev/null | awk '/FLUSH|FUA/ { t = /FLUSH/ ? "flush" : "fua"; sub(/@.*/, "", $2); print t, $2 }'
+  # a replay onto /dev/null reads every entry and writes nothing; a malformed entry ends it early, and that must fail
+  { replay-log -v --log "$LOG" --replay /dev/null && echo "rc 0" || echo "rc $?"; } | awk 'BEGIN { rc = -1 }
+    $1 == "rc" { rc = $2; next }
+    /FLUSH|FUA/ { t = /FLUSH/ ? "flush" : "fua"; sub(/@.*/, "", $2); print t, $2 }
+    END { if (rc != 0) { print "replay-log exited " rc ": the list stops at the first unreadable entry"; exit 1 } }'
   ;;
 check)
   n=$(entries) from=${2:-0}; to=${3:-$((n - 1))} every=${4:-1}
@@ -54,9 +57,10 @@ check)
   loops btrfs > /tmp/btrfs
   [ -s /tmp/btrfs ] || die "no btrfs partition on the disk at entry $from"
   echo 0 > /tmp/n
-  # replay-log runs the hook after each flush entry; -v names each entry just before, and stdbuf keeps the two in order
+  # replay-log runs the hook after each flush entry; -v names each entry just before, and stdbuf keeps the two in order.
+  # set -e ends the { } subshell at a failing command, so its status goes through && / ||.
   { stdbuf -oL replay-log -v --log "$LOG" --replay "$T" --start-entry "$from" --limit $((to - from + 1)) \
-      --check flush --fsck "sh $0 mark $every"; echo "rc $?"; } | awk -v from="$from" -v every="$every" '
+      --check flush --fsck "sh $0 mark $every" && echo "rc 0" || echo "rc $?"; } | awk -v from="$from" -v every="$every" '
     BEGIN { rc = -1 }
     $1 == "replaying" { e = $2; sub(/@.*/, "", e); if (/FUA/ && !/FLUSH/) fua++; next }
     $1 == "mark" { m++; st[$2]++; if ($2 != "skip") print "entry " e ": btrfs check " $2 " at btrfs generation " $3; next }
