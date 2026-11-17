@@ -241,18 +241,18 @@ func TestValidateAccepts(t *testing.T) {
 			t.Errorf("serial %q: %v", s, err)
 		}
 	}
-	for _, u := range []string{"https://releases.example.com/a.tgz", "http://10.0.2.2:7600/agentbox-0.0.1-gate.tgz"} {
-		c := validConfig(t, EncNone, "uefi")
-		c.Dev, c.ReleaseURL = true, u
-		if err := c.Validate(); err != nil {
-			t.Errorf("--dev release url %q: %v", u, err)
-		}
-	}
 	for _, u := range []string{"boxadmin", "ubuntu", "owner"} {
 		c := validConfig(t, EncNone, "uefi")
 		c.AdminUser = u
 		if err := c.Validate(); err != nil {
 			t.Errorf("user %q: %v", u, err)
+		}
+	}
+	for _, u := range []string{"https://releases.example.com/a.tgz", "http://10.0.2.2:7600/agentbox-0.0.1-gate.tgz"} {
+		c := validConfig(t, EncNone, "uefi")
+		c.Dev, c.ReleaseURL = true, u
+		if err := c.Validate(); err != nil {
+			t.Errorf("--dev release url %q: %v", u, err)
 		}
 	}
 }
