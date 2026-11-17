@@ -54,7 +54,7 @@ func validConfig(t *testing.T, enc, boot string) *Config {
 	c := &Config{
 		Hostname:          "agentbox",
 		AdminUser:         "boxadmin",
-		AdminPasswordHash: "$6$saltsalt$" + strings.Repeat("a", 85) + "0",
+		AdminPasswordHash: "$y$j9T$agentboxgatesalt0000$nVjZH1ZaNBH.vEdKjhLQLZVUy6bJDJKQOxEO8qRil23", // libxcrypt crypt("x")
 		SSHKeys:           []string{testSSHKey(t)},
 		DiskSerial:        "Samsung_SSD_870_EVO_500GB_S4EVNX0N123456",
 		Boot:              boot,
@@ -84,15 +84,23 @@ func TestRenderModes(t *testing.T) {
 			"{type: format, id: froot, volume: croot, fstype: btrfs}", "ip=dhcp rd.neednet=1",
 			`sss '{"pins":{"tang":[{"thp":"_OsIk0T-E2l6qjfdDiwVmidoZjA","url":"http://192.168.1.10:7500"}],"tpm2":{}},"t":2}'`,
 			"clevis-dracut", "dracut -f --regenerate-all", "head -c 48", "shred -u /run/agentbox-luks.key", "-pkeyopt rsa_oaep_md:sha256",
-			"test -c /dev/tpmrm0"},
+			"test -c /dev/tpmrm0",
+			// Appendix A items 1-2: forced dracut modules and every kernel's initrd checks, per mode
+			`'add_dracutmodules+=" btrfs systemd-cryptsetup clevis clevis-pin-sss clevis-pin-tpm2 clevis-pin-tang "'`,
+			"for f in btrfs.ko systemd-cryptsetup clevis-luks-askpass clevis-decrypt-sss clevis-decrypt-tpm2 clevis-decrypt-tang; do",
+			`lsinitrd -f etc/crypttab "/boot/initrd.img-$k" | grep -q '^croot '`, `readlink -f "$LUKSDEV"`},
 		EncTPM2: {"{type: format, id: froot, volume: croot, fstype: btrfs}", ` tpm2 '{}'`, "clevis-dracut",
-			"shred -u /run/agentbox-luks.key", "-pkeyopt rsa_oaep_md:sha256", "test -c /dev/tpmrm0"},
-		EncNone: {"{type: format, id: froot, volume: proot, fstype: btrfs}"},
+			"shred -u /run/agentbox-luks.key", "-pkeyopt rsa_oaep_md:sha256", "test -c /dev/tpmrm0",
+			`'add_dracutmodules+=" btrfs systemd-cryptsetup clevis clevis-pin-tpm2 "'`,
+			"for f in btrfs.ko systemd-cryptsetup clevis-luks-askpass clevis-decrypt-tpm2; do",
+			`lsinitrd -f etc/crypttab "/boot/initrd.img-$k" | grep -q '^croot '`, `readlink -f "$LUKSDEV"`},
+		EncNone: {"{type: format, id: froot, volume: proot, fstype: btrfs}", `'add_dracutmodules+=" btrfs "'`, "for f in btrfs.ko; do",
+			`readlink -f "$DEV"`},
 	}
 	encAvoid := map[string][]string{
 		EncTPM2Tang: {"volume: proot, fstype: btrfs", "pcr_ids", "apt-get install", "head -c 64"},
-		EncTPM2:     {"volume: proot, fstype: btrfs", "ip=dhcp", " sss ", "pcr_ids"},
-		EncNone:     {"dm_crypt", "clevis", "cryptsetup", "recovery", "ip=dhcp", "agentbox-luks.key", "tpmrm0"},
+		EncTPM2:     {"volume: proot, fstype: btrfs", "ip=dhcp", " sss ", "pcr_ids", "clevis-pin-tang", "clevis-decrypt-tang", "clevis-pin-sss"},
+		EncNone:     {"dm_crypt", "clevis", "cryptsetup", "recovery", "ip=dhcp", "agentbox-luks.key", "tpmrm0", "crypttab"},
 	}
 	bootWant := map[string][]string{
 		"uefi": {"{type: partition, id: esp, device: d0, number: 1, size: 1G, flag: boot, grub_device: true}", "mount --bind /target/boot/efi /mnt/new/boot/efi"},
@@ -104,7 +112,21 @@ func TestRenderModes(t *testing.T) {
 		`mount --make-rslave "/mnt/new/$d"`, "set fallback=%s", "sort -V", "insmod gzio", "rm -f /var/log/installer/autoinstall-user-data /var/log/installer/curtin-install*.yaml",
 		`mount -o subvol=@var_log "$DEV" /target/var/log`, "D=/run/agentbox-firstboot", "RuntimeDirectory=agentbox-firstboot", "RuntimeDirectoryMode=0700", "PrivateMounts=yes",
 		"@var_lib_agentbox_data /var/lib/agentbox/data", "mkdir -m 0755 /target/@var_lib_agentbox/data", "ports.ubuntu.com/ubuntu-ports",
-		"systemctl mask apt-daily.timer apt-daily-upgrade.timer", "RuntimeMaxSec=120"}
+		"systemctl mask apt-daily.timer apt-daily-upgrade.timer", "RuntimeMaxSec=120",
+		// Appendix A item 1: 90-agentbox.conf, with the root disk's driver chain and the watchdog driver from this hardware
+		`printf '%s\n' 'hostonly="yes"' 'hostonly_cmdline="no"' 'add_dracutmodules+="`, `"add_drivers+=\"$DRV \"" "force_drivers+=\" ${WD:=softdog} \"" > /mnt/new/etc/dracut.conf.d/90-agentbox.conf`,
+		`DRV="$DRV $(basename "$(readlink -f "$p/driver/module")")"`, "/drivers/watchdog/",
+		// item 2: every kernel's initrd, including the recorded driver modules
+		`for k in $(ls /mnt/new/boot | sed -n 's/^vmlinuz-//p'); do chroot /mnt/new lsinitrd "/boot/initrd.img-$k" > /tmp/initrd.lst`,
+		`for m in $DRV $WD; do f=$(chroot /mnt/new modinfo -k "$k" -F filename "$m")`,
+		// item 4, watchdog half
+		`printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=60s' > $G/etc/systemd/system.conf.d/50-agentbox.conf`,
+		// item 5, plus the snapd and dbx policy
+		"systemctl mask nftables.service snapd.socket snapd.service snapd.seeded.service snapd.snap-repair.timer \\\n        lxd-installer.socket secureboot-db.service",
+		"chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get purge -y kdump-tools", "test ! -e /mnt/new/etc/default/grub.d/kdump-tools.cfg",
+		// item 6
+		"control state (rootd.db, audit, taint.db) that stays in @var_lib_agentbox",
+		"mountpoint -q /dev/pts; mountpoint -q /sys/fs/cgroup"}
 	for _, enc := range []string{EncTPM2Tang, EncTPM2, EncNone} {
 		for _, boot := range []string{"uefi", "bios"} {
 			t.Run(enc+"/"+boot, func(t *testing.T) {
@@ -118,7 +140,7 @@ func TestRenderModes(t *testing.T) {
 						t.Errorf("missing %q", w)
 					}
 				}
-				for _, a := range append(append([]string{"/tmp/ab", "| head -1", "mktemp -d /run/agentbox-firstboot"}, encAvoid[enc]...), bootAvoid[boot]...) {
+				for _, a := range append(append([]string{"/tmp/ab", "| head -1", "mktemp -d /run/agentbox-firstboot", "state.db, audit", "modules-load.d"}, encAvoid[enc]...), bootAvoid[boot]...) {
 					if strings.Contains(s, a) {
 						t.Errorf("unexpected %q", a)
 					}
@@ -180,7 +202,20 @@ func TestValidateRejects(t *testing.T) {
 		{"truncated ed25519 blob", "ssh key", EncNone, func(c *Config) { c.SSHKeys = []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGb9c8 you@laptop"} }},
 		{"no ssh keys", "--ssh-key", EncNone, func(c *Config) { c.SSHKeys = nil }},
 		{"plain password", "password hash", EncNone, func(c *Config) { c.AdminPasswordHash = "hunter2" }},
-		{"impossible hash tail", "password hash", EncNone, func(c *Config) { c.AdminPasswordHash = "$6$saltsalt$" + strings.Repeat("a", 86) }},
+		{"impossible hash tail", "password hash", EncNone, func(c *Config) { c.AdminPasswordHash = "$6$rounds=100000$saltsalt$" + strings.Repeat("a", 86) }},
+		{"sha512 default 5000 rounds (openssl passwd -6)", "password hash", EncNone, func(c *Config) {
+			c.AdminPasswordHash = "$6$gatesalt$99DJkr0wJ/juWOF.HTWbZKxnJZDHcqny21RN4rr0J/sQAT2xWQXUZNuVdpZn40q3ER/GB5wyxlM0bBcOhZvR8."
+		}},
+		{"sha512 99999 rounds", "password hash", EncNone, func(c *Config) { c.AdminPasswordHash = "$6$rounds=99999$saltsalt$" + strings.Repeat("a", 85) + "0" }},
+		{"sha512 rounds with a leading zero", "password hash", EncNone, func(c *Config) { c.AdminPasswordHash = "$6$rounds=0100000$saltsalt$" + strings.Repeat("a", 85) + "0" }},
+		{"md5-crypt", "password hash", EncNone, func(c *Config) { c.AdminPasswordHash = "$1$saltsalt$qjXMvbEw8oaL.CzflDugX/" }},
+		{"yescrypt hash cut short", "password hash", EncNone, func(c *Config) {
+			c.AdminPasswordHash = "$y$j9T$agentboxgatesalt0000$nVjZH1ZaNBH.vEdKjhLQLZVUy6bJDJKQOxEO8qRil2"
+		}},
+		{"yescrypt without params", "password hash", EncNone, func(c *Config) {
+			c.AdminPasswordHash = "$y$$agentboxgatesalt0000$nVjZH1ZaNBH.vEdKjhLQLZVUy6bJDJKQOxEO8qRil23"
+		}},
+		{"newline after the hash", "password hash", EncNone, func(c *Config) { c.AdminPasswordHash += "\n" }},
 		{"http release", "release url", EncNone, func(c *Config) { c.ReleaseURL = "http://releases.example.com/a.tgz" }},
 		{"query in release url", "release url", EncNone, func(c *Config) { c.ReleaseURL = "https://x.example.com/a.tgz?x=1&y=$(id)" }},
 		{"tang without thp", "tang thp", EncTPM2Tang, func(c *Config) { c.TangThp = "" }},
@@ -218,6 +253,16 @@ func TestValidateAccepts(t *testing.T) {
 		c.DiskSerial = s
 		if err := c.Validate(); err != nil {
 			t.Errorf("serial %q: %v", s, err)
+		}
+	}
+	for _, h := range []string{ // libxcrypt 4.5.1 crypt("x"): sha512 at the floor, and a non-default yescrypt cost
+		"$6$rounds=100000$gatesalt$PJzNps4L0wTr6EuAOurqVB/VEVeGKeSEpNIR4BLw3eJyf2vEAyw2ETSqg5VBL1fNrlHAQO7p7ZzCYTHME6iRp1",
+		"$y$jFT$0123456789abcdef$DYe.xGroU4Z4Ik0GuQULaEeoxCOS7MfKcL.WEiOxeB/",
+	} {
+		c := validConfig(t, EncNone, "uefi")
+		c.AdminPasswordHash = h
+		if err := c.Validate(); err != nil {
+			t.Errorf("hash %q: %v", h, err)
 		}
 	}
 	for _, u := range []string{"boxadmin", "ubuntu", "owner"} {
@@ -454,6 +499,72 @@ func TestRenderedSeedsVerify(t *testing.T) {
 			args := append(append([]string{}, cmd[1:]...), filepath.Join("..", "..", "hack", "verify-seed.py"), filepath.Join(dir, "user-data"))
 			if out, err := exec.Command(cmd[0], args...).CombinedOutput(); err != nil {
 				t.Errorf("%s/%s: %v\n%s", enc, boot, err, out)
+			}
+		}
+	}
+}
+
+// TestDracutHardware runs the rendered late-commands lines that record the root disk's driver chain and the box's
+// watchdog driver under dash -eu, against a fake sysfs and fake modprobe and modinfo.
+func TestDracutHardware(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash not installed")
+	}
+	out, err := Render(validConfig(t, EncNone, "uefi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const conf = "/mnt/new/etc/dracut.conf.d/90-agentbox.conf"
+	m := regexp.MustCompile(`(?s)\n      (DRV=; p=.*?` + regexp.QuoteMeta(conf) + `)\n`).FindSubmatch(out)
+	if m == nil {
+		t.Fatal("driver chain and watchdog lines not found")
+	}
+	run := func(t *testing.T, watchdog bool) string {
+		root, err := filepath.EvalSymlinks(t.TempDir()) // readlink -f must not leave the fake root (macOS /var -> /private/var)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// nvme behind a PCIe root port: the port's built-in driver has a module link but no initstate, and must not be recorded
+		port := root + "/sys/devices/pci0000:00/0000:00:1c.0"
+		dev := port + "/0000:01:00.0"
+		for _, d := range []string{"bin", "dev", dev + "/nvme/nvme0/nvme0n1/nvme0n1p3", "sys/class/block", "sys/bus/pci/drivers/nvme", "sys/module/nvme",
+			"sys/bus/pci/drivers/pcieport", "sys/module/pcieportdrv", "sys/bus/acpi/devices/QEMU0002:00", "sys/bus/pci/devices/0000:01:00.0",
+			"sys/bus/pci/devices/0000:00:04.0"} {
+			os.MkdirAll(filepath.Join(root, strings.TrimPrefix(d, root)), 0o755)
+		}
+		os.WriteFile(root+"/dev/nvme0n1p3", nil, 0o644)
+		os.WriteFile(root+"/sys/module/nvme/initstate", []byte("live\n"), 0o644)
+		os.Symlink(dev+"/nvme/nvme0/nvme0n1/nvme0n1p3", root+"/sys/class/block/nvme0n1p3")
+		os.Symlink(root+"/sys/bus/pci/drivers/nvme", dev+"/driver")
+		os.Symlink(root+"/sys/module/nvme", root+"/sys/bus/pci/drivers/nvme/module")
+		os.Symlink(root+"/sys/bus/pci/drivers/pcieport", port+"/driver")
+		os.Symlink(root+"/sys/module/pcieportdrv", root+"/sys/bus/pci/drivers/pcieport/module")
+		os.WriteFile(root+"/sys/bus/acpi/devices/QEMU0002:00/modalias", []byte("acpi:QEMU0002:\n"), 0o644) // sorts first and resolves to nothing
+		os.WriteFile(root+"/sys/bus/pci/devices/0000:01:00.0/modalias", []byte("pci:v00001B36d00000010sv00001AF4sd00001100bc01sc08i02\n"), 0o644)
+		if watchdog {
+			os.WriteFile(root+"/sys/bus/pci/devices/0000:00:04.0/modalias", []byte("pci:v00008086d000025ABsv00001AF4sd00001100bc08sc80i00\n"), 0o644)
+		}
+		os.WriteFile(root+"/bin/modprobe", []byte("#!/bin/sh\ncase $2 in pci:v00008086d000025AB*) echo i6300esb ;; pci:v00001B36d00000010*) echo nvme ;; *) exit 1 ;; esac\n"), 0o755)
+		os.WriteFile(root+"/bin/modinfo", []byte("#!/bin/sh\nshift 2; for m; do case $m in nvme) echo /lib/modules/7.0.0-43-generic/kernel/drivers/nvme/host/nvme.ko.zst ;;\n"+
+			"i6300esb) echo /lib/modules/7.0.0-43-generic/kernel/drivers/watchdog/i6300esb.ko.zst ;; *) exit 1 ;; esac; done\n"), 0o755)
+		script := strings.NewReplacer("/sys/", root+"/sys/", conf, root+"/90-agentbox.conf").Replace(string(m[1]))
+		c := exec.Command(dash, "-euc", script)
+		c.Env = append(os.Environ(), "PATH="+root+"/bin:"+os.Getenv("PATH"), "DEV="+root+"/dev/nvme0n1p3")
+		if msg, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, msg)
+		}
+		b, _ := os.ReadFile(root + "/90-agentbox.conf")
+		return string(b)
+	}
+	for _, tc := range []struct {
+		watchdog bool
+		want     string
+	}{{true, `force_drivers+=" i6300esb "`}, {false, `force_drivers+=" softdog "`}} {
+		got := run(t, tc.watchdog)
+		for _, w := range []string{`hostonly="yes"`, `add_dracutmodules+=" btrfs "`, `add_drivers+=" nvme "`, tc.want} {
+			if !strings.Contains(got, w+"\n") {
+				t.Errorf("watchdog device %v: 90-agentbox.conf lacks %q:\n%s", tc.watchdog, w, got)
 			}
 		}
 	}

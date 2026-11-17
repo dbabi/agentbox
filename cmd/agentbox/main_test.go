@@ -78,7 +78,7 @@ func TestSeedDefaultsRender(t *testing.T) {
 	k1, k2 := edLine(t), edLine(t)
 	out := filepath.Join(t.TempDir(), "seed")
 	err = run([]string{"seed", "--disk-serial", "QEMU_NVMe_Ctrl_QM00001_1", "--ssh-key", k1, "--ssh-key", k2,
-		"--password-hash", "$6$saltsalt$" + strings.Repeat("a", 85) + "0", "--minisign-pubkey", "RWQ" + strings.Repeat("A", 53),
+		"--password-hash", "$y$j9T$agentboxgatesalt0000$nVjZH1ZaNBH.vEdKjhLQLZVUy6bJDJKQOxEO8qRil23", "--minisign-pubkey", "RWQ" + strings.Repeat("A", 53),
 		"--release-url", "https://releases.example.com/a.tgz", "--tang-url", "http://192.168.1.10:7500",
 		"--tang-thp", "_OsIk0T-E2l6qjfdDiwVmidoZjA", "--recovery-pub", pub, "--out", out})
 	if err != nil {

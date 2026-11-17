@@ -35,11 +35,14 @@ serial matches anything but exactly one disk, or (encrypted modes) when there is
    If you skip this step, the install stops before touching any disk and logs every disk's ID_SERIAL; read them from the
    installer shell with `journalctl -b | grep 'agentbox: disk'`.
 3. Generate the seed (`tpm2+tang` shown). `user-data` and `seed.iso` hold your password hash: keep them private.
+   The hash must be yescrypt or sha512-crypt with `rounds=100000` or more; `openssl passwd -6` (5000 rounds) is refused.
+   `mkpasswd` is in Debian/Ubuntu's `whois` package; on a Mac, run it in a container:
+   `podman run --rm -it docker.io/library/ubuntu:26.04 sh -c 'apt-get update -qq && apt-get install -qq -y whois >/dev/null && mkpasswd -m yescrypt'`
    ```sh
    ./bin/agentbox seed \
      --disk-serial '<ID_SERIAL from step 2>' \
      --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" \
-     --password-hash "$(openssl passwd -6)" \
+     --password-hash "$(mkpasswd -m yescrypt)" \
      --minisign-pubkey RW... \
      --release-url https://.../agentbox.tgz \
      --encryption tpm2+tang --tang-url http://<tang LAN IPv4>:7500 --tang-thp <thumbprint> \

@@ -65,7 +65,7 @@ autoinstall:
       for p in "home @home" "var/log @var_log" "srv @srv"; do set -- $p
         cp -a --reflink=always "/target/@gen-1/$1/." "/target/$2/"; find "/target/@gen-1/$1" -mindepth 1 -delete; done
       # agent-fillable data (workspaces, agent homes and storage, images) gets its own subvolume so a qgroup can cap it
-      # without starving control state (state.db, audit, rootd.db) that stays in @var_lib_agentbox
+      # without starving control state (rootd.db, audit, taint.db) that stays in @var_lib_agentbox
       mkdir -m 0755 /target/@var_lib_agentbox/data
       G=/target/@gen-1
       mkdir -p $G/var/lib/agentbox $G/var/lib/tailscale $G/var/lib/ntfy $G/.snapshots $G/bootpart $G/etc/default/grub.d
@@ -87,6 +87,9 @@ autoinstall:
       for u in emergency rescue; do mkdir -p $G/etc/systemd/system/$u.service.d
         printf '%s\n' '[Unit]' 'FailureAction=reboot-force' 'SuccessAction=reboot-force' '[Service]' 'RuntimeMaxSec=120' \
           > $G/etc/systemd/system/$u.service.d/90-agentbox.conf; done
+      # a hung PID 1 or kernel resets the box (§3.3 fallback); dracut loads the driver (force_drivers below)
+      mkdir -p $G/etc/systemd/system.conf.d
+      printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=60s' > $G/etc/systemd/system.conf.d/50-agentbox.conf
       cat > $G/etc/grub.d/09_agentbox <<'G9'
       #!/bin/sh
       set -e
@@ -122,17 +125,39 @@ autoinstall:
       [ -n "$KV" ]
       [ -f "/mnt/new/boot/initrd.img-$KV" ]
       chroot /mnt/new systemctl mask apt-daily.timer apt-daily-upgrade.timer # no in-place updates outside A/B (§3.3)
-      # dracut hostonly would bake the installer's top-level root flags (subvolid=5) into the initramfs cmdline; GRUB owns them
-      printf '%s\n' 'hostonly_cmdline="no"' > /mnt/new/etc/dracut.conf.d/90-agentbox.conf
+      # agentbox-firewall loads its own ruleset; snapd and lxd-installer change snaps in place, outside A/B; secureboot-db
+      # rewrites db/dbx at boot, and dbx updates run only as an explicit op. Masked, not purged: snapd's purge takes the
+      # ubuntu-server-minimal metapackage with it and leaves sudo, systemd and cloud-init to apt autoremove
+      chroot /mnt/new systemctl mask nftables.service snapd.socket snapd.service snapd.seeded.service snapd.snap-repair.timer \
+        lxd-installer.socket secureboot-db.service
+      # kdump's grub.d snippet adds crashkernel= even when disabled, and its crash kernel can't unlock the LUKS root
+      chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get purge -y kdump-tools
+      test ! -e /mnt/new/etc/default/grub.d/kdump-tools.cfg
+      # dracut hostonly would bake the installer's top-level root flags (subvolid=5) into the initramfs cmdline; GRUB owns them.
+      # os.apply's nspawn rebuild sees no disks, so force the unlock modules and the root disk's driver chain (the loadable
+      # modules behind udevadm info -a's DRIVERS==, recorded here from the real hardware; built-in drivers have no initstate).
+      # Ubuntu blacklists every watchdog module and systemd-modules-load honors that, so dracut loads the box's watchdog
+      # driver (else softdog) with modprobe
+      DRV=; p=$(readlink -f "/sys/class/block/$(basename "$(readlink -f {{if .Encrypted}}"$LUKSDEV"{{else}}"$DEV"{{end}})")")
+      while [ "${p#/sys/devices/}" != "$p" ]; do [ -e "$p/driver/module/initstate" ] && DRV="$DRV $(basename "$(readlink -f "$p/driver/module")")"; p=${p%/*}; done
+      WD=$(sort -u /sys/bus/*/devices/*/modalias | xargs -n 1 modprobe -R 2>/dev/null | xargs -r modinfo -F filename 2>/dev/null |
+        sed -n 's|.*/drivers/watchdog/\([^/.]*\)\.ko.*|\1|p' | head -n 1)
+      printf '%s\n' 'hostonly="yes"' 'hostonly_cmdline="no"' 'add_dracutmodules+=" {{.DracutModules}} "' \
+        "add_drivers+=\"$DRV \"" "force_drivers+=\" ${WD:=softdog} \"" > /mnt/new/etc/dracut.conf.d/90-agentbox.conf
 {{- if .Encrypted}}
       # 4. bind LUKS to clevis and rebuild the target initramfs BEFORE the first reboot (clevis-dracut came from packages:)
       chroot /mnt/new clevis luks bind -k /run/agentbox-luks.key -d "$LUKSDEV" {{.ClevisPin}} '{{.ClevisConfig}}'
 {{- end}}
       chroot /mnt/new dracut -f --regenerate-all
+      # fail the install here, not as a silent reboot loop at first boot (rd.shell=0 rd.emergency=reboot): every kernel's initrd
+      for k in $(ls /mnt/new/boot | sed -n 's/^vmlinuz-//p'); do chroot /mnt/new lsinitrd "/boot/initrd.img-$k" > /tmp/initrd.lst
 {{- if .Encrypted}}
-      # fail the install here, not as a silent reboot loop at first boot (rd.shell=0 rd.emergency=reboot)
-      chroot /mnt/new lsinitrd -f etc/crypttab "/boot/initrd.img-$KV" | grep -q '^croot '
-      chroot /mnt/new lsinitrd "/boot/initrd.img-$KV" | grep -q clevis-luks-askpass
+        chroot /mnt/new lsinitrd -f etc/crypttab "/boot/initrd.img-$k" | grep -q '^croot '
+{{- end}}
+        for f in {{.InitrdFiles}}; do grep -qE "/$f(\.[a-z]+)?\$" /tmp/initrd.lst; done
+        for m in $DRV $WD; do f=$(chroot /mnt/new modinfo -k "$k" -F filename "$m"); [ "$f" = "(builtin)" ] || grep -qF "/${f##*/}" /tmp/initrd.lst; done
+      done
+{{- if .Encrypted}}
       openssl pkeyutl -encrypt -pubin -inkey /run/agentbox-recovery.pub -pkeyopt rsa_padding_mode:oaep \
         -pkeyopt rsa_oaep_md:sha256 -in /run/agentbox-luks.key -out /mnt/new/bootpart/agentbox/recovery.bin
       shred -u /run/agentbox-luks.key
@@ -173,4 +198,5 @@ autoinstall:
       rm -f /var/log/installer/autoinstall-user-data /var/log/installer/curtin-install*.yaml \
             /var/log/installer/subiquity-curtin-install.conf /var/log/installer/curtin-install/*.conf
       umount -R /mnt/new
+      mountpoint -q /dev/pts; mountpoint -q /sys/fs/cgroup # the rslave rbinds kept umount -R out of the live installer
       mount -o subvol=@var_log "$DEV" /target/var/log

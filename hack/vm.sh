@@ -1,7 +1,8 @@
 #!/bin/sh
 # Local QEMU test VM for agentbox (PLAN.md week 1). arm64 + HVF on Apple Silicon, UEFI.
 #   hack/vm.sh install <seed-dir>   unattended install from the stock ISO; fails on installer errors or after INSTALL_TIMEOUT s
-#   hack/vm.sh boot                 boot the installed disk (SSH on 127.0.0.1:2222+ID)
+#                                   (DUP_DISK=1: also attach a second disk with the same serial)
+#   hack/vm.sh boot                 boot the installed disk (SSH on 127.0.0.1:2222+ID; console also on .vm/console.sock)
 #   hack/vm.sh tang up|down|thp     Tang for tpm2+tang seeds on 127.0.0.1:7500+ID, guest URL http://10.0.2.2:7500+ID (needs podman)
 #   hack/vm.sh ssh [cmd]            SSH into the VM as boxadmin with the throwaway key in .vm/id_vm
 #   hack/vm.sh cut                  power-cut the running VM (QMP system_reset)
@@ -51,6 +52,14 @@ run_qemu() {
     set -- -chardev "socket,id=chrtpm,path=$(qopt "$VM/tpm/sock")" -tpmdev emulator,id=tpm0,chardev=chrtpm \
       -device tpm-tis-device,tpmdev=tpm0,ppi=off "$@"
   fi
+  if [ -f "$VM/disk2.qcow2" ]; then
+    case "$DISKBUS" in
+      # its own NVMe subsystem: with the default NQN (made from the serial) Linux would reject the second controller
+      nvme) set -- -device nvme-subsys,id=dupsys,nqn=nqn.2019-08.org.qemu:agentbox-dup -device "nvme,id=dupctl,serial=$SERIAL,subsys=dupsys" \
+              -drive "if=none,id=d1,format=qcow2,file=$(qopt "$VM/disk2.qcow2")" -device nvme-ns,drive=d1,bus=dupctl,nsid=1 "$@" ;;
+      virtio) set -- -drive "if=none,id=d1,format=qcow2,file=$(qopt "$VM/disk2.qcow2")" -device "virtio-blk-pci,drive=d1,serial=$SERIAL" "$@" ;;
+    esac
+  fi
   exec qemu-system-aarch64 -machine virt -accel hvf -cpu host -smp 4 -m 4096 -display none \
     -drive "if=pflash,format=raw,readonly=on,file=$(qopt "$FW")" -drive "if=pflash,format=raw,file=$(qopt "$VM/vars.fd")" \
     -drive "if=none,id=d0,format=qcow2,file=$(qopt "$DISK")" -device "$dev,drive=d0,serial=$SERIAL" \
@@ -82,6 +91,7 @@ install)
   echo "$DISKBUS" > "$VM/diskbus"
   tpm_start
   qemu-img create -q -f qcow2 "$DISK" 40G
+  [ "${DUP_DISK:-0}" = 1 ] && qemu-img create -q -f qcow2 "$VM/disk2.qcow2" 40G
   : > "$VM/install.log"
   run_qemu -no-reboot -drive "if=virtio,format=raw,readonly=on,file=$(qopt "$ISO")" \
     -drive "if=virtio,format=raw,readonly=on,file=$(qopt "$VM/seed.iso")" \
@@ -103,7 +113,9 @@ boot)
   running && die "a VM is running"
   DISKBUS=$(cat "$VM/diskbus")
   tpm_start
-  run_qemu -serial "file:$VM/boot-$(date +%Y%m%dT%H%M%S).log"
+  # the console log is also a socket, so a gate can type at the boot prompts (the recovery key at the LUKS prompt)
+  run_qemu -chardev "socket,id=con,path=$(qopt "$VM/console.sock"),server=on,wait=off,logfile=$(qopt "$VM/boot-$(date +%Y%m%dT%H%M%S).log")" \
+    -serial chardev:con
   ;;
 tang)
   command -v podman >/dev/null || die "podman not installed (brew install podman && podman machine init && podman machine start)"
@@ -133,7 +145,7 @@ ssh)
 reset)
   running && die "a VM is running"
   pkill -F "$VM/tpm/pid" -x swtpm 2>/dev/null || :
-  rm -rf "$DISK" "$VM/vars.fd" "$VM/tpm" "$VM/tpm.on" "$VM/diskbus" "$VM/seed.iso" "$VM/vmlinuz" "$VM/initrd"
+  rm -rf "$DISK" "$VM/disk2.qcow2" "$VM/vars.fd" "$VM/tpm" "$VM/tpm.on" "$VM/diskbus" "$VM/seed.iso" "$VM/vmlinuz" "$VM/initrd"
   echo "reset: removed VM disk, UEFI vars and TPM state (ISO kept)"
   ;;
 *) die "usage: vm.sh install <seed-dir> | boot | ssh [cmd] | tang up|down|thp | cut | reset" ;;

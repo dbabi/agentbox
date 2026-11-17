@@ -86,7 +86,7 @@ func cmdSeed(args []string) error {
 	var recPub, out, iso string
 	fs.StringVar(&c.Hostname, "hostname", "agentbox", "box hostname")
 	fs.StringVar(&c.AdminUser, "admin", "boxadmin", "admin user name (installer-reserved names such as admin are refused)")
-	fs.StringVar(&c.AdminPasswordHash, "password-hash", "", "sha512-crypt hash (openssl passwd -6); console login only")
+	fs.StringVar(&c.AdminPasswordHash, "password-hash", "", "yescrypt hash (mkpasswd -m yescrypt), or sha512-crypt with rounds=100000 or more; console and sudo only")
 	fs.Var(&keys, "ssh-key", "admin OpenSSH public key line (repeatable)")
 	fs.StringVar(&c.DiskSerial, "disk-serial", "", "install disk udev ID_SERIAL; on the target run: udevadm info --query=property --property=ID_SERIAL --value /dev/DISK (lsblk SERIAL is the short form and never matches)")
 	fs.StringVar(&c.Boot, "boot", "uefi", "uefi or bios")
