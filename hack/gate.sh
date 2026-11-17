@@ -185,7 +185,7 @@ EOF
 vm_check "firstboot does not run again" <<'EOF'
 [ "$(systemctl show -P ConditionResult agentbox-firstboot.service)" = no ]
 EOF
-{ echo x; echo 'journalctl -u agentbox-firstboot.service -u agentbox-reconcile.service -o short-precise --no-pager'; } |
+{ echo x; echo 'journalctl -u agentbox-firstboot.service -u agentbox-reconcile.service -u multi-user.target -o short-precise --no-pager'; } |
   hack/vm.sh ssh 'sudo -S -p "" sh -s' > "$VM/gate-$ENC-journal.txt" 2>&1 || :
 
 { echo x; echo 'systemctl poweroff'; } | hack/vm.sh ssh 'sudo -S -p "" sh -s' 2>/dev/null || :

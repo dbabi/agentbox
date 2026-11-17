@@ -81,7 +81,7 @@ func TestBuild(t *testing.T) {
 	if got := strings.Join(names, " "); got != want {
 		t.Errorf("entries: %s, want %s", got, want)
 	}
-	for _, v := range []string{"", "../x", ".hidden", "1 2", "a/b", strings.Repeat("1", 65)} {
+	for _, v := range []string{"", "../x", ".hidden", "1 2", "a/b", "1.0+git", strings.Repeat("1", 65)} {
 		if _, _, err := build(v, key, out); err == nil {
 			t.Errorf("version %q accepted", v)
 		}

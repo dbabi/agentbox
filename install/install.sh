@@ -12,7 +12,7 @@ ARCH=$(dpkg --print-architecture)
 BIN="$S/bin/linux-$ARCH/agentbox"
 [ -f "$BIN" ] || die "the release has no linux-$ARCH binary"
 VER=$("$BIN" version) || die "$BIN does not run on this box"
-case $VER in ''|[!0-9A-Za-z]*|*[!0-9A-Za-z.+~_-]*) die "bad release version '$VER'" ;; esac
+case $VER in ''|[!0-9A-Za-z]*|*[!0-9A-Za-z._~-]*) die "bad release version '$VER'" ;; esac
 A=/var/lib/agentbox
 R=$A/releases
 N=$R/.$VER.new

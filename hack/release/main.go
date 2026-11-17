@@ -20,8 +20,9 @@ import (
 	"time"
 )
 
-// The version names /var/lib/agentbox/releases/<ver> on the box; install.sh checks the same charset.
-var reVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+~_-]{0,63}$`)
+// The version names /var/lib/agentbox/releases/<ver> on the box (install.sh checks the same charset) and the tarball,
+// so it also stays inside the charset that agentbox seed accepts in a release URL.
+var reVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._~-]{0,63}$`)
 
 func main() {
 	version := flag.String("version", "", "release version, e.g. 2026.11.1")
@@ -39,7 +40,7 @@ func main() {
 // build writes and signs the release; it runs in the repo root.
 func build(version, key, out string) (string, []byte, error) {
 	if !reVersion.MatchString(version) {
-		return "", nil, fmt.Errorf("VERSION=%q: need [0-9A-Za-z][0-9A-Za-z.+~_-]*, at most 64 chars (it names the release dir on the box)", version)
+		return "", nil, fmt.Errorf("VERSION=%q: need [0-9A-Za-z][0-9A-Za-z._~-]*, at most 64 chars (it names the release dir on the box)", version)
 	}
 	if key == "" {
 		return "", nil, errors.New("MINISIGN_KEY (the minisign secret key file) is required")
