@@ -138,7 +138,7 @@ systemctl enable agentbox-health.timer
 $A os mark-last-good
 sync # a power cut right after setup must not leave a 0-byte binary
 EOF
-  check "setup: gen-1 committed" "[ \"\$(committed)\" = \"\$(booted)\" ]"
+  check "setup: the booted generation is committed" "[ \"\$(committed)\" = \"\$(booted)\" ]"
   check "setup: boot deadline armed" "vssh systemctl is-active agentbox-boot-deadline.service"
   status
 }
