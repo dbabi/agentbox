@@ -104,7 +104,9 @@ func TestRenderModes(t *testing.T) {
 		`mount --make-rslave "/mnt/new/$d"`, "set fallback=%s", "sort -V", "insmod gzio", "rm -f /var/log/installer/autoinstall-user-data /var/log/installer/curtin-install*.yaml",
 		`mount -o subvol=@var_log "$DEV" /target/var/log`, "D=/run/agentbox-firstboot", "RuntimeDirectory=agentbox-firstboot", "RuntimeDirectoryMode=0700", "PrivateMounts=yes",
 		"@var_lib_agentbox_data /var/lib/agentbox/data", "mkdir -m 0755 /target/@var_lib_agentbox/data", "ports.ubuntu.com/ubuntu-ports",
-		"systemctl mask apt-daily.timer apt-daily-upgrade.timer", "RuntimeMaxSec=120"}
+		"systemctl mask apt-daily.timer apt-daily-upgrade.timer", "RuntimeMaxSec=120",
+		`printf '%s\n' "agentbox-gen-1-$KV" > /mnt/new/bootpart/agentbox/committed`, "systemctl enable agentbox-boot-deadline.service",
+		"'DefaultDependencies=no'", "'WantedBy=sysinit.target'"}
 	for _, enc := range []string{EncTPM2Tang, EncTPM2, EncNone} {
 		for _, boot := range []string{"uefi", "bios"} {
 			t.Run(enc+"/"+boot, func(t *testing.T) {
@@ -323,6 +325,86 @@ func TestGrub09(t *testing.T) {
 	}
 	if !bytes.Contains(got, []byte(`if [ "${saved_entry}" = "agentbox-gen-10-7.0.0-43-generic" ]; then set fallback=5; fi; fi`)) {
 		t.Fatalf("missing numeric fallback for index 5:\n%s", got)
+	}
+	if bytes.Contains(got, []byte("rd.luks.uuid")) || bytes.Contains(got, []byte("set default")) {
+		t.Fatalf("no crypttab and no committed file: want neither rd.luks.uuid nor a default:\n%s", got)
+	}
+
+	// encrypted modes: rd.luks.uuid from the croot crypttab line; the committed file names the empty-grubenv default
+	os.WriteFile(filepath.Join(root, "crypttab"), []byte("croot UUID=40c5699d-54cf-46bb-a07e-4adf9e3629c7 none luks,x-initrd.attach,timeout=300s\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "bp/agentbox/committed"), []byte("agentbox-gen-2-7.0.0-44-generic\n"), 0o644)
+	script = bytes.Replace(script, []byte("/etc/crypttab"), []byte(root+"/crypttab"), -1)
+	c = exec.Command(dash, "-c", string(script))
+	c.Env = append(os.Environ(), "PATH="+root+"/bin:"+os.Getenv("PATH"))
+	if got, err = c.Output(); err != nil {
+		t.Fatal(err)
+	}
+	if n := bytes.Count(got, []byte(" rootflags=subvol=@")); n != 6 || bytes.Count(got, []byte(" rd.luks.uuid=40c5699d-54cf-46bb-a07e-4adf9e3629c7 rootflags=subvol=@")) != n {
+		t.Fatalf("every entry needs rd.luks.uuid:\n%s", got)
+	}
+	if !bytes.HasSuffix(got, []byte(`if [ -z "${boot_once}" ]; then if [ -z "${saved_entry}" ]; then set default="agentbox-gen-2-7.0.0-44-generic"; fi; fi`+"\n")) {
+		t.Fatalf("missing the committed fallback:\n%s", got)
+	}
+	for _, bad := range []string{"", "Ubuntu\n", "agentbox-gen-2-7.0'x\n"} {
+		os.WriteFile(filepath.Join(root, "bp/agentbox/committed"), []byte(bad), 0o644)
+		c = exec.Command(dash, "-c", string(script))
+		c.Env = append(os.Environ(), "PATH="+root+"/bin:"+os.Getenv("PATH"))
+		if out, err := c.Output(); err == nil {
+			t.Errorf("committed %q accepted:\n%s", bad, out)
+		}
+	}
+}
+
+// TestBootDeadline runs the rendered agentbox-boot-deadline under dash: it reboots unless the booted entry is
+// saved_entry or, with an empty grubenv, the committed one.
+func TestBootDeadline(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash not installed")
+	}
+	out, err := Render(validConfig(t, EncTPM2, "uefi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?s)<<'BD'\n(.*?)\n      BD\n`).FindSubmatch(out)
+	if m == nil {
+		t.Fatal("agentbox-boot-deadline heredoc not found")
+	}
+	root := t.TempDir()
+	script := regexp.MustCompile(`(?m)^      `).ReplaceAll(m[1], nil)
+	script = bytes.ReplaceAll(script, []byte("/boot/grub/grubenv"), []byte(root+"/grubenv"))
+	script = bytes.ReplaceAll(script, []byte("/bootpart/agentbox/committed"), []byte(root+"/committed"))
+	os.MkdirAll(filepath.Join(root, "bin"), 0o755)
+	for name, body := range map[string]string{
+		"findmnt":   "echo /@gen-2",
+		"uname":     "echo 7.0.0-44-generic",
+		"systemctl": "echo \"$*\" > " + root + "/rebooted",
+	} {
+		os.WriteFile(filepath.Join(root, "bin", name), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
+	}
+	for _, tc := range []struct {
+		name, grubenv, committed string
+		reboot                   bool
+	}{
+		{"committed", "saved_entry=agentbox-gen-2-7.0.0-44-generic\n", "agentbox-gen-2-7.0.0-44-generic\n", false},
+		{"trial", "saved_entry=agentbox-gen-1-7.0.0-43-generic\n", "agentbox-gen-1-7.0.0-43-generic\n", true},
+		{"other kernel of the committed generation", "saved_entry=agentbox-gen-2-7.0.0-43-generic\n", "agentbox-gen-2-7.0.0-43-generic\n", true},
+		{"empty grubenv, booted the committed one", "", "agentbox-gen-2-7.0.0-44-generic\n", false},
+		{"empty grubenv, no committed file", "", "", true},
+	} {
+		os.Remove(filepath.Join(root, "rebooted"))
+		os.Remove(filepath.Join(root, "committed"))
+		os.WriteFile(filepath.Join(root, "grubenv"), []byte("# GRUB Environment Block\n"+tc.grubenv+"#####\n"), 0o644)
+		if tc.committed != "" {
+			os.WriteFile(filepath.Join(root, "committed"), []byte(tc.committed), 0o644)
+		}
+		c := exec.Command(dash, "-c", string(script))
+		c.Env = append(os.Environ(), "PATH="+root+"/bin:"+os.Getenv("PATH"), "AGENTBOX_BOOT_DEADLINE_SEC=0")
+		c.Run()
+		got, err := os.ReadFile(filepath.Join(root, "rebooted"))
+		if rebooted := err == nil; rebooted != tc.reboot || (rebooted && string(got) != "reboot --force\n") {
+			t.Errorf("%s: rebooted=%v (%q), want %v", tc.name, rebooted, got, tc.reboot)
+		}
 	}
 }
 

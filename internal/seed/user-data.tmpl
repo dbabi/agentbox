@@ -92,7 +92,10 @@ autoinstall:
       set -e
       BP=/bootpart
       BOOTUUID=$(grub-probe --target=fs_uuid $BP); ROOTUUID=$(grub-probe --target=fs_uuid /)
-      ARGS="root=UUID=$ROOTUUID ro ${GRUB_CMDLINE_LINUX} ${GRUB_CMDLINE_LINUX_DEFAULT}"
+      LUKS= # rd.luks.uuid: unlock never depends on a cmdline baked into the initrd (hostonly_cmdline="no")
+      if [ -f /etc/crypttab ]; then LUKS=$(awk '$1=="croot" && sub(/^UUID=/,"",$2) {print $2}' /etc/crypttab); fi
+      case $LUKS in *[!0-9a-f-]*) echo "09_agentbox: bad croot UUID in /etc/crypttab" >&2; exit 1 ;; esac
+      ARGS="root=UUID=$ROOTUUID ro ${GRUB_CMDLINE_LINUX} ${GRUB_CMDLINE_LINUX_DEFAULT}${LUKS:+ rd.luks.uuid=$LUKS}"
       i=0 # top-level menu index: 00_header and 05_debian_theme emit no entries
       for d in $(printf '%s\n' $BP/agentbox/gens/gen-*/ | sort -V); do g=$(basename "$d") # oldest first: an unknown saved_entry boots entry 0, never the newest trial
         case ${g#gen-} in ''|*[!0-9]*) continue ;; esac
@@ -106,6 +109,12 @@ autoinstall:
           i=$((i+1))
         done
       done
+      # an empty or lost grubenv has no saved_entry: boot the committed generation, not entry 0 (§3.3 step 8)
+      if [ -f $BP/agentbox/committed ]; then C=$(cat $BP/agentbox/committed)
+        case $C in agentbox-gen-[0-9]*) ;; *) echo "09_agentbox: $BP/agentbox/committed holds no entry id" >&2; exit 1 ;; esac
+        case $C in *[!0-9A-Za-z.+~_-]*) echo "09_agentbox: bad id in $BP/agentbox/committed" >&2; exit 1 ;; esac
+        printf 'if [ -z "${boot_once}" ]; then if [ -z "${saved_entry}" ]; then set default="%s"; fi; fi\n' "$C"
+      fi
       G9
       chmod 0755 $G/etc/grub.d/09_agentbox
       # 3. mount gen-1 exactly as the booted system will see it; nothing may propagate back to /target or the live installer
@@ -137,6 +146,7 @@ autoinstall:
         -pkeyopt rsa_oaep_md:sha256 -in /run/agentbox-luks.key -out /mnt/new/bootpart/agentbox/recovery.bin
       shred -u /run/agentbox-luks.key
 {{- end}}
+      printf '%s\n' "agentbox-gen-1-$KV" > /mnt/new/bootpart/agentbox/committed # read by 09_agentbox (§3.3 step 8)
       chroot /mnt/new update-grub
       grep -qF -- "--id 'agentbox-gen-1-$KV'" /mnt/new/boot/grub/grub.cfg # an unknown saved_entry silently boots entry 0
       chroot /mnt/new grub-editenv /boot/grub/grubenv set saved_entry="agentbox-gen-1-$KV"
@@ -168,6 +178,22 @@ autoinstall:
         'RuntimeDirectory=agentbox-firstboot' 'RuntimeDirectoryMode=0700' \
         'Restart=on-failure' 'RestartSec=60' '[Install]' 'WantedBy=multi-user.target' > /mnt/new/etc/systemd/system/agentbox-firstboot.service
       chroot /mnt/new systemctl enable agentbox-firstboot.service
+      # commit deadline (§3.3): reboot an uncommitted generation after 900 s. Plain shell, so it works before the agentbox
+      # binary exists; it starts early in sysinit, so a unit that blocks boot can't stop it.
+      install -m 0755 /dev/stdin /mnt/new/usr/local/sbin/agentbox-boot-deadline <<'BD'
+      #!/bin/sh
+      sleep "${AGENTBOX_BOOT_DEADLINE_SEC:-900}"
+      g=$(findmnt -no FSROOT /); e="agentbox-${g#/@}-$(uname -r)"
+      grep -qxF "saved_entry=$e" /boot/grub/grubenv && exit 0
+      # an empty grubenv boots the committed generation through 09_agentbox's fallback: that one stays up too
+      [ "$(cat /bootpart/agentbox/committed)" = "$e" ] && exit 0
+      echo "agentbox: boot deadline: $e is not committed; rebooting into the committed generation" >&2
+      exec systemctl reboot --force
+      BD
+      printf '%s\n' '[Unit]' 'Description=agentbox commit deadline' 'DefaultDependencies=no' \
+        '[Service]' 'ExecStart=/usr/local/sbin/agentbox-boot-deadline' '[Install]' 'WantedBy=sysinit.target' \
+        > /mnt/new/etc/systemd/system/agentbox-boot-deadline.service
+      chroot /mnt/new systemctl enable agentbox-boot-deadline.service
       # 6. subiquity rsyncs the live /var/log/installer into /target/var/log/installer only AFTER late-commands, and /target
       #    is the btrfs top level: drop the copies of the seed and the generated curtin configs, and land the rest in @var_log
       rm -f /var/log/installer/autoinstall-user-data /var/log/installer/curtin-install*.yaml \
