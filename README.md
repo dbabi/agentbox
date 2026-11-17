@@ -42,7 +42,7 @@ serial matches anything but exactly one disk, or (encrypted modes) when there is
 3. Generate the seed (`tpm2+tang` shown). `user-data` and `seed.iso` hold your password hash: keep them private.
    ```sh
    ./bin/agentbox seed \
-     --disk-serial '<ID_SERIAL from step 2>' \
+     --disk-serial '<ID_SERIAL from step 2>' --boot '<uefi or bios from step 2>' \
      --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" \
      --password-hash "$(openssl passwd -6)" \
      --minisign-pubkey RW... \
