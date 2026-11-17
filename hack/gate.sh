@@ -86,6 +86,9 @@ check "/boot is gen-1's boot dir"        '[ "\$(findmnt -n -o FSROOT /boot)" = /
 check "/boot/grub is shared /grub"       '[ "\$(findmnt -n -o FSROOT /boot/grub)" = /grub ]'
 check "agent data has its own subvol"    '[ "\$(findmnt -n -o FSROOT /var/lib/agentbox/data)" = /@var_lib_agentbox_data ]'
 check "saved_entry is gen-1"             'grub-editenv /boot/grub/grubenv list | grep -q "^saved_entry=agentbox-gen-1-"'
+check "committed names the booted gen-1" '[ "\$(cat /bootpart/agentbox/committed)" = "agentbox-gen-1-\$(uname -r)" ]'
+check "grub.cfg boots committed on an empty grubenv" 'grep -qF "then set default=\"agentbox-gen-1-\$(uname -r)\"; fi" /boot/grub/grub.cfg'
+check "boot deadline armed"              'systemctl is-active agentbox-boot-deadline.service'
 # subiquity writes usr/ and var/ into the top level after late-commands; agentbox-firstboot removes them, so allow it 180 s
 check "top level holds only @* (firstboot cleanup)" 'mkdir -p /run/chk && mount -o subvolid=5 "\$(findmnt -n -v -o SOURCE /)" /run/chk || exit 1; i=0; while ls -A /run/chk | grep -qv "^@"; do i=\$((i+1)); [ \$i -lt 36 ] || { umount /run/chk; exit 1; }; sleep 5; done; umount /run/chk'
 check "no nested subvolumes"             '[ -z "\$(btrfs subvolume list / | awk "{print \\\$NF}" | grep /)" ]'
@@ -114,6 +117,7 @@ if [ "$ENC" != none ]; then
   check "LUKS has a clevis token"        'cryptsetup luksDump "\$(cryptsetup status croot | awk "/device:/{print \\\$2}")" | grep -q ": clevis"'
   check "unlocked by clevis"             'journalctl -b -o cat | grep -q "Finished systemd-cryptsetup@croot.service" && journalctl -b -t clevis-luks-askpass -o cat | grep -q "^Unlocked "'
   check "recovery.bin present"           '[ -s /bootpart/agentbox/recovery.bin ]'
+  check "09_agentbox sets rd.luks.uuid"  'u=\$(grep -o "rd.luks.uuid=[^ ]*" /proc/cmdline) && grep -q "^croot UUID=\${u#rd.luks.uuid=} " /etc/crypttab'
   check "installer keyfile gone"         '[ ! -e /run/agentbox-luks.key ]'
 fi
 if [ "$ENC" = tpm2+tang ]; then

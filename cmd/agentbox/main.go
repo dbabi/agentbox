@@ -1,5 +1,5 @@
 // Command agentbox is the single binary for every agentbox service and CLI (ARCHITECTURE.md §2, §14).
-// Week 1 ships the operator-side commands: seed and recovery.
+// Week 1 ships the operator-side commands (seed, recovery) and, on the box, the os.apply pipeline (os).
 package main
 
 import (
@@ -23,6 +23,9 @@ const usage = `usage:
                 [--boot uefi|bios] [--hostname agentbox] [--admin boxadmin] [--iso seed.iso]
   agentbox recovery keygen --out DIR
   agentbox recovery decrypt --key recovery.key --in recovery.bin --out luks.key
+  agentbox os plan --install PKG[=VER] [--install ...] [--remove PKG] [--reinstall]   (on the box, as root)
+  agentbox os apply --approve SHA256 [--no-reboot]
+  agentbox os health | mark-last-good | status
   agentbox version
 `
 
@@ -69,6 +72,8 @@ func run(args []string) error {
 		return cmdSeed(args[1:])
 	case "recovery":
 		return cmdRecovery(args[1:])
+	case "os":
+		return cmdOS(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil

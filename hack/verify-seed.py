@@ -60,6 +60,7 @@ def main(path):
     assert 'mount --make-rslave "/mnt/new/$d"' in script, "rbind copies must be slaves before umount -R"
     sh_n("09_agentbox", heredoc(script, "G9"))
     sh_n("agentbox-firstboot", heredoc(script, "FB"))
+    sh_n("agentbox-boot-deadline", heredoc(script, "BD"))
     for bad in ("PRIVATE KEY", "|| true", "-y -k"):
         assert bad not in text, f"forbidden text {bad!r}"
     print("ok   no private keys, no failure suppression")

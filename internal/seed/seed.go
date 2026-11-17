@@ -191,7 +191,9 @@ func (c *Config) view() (view, error) {
 	v := view{Config: *c, Encrypted: c.Encryption != EncNone, BIOS: c.Boot == "bios"}
 	pkgs := []string{"btrfs-progs", "minisign", "nftables", "podman", "crun", "systemd-container",
 		"systemd-zram-generator", "curl", "openssl"}
-	v.KernelArgs = "panic=10 rd.emergency=reboot rd.shell=0"
+	// rd.timeout: an initrd that can't find root (one built without btrfs.ko) gives up and reboots instead of waiting
+	// forever; 600 s outlasts crypttab's 300 s prompt, so a recovery key can still be typed
+	v.KernelArgs = "panic=10 rd.emergency=reboot rd.shell=0 rd.timeout=600"
 	v.DracutModules, v.InitrdFiles = "btrfs", "btrfs.ko"
 	// subiquity binds `serial:` to the first probed disk with an equal udev ID_SERIAL and never reports duplicates;
 	// curtin's storage v1 then re-resolves the serial by /dev/disk/by-id substring. Stop before storage runs unless

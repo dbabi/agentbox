@@ -1,0 +1,9 @@
+# Health check skeleton (ARCHITECTURE.md §3.3). It commits a booted os.apply trial once healthy; an uncommitted trial
+# that never gets healthy is rebooted by agentbox-boot-deadline.service. No Requires= on the units it checks, so a
+# failed unit can't stop the check. Installed by the release, like the binary it runs.
+[Unit]
+Description=agentbox health check
+
+[Service]
+Type=oneshot
+ExecStart=/var/lib/agentbox/current/bin/agentbox os health

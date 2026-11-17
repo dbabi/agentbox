@@ -1,0 +1,23 @@
+# /etc/fstab: static file system information.
+#
+# Use 'blkid' to print the universally unique identifier for a
+# device; this may be used with UUID= as a more robust way to name devices
+# that works even if disks are added and removed. See fstab(5).
+#
+# <file system> <mount point>   <type>  <options>       <dump>  <pass>
+# / was on /dev/mapper/croot during curtin installation
+/dev/disk/by-id/dm-uuid-CRYPT-LUKS2-40c5699d54cf46bba07e4adf9e3629c7-croot / btrfs compress=zstd:1,noatime 0 1
+# /bootpart was on /dev/nvme0n1p2 during curtin installation
+/dev/disk/by-uuid/d4f74160-2371-4748-9527-4a631b11203f /bootpart ext4 defaults 0 1
+# /boot/efi was on /dev/nvme0n1p1 during curtin installation
+/dev/disk/by-uuid/B4E7-F7D1 /boot/efi vfat defaults 0 1
+UUID=0f87c44b-a629-4cc7-8683-3e8619b99653 /home btrfs compress=zstd:1,noatime,subvol=@home 0 0
+UUID=0f87c44b-a629-4cc7-8683-3e8619b99653 /var/log btrfs compress=zstd:1,noatime,subvol=@var_log 0 0
+UUID=0f87c44b-a629-4cc7-8683-3e8619b99653 /var/lib/agentbox btrfs compress=zstd:1,noatime,subvol=@var_lib_agentbox 0 0
+UUID=0f87c44b-a629-4cc7-8683-3e8619b99653 /var/lib/agentbox/data btrfs compress=zstd:1,noatime,subvol=@var_lib_agentbox_data 0 0
+UUID=0f87c44b-a629-4cc7-8683-3e8619b99653 /var/lib/tailscale btrfs compress=zstd:1,noatime,subvol=@var_lib_tailscale 0 0
+UUID=0f87c44b-a629-4cc7-8683-3e8619b99653 /var/lib/ntfy btrfs compress=zstd:1,noatime,subvol=@var_lib_ntfy 0 0
+UUID=0f87c44b-a629-4cc7-8683-3e8619b99653 /srv btrfs compress=zstd:1,noatime,subvol=@srv 0 0
+UUID=0f87c44b-a629-4cc7-8683-3e8619b99653 /.snapshots btrfs compress=zstd:1,noatime,subvol=@snapshots 0 0
+/bootpart/agentbox/gens/gen-1 /boot none bind,x-systemd.requires-mounts-for=/bootpart 0 0
+/bootpart/grub /boot/grub none bind,x-systemd.requires-mounts-for=/boot 0 0
