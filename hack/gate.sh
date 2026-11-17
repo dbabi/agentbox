@@ -61,10 +61,11 @@ hack/vm.sh reset >/dev/null
 if [ "$MODE" = dup-serial ]; then
   # early-commands[0], the disk guard, must stop subiquity before storage runs: nothing may land on either disk
   ! INSTALL_TIMEOUT=900 DUP_DISK=1 hack/vm.sh install "$SEED" || die "the install with two same-serial disks went through"
+  vm_off # QEMU must let go of the images before qemu-img reads them
   { n=0
     if grep -aqF "agentbox: --disk-serial $SER matched 2 disks, need exactly 1" "$VM/install.log"; then echo "PASS the disk guard refused two disks with ID_SERIAL=$SER"; else echo "FAIL no disk-guard refusal in install.log"; n=1; fi
     for d in disk disk2; do # qemu-img map shows every written extent as data
-      if qemu-img map --output=json "$VM/$d.qcow2" | grep -q '"data": true'; then echo "FAIL $d.qcow2 was written"; n=1; else echo "PASS $d.qcow2 never written"; fi
+      if m=$(qemu-img map --output=json "$VM/$d.qcow2") && ! echo "$m" | grep -q '"data": true'; then echo "PASS $d.qcow2 never written"; else echo "FAIL $d.qcow2 written or unreadable"; n=1; fi
     done
     echo "fails=$n"; } | tee "$OUT"
   verdict; exit 0
