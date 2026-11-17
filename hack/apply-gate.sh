@@ -6,6 +6,7 @@
 #          systemd/agentbox-health.*, firstboot ended, `os mark-last-good`; a boot deadline of DEADLINE s (default 300).
 # cycles   gen-2 removes the newest kernel, gen-3 brings it back with systemd re-installed (a kernel change whose
 #          initrd dracut builds inside the nspawn), gen-4 prunes gen-1; then current cold-boots and previous boots once.
+#          (Run again on a used box, the generation numbers are higher and the oldest one is pruned.)
 # breaks   a trial broken in GRUB, in the initrd (clevis removed; btrfs in none mode), in fstab (/boot bound to the
 #          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
 #          the committed generation with no console input. Then an emptied grubenv boots the committed generation.
@@ -135,6 +136,7 @@ touch /var/lib/agentbox/.firstboot-done
 systemctl stop agentbox-firstboot.service
 systemctl enable agentbox-health.timer
 $A os mark-last-good
+sync # a power cut right after setup must not leave a 0-byte binary
 EOF
   check "setup: gen-1 committed" "[ \"\$(committed)\" = \"\$(booted)\" ]"
   check "setup: boot deadline armed" "vssh systemctl is-active agentbox-boot-deadline.service"
@@ -146,7 +148,8 @@ sc_cycles() {
   KN=$(vssh uname -r)
   KO=$(vssh ls /boot | sed -n 's/^vmlinuz-//p' | grep -vx "$KN" | sort -rV | head -1)
   [ -n "$KO" ] || die "cycles: needs a second, older kernel next to $KN"
-  log "cycles: kernels $KN (newest) and $KO"
+  O=$(vssh ls /bootpart/agentbox/gens | sed -n 's/^gen-\([1-9][0-9]*\)$/\1/p' | sort -n | head -1) # gen-1 on a fresh box
+  log "cycles: kernels $KN (newest) and $KO; oldest generation gen-$O"
   plan --remove "linux-image-$KN" --remove "linux-modules-$KN"
   build; trial "cycle 1 (remove $KN)"
   check "cycle 1: runs the older kernel $KO" "[ \"\$(vssh uname -r)\" = $KO ]"
@@ -158,7 +161,7 @@ sc_cycles() {
   [ "$ENC" = none ] || check "cycle 2: LUKS unlocked by clevis from the nspawn-built initrd" "vssh 'journalctl -b -o cat' | grep -q 'Finished systemd-cryptsetup@croot.service'"
   plan --reinstall --install base-files
   build; trial "cycle 3"
-  check "cycle 3: gen-1 pruned with its boot dir, gone from grub.cfg" "echo 'test ! -e /bootpart/agentbox/gens/gen-1 && ! grep -q \"agentbox-gen-1-\" /boot/grub/grub.cfg && ! btrfs subvolume list / | grep -qw @gen-1' | root"
+  check "cycle 3: gen-$O pruned with its boot dir, gone from grub.cfg" "echo 'test ! -e /bootpart/agentbox/gens/gen-$O && ! grep -q \"agentbox-gen-$O-\" /boot/grub/grub.cfg && ! btrfs subvolume list / | grep -qw @gen-$O' | root"
   CUR=$E PREV="agentbox-gen-$(( ${M#gen-} - 1 ))-$KN"
   # current cold-boots
   echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
@@ -272,7 +275,7 @@ sc_cuts() {
   cut_at "boot once" 0
   plan --reinstall --install base-files
   build; trial "after the cuts"
-  check "after the cuts: leftovers pruned, at most three generations" "[ \$(echo 'ls -d /bootpart/agentbox/gens/gen-* | wc -l' | root) -le 3 ]"
+  check "after the cuts: leftovers pruned, at most three generations" "[ \$(echo 'ls -d /bootpart/agentbox/gens/gen-[1-9]* | wc -l' | root) -le 3 ]"
 }
 
 : >"$LOG"
@@ -281,6 +284,9 @@ sc_cuts() {
 for s; do
   case "$s" in install|setup|cycles|breaks|cuts) log "== $s ($ENC)"; "sc_$s" ;; *) die "unknown scenario $s" ;; esac
 done
+{ echo "== journal: agentbox-health, agentbox-boot-deadline (every boot; @var_log persists across generations)"
+  echo 'journalctl --no-pager -o short-iso -u agentbox-health.service -u agentbox-boot-deadline.service | grep -v -e "Starting agentbox-health" -e "Deactivated successfully" -e "Finished agentbox-health"' | root
+} >>"$LOG" 2>&1 || :
 echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
 while running; do sleep 2; done
 log "fails=$fails"
