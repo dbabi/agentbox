@@ -14,7 +14,10 @@ A headless home for AI agents on stock Ubuntu Server 26.04. Agents get full free
 | `hack/verify-seed.py` | done: real YAML parse, structure asserts, `dash -n` on every embedded script (also run by `go test`) |
 | QEMU arm64 install, `none` | **passed:** unattended install, boots `@gen-1` through `09_agentbox`, persistent subvolumes, zram, logs in `@var_log` |
 | QEMU arm64 install, `tpm2` (swtpm) | **passed:** LUKS2 unlocks unattended through clevis in the dracut initramfs; `recovery.bin` decrypts to a key that opens LUKS |
-| `tpm2+tang`, BIOS, old x86 PC, `os.apply` | next (needs podman for Tang; week 2 for x86) |
+| `hack/remaster-iso.sh` (zero-touch USB) | done: the pinned ISO with `autoinstall ds=nocloud` on GRUB's linux line; `vm.sh install` boots it through the firmware (shim and GRUB on UEFI), with no `-kernel` |
+| QEMU arm64 install, `tpm2`, Secure Boot on | **passed:** resolute's AAVMF (pinned), shim-verified boot, kernel lockdown, `mokutil --sb-state` enabled |
+| QEMU amd64 BIOS install (q35, SeaBIOS, SATA, swtpm, TCG) | **passed:** `none` and `tpm2` (an install takes 60-80 min under TCG) |
+| `tpm2+tang`, old x86 PC, `os.apply` | next (needs podman for Tang; the old PC needs its owner) |
 
 ## Quick start (operator machine)
 The install needs wired Ethernet with DHCP and HTTP access to the Ubuntu archive: archive.ubuntu.com and security.ubuntu.com
