@@ -45,7 +45,7 @@ const (
 type Config struct {
 	Hostname          string
 	AdminUser         string
-	AdminPasswordHash string   // sha512-crypt ($6$...), e.g. from `openssl passwd -6`
+	AdminPasswordHash string   // yescrypt ($y$...) or sha512-crypt with rounds >= 100000, e.g. from `mkpasswd -m yescrypt`
 	SSHKeys           []string // OpenSSH public keys
 	DiskSerial        string   // udev ID_SERIAL: `udevadm info --query=property --property=ID_SERIAL --value /dev/DISK`
 	Boot              string   // "uefi" | "bios"
@@ -60,7 +60,9 @@ type Config struct {
 var (
 	reHostname = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	reUser     = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
-	reSHA512   = regexp.MustCompile(`^\$6\$(rounds=[0-9]{4,9}\$)?[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{85}[./01]$`)
+	// The seed holds the hash, so it must survive an offline guessing attack: sha512-crypt's default 5000 rounds don't.
+	reSHA512   = regexp.MustCompile(`^\$6\$rounds=[1-9][0-9]{5,8}\$[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{85}[./01]$`) // 100000+ rounds
+	reYescrypt = regexp.MustCompile(`^\$y\$[./A-Za-z0-9]{3,}\$[./A-Za-z0-9]{1,86}\$[./A-Za-z0-9]{43}$`)
 	reSSHKey   = regexp.MustCompile(`^(ssh-ed25519|sk-ssh-ed25519@openssh\.com|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,3}( [A-Za-z0-9@._+-]{1,128})?$`)
 	reSerial   = regexp.MustCompile(`^[A-Za-z0-9._:#+=@-]{1,128}$`) // udev ID_SERIAL charset minus nothing a shell or YAML cares about
 	reMinisign = regexp.MustCompile(`^RW[A-Za-z0-9+/]{54}$`)
@@ -81,8 +83,9 @@ func (c *Config) Validate() error {
 	} else if reservedUser(c.AdminUser) {
 		bad("admin user %q: reserved by the Ubuntu 26.04 installer or by agentbox accounts; use e.g. boxadmin", c.AdminUser)
 	}
-	if !reSHA512.MatchString(c.AdminPasswordHash) {
-		bad("admin password hash: need sha512-crypt ($6$...); create one with `openssl passwd -6`")
+	if !reYescrypt.MatchString(c.AdminPasswordHash) && !reSHA512.MatchString(c.AdminPasswordHash) {
+		bad("admin password hash: need yescrypt ($y$...) or sha512-crypt with rounds=100000 or more; create one with " +
+			"`mkpasswd -m yescrypt` (Debian/Ubuntu package whois). `openssl passwd -6` uses 5000 rounds and is refused")
 	}
 	if len(c.SSHKeys) == 0 {
 		bad("at least one --ssh-key is required (SSH password login is disabled)")
@@ -180,6 +183,8 @@ type view struct {
 	ClevisConfig   string
 	RecoveryPubCmd string
 	DiskGuardCmd   string
+	DracutModules  string // forced into every initrd, so a rebuild that sees no disks still unlocks and mounts root
+	InitrdFiles    string // checked in every kernel's initrd at install
 }
 
 func (c *Config) view() (view, error) {
@@ -187,6 +192,7 @@ func (c *Config) view() (view, error) {
 	pkgs := []string{"btrfs-progs", "minisign", "nftables", "podman", "crun", "systemd-container",
 		"systemd-zram-generator", "curl", "openssl"}
 	v.KernelArgs = "panic=10 rd.emergency=reboot rd.shell=0"
+	v.DracutModules, v.InitrdFiles = "btrfs", "btrfs.ko"
 	// subiquity binds `serial:` to the first probed disk with an equal udev ID_SERIAL and never reports duplicates;
 	// curtin's storage v1 then re-resolves the serial by /dev/disk/by-id substring. Stop before storage runs unless
 	// exactly one disk has this ID_SERIAL and no other device's by-id name contains it. Prints every disk's ID_SERIAL.
@@ -219,6 +225,8 @@ func (c *Config) view() (view, error) {
 		// No PCR policy: PCR 7 adds nothing against the documented threats (signed live media reproduces it) and breaks
 		// unattended unlock on SBAT/dbx/Secure Boot changes; clevis 20 also defaults pcr_bank to sha1.
 		v.ClevisPin, v.ClevisConfig = "tpm2", `{}`
+		v.DracutModules += " systemd-cryptsetup clevis clevis-pin-tpm2"
+		v.InitrdFiles += " systemd-cryptsetup clevis-luks-askpass clevis-decrypt-tpm2"
 	case EncTPM2Tang:
 		// The tang pin ships in the core `clevis` package (no separate clevis-tang binary package in resolute).
 		cfg, err := json.Marshal(map[string]any{
@@ -233,6 +241,8 @@ func (c *Config) view() (view, error) {
 		}
 		v.ClevisPin, v.ClevisConfig = "sss", string(cfg)
 		v.KernelArgs += " ip=dhcp rd.neednet=1" // Tang must be reachable from the initramfs
+		v.DracutModules += " systemd-cryptsetup clevis clevis-pin-sss clevis-pin-tpm2 clevis-pin-tang"
+		v.InitrdFiles += " systemd-cryptsetup clevis-luks-askpass clevis-decrypt-sss clevis-decrypt-tpm2 clevis-decrypt-tang"
 	}
 	v.Packages = strings.Join(pkgs, ", ")
 	return v, nil

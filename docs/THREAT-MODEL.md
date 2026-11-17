@@ -36,7 +36,7 @@ Source of truth: `~/workplace/ai-os-research/ARCHITECTURE.md` v5.1, §10. Update
 4. **rootd executes only the stored operation a human signed**, bound to its immutable inputs and re-checked at execution.
 5. **Taint is sticky.** Only a human clears it, after reviewing the diff, with control files called out first.
 6. **Nothing persists between tasks** except the sticky-tainted workspace.
-7. **The seed and logs contain no plaintext secrets.** The seed holds the admin password hash (sha512-crypt): keep it private. The LUKS key exists only in installer tmpfs and in `recovery.bin`, encrypted to the owner's offline RSA key.
+7. **The seed and logs contain no plaintext secrets.** The seed holds the admin password hash (yescrypt, or sha512-crypt with 100000+ rounds): keep it private. The LUKS key exists only in installer tmpfs and in `recovery.bin`, encrypted to the owner's offline RSA key.
 
 ## Accepted residuals (v1)
 | Residual | Upgrade path |
