@@ -11,10 +11,10 @@ A headless home for AI agents on stock Ubuntu Server 26.04. Agents get full free
 |---|---|
 | `agentbox recovery keygen` / `decrypt` | done: RSA-4096 key, OAEP-SHA256, proven interoperable with the installer's `openssl pkeyutl` call |
 | `agentbox seed` | done: renders the autoinstall seed (`tpm2+tang`, `tpm2`, `none`; UEFI or BIOS), validates every input against subiquity 26.04.1's rules, builds a cidata ISO |
+| Release pipeline and firstboot | done up to `agentbox os mark-last-good` (os.apply work): `make release`, `install.sh`, `agentbox-reconcile.service`; firstboot refuses a tampered tarball, an older signed release and a wrong-key signature, and installs nothing |
 | `hack/verify-seed.py` | done: real YAML parse, structure asserts, `dash -n` on every embedded script (also run by `go test`) |
 | QEMU arm64 install, `none` | **passed:** unattended install, boots `@gen-1` through `09_agentbox`, persistent subvolumes, zram, logs in `@var_log` |
 | QEMU arm64 install, `tpm2` (swtpm) | **passed:** LUKS2 unlocks unattended through clevis in the dracut initramfs; `recovery.bin` decrypts to a key that opens LUKS |
-| Release pipeline and firstboot | done up to `agentbox os mark-last-good` (os.apply work): `make release`, `install.sh`, `agentbox-reconcile.service`; firstboot refuses a tampered tarball, an older signed release and a wrong-key signature, and installs nothing |
 | `tpm2+tang`, BIOS, old x86 PC, `os.apply` | next (needs podman for Tang; week 2 for x86) |
 
 ## Quick start (operator machine)
