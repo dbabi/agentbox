@@ -98,9 +98,10 @@ install)
   [ -f "$SEED/user-data" ] && [ -f "$SEED/meta-data" ] || die "$SEED needs user-data and meta-data (agentbox seed --out)"
   [ -f "$DISK" ] && die "$DISK exists; run 'vm.sh reset' first"
   running && die "a VM is running"
-  MODE=$(sed -n 3p "$SEED/user-data")
+  MODE=$(sed -n 3p "$SEED/user-data") DK=${DIRECT_KERNEL:-0}
+  case $DK in 0|1) ;; *) die "DIRECT_KERNEL must be 0 or 1" ;; esac
   # nvme shows the model-prefixed udev ID_SERIAL that real NVMe disks have, sata the one of the old PC's SATA disk;
-  # virtio hides it. SeaBIOS cannot read NVMe once q35 maps RAM above 4 GiB, which it does above 2.75 GiB.
+  # virtio hides it. SeaBIOS cannot read NVMe once q35 maps RAM above 4 GiB, which it does from 2.75 GiB of RAM.
   case $MODE in
   *boot=bios*) ARCH=amd64 CONSOLE=ttyS0 DISKBUS=${DISKBUS:-sata} T=14400 ;;
   *) ARCH=arm64 CONSOLE=ttyAMA0 DISKBUS=${DISKBUS:-nvme} T=5400 ;;
@@ -116,13 +117,13 @@ install)
   command -v xorriso >/dev/null || die "xorriso not installed (brew install xorriso)"
   if [ "$ARCH" = arm64 ]; then
     case ${SECUREBOOT:-1} in 1) VARS=AAVMF_VARS.ms.fd ;; 0) VARS=AAVMF_VARS.fd ;; *) die "SECUREBOOT must be 0 or 1" ;; esac
-    [ -z "${DIRECT_KERNEL:-}" ] || [ "$VARS" = AAVMF_VARS.fd ] ||
+    [ "$DK" = 0 ] || [ "$VARS" = AAVMF_VARS.fd ] ||
       die "DIRECT_KERNEL=1 needs SECUREBOOT=0: Secure Boot refuses a kernel that shim did not load"
     fw
     cp "$VM/fw/$VARS" "$VM/vars.fd"
   fi
   xorriso -as mkisofs -quiet -o "$VM/seed.iso" -V cidata -J -r "$SEED/user-data" "$SEED/meta-data"
-  if [ -n "${DIRECT_KERNEL:-}" ]; then
+  if [ "$DK" = 1 ]; then
     # The stock ISO boots without `autoinstall` on the kernel command line, and subiquity then waits for a typed "yes".
     xorriso -osirrox on -indev "$ISO" -extract /casper/vmlinuz "$VM/vmlinuz" -extract /casper/initrd "$VM/initrd" >/dev/null
     set -- -drive "if=virtio,format=raw,readonly=on,file=$(qopt "$ISO")" \
@@ -149,7 +150,7 @@ install)
   wait "$q" || die "qemu failed; see $VM/install.log"
   /usr/bin/grep -aq 'reboot: Restarting system' "$VM/install.log" || die "QEMU exited without the installer reboot; see $VM/install.log"
   # BOOT_IMAGE= is set by GRUB, never by -kernel
-  [ -n "${DIRECT_KERNEL:-}" ] || /usr/bin/grep -aq 'Kernel command line: BOOT_IMAGE=/casper/vmlinuz .*autoinstall ds=nocloud' "$VM/install.log" ||
+  [ "$DK" = 1 ] || /usr/bin/grep -aq 'Kernel command line: BOOT_IMAGE=/casper/vmlinuz .*autoinstall ds=nocloud' "$VM/install.log" ||
     die "the installer kernel did not come from the zero-touch ISO's GRUB; see $VM/install.log"
   echo "install ok"
   ;;
