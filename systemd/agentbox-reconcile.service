@@ -1,0 +1,13 @@
+# Re-applies agentbox's persistent control store to whichever generation booted (ARCHITECTURE.md §3.2). Every agentbox
+# unit sets Requires= and After= on it. Never order it After=multi-user.target or agentbox-firstboot.service:
+# agentbox-firstboot runs `systemctl start agentbox-reconcile.service` itself, and that nested start would wait forever.
+[Unit]
+Description=agentbox reconcile
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/var/lib/agentbox/current/bin/agentbox reconcile
+
+[Install]
+WantedBy=multi-user.target

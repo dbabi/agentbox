@@ -17,16 +17,17 @@ import (
 var version = "dev"
 
 const usage = `usage:
-  agentbox seed --disk-serial S --ssh-key KEY --password-hash H --minisign-pubkey K --release-url URL --out DIR
+  agentbox seed --disk-serial S --ssh-key KEY --password-hash H --minisign-pubkey K --release-url URL --release-sha256 HEX --out DIR
                 --encryption tpm2+tang --tang-url U --tang-thp T --recovery-pub recovery.pub   (default mode)
                 --encryption tpm2 --recovery-pub recovery.pub | --encryption none
-                [--boot uefi|bios] [--hostname agentbox] [--admin boxadmin] [--iso seed.iso]
+                [--boot uefi|bios] [--hostname agentbox] [--admin boxadmin] [--iso seed.iso] [--dev]
   agentbox recovery keygen --out DIR
   agentbox recovery decrypt --key recovery.key --in recovery.bin --out luks.key
   agentbox os plan --install PKG[=VER] [--install ...] [--remove PKG] [--reinstall]   (on the box, as root)
   agentbox os apply --approve SHA256 [--no-reboot]
   agentbox os health | mark-last-good | status
   agentbox version
+  agentbox reconcile   (agentbox-reconcile.service, on the box)
 `
 
 type multi []string
@@ -77,6 +78,8 @@ func run(args []string) error {
 	case "version":
 		fmt.Println(version)
 		return nil
+	case "reconcile":
+		return cmdReconcile(args[1:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
@@ -101,6 +104,8 @@ func cmdSeed(args []string) error {
 	fs.StringVar(&recPub, "recovery-pub", "", "recovery.pub from `agentbox recovery keygen` (required unless --encryption=none)")
 	fs.StringVar(&c.MinisignPubKey, "minisign-pubkey", "", "release signing public key")
 	fs.StringVar(&c.ReleaseURL, "release-url", "", "https URL of the agentbox release tarball")
+	fs.StringVar(&c.ReleaseSHA256, "release-sha256", "", "SHA-256 of that tarball (make release prints it): firstboot installs only this release")
+	fs.BoolVar(&c.Dev, "dev", false, "QEMU VM only: also accept http://10.0.2.2:PORT release URLs (sha256 and minisign are still checked)")
 	fs.StringVar(&out, "out", "", "output directory for user-data and meta-data")
 	fs.StringVar(&iso, "iso", "", "also write a NoCloud cidata ISO here (needs xorriso)")
 	if err := parse(fs, args); err != nil {
@@ -133,6 +138,16 @@ func cmdSeed(args []string) error {
 	if c.Encryption == seed.EncNone {
 		fmt.Fprintln(os.Stderr, "warning: --encryption=none: anyone who takes the disk can read everything on it")
 	}
+	return nil
+}
+
+// cmdReconcile is agentbox-reconcile.service (ARCHITECTURE.md §3.2): it re-applies the persistent control store to
+// whichever generation booted, before every agentbox unit. Week 1 skeleton: there is no control store yet.
+func cmdReconcile(args []string) error {
+	if err := parse(flag.NewFlagSet("reconcile", flag.ContinueOnError), args); err != nil {
+		return err
+	}
+	fmt.Println("reconcile: no control state to re-apply yet")
 	return nil
 }
 

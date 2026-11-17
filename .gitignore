@@ -5,3 +5,4 @@
 /.vm/
 recovery.key
 luks.key
+/dist/

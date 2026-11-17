@@ -11,6 +11,7 @@ A headless home for AI agents on stock Ubuntu Server 26.04. Agents get full free
 |---|---|
 | `agentbox recovery keygen` / `decrypt` | done: RSA-4096 key, OAEP-SHA256, proven interoperable with the installer's `openssl pkeyutl` call |
 | `agentbox seed` | done: renders the autoinstall seed (`tpm2+tang`, `tpm2`, `none`; UEFI or BIOS), validates every input against subiquity 26.04.1's rules, builds a cidata ISO |
+| Release pipeline and firstboot | done: `make release`, `install.sh`, `agentbox-reconcile.service`, `agentbox os mark-last-good`; firstboot refuses a tampered tarball, an older signed release and a wrong-key signature, and installs nothing |
 | `hack/verify-seed.py` | done: real YAML parse, structure asserts, `dash -n` on every embedded script (also run by `go test`) |
 | QEMU arm64 install, `none` | **passed:** unattended install, boots `@gen-1` through `09_agentbox`, persistent subvolumes, zram, logs in `@var_log` |
 | QEMU arm64 install, `tpm2` (swtpm) | **passed:** LUKS2 unlocks unattended through clevis in the dracut initramfs; `recovery.bin` decrypts to a key that opens LUKS |
@@ -45,7 +46,7 @@ serial matches anything but exactly one disk, or (encrypted modes) when there is
      --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" \
      --password-hash "$(mkpasswd -m yescrypt)" \
      --minisign-pubkey RW... \
-     --release-url https://.../agentbox.tgz \
+     --release-url https://.../agentbox-<ver>.tgz --release-sha256 <hash that make release printed> \
      --encryption tpm2+tang --tang-url http://<tang LAN IPv4>:7500 --tang-thp <thumbprint> \
      --recovery-pub ~/agentbox-keys/recovery.pub \
      --out seed --iso seed.iso
@@ -63,13 +64,27 @@ serial matches anything but exactly one disk, or (encrypted modes) when there is
    To unlock by hand: `agentbox recovery decrypt --key recovery.key --in recovery.bin --out luks.key`, then type its
    48 digits at the disk passphrase prompt.
 
+## Release
+`make release VERSION=<ver> MINISIGN_KEY=<minisign secret key file>` builds agentbox for linux/arm64 and linux/amd64
+and writes `dist/agentbox-<ver>.tgz` (the binaries, `install/install.sh`, `systemd/*`) plus its `.minisig`, then prints
+the seed's `--release-sha256`. The tarball is reproducible: the same commit and Go version give the same hash.
+Firstboot checks that hash before minisign, because minisign alone accepts any older signed release. Then
+`install.sh --from-firstboot` installs `/var/lib/agentbox/releases/<ver>` and switches the `current` and `previous`
+links by rename.
+
 ## QEMU test VM (Apple Silicon)
 `hack/vm.sh` attaches the disk as NVMe by default, so the seed needs `--disk-serial QEMU_NVMe_Ctrl_QM00001_1`
 (`DISKBUS=virtio` uses `QM00001`). `hack/vm.sh ssh` logs in as `boxadmin` with the throwaway key in `.vm/id_vm`. For `tpm2+tang`, run `hack/vm.sh tang up` first (needs podman); it prints the
 `--tang-url` and `--tang-thp` seed flags.
 
+`hack/gate.sh` needs minisign (`brew install minisign`). It signs its test releases with a throwaway key
+(`.vm/keys/minisign.key`), serves them with `hack/release-serve` on 127.0.0.1:7600+ID, and renders a `--dev` seed: only
+`--dev` accepts the plain-http `http://10.0.2.2:<port>` release URL, and firstboot still checks the sha256 pin and
+minisign.
+
 Several VMs can run at once, one per checkout: each needs its own `AGENTBOX_VM_ID` (0-9: SSH on 127.0.0.1:2222+ID, Tang
-on 127.0.0.1:7500+ID) and its own git worktree, because everything else lives in the checkout's `.vm`.
+on 127.0.0.1:7500+ID, releases on 127.0.0.1:7600+ID) and its own git worktree, because everything else lives in the
+checkout's `.vm`.
 `AGENTBOX_ISO_DIR` lets worktrees share one ISO:
 ```sh
 git worktree add --detach ../agentbox-wt/b main

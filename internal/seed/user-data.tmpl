@@ -175,7 +175,7 @@ autoinstall:
       chroot /mnt/new update-grub
       grep -qF -- "--id 'agentbox-gen-1-$KV'" /mnt/new/boot/grub/grub.cfg # an unknown saved_entry silently boots entry 0
       chroot /mnt/new grub-editenv /boot/grub/grubenv set saved_entry="agentbox-gen-1-$KV"
-      # 5. firstboot: cleanup -> verify -> install -> reconcile -> last-good -> done
+      # 5. firstboot: cleanup -> verify (sha256 pin, then minisign) -> install -> reconcile -> last-good -> done
       install -m 0755 /dev/stdin /mnt/new/usr/local/sbin/agentbox-firstboot <<'FB'
       #!/bin/sh
       set -eu
@@ -189,14 +189,17 @@ autoinstall:
       umount "$D/top"
       C="curl -fsSL --proto-redir =https --connect-timeout 20 --max-time 900 --retry 5 --retry-all-errors"
       $C -o "$D/ab.tgz" "$AGENTBOX_RELEASE_URL"; $C -o "$D/ab.tgz.minisig" "$AGENTBOX_RELEASE_URL.minisig"
-      minisign -Vm "$D/ab.tgz" -P "$AGENTBOX_MINISIGN_PUBKEY"
+      h=$(sha256sum "$D/ab.tgz"); h=${h%% *} # the pin comes first: minisign alone accepts any older signed release
+      [ "$h" = "$AGENTBOX_RELEASE_SHA256" ] || { echo "agentbox-firstboot: release sha256 $h does not match the seed's $AGENTBOX_RELEASE_SHA256; nothing installed" >&2; exit 1; }
+      minisign -Vm "$D/ab.tgz" -P "$AGENTBOX_MINISIGN_PUBKEY" || { echo "agentbox-firstboot: release signature does not verify with the seed's minisign key; nothing installed" >&2; exit 1; }
       mkdir "$D/x" && tar -xzf "$D/ab.tgz" -C "$D/x"
       "$D/x/install.sh" --from-firstboot
       systemctl start agentbox-reconcile.service
       /var/lib/agentbox/current/bin/agentbox os mark-last-good
       touch /var/lib/agentbox/.firstboot-done
       FB
-      printf '%s\n' 'AGENTBOX_RELEASE_URL={{.ReleaseURL}}' 'AGENTBOX_MINISIGN_PUBKEY={{.MinisignPubKey}}' > /mnt/new/etc/agentbox-firstboot.env
+      printf '%s\n' 'AGENTBOX_RELEASE_URL={{.ReleaseURL}}' 'AGENTBOX_RELEASE_SHA256={{.ReleaseSHA256}}' 'AGENTBOX_MINISIGN_PUBKEY={{.MinisignPubKey}}' \
+        > /mnt/new/etc/agentbox-firstboot.env
       printf '%s\n' '[Unit]' 'Description=agentbox first boot' 'After=network-online.target' 'Wants=network-online.target' \
         'ConditionPathExists=!/var/lib/agentbox/.firstboot-done' 'StartLimitIntervalSec=0' \
         '[Service]' 'Type=oneshot' 'ExecStart=/usr/local/sbin/agentbox-firstboot' 'PrivateMounts=yes' 'TimeoutStartSec=45min' \

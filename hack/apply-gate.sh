@@ -2,8 +2,8 @@
 # os.apply gates (PLAN.md week 1 day 4, ARCHITECTURE.md §3.3 and the §15 row 1-2) on the local QEMU VM.
 #   hack/apply-gate.sh none|tpm2|tpm2+tang [install|setup|cycles|breaks|cuts ...]   default: all five, in order
 # install  hack/gate.sh's unattended install and install checks.
-# setup    stands in for the release (week 1 day 5): this checkout's linux binary as /var/lib/agentbox/current,
-#          systemd/agentbox-health.*, firstboot ended, `os mark-last-good`; a boot deadline of DEADLINE s (default 300).
+# setup    checks what firstboot left (gate.sh's release as /var/lib/agentbox/current, agentbox-health.timer enabled,
+#          `os mark-last-good` run) and sets a boot deadline of DEADLINE s (default 300).
 # cycles   gen-2 removes the newest kernel, gen-3 brings it back with systemd re-installed (a kernel change whose
 #          initrd dracut builds inside the nspawn), gen-4 prunes gen-1; then current cold-boots and previous boots once.
 #          (Run again on a used box, the generation numbers are higher and the oldest one is pruned.)
@@ -124,23 +124,14 @@ sc_install() { hack/gate.sh "$ENC" >>"$LOG" 2>&1 || die "install gate failed (se
 
 sc_setup() {
   up
-  GOOS=linux GOARCH=arm64 go build -o bin/agentbox-linux-arm64 ./cmd/agentbox
-  vssh 'cat > /tmp/agentbox' <bin/agentbox-linux-arm64
-  for u in agentbox-health.service agentbox-health.timer; do vssh "cat > /tmp/$u" <"systemd/$u"; done
   root >>"$LOG" 2>&1 <<EOF || die "setup failed"
 set -e
-install -D -m 0755 /tmp/agentbox /var/lib/agentbox/releases/dev/bin/agentbox
-ln -sfn releases/dev /var/lib/agentbox/current
-install -m 0644 /tmp/agentbox-health.service /tmp/agentbox-health.timer /etc/systemd/system/
 mkdir -p /etc/systemd/system/agentbox-boot-deadline.service.d
 printf '%s\n' '[Service]' 'Environment=AGENTBOX_BOOT_DEADLINE_SEC=$DEADLINE' > /etc/systemd/system/agentbox-boot-deadline.service.d/50-gate.conf
 systemctl daemon-reload
-touch /var/lib/agentbox/.firstboot-done
-systemctl stop agentbox-firstboot.service
-systemctl enable agentbox-health.timer
-$A os mark-last-good
-sync # a power cut right after setup must not leave a 0-byte binary
+sync # a power cut right after setup must not lose the drop-in
 EOF
+  check "setup: firstboot installed the release and enabled the health timer" "echo 'test -x $A && test -e /var/lib/agentbox/.firstboot-done && systemctl is-enabled agentbox-health.timer' | root"
   check "setup: the booted generation is committed" "[ \"\$(committed)\" = \"\$(booted)\" ]"
   check "setup: boot deadline armed" "vssh systemctl is-active agentbox-boot-deadline.service"
   status

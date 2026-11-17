@@ -55,6 +55,8 @@ type Config struct {
 	RecoveryPubPEM    []byte   // RSA-4096 PKIX PEM; required unless Encryption is none
 	MinisignPubKey    string   // release verification key
 	ReleaseURL        string   // https URL of the agentbox release tarball
+	ReleaseSHA256     string   // that tarball's SHA-256: minisign alone accepts any older signed release
+	Dev               bool     // QEMU VM only: also accept http://10.0.2.2:PORT release URLs
 }
 
 var (
@@ -67,6 +69,8 @@ var (
 	reSerial   = regexp.MustCompile(`^[A-Za-z0-9._:#+=@-]{1,128}$`) // udev ID_SERIAL charset minus nothing a shell or YAML cares about
 	reMinisign = regexp.MustCompile(`^RW[A-Za-z0-9+/]{54}$`)
 	reHTTPS    = regexp.MustCompile(`^https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$`)
+	reDevURL   = regexp.MustCompile(`^http://10\.0\.2\.2:[0-9]{1,5}(/[A-Za-z0-9._~/-]*)?$`) // the QEMU user-network host (hack/release-serve)
+	reSHA256   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	reTangURL  = regexp.MustCompile(`^http://([0-9]{1,3}(\.[0-9]{1,3}){3})(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$`)
 	reThp      = regexp.MustCompile(`^[A-Za-z0-9_-]{20,128}$`)
 )
@@ -133,8 +137,11 @@ func (c *Config) Validate() error {
 	if mk, err := base64.StdEncoding.DecodeString(c.MinisignPubKey); !reMinisign.MatchString(c.MinisignPubKey) || err != nil || len(mk) != 42 || string(mk[:2]) != "Ed" {
 		bad("minisign public key: expected the 56-char Ed25519 minisign key starting with RW")
 	}
-	if !reHTTPS.MatchString(c.ReleaseURL) {
-		bad("release url %q: https://host[:port]/path without query string required", c.ReleaseURL)
+	if !reHTTPS.MatchString(c.ReleaseURL) && !(c.Dev && reDevURL.MatchString(c.ReleaseURL)) {
+		bad("release url %q: https://host[:port]/path without query string required (with --dev, also http://10.0.2.2:PORT/path)", c.ReleaseURL)
+	}
+	if !reSHA256.MatchString(c.ReleaseSHA256) {
+		bad("release sha256 %q: the tarball's SHA-256 is required, 64 lowercase hex digits (make release prints it); minisign alone would accept any older signed release", c.ReleaseSHA256)
 	}
 	return errors.Join(errs...)
 }
