@@ -26,6 +26,8 @@ OUT="$VM/apply-gate-$ENC.txt" LOG="$VM/apply-gate-$ENC.log"
 A=/var/lib/agentbox/current/bin/agentbox
 mkdir -p "$VM"
 fails=0
+# a laptop that idles to sleep freezes the VM and the Tang container mid-scenario, and the wall-clock waits then fail
+! command -v caffeinate >/dev/null || { caffeinate -i -w $$ & }
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$OUT"; }
 die() { log "ABORT $*"; exit 1; }
