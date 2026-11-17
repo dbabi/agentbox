@@ -103,7 +103,10 @@ fallback() {
     [ -z "$id" ] || [ "$id" = "$old" ] || b=$(booted 2>/dev/null) || :
     [ "$b" = "$C" ] && break
     if [ "$b" = "$E" ] && [ -z "$seen" ]; then seen=1; log "$1: the trial came up ($(vssh systemctl is-system-running)); health must refuse it"; fi
-    [ $(( $(date +%s) - t0 )) -lt "$2" ] || die "$1: not back on $C within $2 s"
+    if [ $(( $(date +%s) - t0 )) -ge "$2" ]; then # no unattended fallback: record it, power-cycle, go on
+      log "FAIL $1: not back on $C within $2 s; QMP reset"; fails=$((fails+1))
+      hack/vm.sh cut; wait_gen "$C" "$old" 900 || die "$1: no $C after the reset"; settled || :; return 0
+    fi
     sleep 5
   done
   log "$1: back on $C after $(( $(date +%s) - t0 )) s"
