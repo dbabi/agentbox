@@ -1,15 +1,19 @@
 #!/bin/sh
 # Week-1 install gates (PLAN.md week 1, ARCHITECTURE.md §15) on the local QEMU VM.
 #   hack/gate.sh none|tpm2|tpm2+tang   render a test seed, install unattended, boot, check every gate item, power off
-# tpm2+tang runs a throwaway Tang container (podman) on 127.0.0.1:7500; the VM reaches it as 10.0.2.2:7500.
+# tpm2+tang runs a throwaway Tang container (vm.sh tang) on 127.0.0.1:7500+ID; the VM reaches it as 10.0.2.2:7500+ID.
+# AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh: gates that run at once need distinct IDs and separate checkouts.
 # Test seeds only: the admin password is "x" and the recovery key lives in .vm/keys. Never use them for a real box.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 VM="$ROOT/.vm"
+mkdir -p "$VM" # a fresh worktree has no .vm yet
 ENC=${1:?usage: hack/gate.sh none|tpm2|tpm2+tang}
 case "$ENC" in none|tpm2|tpm2+tang) ;; *) echo "usage: hack/gate.sh none|tpm2|tpm2+tang" >&2; exit 2 ;; esac
 die() { echo "gate.sh: $*" >&2; exit 1; }
+case ${AGENTBOX_VM_ID:-0} in [0-9]) ;; *) die "AGENTBOX_VM_ID must be 0-9" ;; esac
+TANG_URL=http://10.0.2.2:$((7500 + ${AGENTBOX_VM_ID:-0})) # vm.sh tang up serves this instance on 127.0.0.1:7500+ID
 
 go build -o bin/agentbox ./cmd/agentbox
 [ -f "$VM/id_vm" ] || ssh-keygen -q -t ed25519 -N "" -C agentbox-vm -f "$VM/id_vm"
@@ -21,15 +25,11 @@ set -- --disk-serial QEMU_NVMe_Ctrl_QM00001_1 --ssh-key "$(cat "$VM/id_vm.pub")"
   --release-url https://releases.invalid.example/agentbox-dev.tgz --encryption "$ENC" --out "$SEED"
 [ "$ENC" = none ] || set -- "$@" --recovery-pub "$VM/keys/recovery.pub"
 if [ "$ENC" = tpm2+tang ]; then
-  command -v podman >/dev/null || die "tpm2+tang needs podman (brew install podman; podman machine init; podman machine start)"
-  podman build -q -t agentbox-tang hack/tang >/dev/null
-  podman rm -f agentbox-tang >/dev/null 2>&1 || :
-  podman run -d --name agentbox-tang -p 127.0.0.1:7500:7500 agentbox-tang >/dev/null # loopback only
-  trap 'podman rm -f agentbox-tang >/dev/null 2>&1 || :' EXIT
-  i=0; until curl -sf http://127.0.0.1:7500/adv >/dev/null; do i=$((i+1)); [ $i -lt 20 ] || die "Tang not answering on 127.0.0.1:7500"; sleep 1; done
-  THP=$(podman exec agentbox-tang tang-show-keys 7500 | head -1)
+  trap 'hack/vm.sh tang down >/dev/null 2>&1 || :' EXIT
+  hack/vm.sh tang up
+  THP=$(hack/vm.sh tang thp)
   [ -n "$THP" ] || die "could not read the Tang signing-key thumbprint"
-  set -- "$@" --tang-url http://10.0.2.2:7500 --tang-thp "$THP"
+  set -- "$@" --tang-url "$TANG_URL" --tang-thp "$THP"
 fi
 ./bin/agentbox seed "$@" >/dev/null 2>&1 || ./bin/agentbox seed "$@"
 
@@ -70,8 +70,9 @@ if [ "$ENC" != none ]; then
   check "installer keyfile gone"         '[ ! -e /run/agentbox-luks.key ]'
 fi
 if [ "$ENC" = tpm2+tang ]; then
-  # sss with t=2 needs both pins, so "unlocked by clevis" above also proves the initramfs reached Tang.
-  check "clevis binding is sss tpm2+tang" 'd=\$(cryptsetup status croot | awk "/device:/{print \\\$2}"); l=\$(clevis luks list -d "\$d"); echo "\$l" | grep -q sss && echo "\$l" | grep -q tpm2 && echo "\$l" | grep -q tang'
+  # sss with t=2 needs both pins, so "unlocked by clevis" above also proves the initramfs reached Tang. Every instance's
+  # Tang serves the same keys, so the URL proves it was this instance's Tang.
+  check "clevis binding is sss tpm2+tang at $TANG_URL" 'd=\$(cryptsetup status croot | awk "/device:/{print \\\$2}"); l=\$(clevis luks list -d "\$d"); echo "\$l" | grep -q sss && echo "\$l" | grep -q tpm2 && echo "\$l" | grep -qF "$TANG_URL\""'
   check "initramfs brings up network"     'grep -q "rd.neednet=1" /proc/cmdline'
 fi
 echo "fails=\$fails"
@@ -79,8 +80,7 @@ EOF
 
 if [ "$ENC" != none ]; then # the offline recovery path: recovery.bin -> key -> opens LUKS
   W=$(mktemp -d "$VM/recov.XXXX")
-  scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$VM/id_vm" -P 2222 \
-    boxadmin@127.0.0.1:/bootpart/agentbox/recovery.bin "$W/"
+  hack/vm.sh ssh cat /bootpart/agentbox/recovery.bin > "$W/recovery.bin"
   ./bin/agentbox recovery decrypt --key "$VM/keys/recovery.key" --in "$W/recovery.bin" --out "$W/luks.key" >/dev/null
   { echo x; cat "$W/luks.key"; } | hack/vm.sh ssh 'sudo -S -p "" sh -c "umask 077; head -c 48 > /run/rk.key; d=\$(cryptsetup status croot | awk \"/device:/{print \\\$2}\"); cryptsetup open --test-passphrase --key-file /run/rk.key \$d && echo PASS recovery key opens LUKS || echo FAIL recovery key opens LUKS; shred -u /run/rk.key"' | tee -a "$VM/gate-$ENC.txt"
   rm -P "$W/luks.key" 2>/dev/null || rm -f "$W/luks.key"

@@ -61,8 +61,16 @@ serial matches anything but exactly one disk, or (encrypted modes) when there is
 
 ## QEMU test VM (Apple Silicon)
 `hack/vm.sh` attaches the disk as NVMe by default, so the seed needs `--disk-serial QEMU_NVMe_Ctrl_QM00001_1`
-(`DISKBUS=virtio` uses `QM00001`). `hack/vm.sh ssh` logs in as `boxadmin` with the throwaway key in `.vm/id_vm`. For `tpm2+tang`, run `hack/vm.sh tang up` first (needs podman) and use
-`--tang-url http://10.0.2.2:7500`.
+(`DISKBUS=virtio` uses `QM00001`). `hack/vm.sh ssh` logs in as `boxadmin` with the throwaway key in `.vm/id_vm`. For `tpm2+tang`, run `hack/vm.sh tang up` first (needs podman); it prints the
+`--tang-url` and `--tang-thp` seed flags.
+
+Several VMs can run at once, one per checkout: each needs its own `AGENTBOX_VM_ID` (0-9: SSH on 127.0.0.1:2222+ID, Tang
+on 127.0.0.1:7500+ID) and its own git worktree, because everything else lives in the checkout's `.vm`.
+`AGENTBOX_ISO_DIR` lets worktrees share one ISO:
+```sh
+git worktree add --detach ../agentbox-wt/b main
+cd ../agentbox-wt/b && AGENTBOX_VM_ID=1 AGENTBOX_ISO_DIR=~/workplace/agentbox/.vm hack/gate.sh tpm2+tang
+```
 
 ## Test
 ```sh
