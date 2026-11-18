@@ -152,7 +152,7 @@ sc_cycles() {
   check "cycle 2: the build re-made initrd.img-$KN in the nspawn" "echo 'test /bootpart/agentbox/gens/$M/initrd.img-$KN -nt /bootpart/agentbox/gens/gen-1/initrd.img-$KN' | root"
   trial "cycle 2 (kernel $KO -> $KN, systemd re-installed)"
   check "cycle 2: kernel upgraded to $KN" "[ \"\$(vssh uname -r)\" = $KN ]"
-  [ "$ENC" = none ] || check "cycle 2: LUKS unlocked by clevis from the nspawn-built initrd" "vssh 'journalctl -b -o cat' | grep -q 'Finished systemd-cryptsetup@croot.service'"
+  [ "$ENC" = none ] || check "cycle 2: LUKS unlocked by clevis from the nspawn-built initrd" "vssh 'journalctl -b -o cat' | grep -q 'Finished systemd-cryptsetup@croot.service' && echo 'journalctl -b -t clevis-luks-askpass -o cat' | root | grep -q '^Unlocked '"
   plan --reinstall --install base-files
   build; trial "cycle 3"
   check "cycle 3: gen-$O pruned with its boot dir, gone from grub.cfg" "echo 'test ! -e /bootpart/agentbox/gens/gen-$O && ! grep -q \"agentbox-gen-$O-\" /boot/grub/grub.cfg && ! btrfs subvolume list / | grep -qw @gen-$O' | root"

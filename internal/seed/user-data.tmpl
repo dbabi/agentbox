@@ -142,6 +142,10 @@ autoinstall:
       # kdump's grub.d snippet adds crashkernel= even when disabled, and its crash kernel can't unlock the LUKS root
       chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get purge -y kdump-tools
       test ! -e /mnt/new/etc/default/grub.d/kdump-tools.cfg
+      # curtin purges the ISO's kernel image, but linux-main-modules-zfs-K still needs one, so apt pulls in
+      # linux-image-unsigned-K, which shim refuses under Secure Boot: install the signed build (it Conflicts with the unsigned)
+      U=$(chroot /mnt/new dpkg-query -W -f '${db:Status-Abbrev}${Package}\n' 'linux-image-unsigned-*' 2>/dev/null | sed -n 's/^ii *linux-image-unsigned-/linux-image-/p')
+      [ -z "$U" ] || chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get install -y $U
       # dracut hostonly would bake the installer's top-level root flags (subvolid=5) into the initramfs cmdline; GRUB owns them.
       # os.apply's nspawn rebuild sees no disks, so force the unlock modules and the root disk's driver chain (the loadable
       # modules behind udevadm info -a's DRIVERS==, recorded here from the real hardware; built-in drivers have no initstate).

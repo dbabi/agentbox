@@ -174,6 +174,8 @@ elif [ "$SB" = 1 ]; then
 else
   check "Secure Boot off (mokutil)"      'mokutil --sb-state | grep -q "SecureBoot disabled"'
 fi
+# under Secure Boot shim refuses an unsigned kernel, so its menu entries can't boot (ARCHITECTURE §3.3 post-commit step 1)
+[ "$BOOT" = bios ] || check "shim accepts every kernel (is-not-revoked)" 'for k in /bootpart/agentbox/gens/*/vmlinuz-*; do /usr/lib/shim/is-not-revoked "\$k" || exit 1; done'
 if [ "$ENC" != none ]; then
   check "root on LUKS (croot)"           'findmnt -n -o SOURCE / | grep -q "^/dev/mapper/croot"'
   check "LUKS has a clevis token"        'cryptsetup luksDump "\$(cryptsetup status croot | awk "/device:/{print \\\$2}")" | grep -q ": clevis"'

@@ -101,7 +101,7 @@ func TestRenderModes(t *testing.T) {
 			`readlink -f "$DEV"`},
 	}
 	encAvoid := map[string][]string{
-		EncTPM2Tang: {"volume: proot, fstype: btrfs", "pcr_ids", "apt-get install", "head -c 64"},
+		EncTPM2Tang: {"volume: proot, fstype: btrfs", "pcr_ids", "clevis-tang", "head -c 64"}, // the tang pin is in clevis
 		EncTPM2:     {"volume: proot, fstype: btrfs", "ip=dhcp", " sss ", "pcr_ids", "clevis-pin-tang", "clevis-decrypt-tang", "clevis-pin-sss"},
 		EncNone:     {"dm_crypt", "clevis", "cryptsetup", "recovery", "ip=dhcp", "agentbox-luks.key", "tpmrm0", "lsinitrd -f etc/crypttab"},
 	}
@@ -127,6 +127,7 @@ func TestRenderModes(t *testing.T) {
 		// item 5, plus the snapd and dbx policy
 		"systemctl mask nftables.service snapd.socket snapd.service snapd.seeded.service snapd.snap-repair.timer \\\n        lxd-installer.socket secureboot-db.service",
 		"chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get purge -y kdump-tools", "test ! -e /mnt/new/etc/default/grub.d/kdump-tools.cfg",
+		`[ -z "$U" ] || chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get install -y $U`,
 		// item 6
 		"control state (rootd.db, audit, taint.db) that stays in @var_lib_agentbox",
 		"mountpoint -q /dev/pts; mountpoint -q /sys/fs/cgroup",
@@ -677,6 +678,61 @@ func TestDracutHardware(t *testing.T) {
 			if !strings.Contains(got, w+"\n") {
 				t.Errorf("watchdog device %v: 90-agentbox.conf lacks %q:\n%s", tc.watchdog, w, got)
 			}
+		}
+	}
+}
+
+// TestKernelSwap runs the rendered late-commands lines that replace the installer's leftover linux-image-unsigned-K
+// with the signed linux-image-K under dash -eu, with a fake chroot: one apt call for every installed unsigned image,
+// none (and no failure) when there is none, and all of it before the initrds are rebuilt.
+func TestKernelSwap(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash not installed")
+	}
+	out, err := Render(validConfig(t, EncTPM2, "uefi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	var lines []string
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.TrimPrefix(l, "      "); strings.HasPrefix(l, "U=$(chroot /mnt/new dpkg-query ") || strings.HasPrefix(l, `[ -z "$U" ] || `) {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 2 {
+		t.Fatalf("kernel swap lines not found: %q", lines)
+	}
+	if i, j := strings.Index(s, lines[1]), strings.Index(s, "chroot /mnt/new dracut -f --regenerate-all"); j < 0 || i > j {
+		t.Fatal("the kernel swap must run before dracut --regenerate-all")
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "apt.log")
+	// dpkg-query -W -f '${db:Status-Abbrev}${Package}\n' prints "ii " for installed, "rc " for removed with config files
+	os.WriteFile(filepath.Join(bin, "chroot"), []byte(`#!/bin/sh
+[ "$1" = /mnt/new ] || exit 1; shift
+case $1 in
+dpkg-query) [ -n "$PKGS" ] || { echo "dpkg-query: no packages found matching $5" >&2; exit 1; }; printf "$PKGS" ;;
+env) shift; echo "$*" >> "$LOG" ;;
+*) exit 1 ;;
+esac
+`), 0o755)
+	for _, tc := range []struct{ pkgs, want string }{
+		{"ii linux-image-unsigned-7.0.0-30-generic\\nrc linux-image-unsigned-6.19.0-5-generic\\n",
+			"DEBIAN_FRONTEND=noninteractive apt-get install -y linux-image-7.0.0-30-generic\n"},
+		{"ii linux-image-unsigned-7.0.0-30-generic\\nii linux-image-unsigned-7.0.0-43-generic\\n",
+			"DEBIAN_FRONTEND=noninteractive apt-get install -y linux-image-7.0.0-30-generic linux-image-7.0.0-43-generic\n"},
+		{"", ""},
+	} {
+		os.Remove(log)
+		c := exec.Command(dash, "-euc", strings.Join(lines, "\n"))
+		c.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "PKGS="+tc.pkgs, "LOG="+log)
+		if msg, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("%q: %v: %s", tc.pkgs, err, msg)
+		}
+		if got, _ := os.ReadFile(log); string(got) != tc.want {
+			t.Errorf("%q: apt ran %q, want %q", tc.pkgs, got, tc.want)
 		}
 	}
 }
