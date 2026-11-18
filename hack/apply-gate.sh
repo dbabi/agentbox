@@ -10,7 +10,9 @@
 # breaks   a trial broken in GRUB, in the initrd (clevis removed; btrfs in none mode), in fstab (/boot bound to the
 #          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
 #          the committed generation with no console input. Then an emptied grubenv boots the committed generation.
-# cuts     QMP power cuts (vm.sh cut) at five points of an apply, then a clean apply that commits.
+# cuts     QMP power cuts (vm.sh cut) at five points of an apply, then a clean apply that commits. Those cuts hit a
+#          bad moment for GRUB only by chance, so one more apply, trial and commit runs logged (hack/powercut.sh log),
+#          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Needs the podman machine.
 # Checks print PASS/FAIL to .vm/apply-gate-<mode>.txt, command output goes to .vm/apply-gate-<mode>.log; exit 1 on
 # any FAIL. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -270,6 +272,15 @@ sc_cuts() {
   plan --reinstall --install base-files
   build; trial "after the cuts"
   check "after the cuts: leftovers pruned, at most three generations" "[ \$(echo 'ls -d /bootpart/agentbox/gens/gen-[1-9]* | wc -l' | root) -le 3 ]"
+  echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
+  while running; do sleep 2; done
+  hack/powercut.sh log boot >>"$LOG" 2>&1 &
+  wait_boot none 900 || die "logged apply: no SSH (see $VM/boot-*.log)"
+  plan --reinstall --install base-files
+  build; trial "logged apply"
+  echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
+  while running; do sleep 2; done
+  check "logged apply: after every write to /bootpart, GRUB finds its entry, kernel and initrd (powercut.sh grub)" "hack/powercut.sh grub"
 }
 
 : >"$LOG"
