@@ -21,6 +21,10 @@
 #                                                run at once.
 #   hack/powercut.sh boot <entry>...             boot the disk as replayed to each entry: it must boot the entry GRUB
 #                                                picks on that disk, clean, with the writes files consistent
+#   hack/powercut.sh grub [from [to]]            after every log entry that writes /bootpart, read it as GRUB does
+#                                                (ext4 with no journal replay): the entry GRUB boots must be in
+#                                                grub.cfg, with its kernel and initrd. Catches a grub.cfg or grubenv
+#                                                replace that only Linux, which replays the journal, sees as atomic.
 # Replays run on Linux: hack/powercut/replay.sh, as root in the agentbox-powercut container of the podman machine (built
 # once; after editing hack/powercut/Containerfile, run `podman --connection podman-machine-default-root rmi
 # agentbox-powercut`). The base and the log live in $TMPDIR/agentbox-powercut-ID, which the machine mounts.
@@ -86,6 +90,7 @@ echo "writes: $i rounds"
 EOF
   ;;
 marks) replay marks ;;
+grub) num "$@"; replay grub "$@" ;;
 check)
   num "$@"; [ "${3:-1}" -gt 0 ] || die "every must be 1 or more"
   replay check "$@"
@@ -151,5 +156,5 @@ EOF
   echo "boot: $# entries, $failed failed"
   [ $failed -eq 0 ]
   ;;
-*) die "usage: powercut.sh log <vm.sh command> [args] | writes [rounds] | marks | check [from [to [every]]] | boot <entry>..." ;;
+*) die "usage: powercut.sh log <vm.sh command> [args] | writes [rounds] | marks | check [from [to [every]]] | boot <entry>... | grub [from [to]]" ;;
 esac

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 // Paths on the box (ARCHITECTURE.md §3.1, §12).
@@ -153,19 +154,7 @@ func SetGrubEnv(key, val string) error {
 	if _, err := run("grub-editenv", tmp, "set", key+"="+val); err != nil {
 		return err
 	}
-	f, err := os.Open(tmp)
-	if err != nil {
-		return err
-	}
-	err = f.Sync()
-	f.Close()
-	if err == nil {
-		err = os.Rename(tmp, env)
-	}
-	if err == nil {
-		err = syncDir(GrubDir)
-	}
-	if err != nil {
+	if err := replaceForGrub(tmp, env); err != nil {
 		return err
 	}
 	out, err := run("grub-editenv", env, "list")
@@ -191,19 +180,64 @@ func UpdateGrub() error {
 		os.Remove(tmp)
 		return err
 	}
+	return replaceForGrub(tmp, cfg)
+}
+
+// replaceForGrub renames tmp over dst so that GRUB, too, finds the old or the new file after a power cut at any point.
+// GRUB reads ext4 without replaying the journal: it sees each metadata block as it last reached its home location, so
+// fsync and rename alone can show it the new directory entry with the new inode not home yet, or the old entry with
+// its inode already freed. The first checkpoint puts the new inode home before any entry names it; the hard link keeps
+// the old inode and its blocks allocated until the second checkpoint has put the rename home.
+func replaceForGrub(tmp, dst string) error {
 	f, err := os.Open(tmp)
 	if err != nil {
 		return err
 	}
 	err = f.Sync()
 	f.Close()
-	if err == nil {
-		err = os.Rename(tmp, cfg)
+	if err != nil {
+		return err
 	}
-	if err == nil {
-		err = syncDir(GrubDir)
+	dir, old := filepath.Dir(dst), dst+".agentbox-old"
+	if err := checkpoint(dir); err != nil {
+		return err
 	}
-	return err
+	// a link left by a cut: the checkpoint made the rename it guarded final at home
+	if err := os.Remove(old); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := os.Link(dst, old); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	if err := syncDir(dir); err != nil {
+		return err
+	}
+	if err := checkpoint(dir); err != nil {
+		return err
+	}
+	if err := os.Remove(old); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// checkpoint commits the journal of dir's ext4 file system, writes every transaction to its home location and flushes
+// the disk (EXT4_IOC_CHECKPOINT, Linux 5.13). A variable so the tests, which run off ext4, can stand in for it.
+var checkpoint = func(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var flags uint32
+	const ext4IocCheckpoint = 0x4004662b // _IOW('f', 43, __u32)
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), ext4IocCheckpoint, uintptr(unsafe.Pointer(&flags))); e != 0 {
+		return fmt.Errorf("EXT4_IOC_CHECKPOINT %s: %v", dir, e)
+	}
+	return nil
 }
 
 // GrubHasEntry is the §3.3 step 5 check: an unknown id silently boots entry 0.

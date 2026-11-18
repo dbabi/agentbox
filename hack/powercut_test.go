@@ -93,7 +93,7 @@ esac
 	if b, _ := os.ReadFile(filepath.Join(vm, "disk.qcow2.powercut")); string(b) != "set aside" {
 		t.Errorf("set-aside disk changed: %q", b)
 	}
-	for _, args := range [][]string{{"boot", "7x"}, {"check", "0", "10", "0"}} {
+	for _, args := range [][]string{{"boot", "7x"}, {"check", "0", "10", "0"}, {"grub", "0", "1x"}} {
 		c := exec.Command(dash, append([]string{filepath.Join(root, "hack", "powercut.sh")}, args...)...)
 		c.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TMPDIR="+tmp, "AGENTBOX_VM_ID=3")
 		if out, err := c.CombinedOutput(); err == nil {

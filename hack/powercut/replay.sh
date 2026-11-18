@@ -6,6 +6,8 @@
 #   replay.sh check [from [to [every]]]     replay; btrfs check --readonly each btrfs partition at every <every>-th flush
 #                                           in entries from..to (default 0..last, every flush)
 #   replay.sh image <entry>                 /w/image.qcow2: the disk after <entry>; /w/image.expect: the entry GRUB boots
+#   replay.sh grub [from [to]]              replay; after every entry in from..to that writes /bootpart, read it as GRUB
+#                                           does: the entry GRUB boots must be in grub.cfg, with its kernel and initrd
 # Replayed file systems are only read through read-only loop devices and never mounted, so a corrupt one can't reach
 # the kernel of the podman machine that other VMs' containers share.
 set -eu
@@ -23,6 +25,26 @@ if [ "${1:-}" = mark ]; then # replay-log --fsck hook, run after each flush entr
     btrfs check --readonly "$l" > /tmp/out 2>&1 || { st=FAIL; sed "s|^|    $l: |" /tmp/out; }
   done
   echo "mark $st $g"
+  exit 0
+fi
+if [ "${1:-}" = grubview ]; then # replay-log --fsck hook of grub below, run after every entry
+  read -r n < /tmp/n; echo $((n + 1)) > /tmp/n
+  [ -e "/tmp/e4/$n" ] || exit 0
+  read -r l < /tmp/ext4
+  blockdev --flushbufs "$l"
+  # GRUB ignores a grubenv without its header; with no next_entry or saved_entry, 09_agentbox's fallback picks committed
+  env=$(debugfs -R "cat /grub/grubenv" "$l" 2>/dev/null) || :
+  case $env in "# GRUB Environment Block"*) ;; *) env= ;; esac
+  cfg=$(debugfs -R "cat /grub/grub.cfg" "$l" 2>/dev/null) || :
+  for v in next_entry saved_entry; do
+    want=$(printf '%s\n' "$env" | sed -n "s/^$v=//p") from=$v
+    [ -z "$want" ] || break
+  done
+  [ -n "$want" ] || want=$(printf '%s\n' "$cfg" | sed -n 's/.*set default="\(agentbox-[^"]*\)".*/\1/p') from=committed
+  r=${want#agentbox-gen-}
+  files() { for f in vmlinuz initrd.img; do
+    debugfs -R "stat /agentbox/gens/gen-${r%%-*}/$f-${r#*-}" "$l" 2>/dev/null | grep -q 'Size: [1-9]' || return 1; done; }
+  if [ -n "$want" ] && printf '%s\n' "$cfg" | grep -qF -- "--id '$want'" && files; then echo "grub ok $n"; else echo "grub FAIL $n $from ${want:--}"; fi
   exit 0
 fi
 
@@ -96,5 +118,31 @@ image)
   done
   echo "${want:--} $from" > /w/image.expect
   ;;
-*) die "usage: replay.sh marks | check [from [to [every]]] | image <entry>" ;;
+grub)
+  # GRUB reads ext4 without replaying the journal, so a cut shows it each block of /bootpart as last written home
+  n=$(entries) from=${2:-0}; to=${3:-$((n - 1))}
+  [ "$from" -lt "$n" ] && [ "$from" -le "$to" ] && [ "$to" -lt "$n" ] || die "entries $from..$to are not in the log (entries 0..$((n - 1)))"
+  base
+  [ "$from" -eq 0 ] || replay-log --log "$LOG" --replay "$T" --limit "$from"
+  for l in $(loops ext4); do debugfs -R "stat /agentbox" "$l" 2>/dev/null | grep -q '^Inode:' && { echo "$l" > /tmp/ext4; break; }; done
+  [ -s /tmp/ext4 ] || die "no ext4 partition with /agentbox on the disk at entry $from"
+  # the entries that write /bootpart's sectors
+  set -- $(losetup -l -n -O OFFSET,SIZELIMIT "$(cat /tmp/ext4)")
+  mkdir /tmp/e4
+  replay-log -v --log "$LOG" --replay /dev/null | awk -v s=$(($1 / 512)) -v e=$((($1 + $2) / 512)) -v from="$from" -v to="$to" '
+    $1 == "replaying" { n = $2; sub(/@.*/, "", n); n += 0
+      if (n >= from && n <= to && $6 + 0 > 0 && $4 + 0 < e && $4 + $6 / 512 > s) print "/tmp/e4/" n }' | xargs -r touch
+  echo "$from" > /tmp/n
+  { replay-log --log "$LOG" --replay "$T" --start-entry "$from" --limit $((to - from + 1)) --check 1 --fsck "sh $0 grubview" &&
+      echo "rc 0" || echo "rc $?"; } | awk -v from="$from" -v to="$to" '
+    $1 == "grub" { c++; if ($2 == "FAIL") { f++; print "entry " $3 ": FAIL GRUB finds no bootable " $4 " entry (" $5 ")" }; next }
+    $1 == "rc" { rc = $2; next }
+    { print }
+    END {
+      printf "entries %d..%d: %d writes to /bootpart, %d where GRUB finds no bootable entry\n", from, to, c, f
+      if (rc != 0) print "replay-log exited " rc
+      exit (rc != 0 || c == 0 || f > 0)
+    }'
+  ;;
+*) die "usage: replay.sh marks | check [from [to [every]]] | image <entry> | grub [from [to]]" ;;
 esac
