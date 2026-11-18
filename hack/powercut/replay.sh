@@ -12,6 +12,9 @@
 # the kernel of the podman machine that other VMs' containers share.
 set -eu
 die() { echo "replay.sh: $*" >&2; exit 1; }
+# grubfs <debugfs command> <ext4 device>: read it as GRUB does, with no journal replay and no bitmaps or checksums (a
+# cut can leave a bitmap and its group descriptor from different transactions, and plain debugfs then refuses to open)
+grubfs() { debugfs -c -n -R "$1" "$2" 2>/dev/null; }
 LOG=/w/log.bin T=/var/tmp/disk.raw
 
 if [ "${1:-}" = mark ]; then # replay-log --fsck hook, run after each flush entry: the replayed disk is at that flush
@@ -33,9 +36,9 @@ if [ "${1:-}" = grubview ]; then # replay-log --fsck hook of grub below, run aft
   read -r l < /tmp/ext4
   blockdev --flushbufs "$l"
   # GRUB ignores a grubenv without its header; with no next_entry or saved_entry, 09_agentbox's fallback picks committed
-  env=$(debugfs -R "cat /grub/grubenv" "$l" 2>/dev/null) || :
+  env=$(grubfs "cat /grub/grubenv" "$l") || :
   case $env in "# GRUB Environment Block"*) ;; *) env= ;; esac
-  cfg=$(debugfs -R "cat /grub/grub.cfg" "$l" 2>/dev/null) || :
+  cfg=$(grubfs "cat /grub/grub.cfg" "$l") || :
   for v in next_entry saved_entry; do
     want=$(printf '%s\n' "$env" | sed -n "s/^$v=//p") from=$v
     [ -z "$want" ] || break
@@ -43,7 +46,7 @@ if [ "${1:-}" = grubview ]; then # replay-log --fsck hook of grub below, run aft
   [ -n "$want" ] || want=$(printf '%s\n' "$cfg" | sed -n 's/.*set default="\(agentbox-[^"]*\)".*/\1/p') from=committed
   r=${want#agentbox-gen-}
   files() { for f in vmlinuz initrd.img; do
-    debugfs -R "stat /agentbox/gens/gen-${r%%-*}/$f-${r#*-}" "$l" 2>/dev/null | grep -q 'Size: [1-9]' || return 1; done; }
+    grubfs "stat /agentbox/gens/gen-${r%%-*}/$f-${r#*-}" "$l" | grep -q 'Size: [1-9]' || return 1; done; }
   if [ -n "$want" ] && printf '%s\n' "$cfg" | grep -qF -- "--id '$want'" && files; then echo "grub ok $n"; else echo "grub FAIL $n $from ${want:--}"; fi
   exit 0
 fi
@@ -106,14 +109,14 @@ image)
   # else the committed file that 09_agentbox falls back to. GRUB ignores a grubenv without its header.
   want= from=none
   for l in $(loops ext4); do
-    debugfs -R "stat /agentbox" "$l" 2>/dev/null | grep -q '^Inode:' || continue
-    env=$(debugfs -R "cat /grub/grubenv" "$l" 2>/dev/null)
+    grubfs "stat /agentbox" "$l" | grep -q '^Inode:' || continue
+    env=$(grubfs "cat /grub/grubenv" "$l")
     case $env in "# GRUB Environment Block"*) ;; *) env= ;; esac
     for v in next_entry saved_entry; do
       x=$(printf '%s\n' "$env" | sed -n "s/^$v=//p")
       [ -z "$x" ] || { want=$x from=$v; break; }
     done
-    [ -n "$want" ] || { want=$(debugfs -R "cat /agentbox/committed" "$l" 2>/dev/null) && [ -n "$want" ] && from=committed; } || :
+    [ -n "$want" ] || { want=$(grubfs "cat /agentbox/committed" "$l") && [ -n "$want" ] && from=committed; } || :
     break
   done
   echo "${want:--} $from" > /w/image.expect
@@ -124,7 +127,7 @@ grub)
   [ "$from" -lt "$n" ] && [ "$from" -le "$to" ] && [ "$to" -lt "$n" ] || die "entries $from..$to are not in the log (entries 0..$((n - 1)))"
   base
   [ "$from" -eq 0 ] || replay-log --log "$LOG" --replay "$T" --limit "$from"
-  for l in $(loops ext4); do debugfs -R "stat /agentbox" "$l" 2>/dev/null | grep -q '^Inode:' && { echo "$l" > /tmp/ext4; break; }; done
+  for l in $(loops ext4); do grubfs "stat /agentbox" "$l" | grep -q '^Inode:' && { echo "$l" > /tmp/ext4; break; }; done
   [ -s /tmp/ext4 ] || die "no ext4 partition with /agentbox on the disk at entry $from"
   # the entries that write /bootpart's sectors
   set -- $(losetup -l -n -O OFFSET,SIZELIMIT "$(cat /tmp/ext4)")
