@@ -126,8 +126,8 @@ booted() {
     [ "$(date +%s)" -lt "$end" ] || die "no SSH after boot (LUKS or boot failure); see $VM/boot-*.log"; sleep 5; done
   echo "$b"
 }
-reboot_vm() { echo 'systemctl reboot' | vmroot >/dev/null 2>&1 || :; BOOT=$(booted "$BOOT"); }
-BOOT=$(booted none)
+reboot_vm() { echo 'systemctl reboot' | vmroot >/dev/null 2>&1 || :; BID=$(booted "$BID"); }
+BID=$(booted none)
 
 # Every check prints PASS/FAIL; the script exits 1 if any fails.
 { cat <<EOF; } | vmroot | tee "$OUT"
