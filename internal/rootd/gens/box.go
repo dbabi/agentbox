@@ -39,10 +39,14 @@ const (
 // logf prints a progress line; hack/apply-gate.sh power-cuts the VM on them.
 func logf(format string, a ...any) { fmt.Fprintf(os.Stderr, "os: "+format+"\n", a...) }
 
+// noImageLock turns off systemd-nspawn's image lock, a .#@gen-M.lck next to the image on the btrfs top level, which
+// holds only @* (§15): a power cut during or just after a build leaves it there. Lock serializes os commands instead.
+const noImageLock = "SYSTEMD_NSPAWN_LOCK=0"
+
 func run(name string, args ...string) ([]byte, error) {
 	var stderr bytes.Buffer
 	c := exec.Command(name, args...)
-	c.Env = append(os.Environ(), "LC_ALL=C")
+	c.Env = append(os.Environ(), "LC_ALL=C", noImageLock)
 	c.Stderr = &stderr
 	out, err := c.Output()
 	if err != nil {
@@ -54,7 +58,7 @@ func run(name string, args ...string) ([]byte, error) {
 // stream runs a command with its output on stderr (apt and dpkg progress).
 func stream(name string, args ...string) error {
 	c := exec.Command(name, args...)
-	c.Env = append(os.Environ(), "LC_ALL=C", "DEBIAN_FRONTEND=noninteractive")
+	c.Env = append(os.Environ(), "LC_ALL=C", "DEBIAN_FRONTEND=noninteractive", noImageLock)
 	c.Stdout, c.Stderr = os.Stderr, os.Stderr
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("%s: %v", name, err)
