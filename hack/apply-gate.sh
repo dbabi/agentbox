@@ -11,7 +11,8 @@
 #          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
 #          the committed generation with no console input. After the GRUB break, health drops the kernel-less entry
 #          and retention refuses to prune while a kept fstab binds the trial. Then an emptied grubenv boots committed.
-# cuts     QMP power cuts (vm.sh cut) at five points of an apply, then a clean apply that commits. Those cuts hit a
+# cuts     QMP power cuts (vm.sh cut) at five points of an apply, then the grubenv a cut can leave split between GRUB
+#          and Linux, and a clean apply that commits. The cuts hit a
 #          bad moment for GRUB only by chance, so one more apply, trial and commit runs logged (hack/powercut.sh log),
 #          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Needs the podman machine.
 # Every plan also checks that apt ran none of the box's update hooks: update-success-stamp stays as it was.
@@ -271,7 +272,22 @@ cut_at() {
   fi
   check "cut at $1: grub.cfg and grubenv intact" "echo 'grub-script-check /boot/grub/grub.cfg && grub-editenv /boot/grub/grubenv list | grep -q ^saved_entry=agentbox-' | root"
   settled || :
+  check "cut at $1: no trial left armed (saved_entry is the committed entry, next_entry empty)" "echo 'l=\$(grub-editenv /boot/grub/grubenv list) && echo \"\$l\" | grep -qx \"saved_entry=\$(cat /bootpart/agentbox/committed)\" && ! echo \"\$l\" | grep -q \"^next_entry=.\"' | root"
   clean_root "cut at $1"
+  status
+}
+
+# split_env: Linux's view after a cut inside the trial's SetGrubEnv, where GRUB booted the committed generation from the
+# old grubenv while the replayed journal names the trial in next_entry and saved_entry (review-crash/both.txt). Settle
+# must undo both before it marks the trial failed, or a later boot runs the failed trial.
+split_env() {
+  plan --reinstall --install base-files
+  build
+  C=$(committed)
+  root >>"$LOG" 2>&1 <<EOF || die "split grubenv: could not set it up"
+flock /var/lib/agentbox/os/lock sh -ec 'grub-editenv /boot/grub/grubenv set saved_entry=$E; sed -i "s/\"bootId\":\"[^\"]*\"/\"bootId\":\"gate\"/" /var/lib/agentbox/os/pending.json; grep -q "\"bootId\":\"gate\"" /var/lib/agentbox/os/pending.json'
+EOF
+  check "split grubenv: Settle puts back saved_entry=$C and clears next_entry, then fails $M" "wait_root 180 '$A os health; test ! -e /var/lib/agentbox/os/pending.json' && echo 'l=\$(grub-editenv /boot/grub/grubenv list) && echo \"\$l\" | grep -qx saved_entry=$C && echo \"\$l\" | grep -qx next_entry= && test -e /var/lib/agentbox/os/failed/$M.json' | root"
   status
 }
 
@@ -282,6 +298,7 @@ sc_cuts() {
   cut_at "initrd gate" 0
   cut_at update-grub 0
   cut_at "boot once" 0
+  split_env
   plan --reinstall --install base-files
   build; trial "after the cuts"
   check "after the cuts: leftovers pruned, at most three generations" "[ \$(echo 'ls -d /bootpart/agentbox/gens/gen-[1-9]* | wc -l' | root) -le 3 ]"
