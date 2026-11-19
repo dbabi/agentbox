@@ -130,7 +130,11 @@ func MakePlan(req []string, reinstall bool) (*Plan, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	end, err := EndState(inst, acts)
+	native, err := run("dpkg", "--print-architecture")
+	if err != nil {
+		return nil, "", err
+	}
+	end, err := EndState(inst, acts, strings.TrimSpace(string(native)))
 	if err != nil {
 		return nil, "", err
 	}
@@ -364,7 +368,7 @@ func build(p *Plan, hash, root, boot, m string, sums []string) (*Pending, error)
 	if err != nil {
 		return nil, err
 	}
-	end, _ := EndState(inst, nil)
+	end, _ := EndState(inst, nil, "")
 	if !slices.Equal(end, p.EndState) {
 		return nil, fmt.Errorf("installed set differs from the approved end state")
 	}

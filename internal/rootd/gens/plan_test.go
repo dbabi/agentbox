@@ -145,7 +145,7 @@ func TestEndState(t *testing.T) {
 		t.Fatalf("Installed = %v (config-files packages are not installed)", inst)
 	}
 	acts, _ := ParseSim([]byte(simOut))
-	end, err := EndState(inst, acts)
+	end, err := EndState(inst, acts, "arm64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,11 +155,26 @@ func TestEndState(t *testing.T) {
 		t.Fatalf("EndState = %v\nwant %v", end, want)
 	}
 	two := map[string]string{"libfoo:arm64": "1", "libfoo:armhf": "1"}
-	if _, err := EndState(two, []Action{{Op: "Remv", Package: "libfoo"}}); err == nil {
+	if _, err := EndState(two, []Action{{Op: "Remv", Package: "libfoo"}}, "arm64"); err == nil {
 		t.Error("an ambiguous multi-arch removal was accepted")
 	}
-	if end, err := EndState(two, []Action{{Op: "Remv", Package: "libfoo:armhf"}}); err != nil || !slices.Equal(end, []string{"libfoo:arm64=1"}) {
+	if end, err := EndState(two, []Action{{Op: "Remv", Package: "libfoo:armhf"}}, "arm64"); err != nil || !slices.Equal(end, []string{"libfoo:arm64=1"}) {
 		t.Errorf("arch-qualified removal: %v %v", end, err)
+	}
+	// apt 3.2 on resolute arm64, crossgrades in the native slot (verify-gens-endstate-arch/real-sim.txt): dpkg keeps
+	// only the new instance; the Multi-Arch: same foreign one is its own slot
+	cross, err := ParseSim([]byte(`Inst bar [1.0] (2.0 localhost [all])
+Inst foo [1.0] (2.0 localhost [arm64])
+Inst libm [1.0] (2.0 localhost [arm64]) [libm:arm64 on libm:armhf] [libm:armhf on libm:arm64] [libm:armhf ]
+Inst libm:armhf [1.0] (2.0 localhost [armhf])
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := map[string]string{"bar:arm64": "1.0", "foo:all": "1.0", "libm:arm64": "1.0", "libm:armhf": "1.0", "libx:armhf": "1"}
+	want = []string{"bar:all=2.0", "foo:arm64=2.0", "libm:arm64=2.0", "libm:armhf=2.0", "libx:armhf=1"}
+	if end, err := EndState(before, cross, "arm64"); err != nil || !slices.Equal(end, want) {
+		t.Errorf("crossgrade: %v %v, want %v", end, err, want)
 	}
 }
 
