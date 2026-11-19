@@ -155,9 +155,9 @@ func TestRenderModes(t *testing.T) {
 				if i, j := strings.Index(s, "early-commands:"), strings.Index(s, "need exactly 1"); i < 0 || j < i || strings.Count(s[i:j], "\n    - ") != 1 {
 					t.Error("the disk guard must be early-commands[0]")
 				}
-				// firstboot: the sha256 pin, then minisign, and only then does anything unpack or install
+				// firstboot: capped downloads, the sha256 pin, then minisign, and only then does anything unpack or install
 				last := -1
-				for _, step := range []string{`h=$(sha256sum "$D/ab.tgz")`, `[ "$h" = "$AGENTBOX_RELEASE_SHA256" ] || {`,
+				for _, step := range []string{"--max-filesize 64M", `h=$(sha256sum "$D/ab.tgz")`, `[ "$h" = "$AGENTBOX_RELEASE_SHA256" ] || {`,
 					`minisign -Vm "$D/ab.tgz" -P "$AGENTBOX_MINISIGN_PUBKEY" || {`, `tar -xzf "$D/ab.tgz"`, `"$D/x/install.sh" --from-firstboot`,
 					"systemctl start agentbox-reconcile.service", "touch /var/lib/agentbox/.firstboot-done", "'AGENTBOX_RELEASE_SHA256=" + testSHA + "'"} {
 					i := strings.Index(s, step)

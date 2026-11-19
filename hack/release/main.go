@@ -24,6 +24,10 @@ import (
 // so it also stays inside the charset that agentbox seed accepts in a release URL.
 var reVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._~-]{0,63}$`)
 
+// maxTarball is firstboot's curl --max-filesize (internal/seed/user-data.tmpl): every firstboot attempt would fail on a
+// bigger release, so none is built.
+var maxTarball int64 = 64 << 20
+
 func main() {
 	version := flag.String("version", "", "release version, e.g. 2026.11.1")
 	key := flag.String("key", "", "minisign secret key file")
@@ -118,6 +122,13 @@ func build(version, key, out string) (string, []byte, error) {
 		}
 	}
 	err = errors.Join(tw.Close(), zw.Close(), f.Chmod(0o644), f.Close()) // in this order: tar flushes into gzip, gzip into f
+	var fi os.FileInfo
+	if err == nil {
+		fi, err = os.Stat(f.Name())
+	}
+	if err == nil && fi.Size() > maxTarball {
+		err = fmt.Errorf("%s would be %d bytes, over the %d that firstboot's curl --max-filesize (internal/seed/user-data.tmpl) accepts", tgz, fi.Size(), maxTarball)
+	}
 	if err == nil {
 		err = os.Rename(f.Name(), tgz)
 	}

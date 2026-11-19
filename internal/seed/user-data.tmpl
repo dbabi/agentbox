@@ -191,7 +191,7 @@ autoinstall:
       for e in "$D/top"/* "$D/top"/.[!.]*; do [ -e "$e" ] || continue
         case "${e##*/}" in @*) continue ;; esac; rm -rf --one-file-system "$e"; done
       umount "$D/top"
-      C="curl -fsSL --proto-redir =https --connect-timeout 20 --max-time 900 --retry 5 --retry-all-errors"
+      C="curl -fsSL --proto-redir =https --connect-timeout 20 --max-time 900 --retry 5 --retry-all-errors --max-filesize 64M" # $D is tmpfs: bound what a bad release host can stream
       $C -o "$D/ab.tgz" "$AGENTBOX_RELEASE_URL"; $C -o "$D/ab.tgz.minisig" "$AGENTBOX_RELEASE_URL.minisig"
       h=$(sha256sum "$D/ab.tgz"); h=${h%% *} # the pin comes first: minisign alone accepts any older signed release
       [ "$h" = "$AGENTBOX_RELEASE_SHA256" ] || { echo "agentbox-firstboot: release sha256 $h does not match the seed's $AGENTBOX_RELEASE_SHA256; nothing installed" >&2; exit 1; }

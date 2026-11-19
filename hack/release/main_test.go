@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"debug/buildinfo"
 	"debug/elf"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -101,5 +102,14 @@ func TestBuild(t *testing.T) {
 		if _, _, err := build(v, key, out); err == nil {
 			t.Errorf("version %q accepted", v)
 		}
+	}
+	// firstboot's curl refuses a release over its cap, so make release must not build one
+	if b, err := os.ReadFile("internal/seed/user-data.tmpl"); err != nil || !bytes.Contains(b, fmt.Appendf(nil, " --max-filesize %dM", maxTarball>>20)) {
+		t.Errorf("internal/seed/user-data.tmpl: want firstboot's curl capped at the release limit, %d MiB (%v)", maxTarball>>20, err)
+	}
+	defer func(n int64) { maxTarball = n }(maxTarball)
+	maxTarball = int64(len(data)) - 1
+	if _, _, err := build("1.2.3-test", key, out); err == nil || !strings.Contains(err.Error(), "--max-filesize") {
+		t.Errorf("a release 1 byte over the cap was built: %v", err)
 	}
 }
