@@ -33,6 +33,8 @@ fails=0
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$OUT"; }
 die() { log "ABORT $*"; exit 1; }
+# CODE names the variables it uses ("\$C" or '$C'), so eval expands what the guest reported as data, never as code
+# (hack/apply_gate_test.go replays every check line with values that are shell syntax)
 check() { if (eval "$2") >>"$LOG" 2>&1; then log "PASS $1"; else log "FAIL $1"; fails=$((fails+1)); fi; }
 vssh() { hack/vm.sh ssh "$@"; }
 root() { { echo x; cat; } | hack/vm.sh ssh 'sudo -S -p "" sh -s'; } # stdin: a script run as root on the VM
@@ -80,9 +82,9 @@ clean_root() {
 trial() {
   old=$(bootid); reboot_vm
   wait_boot "$old" 900 || die "$1: no SSH after the trial reboot"
-  check "$1: boots $M (rootflags=subvol=@$M)" "vssh grep -qw rootflags=subvol=@$M /proc/cmdline"
+  check "$1: boots $M (rootflags=subvol=@$M)" 'vssh grep -qw "rootflags=subvol=@$M" /proc/cmdline'
   wait_root 420 "[ \"\$(cat /bootpart/agentbox/committed)\" = $E ] && test ! -e /var/lib/agentbox/os/pending.json" || :
-  check "$1: health committed $E" "[ \"\$(committed)\" = $E ] && vssh 'grub-editenv /boot/grub/grubenv list' | grep -qx saved_entry=$E"
+  check "$1: health committed $E" '[ "$(committed)" = "$E" ] && vssh "grub-editenv /boot/grub/grubenv list" | grep -qx "saved_entry=$E"'
   clean_root "$1"
   status
 }
@@ -112,9 +114,9 @@ fallback() {
     sleep 5
   done
   log "$1: back on $C after $(( $(date +%s) - t0 )) s"
-  check "$1: falls back to the committed $C" "[ \"\$(committed)\" = '$C' ]"
+  check "$1: falls back to the committed $C" '[ "$(committed)" = "$C" ]'
   settled || :
-  check "$1: trial $M marked failed" "echo 'test -e /var/lib/agentbox/os/failed/$M.json && test ! -e /var/lib/agentbox/os/pending.json' | root"
+  check "$1: trial $M marked failed" 'echo "test -e /var/lib/agentbox/os/failed/$M.json && test ! -e /var/lib/agentbox/os/pending.json" | root'
   status
 }
 # with_top CMDS: run CMDS as root with the btrfs top level at $T
@@ -133,7 +135,7 @@ printf '%s\n' '[Service]' 'Environment=AGENTBOX_BOOT_DEADLINE_SEC=$DEADLINE' > /
 systemctl daemon-reload
 sync # a power cut right after setup must not lose the drop-in
 EOF
-  check "setup: firstboot installed the release and enabled the health timer" "echo 'test -x $A && test -e /var/lib/agentbox/.firstboot-done && systemctl is-enabled agentbox-health.timer' | root"
+  check "setup: firstboot installed the release and enabled the health timer" 'echo "test -x $A && test -e /var/lib/agentbox/.firstboot-done && systemctl is-enabled agentbox-health.timer" | root'
   check "setup: the booted generation is committed" "[ \"\$(committed)\" = \"\$(booted)\" ]"
   check "setup: boot deadline armed" "vssh systemctl is-active agentbox-boot-deadline.service"
   status
@@ -148,32 +150,32 @@ sc_cycles() {
   log "cycles: kernels $KN (newest) and $KO; oldest generation gen-$O"
   plan --remove "linux-image-$KN" --remove "linux-modules-$KN"
   build; trial "cycle 1 (remove $KN)"
-  check "cycle 1: runs the older kernel $KO" "[ \"\$(vssh uname -r)\" = $KO ]"
+  check "cycle 1: runs the older kernel $KO" '[ "$(vssh uname -r)" = "$KO" ]'
   plan --reinstall --install linux-generic --install systemd
   build
-  check "cycle 2: the build re-made initrd.img-$KN in the nspawn" "echo 'test /bootpart/agentbox/gens/$M/initrd.img-$KN -nt /bootpart/agentbox/gens/gen-1/initrd.img-$KN' | root"
+  check "cycle 2: the build re-made initrd.img-$KN in the nspawn" 'echo "test /bootpart/agentbox/gens/$M/initrd.img-$KN -nt /bootpart/agentbox/gens/gen-1/initrd.img-$KN" | root'
   trial "cycle 2 (kernel $KO -> $KN, systemd re-installed)"
-  check "cycle 2: kernel upgraded to $KN" "[ \"\$(vssh uname -r)\" = $KN ]"
+  check "cycle 2: kernel upgraded to $KN" '[ "$(vssh uname -r)" = "$KN" ]'
   [ "$ENC" = none ] || check "cycle 2: LUKS unlocked by clevis from the nspawn-built initrd" "vssh 'journalctl -b -o cat' | grep -q 'Finished systemd-cryptsetup@croot.service' && echo 'journalctl -b -t clevis-luks-askpass -o cat' | root | grep -q '^Unlocked '"
   plan --reinstall --install base-files
   build; trial "cycle 3"
-  check "cycle 3: gen-$O pruned with its boot dir, gone from grub.cfg" "echo 'test ! -e /bootpart/agentbox/gens/gen-$O && ! grep -q \"agentbox-gen-$O-\" /boot/grub/grub.cfg && ! btrfs subvolume list / | grep -qw @gen-$O' | root"
+  check "cycle 3: gen-$O pruned with its boot dir, gone from grub.cfg" 'echo "test ! -e /bootpart/agentbox/gens/gen-$O && ! grep -q agentbox-gen-$O- /boot/grub/grub.cfg && ! btrfs subvolume list / | grep -qw @gen-$O" | root'
   CUR=$E PREV="agentbox-gen-$(( ${M#gen-} - 1 ))-$KN"
   # current cold-boots
   echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
   while running; do sleep 2; done
   up
-  check "cold boot: current $CUR" "[ \"\$(booted)\" = $CUR ]"
+  check "cold boot: current $CUR" '[ "$(booted)" = "$CUR" ]'
   clean_root "cold boot"
   # previous boots once (next_entry written the §3.3 way: copy, edit, fsync, rename), then the deadline returns to current
   echo "cd /boot/grub && cp grubenv grubenv.new && grub-editenv grubenv.new set next_entry=$PREV && sync grubenv.new && mv grubenv.new grubenv && sync ." | root >>"$LOG" 2>&1
   old=$(bootid); reboot_vm; wait_boot "$old" 900 || die "previous: no SSH"
-  check "previous: $PREV boots" "[ \"\$(booted)\" = $PREV ]"
+  check "previous: $PREV boots" '[ "$(booted)" = "$PREV" ]'
   clean_root "previous"
   old=$(bootid); t0=$(date +%s)
   wait_boot "$old" $((DEADLINE + 600)) || die "previous: the deadline never rebooted it"
   log "previous: rebooted by the deadline after $(( $(date +%s) - t0 )) s"
-  check "previous: the boot deadline returned to $CUR, still committed" "[ \"\$(booted)\" = $CUR ] && [ \"\$(committed)\" = $CUR ]"
+  check "previous: the boot deadline returned to $CUR, still committed" '[ "$(booted)" = "$CUR" ] && [ "$(committed)" = "$CUR" ]'
   status
 }
 
@@ -211,24 +213,24 @@ sc_breaks() {
   wait_gen "$E" "$old" 900 || die "blocking unit: the trial never came up"
   check "blocking unit: the trial $M boots and never finishes" "[ \"\$(vssh systemctl is-system-running)\" = starting ]"
   sleep 90
-  check "blocking unit: health does not commit it" "[ \"\$(committed)\" = $C ]"
+  check "blocking unit: health does not commit it" '[ "$(committed)" = "$C" ]'
   old=$(bootid); t0=$(date +%s)
   wait_gen "$C" "$old" $((DEADLINE + 600)) || die "blocking unit: the deadline never fell back"
   log "blocking unit: back on $C $(( $(date +%s) - t0 )) s later (boot deadline)"
-  check "blocking unit: falls back to the committed $C" "[ \"\$(committed)\" = $C ]"
+  check "blocking unit: falls back to the committed $C" '[ "$(committed)" = "$C" ]'
   settled || :
-  check "blocking unit: trial $M marked failed" "echo 'test -e /var/lib/agentbox/os/failed/$M.json' | root"
+  check "blocking unit: trial $M marked failed" 'echo "test -e /var/lib/agentbox/os/failed/$M.json" | root'
   status
   # grubenv emptied (what a cut during an in-place grub-editenv leaves): GRUB boots the committed entry through
   # 09_agentbox's fallback, not entry 0 (the oldest generation), and the deadline keeps that boot up
   C=$(committed); old=$(bootid)
   echo ': > /boot/grub/grubenv && sync' | root >>"$LOG" 2>&1
   reboot_vm; wait_boot "$old" 900 || die "empty grubenv: no SSH"
-  check "empty grubenv: boots the committed $C, not entry 0" "[ \"\$(booted)\" = $C ]"
+  check "empty grubenv: boots the committed $C, not entry 0" '[ "$(booted)" = "$C" ]'
   old=$(bootid); sleep $((DEADLINE + 60))
-  check "empty grubenv: the boot deadline leaves the committed boot up" "[ \"\$(bootid)\" = $old ]"
+  check "empty grubenv: the boot deadline leaves the committed boot up" '[ -n "$old" ] && [ "$(bootid)" = "$old" ]'
   echo "$A os mark-last-good" | root >>"$LOG" 2>&1
-  check "empty grubenv: mark-last-good restores saved_entry" "vssh 'grub-editenv /boot/grub/grubenv list' | grep -qx saved_entry=$C"
+  check "empty grubenv: mark-last-good restores saved_entry" 'vssh "grub-editenv /boot/grub/grubenv list" | grep -qx "saved_entry=$C"'
 }
 
 # cut_at PHASE DELAY: power-cut the VM DELAY s after apply prints "os: PHASE"
@@ -252,9 +254,9 @@ cut_at() {
   log "cut at $1: back on $b"
   if [ "$1" = "boot once" ] && [ "$b" != "$C" ]; then # next_entry was already set: the complete trial boots
     wait_root 420 "test ! -e /var/lib/agentbox/os/pending.json" || :
-    check "cut at $1: the complete trial $b boots and health commits it" "[ \"\$(committed)\" = '$b' ]"
+    check "cut at $1: the complete trial $b boots and health commits it" '[ "$(committed)" = "$b" ]'
   else
-    check "cut at $1: boots the committed $C" "[ '$b' = '$C' ] && [ \"\$(committed)\" = '$C' ]"
+    check "cut at $1: boots the committed $C" '[ "$b" = "$C" ] && [ "$(committed)" = "$C" ]'
   fi
   check "cut at $1: grub.cfg and grubenv intact" "echo 'grub-script-check /boot/grub/grub.cfg && grub-editenv /boot/grub/grubenv list | grep -q ^saved_entry=agentbox-' | root"
   settled || :
