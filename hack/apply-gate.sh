@@ -12,7 +12,9 @@
 #          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
 #          the committed generation with no console input. Then a clean apply commits, and an emptied grubenv boots that
 #          committed generation, not entry 0.
-# cuts     QMP power cuts (vm.sh cut) at five points of an apply, then a clean apply that commits. Those cuts hit a
+# cuts     QMP power cuts (vm.sh cut) at five points of an apply and right after it returns, then a clean apply that
+#          commits and discards every interrupted build. At "boot once" a grub-editenv first on the apply's PATH holds
+#          `set next_entry=`, so that cut lands with pending.json on disk and next_entry not yet written. The cuts hit a
 #          bad moment for GRUB only by chance, so one more apply, trial and commit runs logged (hack/powercut.sh log),
 #          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Needs the podman machine.
 # Checks print PASS/FAIL to .vm/apply-gate-<mode>.txt, command output goes to .vm/apply-gate-<mode>.log; exit 1 on
@@ -282,47 +284,72 @@ sc_breaks() {
   check "empty grubenv: mark-last-good restores saved_entry" 'vssh "grub-editenv /boot/grub/grubenv list" | grep -qx "saved_entry=$C"'
 }
 
-# cut_at PHASE DELAY: power-cut the VM DELAY s after apply prints "os: PHASE"
+# cut_at PHASE DELAY: power-cut the VM DELAY s after apply prints "os: PHASE" (PHASE built: its last line). At
+# "boot once" the apply sets next_entry milliseconds later, so a grub-editenv first on its PATH holds `set next_entry=`:
+# the cut lands with pending.json on disk and next_entry not written (powercut.sh grub covers the grubenv write itself).
 cut_at() {
   plan --reinstall --install base-files
-  C=$(committed); old=$(bootid)
-  echo "$A os apply --approve $H --no-reboot" | root >"$VM/apply.out" 2>&1 &
+  C=$(committed); old=$(bootid); PRE=; PAT="^os: $1"
+  [ "$1" != built ] || PAT='^built '
+  if [ "$1" = "boot once" ]; then
+    PRE='PATH=/run/gate-pause:$PATH ' # /run is tmpfs: the reset removes the pause
+    root >>"$LOG" 2>&1 <<'EOF' || die "cut at boot once: could not install the grub-editenv pause"
+mkdir -p /run/gate-pause
+cat >/run/gate-pause/grub-editenv <<'P'
+#!/bin/sh
+case " $* " in *" set next_entry="*) : >/run/gate-pause/held; sleep 300 ;; esac
+exec /usr/bin/grub-editenv "$@"
+P
+chmod 0755 /run/gate-pause/grub-editenv
+EOF
+  fi
+  echo "$PRE$A os apply --approve $H --no-reboot" | root >"$VM/apply.out" 2>&1 &
   sp=$! end=$(( $(date +%s) + 900 ))
-  until grep -q "^os: $1" "$VM/apply.out"; do
-    [ "$(date +%s)" -lt $end ] && kill -0 $sp 2>/dev/null || { cat "$VM/apply.out" >>"$LOG"; die "cut: apply never reached '$1'"; }
+  until grep -q "$PAT" "$VM/apply.out"; do # the last grep: "built" comes right before the apply exits
+    { [ "$(date +%s)" -lt $end ] && kill -0 $sp 2>/dev/null; } || grep -q "$PAT" "$VM/apply.out" || { cat "$VM/apply.out" >>"$LOG"; die "cut: apply never reached '$1'"; }
     sleep 0.2
   done
+  [ -z "$PRE" ] || wait_root 120 "test -e /run/gate-pause/held" || { cat "$VM/apply.out" >>"$LOG"; die "cut at $1: the grub-editenv pause never held"; }
   sleep "$2"
   hack/vm.sh cut
-  log "cut: QMP system_reset $2 s after 'os: $1'"
   kill $sp 2>/dev/null || : # the reset guest never closes the session
   wait $sp 2>/dev/null || :
   cat "$VM/apply.out" >>"$LOG"
+  # the reset guest prints nothing more: a "built" line means the apply had returned, and promised the one-time boot
+  T=$(sed -n 's/.* tries \(agentbox-[^ ]*\) once.*/\1/p' "$VM/apply.out")
+  G=$(sed -n 's/^os: clone gen-[0-9]* -> \(gen-[0-9]*\)$/\1/p' "$VM/apply.out")
+  [ -n "$G" ] || die "cut at $1: no 'os: clone' line in the apply output"
+  log "cut: QMP system_reset $2 s after '${PAT#^}'${PRE:+ (set next_entry held)}${T:+, after the apply returned}"
   wait_boot "$old" 900 || die "cut at $1: no SSH after the reset"
   b=$(booted)
   log "cut at $1: back on $b"
-  if [ "$1" = "boot once" ] && [ "$b" != "$C" ]; then # next_entry was already set: the complete trial boots
+  if [ -n "$T" ]; then
     wait_root 420 "test ! -e /var/lib/agentbox/os/pending.json" || :
-    check "cut at $1: the complete trial $b boots and health commits it" '[ "$(committed)" = "$b" ]'
+    check "cut at $1, after the apply returned: the trial $T boots and health commits it" '[ "$b" = "$T" ] && [ "$(committed)" = "$T" ]'
   else
     check "cut at $1: boots the committed $C" '[ "$b" = "$C" ] && [ "$(committed)" = "$C" ]'
+    LEFT="$LEFT $G" # never committed: the next build must discard it
   fi
-  check "cut at $1: grub.cfg and grubenv intact" "echo 'grub-script-check /boot/grub/grub.cfg && grub-editenv /boot/grub/grubenv list | grep -q ^saved_entry=agentbox-' | root"
   settled || :
-  clean_root "cut at $1"
+  [ "$1" != "boot once" ] || check "cut at boot once: pending.json was on disk, next_entry was not: health marked $G failed" 'echo "test -e /var/lib/agentbox/os/failed/$G.json" | root'
+  check "cut at $1: grub.cfg intact, grubenv names the committed entry, no next_entry armed" "echo 'grub-script-check /boot/grub/grub.cfg && e=\$(grub-editenv /boot/grub/grubenv list) && echo \"\$e\" | grep -qxF \"saved_entry=\$(cat /bootpart/agentbox/committed)\" && ! echo \"\$e\" | grep -q \"^next_entry=.\"' | root"
+  clean_root "cut at $1 (running $b)"
   status
 }
 
 sc_cuts() {
   up
+  LEFT=
   cut_at clone 0
   cut_at "nspawn: apt-get install" 3
   cut_at "initrd gate" 0
   cut_at update-grub 0
   cut_at "boot once" 0
+  cut_at built 0
   plan --reinstall --install base-files
   build; trial "after the cuts"
-  check "after the cuts: leftovers pruned, at most three generations" "[ \$(echo 'ls -d /bootpart/agentbox/gens/gen-[1-9]* | wc -l' | root) -le 3 ]"
+  check "after the cuts: the interrupted builds$LEFT are gone (subvolume, boot dir, grub.cfg entry)" '[ -n "$LEFT" ] && echo "btrfs subvolume list / | grep -qw @$M || exit 1; for g in $LEFT; do ! btrfs subvolume list / | grep -qw @\$g && test ! -e /bootpart/agentbox/gens/\$g && ! grep -q \"agentbox-\$g-\" /boot/grub/grub.cfg || exit 1; done" | root'
+  check "after the cuts: at most three generations (boot dirs and subvolumes)" '[ "$(echo "ls -d /bootpart/agentbox/gens/gen-[1-9]* | wc -l" | root)" -le 3 ] && [ "$(echo "btrfs subvolume list / | grep -cx \".* path @gen-[1-9][0-9]*\"" | root)" -le 3 ]'
   echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
   while running; do sleep 2; done
   hack/powercut.sh log boot >>"$LOG" 2>&1 &
