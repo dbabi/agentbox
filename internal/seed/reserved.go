@@ -16,10 +16,13 @@ ceph opensrf libvirt-qemu admin Debian-exim bind crontab cupsys dcc dhcp dictd d
 fuse gdm haldaemon hplilp identd input jwhois klog kvm lpadmin maas messagebus mythtv netdev powerdev radvd render
 saned sbuild scanner sgx slocate ssh sshd ssl-cert sslwrap statd syslog telnetd tftpd`)
 
-// takenUsers already exist in the 26.04.1 server target (subiquity's in-target useradd would fail after the disk
-// is wiped) or are agentbox's own accounts (ARCHITECTURE.md §12).
-// shortcut: taken from the 26.04.1 server manifests; re-derive from the squashfs /etc/passwd and /etc/group on ISO bumps.
-var takenUsers = strings.Fields(`dhcpcd fwupd-refresh landscape lxd polkitd tcpdump tss uuidd agentbox ntfy`)
+// takenUsers already exist in the 26.04.1 server target as a user or a group (subiquity's in-target useradd also makes
+// a same-name group, so either fails after the disk is wiped) or are agentbox's own accounts (ARCHITECTURE.md §12).
+// shortcut: field 1 of etc/passwd and etc/group in casper/ubuntu-server-minimal.ubuntu-server.squashfs of both pinned
+// ISOs (usbmux is amd64 only), minus what subiquityReserved and reservedUser's prefixes refuse; package manifests miss
+// group-only names. Re-derive on ISO bumps; hack/gate.sh checks that the seed refuses every account and group of the
+// installed box.
+var takenUsers = strings.Fields(`clock dhcpcd fwupd-refresh landscape lxd polkitd rdma tcpdump tss usbmux uuidd agentbox ntfy`)
 
 func reservedUser(u string) bool {
 	for _, p := range []string{"_", "systemd-", "agentbox-", "ag-", "app-"} {

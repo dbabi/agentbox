@@ -193,6 +193,15 @@ fi
 echo "fails=\$fails"
 EOF
 
+# useradd -U fails on any user or group name the box has, after the disk is wiped: the seed must refuse every one of
+# them (ARCHITECTURE §3.1), including what an ISO bump or a seed package adds. "$@" still holds the gate seed's flags.
+names=$(hack/vm.sh ssh 'cut -d: -f1 /etc/passwd /etc/group' | sort -u | grep -vx boxadmin) || :
+took=
+for u in $names; do ./bin/agentbox seed "$@" --admin "$u" --out "$VM/taken-seed" 2>&1 | grep -qF "admin user \"$u\"" || took="$took $u"; done
+rm -rf "$VM/taken-seed"
+if [ -n "$names" ] && [ -z "$took" ]; then echo "PASS the seed refuses --admin for every other user and group on the box"
+else echo "FAIL the seed takes --admin${took:- (read no users from the box)}"; fi | tee -a "$OUT"
+
 if [ "$ENC" != none ]; then # the offline recovery path: recovery.bin -> key -> opens LUKS
   W=$(mktemp -d "$VM/recov.XXXX")
   hack/vm.sh ssh cat /bootpart/agentbox/recovery.bin > "$W/recovery.bin"
