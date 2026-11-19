@@ -24,6 +24,10 @@ import (
 // so it also stays inside the charset that agentbox seed accepts in a release URL.
 var reVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._~-]{0,63}$`)
 
+// maxTarball is firstboot's curl --max-filesize (internal/seed/user-data.tmpl): every firstboot attempt would fail on a
+// bigger release, so none is built.
+var maxTarball int64 = 64 << 20
+
 func main() {
 	version := flag.String("version", "", "release version, e.g. 2026.11.1")
 	key := flag.String("key", "", "minisign secret key file")
@@ -65,7 +69,11 @@ func build(version, key, out string) (string, []byte, error) {
 	for _, arch := range []string{"arm64", "amd64"} {
 		bin := filepath.Join(tmp, arch)
 		cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w -X main.version="+version, "-o", bin, "./cmd/agentbox")
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+arch)
+		// The caller's Go settings must not reach the binaries. GOENV=off drops `go env -w` ones, which an empty GOFLAGS=
+		// would not override; v1 and v8.0 run on pre-AVX2 PCs and ARMv8.0 boards. GOTOOLCHAIN stays the caller's: it picks
+		// the Go version.
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+arch, "GOENV=off", "GOWORK=off", "GOFLAGS=",
+			"GOEXPERIMENT=", "GOFIPS140=off", "GOAMD64=v1", "GOARM64=v8.0")
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		if err := cmd.Run(); err != nil {
 			return "", nil, fmt.Errorf("go build linux/%s: %w", arch, err)
@@ -114,6 +122,13 @@ func build(version, key, out string) (string, []byte, error) {
 		}
 	}
 	err = errors.Join(tw.Close(), zw.Close(), f.Chmod(0o644), f.Close()) // in this order: tar flushes into gzip, gzip into f
+	var fi os.FileInfo
+	if err == nil {
+		fi, err = os.Stat(f.Name())
+	}
+	if err == nil && fi.Size() > maxTarball {
+		err = fmt.Errorf("%s would be %d bytes, over the %d that firstboot's curl --max-filesize (internal/seed/user-data.tmpl) accepts", tgz, fi.Size(), maxTarball)
+	}
 	if err == nil {
 		err = os.Rename(f.Name(), tgz)
 	}
