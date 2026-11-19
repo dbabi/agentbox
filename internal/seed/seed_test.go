@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"os"
 	"os/exec"
@@ -81,6 +82,26 @@ func validConfig(t *testing.T, enc, boot string) *Config {
 
 const testSHA = "5a4f3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a"
 
+// RE2's . stops at a newline, so this sees the bind line only; -[A-Za-z]*y finds y in any short-option cluster
+var reTrustsTang = regexp.MustCompile(`clevis luks bind.*[ \t]-[A-Za-z]*y`)
+
+// trustsTang reports whether a clevis luks bind line in s passes -y, which skips checking Tang's advertisement
+// against thp. A line continued with a trailing backslash counts as one line.
+func trustsTang(s string) bool { return reTrustsTang.MatchString(strings.ReplaceAll(s, "\\\n", " ")) }
+
+// TestTrustsTang checks the -y guard itself: the old pattern never matched -y right after bind.
+func TestTrustsTang(t *testing.T) {
+	for _, f := range []string{"-y -k f", "-yk f", "-yk/run/k", "-fy -k f", "-k f -d d -y", "-k f -yd d", " -y", "\t-y", "-k f \\\n        -y -d d"} {
+		if !trustsTang("      chroot /mnt/new clevis luks bind " + f + " sss '{}'\n") {
+			t.Errorf("misses -y in %q", f)
+		}
+	}
+	if trustsTang("      chroot /mnt/new clevis luks bind -k /run/agentbox-luks.key -d \"$LUKSDEV\" sss '{\"t\":2}'\n" +
+		"      chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get purge -y kdump-tools\n") {
+		t.Error("flags a -y on a later line")
+	}
+}
+
 func TestRenderModes(t *testing.T) {
 	encWant := map[string][]string{
 		EncTPM2Tang: {"keyfile: /run/agentbox-luks.key, options: [luks, x-initrd.attach, timeout=300s]}",
@@ -126,6 +147,7 @@ func TestRenderModes(t *testing.T) {
 		`printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=60s' > $G/etc/systemd/system.conf.d/50-agentbox.conf`,
 		// item 5, plus the snapd and dbx policy
 		"systemctl mask nftables.service snapd.socket snapd.service snapd.seeded.service snapd.snap-repair.timer \\\n        lxd-installer.socket secureboot-db.service",
+		"chroot /mnt/new systemctl mask grub2-common.service grub-initrd-fallback.service\n", // no in-place grubenv rewrites at boot
 		"chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get purge -y kdump-tools", "test ! -e /mnt/new/etc/default/grub.d/kdump-tools.cfg",
 		`[ -z "$U" ] || chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get install -y $U`,
 		// item 6
@@ -166,7 +188,7 @@ func TestRenderModes(t *testing.T) {
 					}
 					last = i
 				}
-				if regexp.MustCompile(`clevis luks bind .*(^| )-y( |$)`).MatchString(s) {
+				if trustsTang(s) {
 					t.Error("clevis luks bind must not auto-trust Tang (-y)")
 				}
 				for _, leak := range []string{"<no value>", "{{"} {
@@ -211,6 +233,9 @@ func TestValidateRejects(t *testing.T) {
 		{"agentboxd service uid", "admin user", EncNone, func(c *Config) { c.AdminUser = "agentbox" }},
 		{"agent namespace", "admin user", EncNone, func(c *Config) { c.AdminUser = "ag-claude" }},
 		{"image account", "admin user", EncNone, func(c *Config) { c.AdminUser = "_apt" }},
+		{"image group clock", "admin user", EncNone, func(c *Config) { c.AdminUser = "clock" }},
+		{"image group rdma", "admin user", EncNone, func(c *Config) { c.AdminUser = "rdma" }},
+		{"amd64 image user usbmux", "admin user", EncNone, func(c *Config) { c.AdminUser = "usbmux" }},
 		{"33-char user", "admin user", EncNone, func(c *Config) { c.AdminUser = strings.Repeat("a", 33) }},
 		{"serial with space (shell/YAML injection)", "disk serial", EncNone, func(c *Config) { c.DiskSerial = "S4EV 123; rm -rf /" }},
 		{"serial with quote", "disk serial", EncNone, func(c *Config) { c.DiskSerial = "S4EV'x" }},
@@ -240,6 +265,9 @@ func TestValidateRejects(t *testing.T) {
 		{"--dev http url off the vm host", "release url", EncNone, func(c *Config) { c.Dev, c.ReleaseURL = true, "http://192.168.1.5:7600/a.tgz" }},
 		{"--dev url without port", "release url", EncNone, func(c *Config) { c.Dev, c.ReleaseURL = true, "http://10.0.2.2/a.tgz" }},
 		{"--dev url with query", "release url", EncNone, func(c *Config) { c.Dev, c.ReleaseURL = true, "http://10.0.2.2:7600/a.tgz?$(id)" }},
+		{"release port 0", "release url", EncNone, func(c *Config) { c.ReleaseURL = "https://releases.example.com:0/a.tgz" }},
+		{"release port 70000", "release url", EncNone, func(c *Config) { c.ReleaseURL = "https://releases.example.com:70000/a.tgz" }},
+		{"--dev url port 99999", "release url", EncNone, func(c *Config) { c.Dev, c.ReleaseURL = true, "http://10.0.2.2:99999/a.tgz" }},
 		{"no release sha256", "release sha256", EncNone, func(c *Config) { c.ReleaseSHA256 = "" }},
 		{"short release sha256", "release sha256", EncNone, func(c *Config) { c.ReleaseSHA256 = testSHA[:63] }},
 		{"release sha256 with shell", "release sha256", EncNone, func(c *Config) { c.ReleaseSHA256 = testSHA[:60] + "$(x)" }},
@@ -249,6 +277,8 @@ func TestValidateRejects(t *testing.T) {
 		{"tang https", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "https://192.168.1.10" }},
 		{"tang public ip", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "http://203.0.113.5:7500" }},
 		{"tang bad ip", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "http://999.1.1.1" }},
+		{"tang port 0", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "http://192.168.1.10:0/tang" }},
+		{"tang port 65536", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "http://192.168.1.10:65536" }},
 		{"tang url in tpm2 mode", "tang url/thp", EncTPM2, func(c *Config) { c.TangURL = "http://192.168.1.10" }},
 		{"bad encryption", "encryption", EncNone, func(c *Config) { c.Encryption = "luks" }},
 		{"bad boot", "boot", EncNone, func(c *Config) { c.Boot = "efi" }},
@@ -297,11 +327,19 @@ func TestValidateAccepts(t *testing.T) {
 			t.Errorf("user %q: %v", u, err)
 		}
 	}
-	for _, u := range []string{"https://releases.example.com/a.tgz", "http://10.0.2.2:7600/agentbox-0.0.1-gate.tgz"} {
+	for _, u := range []string{"https://releases.example.com/a.tgz", "http://10.0.2.2:7600/agentbox-0.0.1-gate.tgz",
+		"https://releases.example.com:65535/a.tgz", "http://10.0.2.2:1/a.tgz"} {
 		c := validConfig(t, EncNone, "uefi")
 		c.Dev, c.ReleaseURL = true, u
 		if err := c.Validate(); err != nil {
 			t.Errorf("--dev release url %q: %v", u, err)
+		}
+	}
+	for _, u := range []string{"http://192.168.1.10", "http://192.168.1.10:1/tang", "http://192.168.1.10:65535"} {
+		c := validConfig(t, EncTPM2Tang, "uefi")
+		c.TangURL = u
+		if err := c.Validate(); err != nil {
+			t.Errorf("tang url %q: %v", u, err)
 		}
 	}
 }
@@ -502,9 +540,49 @@ func TestWriteNoCloudAndISO(t *testing.T) {
 	if err != nil {
 		t.Skip("xorriso not installed")
 	}
-	iso := filepath.Join(dir, "seed.iso")
+	// xorriso creates its output under the umask: this wrapper fails unless xorriso wrote into a file already 0600
+	bin := t.TempDir()
+	shim := "#!/bin/sh\numask 022\n'" + x + "' \"$@\" || exit\nfor a; do [ \"$p\" = -o ] && o=$a; p=$a; done\n" +
+		"case $(ls -l \"$o\") in -rw-------*) ;; *) ls -l \"$o\" >&2; exit 3 ;; esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "xorriso"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	iso := filepath.Join(filepath.Dir(dir), "seed.iso") // README layout: --out seed --iso seed.iso
+	if err := os.WriteFile(iso, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, err := os.Open(iso) // a reader who opened an earlier, world-readable seed.iso
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	if err := BuildCidataISO(t.TempDir(), iso); err == nil {
+		t.Fatal("BuildCidataISO without user-data succeeded")
+	}
+	if b, _ := os.ReadFile(iso); string(b) != "old" {
+		t.Fatalf("a failed build replaced the earlier ISO (%d bytes)", len(b))
+	}
 	if err := BuildCidataISO(dir, iso); err != nil {
 		t.Fatal(err)
+	}
+	if fi, err := os.Stat(iso); err != nil {
+		t.Fatal(err)
+	} else if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("iso mode %v, want 0600", fi.Mode())
+	}
+	if b, _ := io.ReadAll(old); string(b) != "old" {
+		t.Fatalf("the build wrote %d bytes into the inode an earlier reader holds open", len(b))
+	}
+	if ents, _ := os.ReadDir(filepath.Dir(dir)); len(ents) != 2 {
+		t.Fatalf("temp file left next to the ISO: %v", ents)
+	}
+	link := filepath.Join(t.TempDir(), "seed.iso")
+	if err := os.Symlink(iso, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := BuildCidataISO(dir, link); err == nil {
+		t.Fatal("BuildCidataISO replaced a symlink instead of refusing it")
 	}
 	out, _ := exec.Command(x, "-indev", iso, "-pvd_info", "-find", "/", "-type", "f").CombinedOutput()
 	for _, w := range []string{"Volume Id    : cidata", "'/user-data'", "'/meta-data'"} {

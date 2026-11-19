@@ -1,6 +1,6 @@
 # agentbox threat model (one page)
 
-Source of truth: `~/workplace/ai-os-research/ARCHITECTURE.md` v5.1, §10. Update both together.
+Source of truth: `~/workplace/ai-os-research/ARCHITECTURE.md` v5.2, §10. Update both together.
 
 ## What we protect
 1. **The host:** the OS generations, the boot chain, and other users.
@@ -15,7 +15,7 @@ Source of truth: `~/workplace/ai-os-research/ARCHITECTURE.md` v5.1, §10. Update
 | A compromised agent CLI or dependency | Code running inside a task container |
 | Thief | The disk alone, or the whole powered-off machine |
 | Someone on the LAN or tailnet | Exposed ports, the approval page |
-| A bug in our own services | Parsers in agentboxd, proxy, keys, git, approvald and auditd |
+| A bug in our own services | Parsers in agentboxd, proxy, keys, git, approvald and auditd; llama-server's tokenizer, chat template and grammar in agentbox-llm |
 
 ## Trust boundaries
 - internet ↔ proxy
@@ -36,7 +36,7 @@ Source of truth: `~/workplace/ai-os-research/ARCHITECTURE.md` v5.1, §10. Update
 4. **rootd executes only the stored operation a human signed**, bound to its immutable inputs and re-checked at execution.
 5. **Taint is sticky.** Only a human clears it, after reviewing the diff, with control files called out first.
 6. **Nothing persists between tasks** except the sticky-tainted workspace.
-7. **The seed and logs contain no plaintext secrets.** The seed holds the admin password hash (yescrypt, or sha512-crypt with 100000+ rounds): keep it private. The LUKS key exists only in installer tmpfs and in `recovery.bin`, encrypted to the owner's offline RSA key.
+7. **The seed and logs contain no plaintext secrets.** The seed holds the admin password hash (yescrypt, e.g. from `mkpasswd -m yescrypt`, or sha512-crypt with 100000+ rounds): keep it private. The LUKS key exists only in installer tmpfs and in `recovery.bin`, encrypted to the owner's offline RSA key.
 
 ## Accepted residuals (v1)
 | Residual | Upgrade path |
@@ -45,8 +45,17 @@ Source of truth: `~/workplace/ai-os-research/ARCHITECTURE.md` v5.1, §10. Update
 | Whole-machine theft in `tpm2` mode | Use `tpm2+tang`; v2: UKI with a signed PCR 11 policy |
 | An attacker who stays on your LAN with physical access (`tpm2+tang`) | |
 | Boot-chain package updates aren't A/B | |
+| A signed but malicious package in an approved closure runs as root at the trial boot: it can read the LUKS key and rewrite `/bootpart` and the ESP (A/B fallback covers crashes, not hostile code) | v2: UKI + PCR 11 measured trial boot |
 | CDN fronting, and write-capable hosts you allowlist | |
 | Root tampering with on-box audit | Ship audit off-box |
 | Misleading phone page for *reversible* ops | |
+| Model labels can bias a reviewer (bounded: P's deterministic rendering always comes first, §5.5) | |
+| An approvald compromised in memory during the 120 s passkey registration window can swap in its own credential; once the human confirms it, it can approve reversible ops until `passkey.revoke` | v2: attested-only mode for hardware keys |
+| The `admin` uid is root-equivalent (subiquity adds it to `sudo`), and admin ops need only `SO_PEERCRED` membership: CLI signatures don't protect against a compromised admin account | v2: no `sudo` for admin; admin ops become signed pending P |
+| A compromised agentboxd acts as any untainted agent for unsigned floor ops, and can skip READ-INTENT on bus and memory reads | v2: an `agentbox-gate` service (own uid) serves the per-task gate sockets; rootd issues per-task gate MAC keys and applies bus and memory READ-INTENT itself |
+| A compromised proxy, keys or git can omit taint for content it delivers | v2: a second taint check at the task gate on response classes |
+| A compromised auditd can forge ACKs and mask taint until off-box verification catches it | v2: rootd keeps its own append-only taint record and refuses on regression |
+| Root can always remove confinement: after a root-level flush, brokers are unconfined for up to 60 s, until the next `fwcheck` | |
+| One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late | |
 | Jev egress when enabled | |
 | Approximate metering for subscription sessions | |

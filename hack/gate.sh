@@ -151,6 +151,8 @@ check "initramfs bakes no root flags"    '! journalctl -b -o cat | grep -q "root
 check "zram swap"                        'swapon --show=NAME --noheadings | grep -q zram0'
 check "apt timers masked"                '[ "\$(systemctl is-enabled apt-daily.timer apt-daily-upgrade.timer | sort -u)" = masked ]'
 check "nftables, snapd, lxd-installer, secureboot-db masked" '[ "\$(systemctl is-enabled nftables.service snapd.socket snapd.service snapd.seeded.service snapd.snap-repair.timer lxd-installer.socket secureboot-db.service | sort -u)" = masked ]'
+# is-enabled says masked for any masked name, unit file or not: the vendor files pin the names, so a rename fails here
+check "grub2-common, grub-initrd-fallback masked (no in-place grubenv rewrites)" '[ -f /usr/lib/systemd/system/grub2-common.service ] && [ -f /usr/lib/systemd/system/grub-initrd-fallback.service ] && [ "\$(systemctl is-enabled grub2-common.service grub-initrd-fallback.service | sort -u)" = masked ]'
 check "fwupd only refreshes metadata"    '[ "\$(systemctl is-enabled fwupd-refresh.timer)" = enabled ] && systemctl cat fwupd-refresh.service | grep -qx "ExecStart=/usr/bin/fwupdmgr refresh"'
 check "kdump-tools purged, no grub.d snippet" '! dpkg -s kdump-tools && [ ! -e /etc/default/grub.d/kdump-tools.cfg ]'
 check "no crashkernel= on the cmdline"   '! grep -q crashkernel= /proc/cmdline'
@@ -192,6 +194,15 @@ if [ "$ENC" = tpm2+tang ]; then
 fi
 echo "fails=\$fails"
 EOF
+
+# useradd -U fails on any user or group name the box has, after the disk is wiped: the seed must refuse every one of
+# them (ARCHITECTURE §3.1), including what an ISO bump or a seed package adds. "$@" still holds the gate seed's flags.
+names=$(hack/vm.sh ssh 'cut -d: -f1 /etc/passwd /etc/group' | sort -u | grep -vx boxadmin) || :
+took=
+for u in $names; do ./bin/agentbox seed "$@" --admin "$u" --out "$VM/taken-seed" 2>&1 | grep -qF "admin user \"$u\"" || took="$took $u"; done
+rm -rf "$VM/taken-seed"
+if [ -n "$names" ] && [ -z "$took" ]; then echo "PASS the seed refuses --admin for every other user and group on the box"
+else echo "FAIL the seed takes --admin${took:- (read no users from the box)}"; fi | tee -a "$OUT"
 
 if [ "$ENC" != none ]; then # the offline recovery path: recovery.bin -> key -> opens LUKS
   W=$(mktemp -d "$VM/recov.XXXX")
@@ -239,6 +250,8 @@ check "reconcile not ordered after multi-user.target or firstboot" '! systemctl 
 check "systemd-analyze verify: reconcile and firstboot units" 'systemd-analyze verify agentbox-reconcile.service agentbox-firstboot.service'
 check "firstboot done, no retry loop"    '[ -e /var/lib/agentbox/.firstboot-done ] && [ "\$(systemctl show -P Result agentbox-firstboot.service)" = success ] && [ "\$(systemctl show -P SubState agentbox-firstboot.service)" = dead ]'
 check "no failed units"                  '[ -z "\$(systemctl --failed --no-legend --plain)" ]'
+# the boot has finished (first check), so any unit that rewrites grubenv in place has run; GRUB's own save_env moves no mtime
+check "nothing rewrote grubenv during this boot" '[ "\$(stat -c %Y /boot/grub/grubenv)" -lt "\$(awk "/^btime/{print \\\$2}" /proc/stat)" ]'
 echo "fails=\$fails"
 EOF
 vm_check "install.sh switches current/previous by rename, reruns cleanly, refuses changed content" <<EOF

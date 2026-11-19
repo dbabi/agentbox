@@ -139,6 +139,9 @@ autoinstall:
       # ubuntu-server-minimal metapackage with it and leaves sudo, systemd and cloud-init to apt autoremove
       chroot /mnt/new systemctl mask nftables.service snapd.socket snapd.service snapd.seeded.service snapd.snap-repair.timer \
         lxd-installer.socket secureboot-db.service
+      # grub2-common and grub-initrd-fallback run grub-editenv at every boot, which truncates and rewrites grubenv in
+      # place (§3.3 step 8), only to clear 10_linux's recordfail and initrdfail; 09_agentbox entries set neither
+      chroot /mnt/new systemctl mask grub2-common.service grub-initrd-fallback.service
       # kdump's grub.d snippet adds crashkernel= even when disabled, and its crash kernel can't unlock the LUKS root
       chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get purge -y kdump-tools
       test ! -e /mnt/new/etc/default/grub.d/kdump-tools.cfg
