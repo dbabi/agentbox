@@ -4,9 +4,10 @@
 # install  hack/gate.sh's unattended install and install checks.
 # setup    checks what firstboot left (gate.sh's release as /var/lib/agentbox/current, agentbox-health.timer enabled,
 #          `os mark-last-good` run) and sets a boot deadline of DEADLINE s (default 300).
-# cycles   gen-2 removes the newest kernel, gen-3 brings it back with systemd re-installed (a kernel change whose
-#          initrd dracut builds inside the nspawn), gen-4 prunes gen-1; then current cold-boots and previous boots once.
-#          (Run again on a used box, the generation numbers are higher and the oldest one is pruned.)
+# cycles   holds systemd one archive version back (in place, a test fixture: the install took the newest), then gen-2
+#          removes the newest kernel and gen-3 brings it back with every systemd binary upgraded (a kernel and systemd
+#          change whose initrd dracut builds inside the nspawn), gen-4 prunes gen-1; then current cold-boots and previous
+#          boots once. (Run again on a used box, the generation numbers are higher and the oldest one is pruned.)
 # breaks   a trial broken in GRUB, in the initrd (clevis removed; btrfs in none mode), in fstab (/boot bound to the
 #          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
 #          the committed generation with no console input. Then a clean apply commits, and an emptied grubenv boots that
@@ -45,6 +46,11 @@ committed() { vssh cat /bootpart/agentbox/committed; }
 # deadline_fired ENTRY: the boot before this one ended with the boot deadline rebooting ENTRY, not with a crash or the
 # watchdog (-b -1: journalctl rejects /proc's dashed boot_id)
 deadline_fired() { echo 'journalctl -b -1 -o cat -u agentbox-boot-deadline.service' | root | grep -qxF "agentbox: boot deadline: $1 is not committed; rebooting into the committed generation"; }
+# sysd: the versions of the installed binaries built from source systemd
+sysd() { root <<'EOF'
+dpkg-query -W -f '${source:Package} ${Version} ${db:Status-Abbrev}\n' | awk '$1 == "systemd" && $3 == "ii" {print $2}' | sort -u
+EOF
+}
 running() { [ -f "$VM/qemu.pid" ] && kill -0 "$(cat "$VM/qemu.pid")" 2>/dev/null; }
 # wait_boot OLD SECONDS: until SSH answers from a boot other than OLD
 wait_boot() {
@@ -155,6 +161,28 @@ EOF
 
 sc_cycles() {
   up
+  # the install took the archive's newest systemd, so no closure could upgrade it: set every installed binary of source
+  # systemd one archive version back, in place (os.apply itself never downgrades), and cycle 2 upgrades them for real
+  root >"$VM/systemd.out" 2>&1 <<'EOF' || { cat "$VM/systemd.out" >>"$LOG"; die "cycles: could not set systemd one archive version back"; }
+set -e
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
+apt-get -q update </dev/null
+SN=$(apt-cache policy systemd | sed -n 's/^ *Candidate: //p') SO=
+for v in $(apt-cache madison systemd | awk -F'|' '{gsub(/ /, "", $2); print $2}'); do
+  dpkg --compare-versions "$v" lt "$SN" && { [ -z "$SO" ] || dpkg --compare-versions "$v" gt "$SO"; } && SO=$v
+done
+[ -n "$SO" ] || { echo "the archive has no systemd older than $SN"; exit 1; }
+P=$(dpkg-query -W -f '${binary:Package} ${source:Package} ${db:Status-Abbrev}\n' | awk -v v="$SO" '$2 == "systemd" && $3 == "ii" {printf "%s=%s ", $1, v}')
+if apt-get -s install --allow-downgrades $P </dev/null | grep '^Remv'; then exit 1; fi # it must only swap versions
+apt-get install -y --allow-downgrades -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold $P </dev/null
+echo "gate: systemd $SO $SN"
+EOF
+  cat "$VM/systemd.out" >>"$LOG"
+  SO=$(sed -n 's/^gate: systemd \([^ ]*\) .*/\1/p' "$VM/systemd.out")
+  SN=$(sed -n 's/^gate: systemd [^ ]* \([^ ]*\)$/\1/p' "$VM/systemd.out")
+  [ -n "$SO" ] && [ -n "$SN" ] || die "cycles: no systemd versions in $VM/systemd.out"
+  old=$(bootid); reboot_vm; wait_boot "$old" 900 || die "cycles: no SSH after setting systemd back to $SO"
+  check "cycles: the committed generation boots with systemd $SO (the archive has $SN)" '[ "$(sysd)" = "$SO" ] && [ "$(committed)" = "$(booted)" ]'
   KN=$(vssh uname -r)
   KO=$(vssh ls /boot | sed -n 's/^vmlinuz-//p' | grep -vx "$KN" | sort -rV | head -1)
   [ -n "$KO" ] || die "cycles: needs a second, older kernel next to $KN"
@@ -163,11 +191,12 @@ sc_cycles() {
   plan --remove "linux-image-$KN" --remove "linux-modules-$KN"
   build; trial "cycle 1 (remove $KN)"
   check "cycle 1: runs the older kernel $KO" '[ "$(vssh uname -r)" = "$KO" ]'
-  plan --reinstall --install linux-generic --install systemd
+  plan --install linux-generic --install systemd
   build
   check "cycle 2: the build re-made initrd.img-$KN in the nspawn" 'echo "test /bootpart/agentbox/gens/$M/initrd.img-$KN -nt /bootpart/agentbox/gens/gen-1/initrd.img-$KN" | root'
-  trial "cycle 2 (kernel $KO -> $KN, systemd re-installed)"
+  trial "cycle 2 (kernel $KO -> $KN, systemd $SO -> $SN)"
   check "cycle 2: kernel upgraded to $KN" '[ "$(vssh uname -r)" = "$KN" ]'
+  check "cycle 2: every systemd binary upgraded to $SN" '[ "$(sysd)" = "$SN" ]'
   [ "$ENC" = none ] || check "cycle 2: LUKS unlocked by clevis from the nspawn-built initrd" "vssh 'journalctl -b -o cat' | grep -q 'Finished systemd-cryptsetup@croot.service' && echo 'journalctl -b -t clevis-luks-askpass -o cat' | root | grep -q '^Unlocked '"
   plan --reinstall --install base-files
   build; trial "cycle 3"
@@ -185,9 +214,9 @@ sc_cycles() {
   check "previous: $PREV boots" '[ "$(booted)" = "$PREV" ]'
   clean_root "previous"
   old=$(bootid); t0=$(date +%s)
-  wait_boot "$old" $((DEADLINE + 600)) || die "previous: the deadline never rebooted it"
-  log "previous: rebooted by the deadline after $(( $(date +%s) - t0 )) s"
-  check "previous: the boot deadline returned to $CUR, still committed" '[ "$(booted)" = "$CUR" ] && [ "$(committed)" = "$CUR" ]'
+  wait_boot "$old" $((DEADLINE + 600)) || die "previous: never rebooted"
+  log "previous: rebooted after $(( $(date +%s) - t0 )) s"
+  check "previous: the boot deadline returned to $CUR, still committed" '[ "$(booted)" = "$CUR" ] && [ "$(committed)" = "$CUR" ] && deadline_fired "$PREV"'
   status
 }
 
