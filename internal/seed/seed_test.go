@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"os"
 	"os/exec"
@@ -522,9 +523,49 @@ func TestWriteNoCloudAndISO(t *testing.T) {
 	if err != nil {
 		t.Skip("xorriso not installed")
 	}
-	iso := filepath.Join(dir, "seed.iso")
+	// xorriso creates its output under the umask: this wrapper fails unless xorriso wrote into a file already 0600
+	bin := t.TempDir()
+	shim := "#!/bin/sh\numask 022\n'" + x + "' \"$@\" || exit\nfor a; do [ \"$p\" = -o ] && o=$a; p=$a; done\n" +
+		"case $(ls -l \"$o\") in -rw-------*) ;; *) ls -l \"$o\" >&2; exit 3 ;; esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "xorriso"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	iso := filepath.Join(filepath.Dir(dir), "seed.iso") // README layout: --out seed --iso seed.iso
+	if err := os.WriteFile(iso, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, err := os.Open(iso) // a reader who opened an earlier, world-readable seed.iso
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	if err := BuildCidataISO(t.TempDir(), iso); err == nil {
+		t.Fatal("BuildCidataISO without user-data succeeded")
+	}
+	if b, _ := os.ReadFile(iso); string(b) != "old" {
+		t.Fatalf("a failed build replaced the earlier ISO (%d bytes)", len(b))
+	}
 	if err := BuildCidataISO(dir, iso); err != nil {
 		t.Fatal(err)
+	}
+	if fi, err := os.Stat(iso); err != nil {
+		t.Fatal(err)
+	} else if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("iso mode %v, want 0600", fi.Mode())
+	}
+	if b, _ := io.ReadAll(old); string(b) != "old" {
+		t.Fatalf("the build wrote %d bytes into the inode an earlier reader holds open", len(b))
+	}
+	if ents, _ := os.ReadDir(filepath.Dir(dir)); len(ents) != 2 {
+		t.Fatalf("temp file left next to the ISO: %v", ents)
+	}
+	link := filepath.Join(t.TempDir(), "seed.iso")
+	if err := os.Symlink(iso, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := BuildCidataISO(dir, link); err == nil {
+		t.Fatal("BuildCidataISO replaced a symlink instead of refusing it")
 	}
 	out, _ := exec.Command(x, "-indev", iso, "-pvd_info", "-find", "/", "-type", "f").CombinedOutput()
 	for _, w := range []string{"Volume Id    : cidata", "'/user-data'", "'/meta-data'"} {
