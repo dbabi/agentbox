@@ -13,10 +13,16 @@ import (
 	"syscall"
 )
 
-// aptOpts point apt at a plan directory: a copy of the running generation's /etc/apt and dpkg state, its own
-// lists, cache and archive dir. Planning never writes to the running generation.
+// planConf clears apt's hooks for planning: apt reads /etc/apt/apt.conf{,.d} before any -c or -o, so without it the
+// running generation's update and JSON hooks run as root against /.
+const planConf = "#clear APT::Update::Pre-Invoke;\n#clear APT::Update::Post-Invoke;\n#clear APT::Update::Post-Invoke-Success;\n" +
+	"#clear APT::Update::Post-Invoke-Stats;\n#clear AptCli::Hooks;\n"
+
+// aptOpts point apt at a plan directory: a copy of the running generation's /etc/apt (sources, keyrings and
+// preferences) and dpkg state, its own lists, cache and archive dir. apt.conf{,.d} still come from /etc/apt, minus the
+// hooks plan.conf clears, so planning never writes to the running generation.
 func aptOpts(w string) []string {
-	return []string{"-o", "Dir::Etc=" + w + "/etc", "-o", "Dir::State=" + w + "/state",
+	return []string{"-c", w + "/plan.conf", "-o", "Dir::Etc=" + w + "/etc", "-o", "Dir::State=" + w + "/state",
 		"-o", "Dir::State::status=" + w + "/state/status", "-o", "Dir::Cache=" + w + "/cache",
 		"-o", "Dir::Cache::Archives=" + w + "/debs/"}
 }
@@ -58,6 +64,9 @@ func MakePlan(req []string, reinstall bool) (*Plan, string, error) {
 		}
 	}
 	if _, err := run("cp", "-a", "/etc/apt", w+"/etc"); err != nil {
+		return nil, "", err
+	}
+	if err := os.WriteFile(w+"/plan.conf", []byte(planConf), 0o644); err != nil {
 		return nil, "", err
 	}
 	if err := os.WriteFile(w+"/state/status", status, 0o644); err != nil {

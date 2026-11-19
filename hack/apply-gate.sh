@@ -13,6 +13,7 @@
 # cuts     QMP power cuts (vm.sh cut) at five points of an apply, then a clean apply that commits. Those cuts hit a
 #          bad moment for GRUB only by chance, so one more apply, trial and commit runs logged (hack/powercut.sh log),
 #          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Needs the podman machine.
+# Every plan also checks that apt ran none of the box's update hooks: update-success-stamp stays as it was.
 # Checks print PASS/FAIL to .vm/apply-gate-<mode>.txt, command output goes to .vm/apply-gate-<mode>.log; exit 1 on
 # any FAIL. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -57,10 +58,14 @@ up() {
   wait_boot none 900 || die "no SSH (see $VM/boot-*.log)"
 }
 status() { echo "$A os status" | root >>"$LOG" 2>&1 || :; }
-# plan ARGS: plans on the VM, logs the plan, sets H
+# stamp: the mtime of the file apt's 15update-stamp hook touches after every successful apt-get update
+stamp() { echo 'stat -c %Y /var/lib/apt/periodic/update-success-stamp 2>/dev/null || :' | root; }
+# plan ARGS: plans on the VM, logs the plan, sets H. Planning runs none of the running generation's apt hooks.
 plan() {
+  s=$(stamp)
   H=$(echo "$A os plan $* 2>>/tmp/gate-plan.err" | root | tee -a "$LOG" | sed -n 's/^plan sha256: //p')
   [ -n "$H" ] || die "os plan $* failed: $(echo 'tail -5 /tmp/gate-plan.err' | root)"
+  check "plan $*: apt ran no update hook on the running generation" "[ \"\$(stamp)\" = '$s' ]"
 }
 # build: os apply --approve H --no-reboot; sets M (the new generation) and E (its entry)
 build() {
