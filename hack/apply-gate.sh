@@ -1,6 +1,7 @@
 #!/bin/sh
 # os.apply gates (PLAN.md week 1 day 4, ARCHITECTURE.md §3.3 and the §15 row 1-2) on the local QEMU VM.
-#   hack/apply-gate.sh none|tpm2|tpm2+tang [install|setup|cycles|breaks|cuts ...]   default: all five, in order
+#   hack/apply-gate.sh none|tpm2|tpm2+tang [uefi|bios] [install|setup|cycles|breaks|cuts ...]   default: all five, in order
+# uefi (default) is the arm64 VM, bios the amd64 one under TCG (hack/gate.sh's boot modes).
 # install  hack/gate.sh's unattended install and install checks.
 # setup    checks what firstboot left (gate.sh's release as /var/lib/agentbox/current, agentbox-health.timer enabled,
 #          `os mark-last-good` run) and sets a boot deadline of DEADLINE s (default 300).
@@ -17,18 +18,20 @@
 #          `set next_entry=`, so that cut lands with pending.json on disk and next_entry not yet written. The cuts hit a
 #          bad moment for GRUB only by chance, so one more apply, trial and commit runs logged (hack/powercut.sh log),
 #          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Needs the podman machine.
-# Checks print PASS/FAIL to .vm/apply-gate-<mode>.txt, command output goes to .vm/apply-gate-<mode>.log; exit 1 on
-# any FAIL. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
+# Checks print PASS/FAIL to .vm/apply-gate-<mode>[-bios].txt, command output goes to .vm/apply-gate-<mode>[-bios].log;
+# exit 1 on any FAIL. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 VM="$ROOT/.vm"
-ENC=${1:?usage: hack/apply-gate.sh none|tpm2|tpm2+tang [install|setup|cycles|breaks|cuts ...]}
-case "$ENC" in none|tpm2|tpm2+tang) ;; *) echo "usage: hack/apply-gate.sh none|tpm2|tpm2+tang [scenario ...]" >&2; exit 2 ;; esac
+ENC=${1:?usage: hack/apply-gate.sh none|tpm2|tpm2+tang [uefi|bios] [install|setup|cycles|breaks|cuts ...]}
+case "$ENC" in none|tpm2|tpm2+tang) ;; *) echo "usage: hack/apply-gate.sh none|tpm2|tpm2+tang [uefi|bios] [scenario ...]" >&2; exit 2 ;; esac
 shift
+BOOT=uefi; case ${1:-} in uefi|bios) BOOT=$1; shift ;; esac
+TAG=$ENC; [ "$BOOT" = uefi ] || TAG=$ENC-bios
 [ $# -gt 0 ] || set -- install setup cycles breaks cuts
 DEADLINE=${DEADLINE:-300}
-OUT="$VM/apply-gate-$ENC.txt" LOG="$VM/apply-gate-$ENC.log"
+OUT="$VM/apply-gate-$TAG.txt" LOG="$VM/apply-gate-$TAG.log"
 A=/var/lib/agentbox/current/bin/agentbox
 mkdir -p "$VM"
 fails=0
@@ -144,7 +147,7 @@ with_top() {
   { echo 'set -e; T=/run/gate-top; mkdir -p $T; mount -o subvolid=5 "$(findmnt -n -v -o SOURCE /)" $T'; echo "$1"; echo 'umount $T'; } | root >>"$LOG" 2>&1
 }
 
-sc_install() { hack/gate.sh "$ENC" >>"$LOG" 2>&1 || die "install gate failed (see $LOG and $VM/gate-$ENC.txt)"; cat "$VM/gate-$ENC.txt" >>"$OUT"; }
+sc_install() { hack/gate.sh "$ENC" "$BOOT" >>"$LOG" 2>&1 || die "install gate failed (see $LOG and $VM/gate-$TAG.txt)"; cat "$VM/gate-$TAG.txt" >>"$OUT"; }
 
 sc_setup() {
   up
@@ -155,6 +158,7 @@ printf '%s\n' '[Service]' 'Environment=AGENTBOX_BOOT_DEADLINE_SEC=$DEADLINE' > /
 systemctl daemon-reload
 sync # a power cut right after setup must not lose the drop-in
 EOF
+  check "setup: the box boots by $BOOT" '[ "$(vssh "test -d /sys/firmware/efi && echo uefi || echo bios")" = "$BOOT" ]'
   check "setup: firstboot installed the release and enabled the health timer" 'echo "test -x $A && test -e /var/lib/agentbox/.firstboot-done && systemctl is-enabled agentbox-health.timer" | root'
   check "setup: the booted generation is committed" "[ \"\$(committed)\" = \"\$(booted)\" ]"
   check "setup: boot deadline armed" "vssh systemctl is-active agentbox-boot-deadline.service"
@@ -365,7 +369,7 @@ sc_cuts() {
 [ "$1" != install ] || : >"$OUT"
 [ "$ENC" != tpm2+tang ] || trap 'hack/vm.sh tang down >/dev/null 2>&1 || :' EXIT
 for s; do
-  case "$s" in install|setup|cycles|breaks|cuts) log "== $s ($ENC)"; "sc_$s" ;; *) die "unknown scenario $s" ;; esac
+  case "$s" in install|setup|cycles|breaks|cuts) log "== $s ($TAG)"; "sc_$s" ;; *) die "unknown scenario $s" ;; esac
 done
 { echo "== journal: agentbox-health, agentbox-boot-deadline (every boot; @var_log persists across generations)"
   echo 'journalctl --no-pager -o short-iso -u agentbox-health.service -u agentbox-boot-deadline.service | grep -v -e "Starting agentbox-health" -e "Deactivated successfully" -e "Finished agentbox-health"' | root
