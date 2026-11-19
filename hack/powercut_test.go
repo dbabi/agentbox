@@ -93,11 +93,14 @@ esac
 	if b, _ := os.ReadFile(filepath.Join(vm, "disk.qcow2.powercut")); string(b) != "set aside" {
 		t.Errorf("set-aside disk changed: %q", b)
 	}
-	for _, args := range [][]string{{"boot", "7x"}, {"check", "0", "10", "0"}, {"grub", "0", "1x"}} {
-		c := exec.Command(dash, append([]string{filepath.Join(root, "hack", "powercut.sh")}, args...)...)
+	// each bad argument is refused by its own check: without it the script still fails later, so only the reason
+	// tells. The set-aside disk goes, or boot would stop at aside whatever the entry.
+	os.Remove(filepath.Join(vm, "disk.qcow2.powercut"))
+	for args, why := range map[string]string{"boot 7x": "not a number: 7x", "check 0 10 0": "every must be 1 or more", "grub 0 1x": "not a number: 1x"} {
+		c := exec.Command(dash, append([]string{filepath.Join(root, "hack", "powercut.sh")}, strings.Fields(args)...)...)
 		c.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TMPDIR="+tmp, "AGENTBOX_VM_ID=3")
-		if out, err := c.CombinedOutput(); err == nil {
-			t.Errorf("powercut.sh %v accepted:\n%s", args, out)
+		if out, err := c.CombinedOutput(); err == nil || !strings.Contains(string(out), why) {
+			t.Errorf("powercut.sh %s: %v, want %q:\n%s", args, err, why, out)
 		}
 	}
 }
