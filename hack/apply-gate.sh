@@ -152,6 +152,7 @@ sc_cycles() {
   O=$(vssh ls /bootpart/agentbox/gens | sed -n 's/^gen-\([1-9][0-9]*\)$/\1/p' | sort -n | head -1) # gen-1 on a fresh box
   log "cycles: kernels $KN (newest) and $KO; oldest generation gen-$O"
   plan --remove "linux-image-$KN" --remove "linux-modules-$KN"
+  check "cycle 1: cas/ is its own btrfs subvolume (§3.2)" "echo '[ \"\$(stat -c %i /var/lib/agentbox/cas)\" = 256 ]' | root"
   build; trial "cycle 1 (remove $KN)"
   check "cycle 1: runs the older kernel $KO" "[ \"\$(vssh uname -r)\" = $KO ]"
   plan --reinstall --install linux-generic --install systemd

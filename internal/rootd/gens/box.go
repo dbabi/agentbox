@@ -31,7 +31,8 @@ const (
 	// StateDir stands in for rootd.db until week 3: pending.json is the os_lock row held across the trial boot,
 	// failed/ records trials that another generation booted instead.
 	StateDir = "/var/lib/agentbox/os"
-	DebsDir  = "/var/lib/agentbox/cas/debs"
+	CASDir   = "/var/lib/agentbox/cas"
+	DebsDir  = CASDir + "/debs"
 	// The build's fixed user-namespace range: outside nspawn's automatic pool and every agent or app sub-id block (§2, §4.1).
 	nspawnUsers = "--private-users=2130706432:65536" // 0x7F000000
 )

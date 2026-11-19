@@ -47,6 +47,19 @@ func MakePlan(req []string, reinstall bool) (*Plan, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	// cas/ is its own subvolume (§3.2): a plain directory can't become one in place, or go under qgroup 2/0 in week 3
+	if _, err := os.Stat(CASDir); errors.Is(err, fs.ErrNotExist) {
+		if _, err := run("btrfs", "subvolume", "create", CASDir); err != nil {
+			return nil, "", err
+		}
+	}
+	var st syscall.Stat_t
+	if err := syscall.Stat(CASDir, &st); err != nil {
+		return nil, "", err
+	}
+	if st.Ino != 256 { // the root directory of every btrfs subvolume
+		return nil, "", fmt.Errorf("plan: %s is a plain directory, not a btrfs subvolume (§3.2); it holds only plans: remove it and plan again", CASDir)
+	}
 	if err := os.MkdirAll(DebsDir, 0o755); err != nil {
 		return nil, "", err
 	}
