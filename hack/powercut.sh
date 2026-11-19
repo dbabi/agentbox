@@ -16,15 +16,19 @@
 #                                                ext4, then the grubenv replace of ARCHITECTURE §3.3 step 8 (default 50;
 #                                                once per disk)
 #   hack/powercut.sh marks                       the log's entry count and the entry number of every flush
-#   hack/powercut.sh check [from [to [every]]]   btrfs check --readonly at every flush (or every <every>-th flush) in
-#                                                log entries from..to; default the whole log. Several ranges can
-#                                                run at once.
+#   hack/powercut.sh check [from [to [every]]]   btrfs check --readonly at every flush (or the first and every
+#                                                <every>-th after it) in log entries from..to; default the whole log.
+#                                                Several ranges can run at once.
 #   hack/powercut.sh boot <entry>...             boot the disk as replayed to each entry: it must boot the entry GRUB
-#                                                picks on that disk, clean, with the writes files consistent
+#                                                picks on that disk, clean, with the writes files consistent, and once
+#                                                health has settled a trial the cut left, run the committed entry,
+#                                                which saved_entry names, with no next_entry
 #   hack/powercut.sh grub [from [to]]            after every log entry that writes /bootpart, read it as GRUB does
 #                                                (ext4 with no journal replay): the entry GRUB boots must be in
 #                                                grub.cfg, with its kernel and initrd. Catches a grub.cfg or grubenv
 #                                                replace that only Linux, which replays the journal, sees as atomic.
+#                                                Then lists the splits: entries next to a change of the next_entry or
+#                                                saved_entry GRUB reads where Linux reads others. Boot them.
 # Replays run on Linux: hack/powercut/replay.sh, as root in the agentbox-powercut container of the podman machine (built
 # once; after editing hack/powercut/Containerfile, run `podman --connection podman-machine-default-root rmi
 # agentbox-powercut`). The base and the log live in $TMPDIR/agentbox-powercut-ID, which the machine mounts.
@@ -141,6 +145,16 @@ check "boots the $from entry" '[ "agentbox-$g-$(uname -r)" = "$want" ]'
 check "/boot is $g's boot dir" '[ "$(findmnt -n -o FSROOT /boot)" = "/agentbox/gens/$g" ]'
 check "no btrfs or ext4 errors in the kernel log" '! journalctl -k -b -o cat | grep -qE "BTRFS (error|critical)|EXT4-fs error"'
 check "top level holds only @* (firstboot cleanup)" 'mkdir -p /run/chk && mount -o subvolid=5 "$(findmnt -n -v -o SOURCE /)" /run/chk || exit 1; i=0; while ls -A /run/chk | grep -qv "^@"; do i=$((i+1)); [ $i -lt 36 ] || { umount /run/chk; exit 1; }; sleep 5; done; umount /run/chk'
+# health settles a trial the cut left (commits it if it booted, else marks it failed). The grubenv Linux reads then is
+# the one GRUB reads next: systemd-fsck replayed /bootpart's journal home before the mount, and grubenv replaces
+# checkpoint.
+settled() {
+  i=0; while [ -e /var/lib/agentbox/os/pending.json ]; do i=$((i + 1)); [ $i -lt 60 ] || return 1; sleep 5; done
+  c=$(cat /bootpart/agentbox/committed) env=$(grub-editenv /boot/grub/grubenv list) || return 1
+  [ "agentbox-$g-$(uname -r)" = "$c" ] && printf '%s\n' "$env" | grep -qx "saved_entry=$c" && ! printf '%s\n' "$env" | grep -q '^next_entry=.'
+}
+check "settles: runs the committed entry, saved_entry names it, no next_entry, no trial pending" settled
+echo "settled: committed $(cat /bootpart/agentbox/committed); $(grub-editenv /boot/grub/grubenv list | grep -e ^saved_entry= -e ^next_entry= | tr '\n' ' ')os/: $(ls /var/lib/agentbox/os 2>/dev/null | tr '\n' ' ')"
 check "no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 check "writes files consistent" writes
 echo "fails=$fails"
