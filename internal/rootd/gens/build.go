@@ -391,7 +391,10 @@ func build(p *Plan, hash, root, boot, m string, sums []string) (*Pending, error)
 	if err != nil {
 		return nil, err
 	}
-	conf, _ := os.ReadFile(filepath.Join(root, "etc/dracut.conf.d/90-agentbox.conf"))
+	conf, err := os.ReadFile(filepath.Join(root, "etc/dracut.conf.d/90-agentbox.conf")) // every generation inherits gen-1's
+	if err != nil {
+		return nil, fmt.Errorf("initrd gate: %v", err)
+	}
 	for _, k := range ks {
 		initrd := filepath.Join(boot, "initrd.img-"+k)
 		if _, err := os.Stat(initrd); err != nil {
@@ -411,8 +414,12 @@ func build(p *Plan, hash, root, boot, m string, sums []string) (*Pending, error)
 		if err != nil {
 			return nil, fmt.Errorf("initrd gate: %v", err)
 		}
+		builtin, err := os.ReadFile(filepath.Join(root, "usr/lib/modules", k, "modules.builtin")) // shipped in linux-modules-K
+		if err != nil {
+			return nil, fmt.Errorf("initrd gate: %v", err)
+		}
 		km := mode
-		km.Drivers = RecordedDrivers(string(conf), string(dep))
+		km.Drivers = RecordedDrivers(string(conf), string(dep), string(builtin))
 		if miss := InitrdProblems(string(list), string(crypttab), km); len(miss) > 0 {
 			return nil, fmt.Errorf("initrd gate: initrd.img-%s: %s", k, strings.Join(miss, "; "))
 		}
