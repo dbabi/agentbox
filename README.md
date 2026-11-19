@@ -151,5 +151,7 @@ unless GRUB would find its entry, kernel and initrd. The script header says what
 ```sh
 go vet ./... && go test ./...
 ```
+`.github/workflows/ci.yml` runs the same on Linux, plus `hack/gate.sh none bios` and `hack/gate.sh tpm2 bios` under KVM,
+once the repo is pushed.
 
 License: Apache-2.0.
