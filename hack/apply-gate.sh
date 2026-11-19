@@ -190,6 +190,7 @@ EOF
   old=$(bootid); reboot_vm; wait_boot "$old" 900 || die "cycles: no SSH after setting systemd back to $SO"
   check "cycles: the committed generation boots with systemd $SO (the archive has $SN)" '[ "$(sysd)" = "$SO" ] && [ "$(committed)" = "$(booted)" ]'
   KN=$(vssh uname -r)
+  G0=$(vssh findmnt -no FSROOT /); G0=${G0#/@} # the generation cycles starts from: retention keeps it through cycle 2
   KO=$(vssh ls /boot | sed -n 's/^vmlinuz-//p' | grep -vx "$KN" | sort -rV | head -1)
   [ -n "$KO" ] || die "cycles: needs a second, older kernel next to $KN"
   O=$(vssh ls /bootpart/agentbox/gens | sed -n 's/^gen-\([1-9][0-9]*\)$/\1/p' | sort -n | head -1) # gen-1 on a fresh box
@@ -199,7 +200,7 @@ EOF
   check "cycle 1: runs the older kernel $KO" '[ "$(vssh uname -r)" = "$KO" ]'
   plan --install linux-generic --install systemd
   build
-  check "cycle 2: the build re-made initrd.img-$KN in the nspawn" 'echo "test /bootpart/agentbox/gens/$M/initrd.img-$KN -nt /bootpart/agentbox/gens/gen-1/initrd.img-$KN" | root'
+  check "cycle 2: the build re-made initrd.img-$KN in the nspawn (newer than $G0's)" 'echo "test -e /bootpart/agentbox/gens/$G0/initrd.img-$KN && test /bootpart/agentbox/gens/$M/initrd.img-$KN -nt /bootpart/agentbox/gens/$G0/initrd.img-$KN" | root'
   trial "cycle 2 (kernel $KO -> $KN, systemd $SO -> $SN)"
   check "cycle 2: kernel upgraded to $KN" '[ "$(vssh uname -r)" = "$KN" ]'
   check "cycle 2: every systemd binary upgraded to $SN" '[ "$(sysd)" = "$SN" ]'
