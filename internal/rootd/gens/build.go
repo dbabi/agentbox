@@ -158,7 +158,8 @@ func MakePlan(req []string, reinstall bool) (*Plan, string, error) {
 	return p, h, syncDir(DebsDir)
 }
 
-// Print shows the plan for approval: every action, every .deb with its SHA-256, the base and the plan hash.
+// Print shows the plan for approval: every action, every .deb with its SHA-256, the base and the plan hash. Origins are
+// repository Release text, so they are quoted with only printable characters (§5.4); every other field has a grammar.
 func (p *Plan) Print(h string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "base: %s, dpkg status sha256 %s\n", p.BaseGen, p.BaseDpkg)
@@ -167,9 +168,9 @@ func (p *Plan) Print(h string) string {
 		case a.Op == "Remv":
 			fmt.Fprintf(&b, "  Remv %s %s\n", a.Package, a.Old)
 		case a.Old != "":
-			fmt.Fprintf(&b, "  Inst %s %s -> %s [%s] (%s)\n", a.Package, a.Old, a.Version, a.Arch, a.Origin)
+			fmt.Fprintf(&b, "  Inst %s %s -> %s [%s] (%q)\n", a.Package, a.Old, a.Version, a.Arch, a.Origin)
 		default:
-			fmt.Fprintf(&b, "  Inst %s %s [%s] (%s) new\n", a.Package, a.Version, a.Arch, a.Origin)
+			fmt.Fprintf(&b, "  Inst %s %s [%s] (%q) new\n", a.Package, a.Version, a.Arch, a.Origin)
 		}
 	}
 	var total int64

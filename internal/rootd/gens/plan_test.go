@@ -2,8 +2,10 @@ package gens
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // apt 3.2.1 output captured on the 26.04.1 arm64 VM (Remv, reinstall, epochs, two origins, the trailing [] form).
@@ -175,6 +177,30 @@ Inst libm:armhf [1.0] (2.0 localhost [armhf])
 	want = []string{"bar:all=2.0", "foo:arm64=2.0", "libm:arm64=2.0", "libm:armhf=2.0", "libx:armhf=1"}
 	if end, err := EndState(before, cross, "arm64"); err != nil || !slices.Equal(end, want) {
 		t.Errorf("crossgrade: %v %v, want %v", end, err, want)
+	}
+}
+
+// TestPrint feeds the approval listing origins with terminal controls, bidi and invisible characters: they are repo
+// Release text, and must reach the human only as printable characters (§5.4).
+func TestPrint(t *testing.T) {
+	for _, o := range []string{"Ubuntu:26.04/resolute-updates, Ubuntu:26.04/resolute-security", "Café",
+		"resolute-security\x1b[2K\rInst base-files 1 -> 2 [all] (Ubuntu:26.04/resolute-updates", "a\u009b2Kb",
+		"a\u202eb", "a\u2066b\u2069", "a\u200bb", "a\u2028b", "a\ufeffb", "a\U000e0001b", "a\u00a0b", "a\xffb"} {
+		for _, l := range []string{"Inst x11 [1] (2 " + o + " [arm64])", "Inst x11 (2 " + o + " [arm64])"} {
+			acts, err := ParseSim([]byte(l + "\n"))
+			if err != nil || len(acts) != 1 || acts[0].Origin != o {
+				t.Fatalf("ParseSim(%q) = %+v, %v", l, acts, err)
+			}
+			out := (&Plan{BaseGen: "gen-1", Actions: acts}).Print(strings.Repeat("0", 64))
+			for _, r := range out {
+				if r != '\n' && !unicode.IsPrint(r) {
+					t.Errorf("origin %q: the listing has %U", o, r)
+				}
+			}
+			if !strings.Contains(out, "("+strconv.Quote(o)+")") {
+				t.Errorf("origin %q is not shown quoted:\n%s", o, out)
+			}
+		}
 	}
 }
 
