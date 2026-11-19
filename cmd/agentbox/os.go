@@ -126,7 +126,8 @@ func mountTop() (string, error) {
 }
 
 // osHealth runs from agentbox-health.timer. On the booted trial it commits once healthy, and otherwise waits: the
-// boot deadline falls back. It exits 0 unless it can't run, so a not-yet-healthy trial never fails a unit.
+// boot deadline falls back. On the committed generation it drops deleted generations from grub.cfg (gens.FixGrub).
+// It exits 0 unless it can't run, so a not-yet-healthy trial never fails a unit.
 func osHealth() error {
 	unlock, err := gens.Lock(false)
 	if err != nil {
@@ -166,10 +167,12 @@ func osHealth() error {
 	}
 	if c, err := gens.CommittedEntry(); err != nil || c != gens.Entry(gen, k) {
 		fmt.Fprintf(os.Stderr, "agentbox: ALERT: booted %s is not the committed %q (%v); the boot deadline returns to it\n", gens.Entry(gen, k), c, err)
-	} else if len(bad) > 0 {
+		return nil // update-grub runs only the committed generation's grub.d
+	}
+	if len(bad) > 0 {
 		fmt.Fprintln(os.Stderr, "agentbox: ALERT: the committed generation is unhealthy (see above)")
 	}
-	return nil
+	return gens.FixGrub()
 }
 
 func osStatus() error {

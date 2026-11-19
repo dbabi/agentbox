@@ -31,7 +31,8 @@ const (
 	// StateDir stands in for rootd.db until week 3: pending.json is the os_lock row held across the trial boot,
 	// failed/ records trials that another generation booted instead.
 	StateDir = "/var/lib/agentbox/os"
-	DebsDir  = "/var/lib/agentbox/cas/debs"
+	CASDir   = "/var/lib/agentbox/cas"
+	DebsDir  = CASDir + "/debs"
 	// The build's fixed user-namespace range: outside nspawn's automatic pool and every agent or app sub-id block (§2, §4.1).
 	nspawnUsers = "--private-users=2130706432:65536" // 0x7F000000
 )
@@ -320,6 +321,27 @@ func Settle() (*Pending, error) {
 	if id == p.BootID || (gen == p.Gen && k == p.Kernel) {
 		return p, nil
 	}
+	// GRUB reads /bootpart without replaying its journal: a cut inside SetGrubEnv can boot the old grubenv while the
+	// one Linux reads still arms the trial (next_entry) or makes it the default (saved_entry). This runs before
+	// failed/ and pending.json change, so a cut in here either boots the trial, still pending, or runs this again.
+	env, err := ReadGrubEnv()
+	if err != nil {
+		return nil, err
+	}
+	if env["next_entry"] == p.Entry {
+		if err := SetGrubEnv("next_entry", ""); err != nil {
+			return nil, err
+		}
+	}
+	if env["saved_entry"] == p.Entry {
+		c, err := CommittedEntry()
+		if err != nil {
+			return nil, err
+		}
+		if err := SetGrubEnv("saved_entry", c); err != nil {
+			return nil, err
+		}
+	}
 	rec, _ := json.Marshal(map[string]string{"entry": p.Entry, "plan": p.Plan, "booted": Entry(gen, k), "at": time.Now().UTC().Format(time.RFC3339)})
 	if err := os.MkdirAll(filepath.Join(StateDir, "failed"), 0o700); err != nil {
 		return nil, err
@@ -400,7 +422,8 @@ func protectedGens() (booted int, committed int, prot []int, err error) {
 }
 
 // PruneGens applies retention (§3.3 step 7). It refuses, deleting nothing, if a kept generation's fstab still binds
-// a doomed generation's boot dir. Deleted generations leave grub.cfg in the same step.
+// a doomed generation's boot dir. Deleted generations leave grub.cfg in the same step; if that update-grub fails or
+// is cut, FixGrub repairs grub.cfg from the next health run.
 func PruneGens(top string) error {
 	all, err := Generations(top)
 	if err != nil {
@@ -414,6 +437,21 @@ func PruneGens(top string) error {
 	if len(drop) == 0 {
 		return nil
 	}
+	if err := stillBound(top, all, drop); err != nil {
+		return err
+	}
+	for _, d := range drop {
+		logf("prune %s", Gen(d))
+		if err := discard(top, Gen(d)); err != nil {
+			return err
+		}
+	}
+	return UpdateGrub()
+}
+
+// stillBound is the retention guard: an error if the fstab of a generation in all but not in drop binds the boot dir
+// of one in drop. top is the mounted btrfs top level.
+func stillBound(top string, all, drop []int) error {
 	for _, k := range all {
 		if slices.Contains(drop, k) {
 			continue
@@ -431,13 +469,29 @@ func PruneGens(top string) error {
 			}
 		}
 	}
-	for _, d := range drop {
-		logf("prune %s", Gen(d))
-		if err := discard(top, Gen(d)); err != nil {
-			return err
+	return nil
+}
+
+// FixGrub runs update-grub when grub.cfg lists a generation whose kernel or initrd is gone: a prune or discard whose
+// update-grub failed or was cut, which no later prune retries (it finds nothing left to drop).
+func FixGrub() error {
+	cfg, err := os.ReadFile(filepath.Join(GrubDir, "grub.cfg"))
+	if err != nil {
+		return err
+	}
+	for _, id := range MenuIDs(cfg) {
+		g, k, ok := ParseEntry(id)
+		if !ok {
+			continue
+		}
+		for _, f := range []string{"vmlinuz-" + k, "initrd.img-" + k} { // what 09_agentbox lists an entry for
+			if _, err := os.Stat(filepath.Join(GensDir, g, f)); errors.Is(err, fs.ErrNotExist) {
+				logf("grub.cfg lists %s, whose %s is gone: update-grub", id, f)
+				return UpdateGrub()
+			}
 		}
 	}
-	return UpdateGrub()
+	return nil
 }
 
 // discard deletes a generation's boot dir, then its subvolume.

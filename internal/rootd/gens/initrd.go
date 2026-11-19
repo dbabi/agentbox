@@ -10,7 +10,7 @@ import (
 type Mode struct {
 	Encrypted bool     // root on LUKS (crypttab has croot)
 	Tang      bool     // the clevis binding has a tang pin
-	Drivers   []string // add_drivers recorded at install that are modules in this kernel (file base names)
+	Drivers   []string // add_drivers and force_drivers recorded at install, unless built into this kernel (file base names)
 }
 
 // InitrdProblems returns what one initrd lacks, given `lsinitrd` (its file list) and `lsinitrd -f etc/crypttab`.
@@ -46,11 +46,14 @@ func hasLinePrefix(s, p string) bool {
 	return false
 }
 
-var reAddDrivers = regexp.MustCompile(`(?m)^\s*add_drivers\+?=\s*"([^"]*)"`)
+var reDrivers = regexp.MustCompile(`(?m)^\s*(?:add|force)_drivers\+?=\s*"([^"]*)"`)
 
-// RecordedDrivers maps the add_drivers of a dracut.conf (90-agentbox.conf) to the module files of one kernel,
-// given its modules.dep. Built-in drivers have no file and are skipped ("if it is a module in K").
-func RecordedDrivers(dracutConf, modulesDep string) []string {
+// RecordedDrivers maps the add_drivers (the root disk's driver chain) and force_drivers (the watchdog driver) of a
+// dracut.conf (90-agentbox.conf) to the module files of one kernel, given its modules.dep and modules.builtin.
+// Built-in drivers have no file and are skipped. A driver the kernel has in neither keeps its recorded name, so the
+// gate reports it missing, as the install's modinfo check does.
+// shortcut: no modules.alias lookup, so a renamed driver fails the gate until 90-agentbox.conf names the new one.
+func RecordedDrivers(dracutConf, modulesDep, modulesBuiltin string) []string {
 	files := map[string]string{} // nvme_core -> nvme-core.ko (any compression suffix matches in the initrd list)
 	for _, l := range strings.Split(modulesDep, "\n") {
 		if f, _, ok := strings.Cut(l, ":"); ok {
@@ -59,10 +62,17 @@ func RecordedDrivers(dracutConf, modulesDep string) []string {
 			files[strings.ReplaceAll(b, "-", "_")] = b + ".ko"
 		}
 	}
+	for _, f := range strings.Fields(modulesBuiltin) {
+		files[strings.ReplaceAll(strings.TrimSuffix(path.Base(f), ".ko"), "-", "_")] = ""
+	}
 	var out []string
-	for _, m := range reAddDrivers.FindAllStringSubmatch(dracutConf, -1) {
+	for _, m := range reDrivers.FindAllStringSubmatch(dracutConf, -1) {
 		for _, d := range strings.Fields(m[1]) {
-			if f, ok := files[strings.ReplaceAll(d, "-", "_")]; ok {
+			f, ok := files[strings.ReplaceAll(d, "-", "_")]
+			if !ok {
+				f = d + ".ko"
+			}
+			if f != "" {
 				out = append(out, f)
 			}
 		}

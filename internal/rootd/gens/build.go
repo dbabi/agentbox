@@ -13,10 +13,16 @@ import (
 	"syscall"
 )
 
-// aptOpts point apt at a plan directory: a copy of the running generation's /etc/apt and dpkg state, its own
-// lists, cache and archive dir. Planning never writes to the running generation.
+// planConf clears apt's hooks for planning: apt reads /etc/apt/apt.conf{,.d} before any -c or -o, so without it the
+// running generation's update and JSON hooks run as root against /.
+const planConf = "#clear APT::Update::Pre-Invoke;\n#clear APT::Update::Post-Invoke;\n#clear APT::Update::Post-Invoke-Success;\n" +
+	"#clear APT::Update::Post-Invoke-Stats;\n#clear AptCli::Hooks;\n"
+
+// aptOpts point apt at a plan directory: a copy of the running generation's /etc/apt (sources, keyrings and
+// preferences) and dpkg state, its own lists, cache and archive dir. apt.conf{,.d} still come from /etc/apt, minus the
+// hooks plan.conf clears, so planning never writes to the running generation.
 func aptOpts(w string) []string {
-	return []string{"-o", "Dir::Etc=" + w + "/etc", "-o", "Dir::State=" + w + "/state",
+	return []string{"-c", w + "/plan.conf", "-o", "Dir::Etc=" + w + "/etc", "-o", "Dir::State=" + w + "/state",
 		"-o", "Dir::State::status=" + w + "/state/status", "-o", "Dir::Cache=" + w + "/cache",
 		"-o", "Dir::Cache::Archives=" + w + "/debs/"}
 }
@@ -41,6 +47,19 @@ func MakePlan(req []string, reinstall bool) (*Plan, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	// cas/ is its own subvolume (§3.2): a plain directory can't become one in place, or go under qgroup 2/0 in week 3
+	if _, err := os.Stat(CASDir); errors.Is(err, fs.ErrNotExist) {
+		if _, err := run("btrfs", "subvolume", "create", CASDir); err != nil {
+			return nil, "", err
+		}
+	}
+	var st syscall.Stat_t
+	if err := syscall.Stat(CASDir, &st); err != nil {
+		return nil, "", err
+	}
+	if st.Ino != 256 { // the root directory of every btrfs subvolume
+		return nil, "", fmt.Errorf("plan: %s is a plain directory, not a btrfs subvolume (§3.2); it holds only plans: remove it and plan again", CASDir)
+	}
 	if err := os.MkdirAll(DebsDir, 0o755); err != nil {
 		return nil, "", err
 	}
@@ -58,6 +77,9 @@ func MakePlan(req []string, reinstall bool) (*Plan, string, error) {
 		}
 	}
 	if _, err := run("cp", "-a", "/etc/apt", w+"/etc"); err != nil {
+		return nil, "", err
+	}
+	if err := os.WriteFile(w+"/plan.conf", []byte(planConf), 0o644); err != nil {
 		return nil, "", err
 	}
 	if err := os.WriteFile(w+"/state/status", status, 0o644); err != nil {
@@ -130,7 +152,11 @@ func MakePlan(req []string, reinstall bool) (*Plan, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	end, err := EndState(inst, acts)
+	native, err := run("dpkg", "--print-architecture")
+	if err != nil {
+		return nil, "", err
+	}
+	end, err := EndState(inst, acts, strings.TrimSpace(string(native)))
 	if err != nil {
 		return nil, "", err
 	}
@@ -154,7 +180,8 @@ func MakePlan(req []string, reinstall bool) (*Plan, string, error) {
 	return p, h, syncDir(DebsDir)
 }
 
-// Print shows the plan for approval: every action, every .deb with its SHA-256, the base and the plan hash.
+// Print shows the plan for approval: every action, every .deb with its SHA-256, the base and the plan hash. Origins are
+// repository Release text, so they are quoted with only printable characters (§5.4); every other field has a grammar.
 func (p *Plan) Print(h string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "base: %s, dpkg status sha256 %s\n", p.BaseGen, p.BaseDpkg)
@@ -163,9 +190,9 @@ func (p *Plan) Print(h string) string {
 		case a.Op == "Remv":
 			fmt.Fprintf(&b, "  Remv %s %s\n", a.Package, a.Old)
 		case a.Old != "":
-			fmt.Fprintf(&b, "  Inst %s %s -> %s [%s] (%s)\n", a.Package, a.Old, a.Version, a.Arch, a.Origin)
+			fmt.Fprintf(&b, "  Inst %s %s -> %s [%s] (%q)\n", a.Package, a.Old, a.Version, a.Arch, a.Origin)
 		default:
-			fmt.Fprintf(&b, "  Inst %s %s [%s] (%s) new\n", a.Package, a.Version, a.Arch, a.Origin)
+			fmt.Fprintf(&b, "  Inst %s %s [%s] (%q) new\n", a.Package, a.Version, a.Arch, a.Origin)
 		}
 	}
 	var total int64
@@ -222,7 +249,8 @@ func nspawnArgs(root, boot, planDir string, env []string, script string, args []
 }
 
 // Build turns the approved plan into gen-M and sets it up for one trial boot (§3.3 steps 3-5). Any failure after
-// the clone discards gen-M. top is the mounted btrfs top level.
+// the clone discards gen-M, except a next_entry write that may have landed: then it returns the trial, still pending,
+// with the error. top is the mounted btrfs top level.
 func Build(hash, top string) (*Pending, error) {
 	if p, err := Settle(); err != nil {
 		return nil, err
@@ -270,11 +298,12 @@ func Build(hash, top string) (*Pending, error) {
 		}
 		sums = append(sums, d.SHA256+"  "+d.File)
 	}
-	all, err := Generations(top) // before pruning, so a failed trial's number is never reused
+	all, err := Generations(top) // before pruning, so leftovers keep their numbers
 	if err != nil {
 		return nil, err
 	}
-	m := Gen(slices.Max(all) + 1)
+	failed, _ := filepath.Glob(filepath.Join(StateDir, "failed", "gen-*.json"))
+	m := NextGen(all, failed)
 	if err := PruneGens(top); err != nil { // failed trials and interrupted builds go before a new one starts
 		return nil, err
 	}
@@ -285,7 +314,7 @@ func Build(hash, top string) (*Pending, error) {
 		return nil, err
 	}
 	pend, err := build(p, hash, root, boot, m, sums)
-	if err != nil {
+	if err != nil && pend == nil {
 		fmt.Fprintf(os.Stderr, "agentbox: ALERT: build %s discarded: %v\n", m, err)
 		if derr := discard(top, m); derr != nil {
 			return nil, fmt.Errorf("%v; discarding %s failed too: %v", err, m, derr)
@@ -297,7 +326,7 @@ func Build(hash, top string) (*Pending, error) {
 		}
 		return nil, err
 	}
-	return pend, nil
+	return pend, err
 }
 
 func build(p *Plan, hash, root, boot, m string, sums []string) (*Pending, error) {
@@ -364,7 +393,7 @@ func build(p *Plan, hash, root, boot, m string, sums []string) (*Pending, error)
 	if err != nil {
 		return nil, err
 	}
-	end, _ := EndState(inst, nil)
+	end, _ := EndState(inst, nil, "")
 	if !slices.Equal(end, p.EndState) {
 		return nil, fmt.Errorf("installed set differs from the approved end state")
 	}
@@ -391,7 +420,10 @@ func build(p *Plan, hash, root, boot, m string, sums []string) (*Pending, error)
 	if err != nil {
 		return nil, err
 	}
-	conf, _ := os.ReadFile(filepath.Join(root, "etc/dracut.conf.d/90-agentbox.conf"))
+	conf, err := os.ReadFile(filepath.Join(root, "etc/dracut.conf.d/90-agentbox.conf")) // every generation inherits gen-1's
+	if err != nil {
+		return nil, fmt.Errorf("initrd gate: %v", err)
+	}
 	for _, k := range ks {
 		initrd := filepath.Join(boot, "initrd.img-"+k)
 		if _, err := os.Stat(initrd); err != nil {
@@ -411,8 +443,12 @@ func build(p *Plan, hash, root, boot, m string, sums []string) (*Pending, error)
 		if err != nil {
 			return nil, fmt.Errorf("initrd gate: %v", err)
 		}
+		builtin, err := os.ReadFile(filepath.Join(root, "usr/lib/modules", k, "modules.builtin")) // shipped in linux-modules-K
+		if err != nil {
+			return nil, fmt.Errorf("initrd gate: %v", err)
+		}
 		km := mode
-		km.Drivers = RecordedDrivers(string(conf), string(dep))
+		km.Drivers = RecordedDrivers(string(conf), string(dep), string(builtin))
 		if miss := InitrdProblems(string(list), string(crypttab), km); len(miss) > 0 {
 			return nil, fmt.Errorf("initrd gate: initrd.img-%s: %s", k, strings.Join(miss, "; "))
 		}
@@ -438,6 +474,10 @@ func build(p *Plan, hash, root, boot, m string, sums []string) (*Pending, error)
 		return nil, err
 	}
 	if err := SetGrubEnv("next_entry", entry); err != nil {
+		// past the rename GRUB may boot gen-M: keep it pending, the state a power cut here leaves; Settle ends it
+		if env, rerr := ReadGrubEnv(); rerr != nil || env["next_entry"] == entry {
+			return pend, fmt.Errorf("%v; %s stays pending: the next boot tries it once or falls back", err, entry)
+		}
 		os.Remove(filepath.Join(StateDir, "pending.json"))
 		return nil, err
 	}

@@ -128,13 +128,18 @@ func Installed(status []byte) (map[string]string, error) {
 	return inst, nil
 }
 
-// EndState applies acts to the installed set and returns the sorted package:arch=version list.
-func EndState(inst map[string]string, acts []Action) ([]string, error) {
+// EndState applies acts to the installed set and returns the sorted package:arch=version list. native is dpkg's
+// architecture: apt names that slot unqualified, and dpkg keeps one instance in it, arch all or native.
+func EndState(inst map[string]string, acts []Action, native string) ([]string, error) {
 	end := maps.Clone(inst)
 	for _, a := range acts {
 		name, arch, _ := strings.Cut(a.Package, ":")
 		switch a.Op {
 		case "Inst":
+			if arch == "" { // an all <-> native upgrade replaces the old instance; foreign Multi-Arch: same ones stay
+				delete(end, name+":all")
+				delete(end, name+":"+native)
+			}
 			end[name+":"+a.Arch] = a.Version
 		case "Remv":
 			var keys []string

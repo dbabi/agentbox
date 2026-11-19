@@ -9,10 +9,13 @@
 #          (Run again on a used box, the generation numbers are higher and the oldest one is pruned.)
 # breaks   a trial broken in GRUB, in the initrd (clevis removed; btrfs in none mode), in fstab (/boot bound to the
 #          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
-#          the committed generation with no console input. Then an emptied grubenv boots the committed generation.
-# cuts     QMP power cuts (vm.sh cut) at five points of an apply, then a clean apply that commits. Those cuts hit a
+#          the committed generation with no console input. After the GRUB break, health drops the kernel-less entry
+#          and retention refuses to prune while a kept fstab binds the trial. Then an emptied grubenv boots committed.
+# cuts     QMP power cuts (vm.sh cut) at five points of an apply, then the grubenv a cut can leave split between GRUB
+#          and Linux, a next_entry write that fails after its rename, and a clean apply that commits. The cuts hit a
 #          bad moment for GRUB only by chance, so one more apply, trial and commit runs logged (hack/powercut.sh log),
 #          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Needs the podman machine.
+# Every plan also checks that apt ran none of the box's update hooks: update-success-stamp stays as it was.
 # Checks print PASS/FAIL to .vm/apply-gate-<mode>.txt, command output goes to .vm/apply-gate-<mode>.log; exit 1 on
 # any FAIL. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -57,10 +60,14 @@ up() {
   wait_boot none 900 || die "no SSH (see $VM/boot-*.log)"
 }
 status() { echo "$A os status" | root >>"$LOG" 2>&1 || :; }
-# plan ARGS: plans on the VM, logs the plan, sets H
+# stamp: the mtime of the file apt's 15update-stamp hook touches after every successful apt-get update
+stamp() { echo 'stat -c %Y /var/lib/apt/periodic/update-success-stamp 2>/dev/null || :' | root; }
+# plan ARGS: plans on the VM, logs the plan, sets H. Planning runs none of the running generation's apt hooks.
 plan() {
+  s=$(stamp)
   H=$(echo "$A os plan $* 2>>/tmp/gate-plan.err" | root | tee -a "$LOG" | sed -n 's/^plan sha256: //p')
   [ -n "$H" ] || die "os plan $* failed: $(echo 'tail -5 /tmp/gate-plan.err' | root)"
+  check "plan $*: apt ran no update hook on the running generation" "[ \"\$(stamp)\" = '$s' ]"
 }
 # build: os apply --approve H --no-reboot; sets M (the new generation) and E (its entry)
 build() {
@@ -147,6 +154,7 @@ sc_cycles() {
   O=$(vssh ls /bootpart/agentbox/gens | sed -n 's/^gen-\([1-9][0-9]*\)$/\1/p' | sort -n | head -1) # gen-1 on a fresh box
   log "cycles: kernels $KN (newest) and $KO; oldest generation gen-$O"
   plan --remove "linux-image-$KN" --remove "linux-modules-$KN"
+  check "cycle 1: cas/ is its own btrfs subvolume (§3.2)" "echo '[ \"\$(stat -c %i /var/lib/agentbox/cas)\" = 256 ]' | root"
   build; trial "cycle 1 (remove $KN)"
   check "cycle 1: runs the older kernel $KO" "[ \"\$(vssh uname -r)\" = $KO ]"
   plan --reinstall --install linux-generic --install systemd
@@ -154,6 +162,7 @@ sc_cycles() {
   check "cycle 2: the build re-made initrd.img-$KN in the nspawn" "echo 'test /bootpart/agentbox/gens/$M/initrd.img-$KN -nt /bootpart/agentbox/gens/gen-1/initrd.img-$KN' | root"
   trial "cycle 2 (kernel $KO -> $KN, systemd re-installed)"
   check "cycle 2: kernel upgraded to $KN" "[ \"\$(vssh uname -r)\" = $KN ]"
+  check "cycle 2: the nspawn-built initrd loads the watchdog driver (force_drivers), PID 1 arms it" "echo 'grep -qx active /sys/class/watchdog/watchdog0/state' | root"
   [ "$ENC" = none ] || check "cycle 2: LUKS unlocked by clevis from the nspawn-built initrd" "vssh 'journalctl -b -o cat' | grep -q 'Finished systemd-cryptsetup@croot.service' && echo 'journalctl -b -t clevis-luks-askpass -o cat' | root | grep -q '^Unlocked '"
   plan --reinstall --install base-files
   build; trial "cycle 3"
@@ -183,7 +192,12 @@ sc_breaks() {
   build
   echo "rm /bootpart/agentbox/gens/$M/vmlinuz-$K" | root >>"$LOG" 2>&1
   fallback "GRUB break (vmlinuz-$K deleted after update-grub)" 600
+  check "GRUB break: health drops $E, whose vmlinuz is gone, from grub.cfg" "wait_root 180 '! grep -qF $E /boot/grub/grub.cfg'"
   plan --reinstall --install base-files
+  # the build would prune the failed $M, but a kept generation's fstab (the running one's) binds its boot dir
+  echo "echo '/bootpart/agentbox/gens/$M /mnt none bind,noauto 0 0' >> /etc/fstab" | root >>"$LOG" 2>&1
+  check "retention guard: apply refuses to prune $M while a kept fstab binds it, and deletes nothing" "echo '$A os apply --approve $H --no-reboot' | root 2>&1 | grep -q 'retention refused' && echo 'test -e /bootpart/agentbox/gens/$M/initrd.img-$K && btrfs subvolume list / | grep -qw @$M' | root"
+  echo "sed -i '\\|^/bootpart/agentbox/gens/$M /mnt |d' /etc/fstab" | root >>"$LOG" 2>&1
   build
   if [ "$ENC" = none ]; then
     echo "dracut --force --omit-drivers btrfs /bootpart/agentbox/gens/$M/initrd.img-$K $K && ! lsinitrd /bootpart/agentbox/gens/$M/initrd.img-$K | grep -q /btrfs.ko" | root >>"$LOG" 2>&1 || die "could not break the initrd"
@@ -258,8 +272,43 @@ cut_at() {
   fi
   check "cut at $1: grub.cfg and grubenv intact" "echo 'grub-script-check /boot/grub/grub.cfg && grub-editenv /boot/grub/grubenv list | grep -q ^saved_entry=agentbox-' | root"
   settled || :
+  check "cut at $1: no trial left armed (saved_entry is the committed entry, next_entry empty)" "echo 'l=\$(grub-editenv /boot/grub/grubenv list) && echo \"\$l\" | grep -qx \"saved_entry=\$(cat /bootpart/agentbox/committed)\" && ! echo \"\$l\" | grep -q \"^next_entry=.\"' | root"
   clean_root "cut at $1"
   status
+}
+
+# split_env: Linux's view after a cut inside the trial's SetGrubEnv, where GRUB booted the committed generation from the
+# old grubenv while the replayed journal names the trial in next_entry and saved_entry (review-crash/both.txt). Settle
+# must undo both before it marks the trial failed, or a later boot runs the failed trial.
+split_env() {
+  plan --reinstall --install base-files
+  build
+  C=$(committed)
+  root >>"$LOG" 2>&1 <<EOF || die "split grubenv: could not set it up"
+flock /var/lib/agentbox/os/lock sh -ec 'grub-editenv /boot/grub/grubenv set saved_entry=$E; sed -i "s/\"bootId\":\"[^\"]*\"/\"bootId\":\"gate\"/" /var/lib/agentbox/os/pending.json; grep -q "\"bootId\":\"gate\"" /var/lib/agentbox/os/pending.json'
+EOF
+  check "split grubenv: Settle puts back saved_entry=$C and clears next_entry, then fails $M" "wait_root 180 '$A os health; test ! -e /var/lib/agentbox/os/pending.json' && echo 'l=\$(grub-editenv /boot/grub/grubenv list) && echo \"\$l\" | grep -qx saved_entry=$C && echo \"\$l\" | grep -qx next_entry= && test -e /var/lib/agentbox/os/failed/$M.json' | root"
+  status
+}
+
+# env_fail: the next_entry write fails after its rename (a grub-editenv shim fails its list check once). GRUB may boot
+# gen-M, so it stays pending, as a power cut there leaves it, and the next boot tries it once.
+env_fail() {
+  plan --reinstall --install base-files
+  root >>"$LOG" 2>&1 <<'EOF' || die "next_entry write: could not install the grub-editenv shim"
+mkdir -p /run/gate-shim
+printf '%s\n' '#!/bin/sh' 'if [ "$2" = list ] && grep -q "^next_entry=agentbox-" "$1" && rm /run/gate-shim/once 2>/dev/null; then exit 1; fi' \
+  'exec /usr/bin/grub-editenv "$@"' > /run/gate-shim/grub-editenv
+chmod 0755 /run/gate-shim/grub-editenv
+touch /run/gate-shim/once
+EOF
+  ! echo "PATH=/run/gate-shim:\$PATH $A os apply --approve $H --no-reboot" | root >"$VM/apply.out" 2>&1 || die "next_entry write: the apply did not fail"
+  cat "$VM/apply.out" >>"$LOG"
+  echo 'rm -r /run/gate-shim' | root >>"$LOG" 2>&1
+  E=$(sed -n 's/^os: boot once: //p' "$VM/apply.out") M=$(sed -n 's/^os: boot once: agentbox-\(gen-[0-9]*\)-.*/\1/p' "$VM/apply.out")
+  [ -n "$M" ] || die "next_entry write: the apply never reached boot once"
+  check "next_entry write fails after its rename: $M stays pending and armed, not discarded" "grep -q 'stays pending' '$VM/apply.out' && echo 'test -e /var/lib/agentbox/os/pending.json && test -d /bootpart/agentbox/gens/$M && grub-editenv /boot/grub/grubenv list | grep -qx next_entry=$E' | root"
+  trial "next_entry write failed"
 }
 
 sc_cuts() {
@@ -269,6 +318,8 @@ sc_cuts() {
   cut_at "initrd gate" 0
   cut_at update-grub 0
   cut_at "boot once" 0
+  split_env
+  env_fail
   plan --reinstall --install base-files
   build; trial "after the cuts"
   check "after the cuts: leftovers pruned, at most three generations" "[ \$(echo 'ls -d /bootpart/agentbox/gens/gen-[1-9]* | wc -l' | root) -le 3 ]"

@@ -140,6 +140,30 @@ func GrubEnv(b []byte) map[string]string {
 	return env
 }
 
+// NextGen numbers a new generation above every one on disk and every trial with a failed/ record (it outlives the prune).
+// shortcut: a build discarded before its trial can reuse its own number (it leaves no record); week 3's rootd.db can
+// keep a counter that only grows.
+func NextGen(all []int, failed []string) string {
+	hi := slices.Max(all)
+	for _, f := range failed {
+		if n, ok := GenNum(strings.TrimSuffix(path.Base(f), ".json")); ok {
+			hi = max(hi, n)
+		}
+	}
+	return Gen(hi + 1)
+}
+
+var reMenuID = regexp.MustCompile(`(?m)^menuentry .* --id '([^']*)' \{$`)
+
+// MenuIDs returns the --id of every top-level menu entry in a grub.cfg (09_agentbox's; 10_linux's use $menuentry_id_option).
+func MenuIDs(cfg []byte) []string {
+	var ids []string
+	for _, m := range reMenuID.FindAllSubmatch(cfg, -1) {
+		ids = append(ids, string(m[1]))
+	}
+	return ids
+}
+
 // Prune returns the generations to delete (§3.3 step 7): keep current, previous and one more, that is the three
 // newest at or below the committed one, plus every protected generation (booted, saved_entry, committed, pending).
 // Anything newer than the committed generation and unprotected is a failed trial or an interrupted build.

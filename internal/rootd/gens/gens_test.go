@@ -1,6 +1,7 @@
 package gens
 
 import (
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -98,5 +99,38 @@ func TestBadNames(t *testing.T) {
 	got := BadNames([]string{"vmlinuz-7.0.0-44-generic", "grub", "efi", "dtbs/7.0.0-44-generic/a.dtb", "x y", "dtbs/q'x", "initrd.img-7.0.0-44-generic"})
 	if !slices.Equal(got, []string{"x y", "dtbs/q'x"}) {
 		t.Fatalf("BadNames = %v", got)
+	}
+}
+
+func TestNextGen(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		all    []int
+		failed []string
+		want   string
+	}{
+		{"consecutive", []int{2, 3, 4, 5}, nil, "gen-6"},
+		{"a failed trial pruned since, then a build discarded", []int{2, 3, 4}, []string{"/var/lib/agentbox/os/failed/gen-5.json"}, "gen-6"},
+		{"failed records below a kept generation", []int{2, 3, 4, 9}, []string{"failed/gen-5.json", "failed/gen-8.json"}, "gen-10"},
+		{"not records", []int{2, 3, 4}, []string{"failed/gen-x.json", "failed/notes.json", "failed/gen-07.json"}, "gen-5"},
+	} {
+		if got := NextGen(tc.all, tc.failed); got != tc.want {
+			t.Errorf("%s: NextGen = %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestMenuIDs reads grub.cfg as update-grub left it on the tpm2 VM after the power cuts (gen-1 and gen-6, two kernels each).
+func TestMenuIDs(t *testing.T) {
+	cfg, err := os.ReadFile("testdata/grub.cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"agentbox-gen-1-7.0.0-43-generic", "agentbox-gen-1-7.0.0-30-generic", "agentbox-gen-6-7.0.0-43-generic", "agentbox-gen-6-7.0.0-30-generic"}
+	if got := MenuIDs(cfg); !slices.Equal(got, want) {
+		t.Fatalf("MenuIDs = %q, want %q", got, want)
+	}
+	if got := MenuIDs([]byte("if [ \"${saved_entry}\" = \"agentbox-gen-1-7.0.0-43-generic\" ]; then set fallback=0; fi\n\tmenuentry 'x' --id 'nested' {\n")); got != nil {
+		t.Errorf("MenuIDs took a fallback line or a submenu entry: %q", got)
 	}
 }
