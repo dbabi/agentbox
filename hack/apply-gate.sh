@@ -9,7 +9,8 @@
 #          (Run again on a used box, the generation numbers are higher and the oldest one is pruned.)
 # breaks   a trial broken in GRUB, in the initrd (clevis removed; btrfs in none mode), in fstab (/boot bound to the
 #          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
-#          the committed generation with no console input. Then an emptied grubenv boots the committed generation.
+#          the committed generation with no console input. After the GRUB break, retention refuses to prune the
+#          trial while a kept fstab binds it. Then an emptied grubenv boots the committed generation.
 # cuts     QMP power cuts (vm.sh cut) at five points of an apply, then a clean apply that commits. Those cuts hit a
 #          bad moment for GRUB only by chance, so one more apply, trial and commit runs logged (hack/powercut.sh log),
 #          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Needs the podman machine.
@@ -191,6 +192,10 @@ sc_breaks() {
   echo "rm /bootpart/agentbox/gens/$M/vmlinuz-$K" | root >>"$LOG" 2>&1
   fallback "GRUB break (vmlinuz-$K deleted after update-grub)" 600
   plan --reinstall --install base-files
+  # the build would prune the failed $M, but a kept generation's fstab (the running one's) binds its boot dir
+  echo "echo '/bootpart/agentbox/gens/$M /mnt none bind,noauto 0 0' >> /etc/fstab" | root >>"$LOG" 2>&1
+  check "retention guard: apply refuses to prune $M while a kept fstab binds it, and deletes nothing" "echo '$A os apply --approve $H --no-reboot' | root 2>&1 | grep -q 'retention refused' && echo 'test -e /bootpart/agentbox/gens/$M/initrd.img-$K && btrfs subvolume list / | grep -qw @$M' | root"
+  echo "sed -i '\\|^/bootpart/agentbox/gens/$M /mnt |d' /etc/fstab" | root >>"$LOG" 2>&1
   build
   if [ "$ENC" = none ]; then
     echo "dracut --force --omit-drivers btrfs /bootpart/agentbox/gens/$M/initrd.img-$K $K && ! lsinitrd /bootpart/agentbox/gens/$M/initrd.img-$K | grep -q /btrfs.ko" | root >>"$LOG" 2>&1 || die "could not break the initrd"

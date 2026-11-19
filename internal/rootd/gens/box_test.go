@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -71,5 +72,45 @@ func TestReplaceForGrub(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(dst); string(b) != "old" {
 		t.Errorf("a failed checkpoint replaced grubenv: %q", b)
+	}
+}
+
+// TestStillBound checks the retention guard on fstabs laid out like the btrfs top level (@gen-N/etc/fstab).
+func TestStillBound(t *testing.T) {
+	own := func(n int) string {
+		return GensDir + "/" + Gen(n) + " /boot none bind,x-systemd.requires-mounts-for=/bootpart 0 0\n"
+	}
+	for _, tc := range []struct {
+		name   string
+		fstabs map[int]string // "" makes etc/fstab a directory; a missing key, no subvolume
+		all    []int
+		drop   []int
+		want   string // "" for no refusal
+	}{
+		{"each generation binds its own dir", map[int]string{1: own(1), 2: own(2), 3: own(3), 4: own(4)}, []int{1, 2, 3, 4}, []int{1}, ""},
+		{"kept gen-3 binds doomed gen-1", map[int]string{1: own(1), 2: own(2), 3: own(1)}, []int{1, 2, 3}, []int{1},
+			"retention refused: kept gen-3's fstab still binds /bootpart/agentbox/gens/gen-1"},
+		{"a doomed trial binds its kept parent (apply-gate's fstab break)", map[int]string{4: own(4), 5: own(4)}, []int{4, 5}, []int{5}, ""},
+		{"an extra noauto bind of a doomed dir", map[int]string{2: own(2) + GensDir + "/gen-5 /mnt none bind,noauto 0 0\n", 5: own(5)}, []int{2, 5}, []int{5},
+			"kept gen-2's fstab still binds /bootpart/agentbox/gens/gen-5"},
+		{"gen-10 is not gen-1", map[int]string{1: own(1), 10: own(10)}, []int{1, 10}, []int{1}, ""},
+		{"a commented-out bind", map[int]string{1: own(1), 2: own(2) + "# " + own(1)}, []int{1, 2}, []int{1}, ""},
+		{"a kept generation with no subvolume", map[int]string{1: own(1)}, []int{1, 2}, []int{1}, ""},
+		{"an fstab that can't be read", map[int]string{1: own(1), 2: ""}, []int{1, 2}, []int{1}, "is a directory"},
+	} {
+		top := t.TempDir()
+		for n, fstab := range tc.fstabs {
+			etc := filepath.Join(top, "@"+Gen(n), "etc")
+			if fstab == "" {
+				os.MkdirAll(filepath.Join(etc, "fstab"), 0o755)
+				continue
+			}
+			os.MkdirAll(etc, 0o755)
+			os.WriteFile(filepath.Join(etc, "fstab"), []byte(fstab), 0o644)
+		}
+		err := stillBound(top, tc.all, tc.drop)
+		if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+			t.Errorf("%s: %v, want %q", tc.name, err, tc.want)
+		}
 	}
 }

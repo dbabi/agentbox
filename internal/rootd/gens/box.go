@@ -415,6 +415,21 @@ func PruneGens(top string) error {
 	if len(drop) == 0 {
 		return nil
 	}
+	if err := stillBound(top, all, drop); err != nil {
+		return err
+	}
+	for _, d := range drop {
+		logf("prune %s", Gen(d))
+		if err := discard(top, Gen(d)); err != nil {
+			return err
+		}
+	}
+	return UpdateGrub()
+}
+
+// stillBound is the retention guard: an error if the fstab of a generation in all but not in drop binds the boot dir
+// of one in drop. top is the mounted btrfs top level.
+func stillBound(top string, all, drop []int) error {
 	for _, k := range all {
 		if slices.Contains(drop, k) {
 			continue
@@ -432,13 +447,7 @@ func PruneGens(top string) error {
 			}
 		}
 	}
-	for _, d := range drop {
-		logf("prune %s", Gen(d))
-		if err := discard(top, Gen(d)); err != nil {
-			return err
-		}
-	}
-	return UpdateGrub()
+	return nil
 }
 
 // discard deletes a generation's boot dir, then its subvolume.
