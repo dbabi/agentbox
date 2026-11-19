@@ -28,8 +28,10 @@ case ${AGENTBOX_VM_ID:-0} in [0-9]) ;; *) die "AGENTBOX_VM_ID must be 0-9" ;; es
 TANG_URL=http://10.0.2.2:$((7500 + ${AGENTBOX_VM_ID:-0})) # vm.sh tang up serves this instance on 127.0.0.1:7500+ID
 RPORT=$((7600 + ${AGENTBOX_VM_ID:-0})) REL="$VM/release" V=0.0.1-gate V0=0.0.0-gate
 command -v minisign >/dev/null || die "minisign not installed (brew install minisign)"
-# vm.sh's default disk per boot mode, and the factor for the waits below
-case $BOOT in uefi) SLOW=1 TAG=$MODE B=${DISKBUS:-nvme} ;; bios) SLOW=5 TAG=$MODE-bios B=${DISKBUS:-sata} ;; esac
+# vm.sh's default disk per boot mode, the factor for the waits below, and the watchdog the seed must find: vm.sh gives
+# only the amd64 VM an i6300esb, so the arm64 one boots the softdog fallback
+case $BOOT in uefi) SLOW=1 TAG=$MODE B=${DISKBUS:-nvme} WD=softdog WDID="Software Watchdog" ;;
+  bios) SLOW=5 TAG=$MODE-bios B=${DISKBUS:-sata} WD=i6300esb WDID="i6300ESB timer" ;; esac
 # the disk's udev ID_SERIAL, and the loadable modules of its driver chain that the seed records (virtio_blk is built in;
 # on amd64 sd_mod and libata are too, ahci is not)
 case $B in
@@ -155,9 +157,9 @@ check "fwupd only refreshes metadata"    '[ "\$(systemctl is-enabled fwupd-refre
 check "kdump-tools purged, no grub.d snippet" '! dpkg -s kdump-tools && [ ! -e /etc/default/grub.d/kdump-tools.cfg ]'
 check "no crashkernel= on the cmdline"   '! grep -q crashkernel= /proc/cmdline'
 check "emergency reboots"                'grep -q FailureAction=reboot-force /etc/systemd/system/emergency.service.d/90-agentbox.conf'
-check "watchdog: PID 1 drives the i6300esb, 60 s" '[ "\$(cat /sys/class/watchdog/watchdog0/identity /sys/class/watchdog/watchdog0/state /sys/class/watchdog/watchdog0/timeout | paste -sd,)" = "i6300ESB timer,active,60" ]'
-check "dracut: hostonly, forced modules, driver chain [$DRV ], watchdog driver" 'f=/etc/dracut.conf.d/90-agentbox.conf; grep -qx "hostonly=\"yes\"" \$f && grep -qx "hostonly_cmdline=\"no\"" \$f && grep -q "^add_dracutmodules+=\" btrfs " \$f && grep -qx "add_drivers+=\"$DRV \"" \$f && grep -qx "force_drivers+=\" i6300esb \"" \$f'
-check "every kernel's initrd has btrfs$DRV i6300esb" 'for k in \$(ls /boot | sed -n "s/^vmlinuz-//p"); do l=\$(lsinitrd /boot/initrd.img-\$k) || exit 1; for m in btrfs $DRV i6300esb; do echo "\$l" | grep -q "/\$m\.ko" || exit 1; done; done'
+check "watchdog: PID 1 drives $WD, 60 s" '[ "\$(cat /sys/class/watchdog/watchdog0/identity /sys/class/watchdog/watchdog0/state /sys/class/watchdog/watchdog0/timeout | paste -sd,)" = "$WDID,active,60" ]'
+check "dracut: hostonly, forced modules, driver chain [$DRV ], watchdog driver" 'f=/etc/dracut.conf.d/90-agentbox.conf; grep -qx "hostonly=\"yes\"" \$f && grep -qx "hostonly_cmdline=\"no\"" \$f && grep -q "^add_dracutmodules+=\" btrfs " \$f && grep -qx "add_drivers+=\"$DRV \"" \$f && grep -qx "force_drivers+=\" $WD \"" \$f'
+check "every kernel's initrd has btrfs$DRV $WD" 'for k in \$(ls /boot | sed -n "s/^vmlinuz-//p"); do l=\$(lsinitrd /boot/initrd.img-\$k) || exit 1; for m in btrfs $DRV $WD; do echo "\$l" | grep -q "/\$m\.ko" || exit 1; done; done'
 check "installer logs persist in @var_log" '[ "\$(findmnt -n -o FSROOT -T /var/log/installer)" = /@var_log ] && [ -s /var/log/installer/installer-journal.txt ] && [ -s /var/log/installer/subiquity-server-debug.log ] && [ -s /var/log/installer/cloud-init.log ]'
 # grep exits 2 on a missing path or a read error even after a match: PASS only on 1 (read everything, matched nothing)
 check "no password hash under /var/log (installer, subiquity, cloud-init, journal)" 'grep -rqF gatesalt /var/log; [ \$? = 1 ] && { grep -rqF -e "\\\$6\\\$" -e "\\\$y\\\$" /var/log/installer /var/log/cloud-init.log /var/log/cloud-init-output.log; [ \$? = 1 ]; }'

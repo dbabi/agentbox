@@ -81,6 +81,9 @@ func TestVMArgv(t *testing.T) {
 				t.Errorf("%s QEMU argv lacks %q:\n%s", m.arch, want, strings.Join(qemu, "\n"))
 			}
 		}
+		if wd := slices.Contains(qemu, "i6300esb"); wd != (m.arch == "amd64") { // arm64 virt boots the softdog fallback
+			t.Errorf("%s QEMU argv has an i6300esb: %v, want %v", m.arch, wd, m.arch == "amd64")
+		}
 		if pf := slices.ContainsFunc(qemu, func(s string) bool { return strings.HasPrefix(s, "if=pflash") }); pf != (m.arch == "arm64") {
 			t.Errorf("%s QEMU argv has pflash drives: %v, want %v", m.arch, pf, m.arch == "arm64")
 		}

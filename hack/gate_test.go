@@ -31,7 +31,7 @@ func TestGateBootMode(t *testing.T) {
 	os.WriteFile(filepath.Join(root, "hack", "vm.sh"), []byte("#!/bin/sh\n[ \"$1\" = ssh ] && echo 6c1f2b9e-4d3a-4c55-9f0e-0a1b2c3d4e5f\n"), 0o755)
 	for _, mode := range []string{"bios", "uefi"} {
 		block := filepath.Join(root, "block-"+mode)
-		script := `SLOW=1 SB=1 ENC=none DRV=" ahci" SER=X TANG_URL=x OUT=/dev/null VM=. BOOT=` + mode + "\n" +
+		script := `SLOW=1 SB=1 ENC=none DRV=" ahci" WD=x WDID=x SER=X TANG_URL=x OUT=/dev/null VM=. BOOT=` + mode + "\n" +
 			`die() { echo "$*" >&2; exit 1; }; vmroot() { cat > "` + block + `"; }` + string(m)
 		c := exec.Command(dash, "-euc", script)
 		c.Dir = root
