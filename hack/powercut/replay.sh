@@ -3,8 +3,8 @@
 # the work dir at /w: log.bin (dm-log-writes format) and base.qcow2, the disk when the log started (base.size instead
 # for a log that starts on an empty disk).
 #   replay.sh marks                         the entry count, then the entry number of every flush
-#   replay.sh check [from [to [every]]]     replay; btrfs check --readonly each btrfs partition at every <every>-th flush
-#                                           in entries from..to (default 0..last, every flush)
+#   replay.sh check [from [to [every]]]     replay; btrfs check --readonly each btrfs partition at the first flush in
+#                                           entries from..to and every <every>-th after it (default 0..last, every flush)
 #   replay.sh image <entry>                 /w/image.qcow2: the disk after <entry>; /w/image.expect: the entry GRUB boots
 #   replay.sh grub [from [to]]              replay; after every entry in from..to that writes /bootpart, read it as GRUB
 #                                           does: the entry GRUB boots must be in grub.cfg, with its kernel and initrd
@@ -19,7 +19,7 @@ LOG=/w/log.bin T=/var/tmp/disk.raw
 
 if [ "${1:-}" = mark ]; then # replay-log --fsck hook, run after each flush entry: the replayed disk is at that flush
   n=$(($(cat /tmp/n) + 1)); echo "$n" > /tmp/n
-  [ $((n % $2)) -eq 0 ] || { echo "mark skip"; exit 0; }
+  [ $(((n - 1) % $2)) -eq 0 ] || { echo "mark skip"; exit 0; } # the first flush, then every <every>-th
   st=ok
   for l in $(cat /tmp/btrfs); do
     blockdev --flushbufs "$l" # replay-log wrote the file under this loop device's cache
@@ -96,7 +96,7 @@ check)
       if (rc != 0) print "replay-log exited " rc
       if (m == 0) print "no flush in the range: nothing checked"
       if (fua > 0) print fua " FUA entries without a flush: not checked"
-      exit (rc != 0 || m == 0 || fua > 0 || st["FAIL"] > 0)
+      exit (rc != 0 || st["ok"] + st["FAIL"] == 0 || fua > 0 || st["FAIL"] > 0)
     }'
   ;;
 image)

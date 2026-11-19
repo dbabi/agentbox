@@ -16,9 +16,9 @@
 #                                                ext4, then the grubenv replace of ARCHITECTURE §3.3 step 8 (default 50;
 #                                                once per disk)
 #   hack/powercut.sh marks                       the log's entry count and the entry number of every flush
-#   hack/powercut.sh check [from [to [every]]]   btrfs check --readonly at every flush (or every <every>-th flush) in
-#                                                log entries from..to; default the whole log. Several ranges can
-#                                                run at once.
+#   hack/powercut.sh check [from [to [every]]]   btrfs check --readonly at every flush (or the first and every
+#                                                <every>-th after it) in log entries from..to; default the whole log.
+#                                                Several ranges can run at once.
 #   hack/powercut.sh boot <entry>...             boot the disk as replayed to each entry: it must boot the entry GRUB
 #                                                picks on that disk, clean, with the writes files consistent
 #   hack/powercut.sh grub [from [to]]            after every log entry that writes /bootpart, read it as GRUB does

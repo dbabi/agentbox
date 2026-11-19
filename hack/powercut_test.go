@@ -1,6 +1,8 @@
 package hack
 
 import (
+	"bytes"
+	"encoding/binary"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,6 +103,61 @@ esac
 		c.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TMPDIR="+tmp, "AGENTBOX_VM_ID=3")
 		if out, err := c.CombinedOutput(); err == nil || !strings.Contains(string(out), why) {
 			t.Errorf("powercut.sh %s: %v, want %q:\n%s", args, err, why, out)
+		}
+	}
+}
+
+// TestPowercutCheck runs powercut.sh check in the agentbox-powercut container, on a log of one write and two flushes
+// over a disk with one fresh btrfs partition. A range with fewer flushes than <every> still checks its first one; a
+// range with no flush checks nothing and fails.
+func TestPowercutCheck(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash not installed")
+	}
+	podman := []string{"--connection", "podman-machine-default-root"}
+	if exec.Command("podman", append(podman, "image", "exists", "agentbox-powercut")...).Run() != nil {
+		t.Skip("no agentbox-powercut image in the podman machine (powercut.sh builds it)")
+	}
+	tmp := t.TempDir() // under $TMPDIR, which the podman machine mounts
+	pc := filepath.Join(tmp, "agentbox-powercut-9")
+	os.MkdirAll(pc, 0o755)
+	// dm-log-writes as QEMU's blklogwrites writes it: a superblock, then each entry in its own 512-byte sector, a
+	// write's data after it. The write lands past the partition.
+	sector := func(v ...uint64) []byte {
+		b := make([]byte, 512)
+		for i, x := range v {
+			binary.LittleEndian.PutUint64(b[8*i:], x)
+		}
+		return b
+	}
+	log := sector(0x6a736677736872, 1, 3, 512) // magic, version, entries, sector size (a u32, then zeros)
+	log = append(append(log, sector(500000, 8, 0, 0)...), bytes.Repeat([]byte{0xab}, 8*512)...)
+	log = append(append(log, sector(0, 0, 1, 0)...), sector(0, 0, 1, 0)...) // two flushes
+	os.WriteFile(filepath.Join(pc, "log.bin"), log, 0o644)
+	mk := exec.Command("podman", append(podman, "run", "--rm", "--privileged", "-v", "/dev:/dev", "-v", pc+":/w", "agentbox-powercut", "sh", "-ec", `
+truncate -s 300M /var/tmp/b.raw
+echo 'start=2048, size=409600, type=L' | sfdisk -q -X gpt /var/tmp/b.raw
+l=$(losetup -f --show -o 1048576 --sizelimit 209715200 /var/tmp/b.raw)
+mkfs.btrfs -q "$l" || { losetup -d "$l"; exit 1; }
+losetup -d "$l"
+qemu-img convert -O qcow2 /var/tmp/b.raw /w/base.qcow2`)...)
+	if out, err := mk.CombinedOutput(); err != nil {
+		t.Fatalf("base disk: %v\n%s", err, out)
+	}
+	for _, tc := range []struct {
+		args, want string
+		ok         bool
+	}{
+		{"0 2 50", "entries 0..2: 2 flushes, 1 checked (every 50), 0 failed", true},
+		{"0 2 1", "entries 0..2: 2 flushes, 2 checked (every 1), 0 failed", true},
+		{"0 0 1", "no flush in the range: nothing checked", false},
+	} {
+		c := exec.Command(dash, append([]string{"powercut.sh", "check"}, strings.Fields(tc.args)...)...)
+		c.Env = append(os.Environ(), "TMPDIR="+tmp, "AGENTBOX_VM_ID=9")
+		out, err := c.CombinedOutput()
+		if (err == nil) != tc.ok || !strings.Contains(string(out), tc.want) {
+			t.Errorf("powercut.sh check %s: %v, want %q (ok %v):\n%s", tc.args, err, tc.want, tc.ok, out)
 		}
 	}
 }
