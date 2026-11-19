@@ -1,0 +1,56 @@
+# PLAN Defaults "amd64 testing": go test on Linux, and the BIOS install gates on the amd64 VM under KVM. It first runs
+# when the repo is pushed.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with: {go-version-file: go.mod, cache: false} # stdlib only: no go.sum to key a cache on
+      # GitHub sets CI=true, so the tests that need these tools fail instead of skipping
+      - run: sudo apt-get update && sudo apt-get install -y minisign xorriso python3-yaml
+      - run: go vet ./... && go test ./...
+  bios:
+    needs: test
+    runs-on: ubuntu-26.04 # 24.04's swtpm 0.7 has no --ctrl terminate, which vm.sh uses
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: {mode: [none, tpm2]}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with: {go-version-file: go.mod, cache: false}
+      - run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils swtpm xorriso minisign
+      # vm.sh falls back to TCG with only a warning; without KVM this job must fail, not run a 70-min TCG gate
+      - run: sudo chmod 666 /dev/kvm && test -w /dev/kvm
+      # .vm grows to about 12 GB (stock ISO, zero-touch ISO, VM disk). It stays in the checkout: swtpm's AppArmor profile
+      # lets it write only under $HOME
+      - run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc && df -h .
+      # vm.sh checks it against hack/SHA256SUMS; releases.ubuntu.com drops a point release once the next one ships
+      - run: |
+          f=ubuntu-26.04.1-live-server-amd64.iso
+          mkdir -p .vm
+          curl -fsSL --retry 3 -o ".vm/$f" "https://releases.ubuntu.com/26.04.1/$f" ||
+            curl -fsSL --retry 3 -o ".vm/$f" "https://old-releases.ubuntu.com/releases/26.04.1/$f"
+      - run: hack/gate.sh ${{ matrix.mode }} bios
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gate-${{ matrix.mode }}-bios
+          retention-days: 14
+          include-hidden-files: true # .vm is a dot dir; only these logs go up, never .vm/keys or .vm/id_vm
+          path: |
+            .vm/gate-*.txt
+            .vm/gate-*.log
+            .vm/install.log
+            .vm/boot-*.log

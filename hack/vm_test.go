@@ -114,6 +114,54 @@ func TestVMArgv(t *testing.T) {
 	}
 }
 
+// TestVMInstallPin runs vm.sh install on a stock ISO that does not match hack/SHA256SUMS: with and without DIRECT_KERNEL
+// it refuses before it writes any VM state, and once the ISO is pinned it gets past the check. The seed is encrypted, so
+// a check moved below tpm.on is caught, and BIOS, so a regression never fetches the UEFI firmware. xorriso, qemu-img and
+// QEMU are fakes that fail.
+func TestVMInstallPin(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash not installed")
+	}
+	src, err := os.ReadFile("vm.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, bin, seed := t.TempDir(), t.TempDir(), t.TempDir()
+	hack, vm := filepath.Join(root, "hack"), filepath.Join(root, ".vm")
+	os.MkdirAll(hack, 0o755)
+	os.MkdirAll(vm, 0o755)
+	os.WriteFile(filepath.Join(hack, "vm.sh"), src, 0o755)
+	iso, junk := "ubuntu-26.04.1-live-server-amd64.iso", []byte("not the pinned ISO\n")
+	os.WriteFile(filepath.Join(vm, iso), junk, 0o644)
+	os.WriteFile(filepath.Join(seed, "user-data"), []byte("#cloud-config\n#\n# encryption=tpm2 boot=bios\nserial: \"QEMU_HARDDISK_QM00001\"\n"), 0o644)
+	os.WriteFile(filepath.Join(seed, "meta-data"), nil, 0o644)
+	for _, b := range []string{"xorriso", "qemu-img", "qemu-system-x86_64"} {
+		os.WriteFile(filepath.Join(bin, b), []byte("#!/bin/sh\necho fake "+b+" >&2; exit 1\n"), 0o755)
+	}
+	h := sha256.Sum256(junk)
+	good := hex.EncodeToString(h[:])
+	for _, pin := range []string{strings.Repeat("0", 64), good} {
+		os.WriteFile(filepath.Join(hack, "SHA256SUMS"), []byte(pin+"  "+iso+"\n"), 0o644)
+		for _, dk := range []string{"0", "1"} {
+			c := exec.Command(dash, filepath.Join(hack, "vm.sh"), "install", seed)
+			// set here, so the caller's environment cannot point vm.sh at the real ISO or another disk bus
+			c.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "AGENTBOX_ISO_DIR="+vm, "DISKBUS=sata", "DIRECT_KERNEL="+dk)
+			out, err := c.CombinedOutput()
+			if pin != good {
+				if err == nil || !strings.Contains(string(out), iso+" does not match hack/SHA256SUMS") {
+					t.Errorf("DIRECT_KERNEL=%s: unpinned ISO not refused: %v\n%s", dk, err, out)
+				}
+				if left, _ := os.ReadDir(vm); len(left) != 1 {
+					t.Errorf("DIRECT_KERNEL=%s: the refusal left VM state in .vm: %v", dk, left)
+				}
+			} else if !strings.Contains(string(out), "fake xorriso") { // the seed ISO comes next
+				t.Errorf("DIRECT_KERNEL=%s: pinned ISO did not get past the check: %v\n%s", dk, err, out)
+			}
+		}
+	}
+}
+
 // TestRemasterISO runs remaster-iso.sh on a small ISO with the stock grub.cfg shapes (arm64's `$cmdline  ---  console=tty0`,
 // amd64's trailing `--- `, a tab, a non-casper line): every casper linux line gets `autoinstall ds=nocloud` before ` ---`
 // and the extra args at the end, /md5sum.txt follows, and an unpinned ISO or unsafe extra args are refused.

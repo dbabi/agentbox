@@ -16,7 +16,8 @@
 # every install. SeaBIOS is QEMU's own.
 # AGENTBOX_VM_ID (0-9, default 0) picks the host ports and the Tang container agentbox-tang-ID. Everything else lives in
 # this checkout's .vm, so VMs that run at once need distinct IDs and separate checkouts (git worktrees).
-# AGENTBOX_ISO_DIR (default .vm) holds the stock ISOs, so worktrees can share one copy.
+# AGENTBOX_ISO_DIR (default .vm) holds the stock ISOs, so worktrees can share one copy. Every install checks its stock
+# ISO against hack/SHA256SUMS, with or without DIRECT_KERNEL.
 # AGENTBOX_BLKLOG=<file>: QEMU logs every guest disk write and flush to <file>, dm-log-writes format (hack/powercut.sh).
 # A TPM is attached in both phases whenever the seed is encrypted. Logs go to .vm/<phase>*.log (serial console).
 # Host ports listen on 127.0.0.1 only, but the guest can reach every Mac service on 127.0.0.1 through 10.0.2.2.
@@ -127,6 +128,7 @@ install)
   /usr/bin/grep -q "serial: \"$WANT\"" "$SEED/user-data" || die "seed --disk-serial must be $WANT for DISKBUS=$DISKBUS"
   ISO="${AGENTBOX_ISO_DIR:-$VM}/ubuntu-26.04.1-live-server-$ARCH.iso"
   [ -f "$ISO" ] || die "missing $ISO"
+  pinned "$ISO" || die "$ISO does not match hack/SHA256SUMS"
   case $MODE in *encryption=none*) rm -f "$VM/tpm.on" ;; *) : > "$VM/tpm.on" ;; esac
   command -v xorriso >/dev/null || die "xorriso not installed (brew install xorriso)"
   if [ "$ARCH" = arm64 ]; then

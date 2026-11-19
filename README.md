@@ -19,7 +19,7 @@ A headless home for AI agents on stock Ubuntu Server 26.04. Agents get full free
 | `hack/remaster-iso.sh` (zero-touch USB) | done: the pinned ISO with `autoinstall ds=nocloud` on GRUB's linux line; `vm.sh install` boots it through the firmware (shim and GRUB on UEFI), with no `-kernel` |
 | QEMU arm64 install, `tpm2`, Secure Boot on | **passed:** resolute's AAVMF (pinned), shim-verified boot, kernel lockdown, `mokutil --sb-state` enabled |
 | QEMU amd64 BIOS install (q35, SeaBIOS, SATA, swtpm, TCG) | **passed:** `none` and `tpm2` (an install takes 60-80 min under TCG) |
-| Old x86 PC | next (needs its owner) |
+| Old x86 PC | **not run:** needs its owner and the PC (see [Old-PC gate](#old-pc-gate-needs-the-owner)) |
 
 ## Quick start (operator machine)
 The install needs wired Ethernet with DHCP and HTTP access to the Ubuntu archive: archive.ubuntu.com and security.ubuntu.com
@@ -76,6 +76,37 @@ serial matches anything but exactly one disk, or (encrypted modes) when there is
    To unlock by hand: `agentbox recovery decrypt --key recovery.key --in recovery.bin --out luks.key`, then type its
    48 digits at the disk passphrase prompt.
 
+## Old-PC gate (needs the owner)
+PLAN row 1-2 ends with "Old PC passes in week 2": the install and `os.apply` checks on the old x86 PC. The VMs run UEFI
+only on arm64 and BIOS only on amd64 (`os.apply` on both: `hack/apply-gate.sh <mode> bios` on amd64), so the PC runs the
+first `os.apply` on real hardware, and a UEFI PC the first amd64 UEFI install. About 1 h hands-on, plus the install.
+1. Publish a release the PC can fetch: `make release VERSION=<ver> MINISIGN_KEY=<your key>`, then put
+   `dist/agentbox-<ver>.tgz` and its `.minisig` side by side at one https URL with a CA-trusted certificate and no query
+   string (firstboot fetches `<url>` and `<url>.minisig`; `--dev`'s plain http is for the VM only). A public host
+   publishes the code: record the clearance first (PLAN "Required before writing code", LEDGER C-spec-conformance-17).
+2. Install with the Quick start steps above, seeded with that URL, the `--release-sha256` that `make release` printed
+   and your minisign public key. Use `--encryption tpm2` if `test -c /dev/tpmrm0` succeeds in the installer shell
+   (Quick start step 2), else `none`. A placeholder release checks the install only: `os.apply` runs from the release.
+3. After the first boot, from the Mac:
+   ```sh
+   ssh -t boxadmin@<box> 'cat /proc/cmdline; findmnt -n -o SOURCE,FSROOT /; findmnt -n -o FSROOT /boot;
+     readlink /var/lib/agentbox/current; sudo grub-editenv /boot/grub/grubenv list; systemctl --failed --no-legend;
+     [ -d /sys/firmware/efi ] && mokutil --sb-state || echo bios'
+   ```
+   Expect `BOOT_IMAGE=/agentbox/gens/gen-1/vmlinuz-...` with `rootflags=subvol=@gen-1`, root `/@gen-1` (on
+   `/dev/mapper/croot` if encrypted), `/boot` at `/agentbox/gens/gen-1`, `releases/<ver>`,
+   `saved_entry=agentbox-gen-1-...` and no failed units. Then do Quick start step 6: `recovery.bin` must decrypt.
+4. One `os.apply` on the PC:
+   ```sh
+   sudo /var/lib/agentbox/current/bin/agentbox os plan --reinstall --install base-files   # prints plan sha256: <H>
+   sudo /var/lib/agentbox/current/bin/agentbox os apply --approve <H>                     # reboots into the trial
+   ```
+   After the reboot `/proc/cmdline` must have `rootflags=subvol=@gen-2`. Within a few minutes the health timer commits
+   it: `/bootpart/agentbox/committed` and `saved_entry` in `sudo grub-editenv /boot/grub/grubenv list` both read
+   `agentbox-gen-2-<kernel>`. Left uncommitted, the box falls back to gen-1 after 15 min.
+5. Keep the outputs of steps 3 and 4 with the evidence, and put the firmware (`uefi` or `bios`) and the
+   `mokutil --sb-state` line in the status row above. On a UEFI PC, say there that this was the first amd64 UEFI run.
+
 ## Release
 `make release VERSION=<ver> MINISIGN_KEY=<minisign secret key file>` builds agentbox for linux/arm64 and linux/amd64
 and writes `dist/agentbox-<ver>.tgz` (the binaries, `install/install.sh`, `systemd/*`) plus its `.minisig`, then prints
@@ -120,5 +151,7 @@ unless GRUB would find its entry, kernel and initrd. The script header says what
 ```sh
 go vet ./... && go test ./...
 ```
+`.github/workflows/ci.yml` runs the same on Linux, plus `hack/gate.sh none bios` and `hack/gate.sh tpm2 bios` under KVM,
+once the repo is pushed.
 
 License: Apache-2.0.
