@@ -147,6 +147,7 @@ func TestRenderModes(t *testing.T) {
 		`printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=60s' > $G/etc/systemd/system.conf.d/50-agentbox.conf`,
 		// item 5, plus the snapd and dbx policy
 		"systemctl mask nftables.service snapd.socket snapd.service snapd.seeded.service snapd.snap-repair.timer \\\n        lxd-installer.socket secureboot-db.service",
+		"chroot /mnt/new systemctl mask grub2-common.service grub-initrd-fallback.service\n", // no in-place grubenv rewrites at boot
 		"chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get purge -y kdump-tools", "test ! -e /mnt/new/etc/default/grub.d/kdump-tools.cfg",
 		`[ -z "$U" ] || chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get install -y $U`,
 		// item 6
