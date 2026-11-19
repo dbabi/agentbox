@@ -28,8 +28,10 @@ case ${AGENTBOX_VM_ID:-0} in [0-9]) ;; *) die "AGENTBOX_VM_ID must be 0-9" ;; es
 TANG_URL=http://10.0.2.2:$((7500 + ${AGENTBOX_VM_ID:-0})) # vm.sh tang up serves this instance on 127.0.0.1:7500+ID
 RPORT=$((7600 + ${AGENTBOX_VM_ID:-0})) REL="$VM/release" V=0.0.1-gate V0=0.0.0-gate
 command -v minisign >/dev/null || die "minisign not installed (brew install minisign)"
-# vm.sh's default disk per boot mode, and the factor for the waits below
-case $BOOT in uefi) SLOW=1 TAG=$MODE B=${DISKBUS:-nvme} ;; bios) SLOW=5 TAG=$MODE-bios B=${DISKBUS:-sata} ;; esac
+# vm.sh's default disk per boot mode, the factor for the waits below, and the watchdog the seed must find: vm.sh gives
+# only the amd64 VM an i6300esb, so the arm64 one boots the softdog fallback
+case $BOOT in uefi) SLOW=1 TAG=$MODE B=${DISKBUS:-nvme} WD=softdog WDID="Software Watchdog" ;;
+  bios) SLOW=5 TAG=$MODE-bios B=${DISKBUS:-sata} WD=i6300esb WDID="i6300ESB timer" ;; esac
 # the disk's udev ID_SERIAL, and the loadable modules of its driver chain that the seed records (virtio_blk is built in;
 # on amd64 sd_mod and libata are too, ahci is not)
 case $B in
@@ -110,8 +112,8 @@ if [ "$MODE" = dup-serial ]; then
   vm_off # QEMU must let go of the images before qemu-img reads them
   { n=0
     if grep -aqF "agentbox: --disk-serial $SER matched 2 disks, need exactly 1" "$VM/install.log"; then echo "PASS the disk guard refused two disks with ID_SERIAL=$SER"; else echo "FAIL no disk-guard refusal in install.log"; n=1; fi
-    for d in disk disk2; do # qemu-img map shows every written extent as data
-      if m=$(qemu-img map --output=json "$VM/$d.qcow2") && ! echo "$m" | grep -q '"data": true'; then echo "PASS $d.qcow2 never written"; else echo "FAIL $d.qcow2 written or unreadable"; n=1; fi
+    for d in disk disk2; do # every extent the guest wrote is "present", a zero write ("data": false) too; a map with no "present": false can't tell
+      if m=$(qemu-img map --output=json "$VM/$d.qcow2") && echo "$m" | grep -q '"present": false' && ! echo "$m" | grep -q '"present": true'; then echo "PASS $d.qcow2 never written"; else echo "FAIL $d.qcow2 written or unreadable"; n=1; fi
     done
     echo "fails=$n"; } | tee "$OUT"
   verdict 1; exit 0
@@ -157,17 +159,17 @@ check "fwupd only refreshes metadata"    '[ "\$(systemctl is-enabled fwupd-refre
 check "kdump-tools purged, no grub.d snippet" '! dpkg -s kdump-tools && [ ! -e /etc/default/grub.d/kdump-tools.cfg ]'
 check "no crashkernel= on the cmdline"   '! grep -q crashkernel= /proc/cmdline'
 check "emergency reboots"                'grep -q FailureAction=reboot-force /etc/systemd/system/emergency.service.d/90-agentbox.conf'
-check "watchdog: PID 1 drives the i6300esb, 60 s" '[ "\$(cat /sys/class/watchdog/watchdog0/identity /sys/class/watchdog/watchdog0/state /sys/class/watchdog/watchdog0/timeout | paste -sd,)" = "i6300ESB timer,active,60" ]'
-check "dracut: hostonly, forced modules, driver chain [$DRV ], watchdog driver" 'f=/etc/dracut.conf.d/90-agentbox.conf; grep -qx "hostonly=\"yes\"" \$f && grep -qx "hostonly_cmdline=\"no\"" \$f && grep -q "^add_dracutmodules+=\" btrfs " \$f && grep -qx "add_drivers+=\"$DRV \"" \$f && grep -qx "force_drivers+=\" i6300esb \"" \$f'
-check "every kernel's initrd has btrfs$DRV i6300esb" 'for k in \$(ls /boot | sed -n "s/^vmlinuz-//p"); do l=\$(lsinitrd /boot/initrd.img-\$k) || exit 1; for m in btrfs $DRV i6300esb; do echo "\$l" | grep -q "/\$m\.ko" || exit 1; done; done'
+check "watchdog: PID 1 drives $WD, 60 s" '[ "\$(cat /sys/class/watchdog/watchdog0/identity /sys/class/watchdog/watchdog0/state /sys/class/watchdog/watchdog0/timeout | paste -sd,)" = "$WDID,active,60" ]'
+check "dracut: hostonly, forced modules, driver chain [$DRV ], watchdog driver" 'f=/etc/dracut.conf.d/90-agentbox.conf; grep -qx "hostonly=\"yes\"" \$f && grep -qx "hostonly_cmdline=\"no\"" \$f && grep -q "^add_dracutmodules+=\" btrfs " \$f && grep -qx "add_drivers+=\"$DRV \"" \$f && grep -qx "force_drivers+=\" $WD \"" \$f'
+check "every kernel's initrd has btrfs$DRV $WD" 'for k in \$(ls /boot | sed -n "s/^vmlinuz-//p"); do l=\$(lsinitrd /boot/initrd.img-\$k) || exit 1; for m in btrfs $DRV $WD; do echo "\$l" | grep -q "/\$m\.ko" || exit 1; done; done'
 check "installer logs persist in @var_log" '[ "\$(findmnt -n -o FSROOT -T /var/log/installer)" = /@var_log ] && [ -s /var/log/installer/installer-journal.txt ] && [ -s /var/log/installer/subiquity-server-debug.log ] && [ -s /var/log/installer/cloud-init.log ]'
-check "no password hash under /var/log (installer, subiquity, cloud-init, journal)" '! grep -rlF gatesalt /var/log && ! grep -rlF -e "\\\$6\\\$" -e "\\\$y\\\$" /var/log/installer /var/log/cloud-init.log /var/log/cloud-init-output.log'
+# grep exits 2 on a missing path or a read error even after a match: PASS only on 1 (read everything, matched nothing)
+check "no password hash under /var/log (installer, subiquity, cloud-init, journal)" 'grep -rqF gatesalt /var/log; [ \$? = 1 ] && { grep -rqF -e "\\\$6\\\$" -e "\\\$y\\\$" /var/log/installer /var/log/cloud-init.log /var/log/cloud-init-output.log; [ \$? = 1 ]; }'
 check "seed copy scrubbed"               '[ ! -e /var/log/installer/autoinstall-user-data ]'
 check "disk guard saw exactly one $SER"  '[ "\$(grep -c "agentbox: disk [^ ]* ID_SERIAL=$SER\\\$" /var/log/installer/installer-journal.txt)" = 1 ]'
 check "umount -R left the live installer's /dev/pts and /sys/fs/cgroup" 'grep -q "+ mountpoint -q /sys/fs/cgroup" /var/log/installer/installer-journal.txt'
 check "firstboot script installed from stdin, 0755" '[ "\$(stat -c %a /usr/local/sbin/agentbox-firstboot)" = 755 ] && grep -q "touch /var/lib/agentbox/.firstboot-done" /usr/local/sbin/agentbox-firstboot'
 check "no failed units"                  '[ -z "\$(systemctl --failed --no-legend --plain)" ]'
-check "firstboot leaves no /run copies"  '[ "\$(ls -d /run/agentbox-firstboot* 2>/dev/null | wc -l)" -le 1 ]'
 check "dracut builds the initramfs"      'dpkg -s dracut | grep -q "Status: install ok installed"'
 if [ "$BOOT" = bios ]; then
   check "booted by BIOS (no EFI)"        '[ ! -d /sys/firmware/efi ]'
@@ -184,7 +186,8 @@ if [ "$ENC" != none ]; then
   check "unlocked by clevis"             'journalctl -b -o cat | grep -q "Finished systemd-cryptsetup@croot.service" && journalctl -b -t clevis-luks-askpass -o cat | grep -q "^Unlocked "'
   check "recovery.bin present"           '[ -s /bootpart/agentbox/recovery.bin ]'
   check "09_agentbox sets rd.luks.uuid"  'u=\$(grep -o "rd.luks.uuid=[^ ]*" /proc/cmdline) && grep -q "^croot UUID=\${u#rd.luks.uuid=} " /etc/crypttab'
-  check "installer keyfile gone"         '[ ! -e /run/agentbox-luks.key ]'
+  check "crypttab: croot names no keyfile" 'grep -qE "^croot [^ ]+ none " /etc/crypttab'
+  check "late-commands shredded the installer keyfile" 'grep -qF "+ shred -u /run/agentbox-luks.key" /var/log/installer/installer-journal.txt'
 fi
 if [ "$ENC" = tpm2+tang ]; then
   # sss with t=2 needs both pins, so "unlocked by clevis" above also proves the initramfs reached Tang. Every instance's
@@ -210,7 +213,11 @@ if [ "$ENC" != none ]; then # the offline recovery path: recovery.bin -> key -> 
   ./bin/agentbox recovery decrypt --key "$VM/keys/recovery.key" --in "$W/recovery.bin" --out "$W/luks.key" >/dev/null
   # tr -dc 0-9 | head -c 48 ran under the live installer's uutils: the key must be exactly 48 digits, typeable at the prompt
   if grep -qxE '[0-9]{48}' "$W/luks.key"; then echo "PASS the LUKS key is 48 digits"; else echo "FAIL the LUKS key is not 48 digits"; fi | tee -a "$OUT"
-  { echo x; cat "$W/luks.key"; } | hack/vm.sh ssh 'sudo -S -p "" sh -c "umask 077; head -c 48 > /run/rk.key; d=\$(cryptsetup status croot | awk \"/device:/{print \\\$2}\"); cryptsetup open --test-passphrase --key-file /run/rk.key \$d && echo PASS recovery key opens LUKS || echo FAIL recovery key opens LUKS; shred -u /run/rk.key"' | tee -a "$OUT"
+  # PASS/FAIL from the exit status, printed here: a failed ssh or sudo can't drop the line, and the key file goes either way
+  if { echo x; cat "$W/luks.key"; } | hack/vm.sh ssh 'sudo -S -p "" sh -c "umask 077; head -c 48 > /run/rk.key; d=\$(cryptsetup status croot | awk \"/device:/{print \\\$2}\"); cryptsetup open --test-passphrase --key-file /run/rk.key \$d; r=\$?; shred -u /run/rk.key; exit \$r"'; then echo "PASS recovery key opens LUKS"; else echo "FAIL recovery key opens LUKS"; fi | tee -a "$OUT"
+  # the key goes on stdin, never on a command line: no file the installer or the box wrote may hold it (THREAT-MODEL 7)
+  g=$({ echo x; cat "$W/luks.key"; } | hack/vm.sh ssh 'sudo -S -p "" sh -c "grep -rqaF -f - /var/log /etc /bootpart /boot; echo grep=\$?"' || :)
+  if [ "$g" = grep=1 ]; then echo "PASS the LUKS key is in no file under /var/log, /etc, /bootpart or /boot"; else echo "FAIL the LUKS key is in a file under /var/log, /etc, /bootpart or /boot, or the search failed ($g)"; fi | tee -a "$OUT"
 fi
 
 : > "$VM/gate-$TAG.log"
@@ -219,14 +226,16 @@ vm_check() {
   if vmroot >>"$VM/gate-$TAG.log" 2>&1; then r=PASS; else r=FAIL; fi
   echo "$r $1" | tee -a "$OUT"
 }
-# refused <what> <tgz> <minisig> <journal line>: a firstboot attempt on that release logs the line and installs nothing
+# refused <what> <tgz> <minisig> <journal line>: a firstboot attempt on that release logs the line, installs nothing and
+# leaves nothing in /run (systemd removes the RuntimeDirectory before the restart job returns; the next try is 60 s off)
 refused() {
   serve "$2" "$3"
   vm_check "firstboot refuses $1" <<EOF
 t=\$(date +%s)
 if timeout $((300 * SLOW)) systemctl restart agentbox-firstboot.service; then exit 1; fi # returns when this attempt ends
 journalctl -u agentbox-firstboot.service --since @\$t -o cat | grep -F "$4" &&
-  [ ! -e /var/lib/agentbox/releases ] && [ ! -e /var/lib/agentbox/current ] && [ ! -e /etc/systemd/system/agentbox-reconcile.service ] && [ ! -e /run/agentbox-tampered-ran ]
+  [ ! -e /var/lib/agentbox/releases ] && [ ! -e /var/lib/agentbox/current ] && [ ! -e /etc/systemd/system/agentbox-reconcile.service ] && [ ! -e /run/agentbox-tampered-ran ] &&
+  ! ls -d /run/agentbox-firstboot* 2>/dev/null
 EOF
 }
 refused "a tampered tarball" "$REL/tampered.tgz" "$REL/agentbox-$V.tgz.minisig" "release sha256 $(sha "$REL/tampered.tgz") does not match"
@@ -249,6 +258,7 @@ check "reconcile ran, enabled for multi-user.target" '[ "\$(systemctl is-active 
 check "reconcile not ordered after multi-user.target or firstboot" '! systemctl show -P After agentbox-reconcile.service | grep -Eq "multi-user.target|agentbox-firstboot"'
 check "systemd-analyze verify: reconcile and firstboot units" 'systemd-analyze verify agentbox-reconcile.service agentbox-firstboot.service'
 check "firstboot done, no retry loop"    '[ -e /var/lib/agentbox/.firstboot-done ] && [ "\$(systemctl show -P Result agentbox-firstboot.service)" = success ] && [ "\$(systemctl show -P SubState agentbox-firstboot.service)" = dead ]'
+check "firstboot leaves no /run copies"  '! ls -d /run/agentbox-firstboot*'
 check "no failed units"                  '[ -z "\$(systemctl --failed --no-legend --plain)" ]'
 # the boot has finished (first check), so any unit that rewrites grubenv in place has run; GRUB's own save_env moves no mtime
 check "nothing rewrote grubenv during this boot" '[ "\$(stat -c %Y /boot/grub/grubenv)" -lt "\$(awk "/^btime/{print \\\$2}" /proc/stat)" ]'

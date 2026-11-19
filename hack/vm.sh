@@ -91,15 +91,16 @@ run_qemu() {
   set -- -smp 4 -m 4096 -display none \
     -drive "if=none,id=d0,$disk" -device "$dev,drive=d0,serial=$SERIAL" \
     -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" -device virtio-net-pci,netdev=n0 \
-    -device virtio-rng-pci -device i6300esb -pidfile "$VM/qemu.pid" -qmp "unix:$(qopt "$VM/qmp.sock"),server=on,wait=off" "$@"
+    -device virtio-rng-pci -pidfile "$VM/qemu.pid" -qmp "unix:$(qopt "$VM/qmp.sock"),server=on,wait=off" "$@"
   case $ARCH in
   # virt-11.0: from 11.1 on, virt under HVF uses the in-kernel GICv3, where resolute's AAVMF hangs before its boot
   # manager runs. 11.0 keeps QEMU's emulated GICv2.
   arm64) exec qemu-system-aarch64 -machine virt-11.0 -accel hvf -cpu host \
     -drive "if=pflash,format=raw,readonly=on,file=$(qopt "$VM/fw/AAVMF_CODE.ms.fd")" \
     -drive "if=pflash,format=raw,file=$(qopt "$VM/vars.fd")" "$@" ;;
-  # SeaBIOS is QEMU's default x86 firmware. KVM where the host has it (Linux CI), else TCG.
-  amd64) exec qemu-system-x86_64 -machine q35 -accel kvm -accel tcg -cpu max "$@" ;;
+  # SeaBIOS is QEMU's default x86 firmware. KVM where the host has it (Linux CI), else TCG. The i6300esb is amd64's
+  # only: arm64 virt has no watchdog device, so that VM boots the seed's softdog fallback (ARCHITECTURE §3.3)
+  amd64) exec qemu-system-x86_64 -machine q35 -accel kvm -accel tcg -cpu max -device i6300esb "$@" ;;
   *) die "unknown VM arch $ARCH" ;;
   esac
 }

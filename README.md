@@ -107,8 +107,8 @@ git worktree add --detach ../agentbox-wt/b main
 cd ../agentbox-wt/b && AGENTBOX_VM_ID=1 AGENTBOX_ISO_DIR=~/workplace/agentbox/.vm hack/gate.sh tpm2+tang
 ```
 
-`hack/apply-gate.sh none|tpm2|tpm2+tang [install setup cycles breaks cuts]` runs the `os.apply` gates on the same VM
-(all five scenarios take about 90 minutes); results land in `.vm/apply-gate-<mode>.txt`.
+`hack/apply-gate.sh none|tpm2|tpm2+tang [uefi|bios] [install setup cycles breaks cuts]` runs the `os.apply` gates on the
+same VM (all five scenarios take about 90 minutes on arm64); results land in `.vm/apply-gate-<mode>[-bios].txt`.
 
 Power cuts: `hack/powercut.sh log boot` runs the VM with every disk write and flush logged (QEMU blklogwrites), and the
 podman machine replays the log with xfstests `replay-log`. `hack/powercut.sh check` runs `btrfs check --readonly` at
