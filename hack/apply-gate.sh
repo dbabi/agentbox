@@ -12,7 +12,7 @@
 #          the committed generation with no console input. After the GRUB break, health drops the kernel-less entry
 #          and retention refuses to prune while a kept fstab binds the trial. Then an emptied grubenv boots committed.
 # cuts     QMP power cuts (vm.sh cut) at five points of an apply, then the grubenv a cut can leave split between GRUB
-#          and Linux, and a clean apply that commits. The cuts hit a
+#          and Linux, a next_entry write that fails after its rename, and a clean apply that commits. The cuts hit a
 #          bad moment for GRUB only by chance, so one more apply, trial and commit runs logged (hack/powercut.sh log),
 #          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Needs the podman machine.
 # Every plan also checks that apt ran none of the box's update hooks: update-success-stamp stays as it was.
@@ -291,6 +291,26 @@ EOF
   status
 }
 
+# env_fail: the next_entry write fails after its rename (a grub-editenv shim fails its list check once). GRUB may boot
+# gen-M, so it stays pending, as a power cut there leaves it, and the next boot tries it once.
+env_fail() {
+  plan --reinstall --install base-files
+  root >>"$LOG" 2>&1 <<'EOF' || die "next_entry write: could not install the grub-editenv shim"
+mkdir -p /run/gate-shim
+printf '%s\n' '#!/bin/sh' 'if [ "$2" = list ] && grep -q "^next_entry=agentbox-" "$1" && rm /run/gate-shim/once 2>/dev/null; then exit 1; fi' \
+  'exec /usr/bin/grub-editenv "$@"' > /run/gate-shim/grub-editenv
+chmod 0755 /run/gate-shim/grub-editenv
+touch /run/gate-shim/once
+EOF
+  ! echo "PATH=/run/gate-shim:\$PATH $A os apply --approve $H --no-reboot" | root >"$VM/apply.out" 2>&1 || die "next_entry write: the apply did not fail"
+  cat "$VM/apply.out" >>"$LOG"
+  echo 'rm -r /run/gate-shim' | root >>"$LOG" 2>&1
+  E=$(sed -n 's/^os: boot once: //p' "$VM/apply.out") M=$(sed -n 's/^os: boot once: agentbox-\(gen-[0-9]*\)-.*/\1/p' "$VM/apply.out")
+  [ -n "$M" ] || die "next_entry write: the apply never reached boot once"
+  check "next_entry write fails after its rename: $M stays pending and armed, not discarded" "grep -q 'stays pending' '$VM/apply.out' && echo 'test -e /var/lib/agentbox/os/pending.json && test -d /bootpart/agentbox/gens/$M && grub-editenv /boot/grub/grubenv list | grep -qx next_entry=$E' | root"
+  trial "next_entry write failed"
+}
+
 sc_cuts() {
   up
   cut_at clone 0
@@ -299,6 +319,7 @@ sc_cuts() {
   cut_at update-grub 0
   cut_at "boot once" 0
   split_env
+  env_fail
   plan --reinstall --install base-files
   build; trial "after the cuts"
   check "after the cuts: leftovers pruned, at most three generations" "[ \$(echo 'ls -d /bootpart/agentbox/gens/gen-[1-9]* | wc -l' | root) -le 3 ]"

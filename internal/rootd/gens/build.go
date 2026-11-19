@@ -249,7 +249,8 @@ func nspawnArgs(root, boot, planDir string, env []string, script string, args []
 }
 
 // Build turns the approved plan into gen-M and sets it up for one trial boot (§3.3 steps 3-5). Any failure after
-// the clone discards gen-M. top is the mounted btrfs top level.
+// the clone discards gen-M, except a next_entry write that may have landed: then it returns the trial, still pending,
+// with the error. top is the mounted btrfs top level.
 func Build(hash, top string) (*Pending, error) {
 	if p, err := Settle(); err != nil {
 		return nil, err
@@ -313,7 +314,7 @@ func Build(hash, top string) (*Pending, error) {
 		return nil, err
 	}
 	pend, err := build(p, hash, root, boot, m, sums)
-	if err != nil {
+	if err != nil && pend == nil {
 		fmt.Fprintf(os.Stderr, "agentbox: ALERT: build %s discarded: %v\n", m, err)
 		if derr := discard(top, m); derr != nil {
 			return nil, fmt.Errorf("%v; discarding %s failed too: %v", err, m, derr)
@@ -325,7 +326,7 @@ func Build(hash, top string) (*Pending, error) {
 		}
 		return nil, err
 	}
-	return pend, nil
+	return pend, err
 }
 
 func build(p *Plan, hash, root, boot, m string, sums []string) (*Pending, error) {
@@ -473,6 +474,10 @@ func build(p *Plan, hash, root, boot, m string, sums []string) (*Pending, error)
 		return nil, err
 	}
 	if err := SetGrubEnv("next_entry", entry); err != nil {
+		// past the rename GRUB may boot gen-M: keep it pending, the state a power cut here leaves; Settle ends it
+		if env, rerr := ReadGrubEnv(); rerr != nil || env["next_entry"] == entry {
+			return pend, fmt.Errorf("%v; %s stays pending: the next boot tries it once or falls back", err, entry)
+		}
 		os.Remove(filepath.Join(StateDir, "pending.json"))
 		return nil, err
 	}
