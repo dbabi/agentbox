@@ -297,11 +297,12 @@ func Build(hash, top string) (*Pending, error) {
 		}
 		sums = append(sums, d.SHA256+"  "+d.File)
 	}
-	all, err := Generations(top) // before pruning, so a failed trial's number is never reused
+	all, err := Generations(top) // before pruning, so leftovers keep their numbers
 	if err != nil {
 		return nil, err
 	}
-	m := Gen(slices.Max(all) + 1)
+	failed, _ := filepath.Glob(filepath.Join(StateDir, "failed", "gen-*.json"))
+	m := NextGen(all, failed)
 	if err := PruneGens(top); err != nil { // failed trials and interrupted builds go before a new one starts
 		return nil, err
 	}

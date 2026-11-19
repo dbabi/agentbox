@@ -100,3 +100,21 @@ func TestBadNames(t *testing.T) {
 		t.Fatalf("BadNames = %v", got)
 	}
 }
+
+func TestNextGen(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		all    []int
+		failed []string
+		want   string
+	}{
+		{"consecutive", []int{2, 3, 4, 5}, nil, "gen-6"},
+		{"a failed trial pruned since, then a build discarded", []int{2, 3, 4}, []string{"/var/lib/agentbox/os/failed/gen-5.json"}, "gen-6"},
+		{"failed records below a kept generation", []int{2, 3, 4, 9}, []string{"failed/gen-5.json", "failed/gen-8.json"}, "gen-10"},
+		{"not records", []int{2, 3, 4}, []string{"failed/gen-x.json", "failed/notes.json", "failed/gen-07.json"}, "gen-5"},
+	} {
+		if got := NextGen(tc.all, tc.failed); got != tc.want {
+			t.Errorf("%s: NextGen = %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
