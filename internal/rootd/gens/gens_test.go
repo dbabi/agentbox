@@ -1,6 +1,7 @@
 package gens
 
 import (
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -116,5 +117,20 @@ func TestNextGen(t *testing.T) {
 		if got := NextGen(tc.all, tc.failed); got != tc.want {
 			t.Errorf("%s: NextGen = %s, want %s", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestMenuIDs reads grub.cfg as update-grub left it on the tpm2 VM after the power cuts (gen-1 and gen-6, two kernels each).
+func TestMenuIDs(t *testing.T) {
+	cfg, err := os.ReadFile("testdata/grub.cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"agentbox-gen-1-7.0.0-43-generic", "agentbox-gen-1-7.0.0-30-generic", "agentbox-gen-6-7.0.0-43-generic", "agentbox-gen-6-7.0.0-30-generic"}
+	if got := MenuIDs(cfg); !slices.Equal(got, want) {
+		t.Fatalf("MenuIDs = %q, want %q", got, want)
+	}
+	if got := MenuIDs([]byte("if [ \"${saved_entry}\" = \"agentbox-gen-1-7.0.0-43-generic\" ]; then set fallback=0; fi\n\tmenuentry 'x' --id 'nested' {\n")); got != nil {
+		t.Errorf("MenuIDs took a fallback line or a submenu entry: %q", got)
 	}
 }

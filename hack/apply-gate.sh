@@ -9,8 +9,8 @@
 #          (Run again on a used box, the generation numbers are higher and the oldest one is pruned.)
 # breaks   a trial broken in GRUB, in the initrd (clevis removed; btrfs in none mode), in fstab (/boot bound to the
 #          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
-#          the committed generation with no console input. After the GRUB break, retention refuses to prune the
-#          trial while a kept fstab binds it. Then an emptied grubenv boots the committed generation.
+#          the committed generation with no console input. After the GRUB break, health drops the kernel-less entry
+#          and retention refuses to prune while a kept fstab binds the trial. Then an emptied grubenv boots committed.
 # cuts     QMP power cuts (vm.sh cut) at five points of an apply, then a clean apply that commits. Those cuts hit a
 #          bad moment for GRUB only by chance, so one more apply, trial and commit runs logged (hack/powercut.sh log),
 #          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Needs the podman machine.
@@ -191,6 +191,7 @@ sc_breaks() {
   build
   echo "rm /bootpart/agentbox/gens/$M/vmlinuz-$K" | root >>"$LOG" 2>&1
   fallback "GRUB break (vmlinuz-$K deleted after update-grub)" 600
+  check "GRUB break: health drops $E, whose vmlinuz is gone, from grub.cfg" "wait_root 180 '! grep -qF $E /boot/grub/grub.cfg'"
   plan --reinstall --install base-files
   # the build would prune the failed $M, but a kept generation's fstab (the running one's) binds its boot dir
   echo "echo '/bootpart/agentbox/gens/$M /mnt none bind,noauto 0 0' >> /etc/fstab" | root >>"$LOG" 2>&1

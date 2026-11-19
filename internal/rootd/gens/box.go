@@ -401,7 +401,8 @@ func protectedGens() (booted int, committed int, prot []int, err error) {
 }
 
 // PruneGens applies retention (§3.3 step 7). It refuses, deleting nothing, if a kept generation's fstab still binds
-// a doomed generation's boot dir. Deleted generations leave grub.cfg in the same step.
+// a doomed generation's boot dir. Deleted generations leave grub.cfg in the same step; if that update-grub fails or
+// is cut, FixGrub repairs grub.cfg from the next health run.
 func PruneGens(top string) error {
 	all, err := Generations(top)
 	if err != nil {
@@ -444,6 +445,28 @@ func stillBound(top string, all, drop []int) error {
 		for _, d := range drop {
 			if References(fstab, filepath.Join(GensDir, Gen(d))) {
 				return fmt.Errorf("ALERT: retention refused: kept %s's fstab still binds %s", Gen(k), filepath.Join(GensDir, Gen(d)))
+			}
+		}
+	}
+	return nil
+}
+
+// FixGrub runs update-grub when grub.cfg lists a generation whose kernel or initrd is gone: a prune or discard whose
+// update-grub failed or was cut, which no later prune retries (it finds nothing left to drop).
+func FixGrub() error {
+	cfg, err := os.ReadFile(filepath.Join(GrubDir, "grub.cfg"))
+	if err != nil {
+		return err
+	}
+	for _, id := range MenuIDs(cfg) {
+		g, k, ok := ParseEntry(id)
+		if !ok {
+			continue
+		}
+		for _, f := range []string{"vmlinuz-" + k, "initrd.img-" + k} { // what 09_agentbox lists an entry for
+			if _, err := os.Stat(filepath.Join(GensDir, g, f)); errors.Is(err, fs.ErrNotExist) {
+				logf("grub.cfg lists %s, whose %s is gone: update-grub", id, f)
+				return UpdateGrub()
 			}
 		}
 	}

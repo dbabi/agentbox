@@ -153,6 +153,17 @@ func NextGen(all []int, failed []string) string {
 	return Gen(hi + 1)
 }
 
+var reMenuID = regexp.MustCompile(`(?m)^menuentry .* --id '([^']*)' \{$`)
+
+// MenuIDs returns the --id of every top-level menu entry in a grub.cfg (09_agentbox's; 10_linux's use $menuentry_id_option).
+func MenuIDs(cfg []byte) []string {
+	var ids []string
+	for _, m := range reMenuID.FindAllSubmatch(cfg, -1) {
+		ids = append(ids, string(m[1]))
+	}
+	return ids
+}
+
 // Prune returns the generations to delete (§3.3 step 7): keep current, previous and one more, that is the three
 // newest at or below the committed one, plus every protected generation (booted, saved_entry, committed, pending).
 // Anything newer than the committed generation and unprotected is a failed trial or an interrupted build.
