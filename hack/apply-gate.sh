@@ -12,7 +12,8 @@
 #          the committed generation with no console input. Then an emptied grubenv boots the committed generation.
 # cuts     QMP power cuts (vm.sh cut) at five points of an apply, then a clean apply that commits. Those cuts hit a
 #          bad moment for GRUB only by chance, so one more apply, trial and commit runs logged (hack/powercut.sh log),
-#          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Needs the podman machine.
+#          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Each split it lists (GRUB reads
+#          the old grubenv, Linux the new) then boots, and health must settle it. Needs the podman machine.
 # Checks print PASS/FAIL to .vm/apply-gate-<mode>.txt, command output goes to .vm/apply-gate-<mode>.log; exit 1 on
 # any FAIL. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -280,7 +281,11 @@ sc_cuts() {
   build; trial "logged apply"
   echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
   while running; do sleep 2; done
-  check "logged apply: after every write to /bootpart, GRUB finds its entry, kernel and initrd (powercut.sh grub)" "hack/powercut.sh grub"
+  check "logged apply: after every write to /bootpart, GRUB finds its entry, kernel and initrd (powercut.sh grub)" "hack/powercut.sh grub > '$VM/powercut-grub.txt'"
+  cat "$VM/powercut-grub.txt" >>"$LOG"
+  # the next_entry and the saved_entry replace each leave one, so none at all means the scan is broken
+  S=$(sed -n 's/^entry \([0-9]*\): split: .*/\1/p' "$VM/powercut-grub.txt" | xargs)
+  check "logged apply: a cut at each split ($S) boots clean and settles on the committed generation (powercut.sh boot)" "[ -n '$S' ] && hack/powercut.sh boot $S"
 }
 
 : >"$LOG"

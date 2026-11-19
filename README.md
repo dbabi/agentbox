@@ -112,9 +112,10 @@ cd ../agentbox-wt/b && AGENTBOX_VM_ID=1 AGENTBOX_ISO_DIR=~/workplace/agentbox/.v
 
 Power cuts: `hack/powercut.sh log boot` runs the VM with every disk write and flush logged (QEMU blklogwrites), and the
 podman machine replays the log with xfstests `replay-log`. `hack/powercut.sh check` runs `btrfs check --readonly` at
-every flush; `hack/powercut.sh boot <entry>...` boots the disk as it was after those log entries;
-`hack/powercut.sh grub` reads `/bootpart` as GRUB does (no journal replay) after every entry that writes it, and fails
-unless GRUB would find its entry, kernel and initrd. The script header says what this models and what it does not.
+every flush; `hack/powercut.sh boot <entry>...` boots the disk as it was after those log entries, and health must then
+settle it on the committed entry; `hack/powercut.sh grub` reads `/bootpart` as GRUB does (no journal replay) after
+every entry that writes it, fails unless GRUB would find its entry, kernel and initrd, and lists the splits, where
+Linux reads another grubenv after journal replay. The script header says what this models and what it does not.
 
 ## Test
 ```sh

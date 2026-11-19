@@ -303,7 +303,8 @@ func Lock(wait bool) (func(), error) {
 }
 
 // Settle ends a trial that is over: once the box has rebooted since the build and booted any other generation,
-// the trial failed (§3.3 step 6: mark it failed, alert, never set saved_entry). It returns the trial still pending.
+// the trial failed (§3.3 step 6: mark it failed, alert, and grubenv names it nowhere). It returns the trial still
+// pending.
 func Settle() (*Pending, error) {
 	p, err := ReadPending()
 	if err != nil || p == nil {
@@ -319,6 +320,27 @@ func Settle() (*Pending, error) {
 	}
 	if id == p.BootID || (gen == p.Gen && k == p.Kernel) {
 		return p, nil
+	}
+	// GRUB reads /bootpart without replaying its journal: a cut inside SetGrubEnv can boot the old grubenv while the
+	// one Linux reads still arms the trial (next_entry) or makes it the default (saved_entry). This runs before
+	// failed/ and pending.json change, so a cut in here either boots the trial, still pending, or runs this again.
+	env, err := ReadGrubEnv()
+	if err != nil {
+		return nil, err
+	}
+	if env["next_entry"] == p.Entry {
+		if err := SetGrubEnv("next_entry", ""); err != nil {
+			return nil, err
+		}
+	}
+	if env["saved_entry"] == p.Entry {
+		c, err := CommittedEntry()
+		if err != nil {
+			return nil, err
+		}
+		if err := SetGrubEnv("saved_entry", c); err != nil {
+			return nil, err
+		}
 	}
 	rec, _ := json.Marshal(map[string]string{"entry": p.Entry, "plan": p.Plan, "booted": Entry(gen, k), "at": time.Now().UTC().Format(time.RFC3339)})
 	if err := os.MkdirAll(filepath.Join(StateDir, "failed"), 0o700); err != nil {
