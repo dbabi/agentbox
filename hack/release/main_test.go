@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"debug/buildinfo"
 	"debug/elf"
 	"io"
 	"os"
@@ -37,8 +38,18 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The caller's Go settings, in the environment and in the `go env -w` file, must not reach the binaries. A missing
+	// GOWORK file fails any build that reads it.
+	goenv := filepath.Join(dir, "goenv")
+	if err := os.WriteFile(goenv, []byte("GOFLAGS=-tags=leak\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]string{"GOENV": goenv, "GOFLAGS": "-tags=leak", "GOAMD64": "v3", "GOARM64": "v8.1",
+		"GOFIPS140": "latest", "GOWORK": filepath.Join(dir, "go.work")} {
+		t.Setenv(k, v)
+	}
 	if _, again, err := build("1.2.3-test", key, out); err != nil || !bytes.Equal(sum, again) {
-		t.Fatalf("a second build of the same tree differs: %v", err)
+		t.Fatalf("a second build, with the caller's Go settings changed, differs: %v", err)
 	}
 	if b, err := exec.Command(ms, "-V", "-m", tgz, "-p", pub).CombinedOutput(); err != nil || !bytes.Contains(b, []byte("Trusted comment: agentbox 1.2.3-test")) {
 		t.Fatalf("minisign -V: %v\n%s", err, b)
@@ -48,6 +59,7 @@ func TestBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	machine := map[string]elf.Machine{"bin/linux-amd64/agentbox": elf.EM_X86_64, "bin/linux-arm64/agentbox": elf.EM_AARCH64}
+	level := map[string]string{"bin/linux-amd64/agentbox": "GOAMD64=v1", "bin/linux-arm64/agentbox": "GOARM64=v8.0"}
 	mode := map[string]int64{"bin/linux-amd64/agentbox": 0o755, "bin/linux-arm64/agentbox": 0o755, "install.sh": 0o755}
 	want := "bin/linux-amd64/agentbox bin/linux-arm64/agentbox install.sh"
 	units, _ := filepath.Glob("systemd/*") // sorted, and every unit in the repo ships
@@ -75,6 +87,10 @@ func TestBuild(t *testing.T) {
 			b, _ := io.ReadAll(tr)
 			if f, err := elf.NewFile(bytes.NewReader(b)); err != nil || f.Machine != m || !bytes.Contains(b, []byte("1.2.3-test")) {
 				t.Errorf("%s: want a %v ELF that carries the version (%v)", h.Name, m, err)
+			}
+			// the baseline levels: the old-PC target has no AVX2
+			if bi, err := buildinfo.Read(bytes.NewReader(b)); err != nil || !strings.Contains(bi.String(), "\nbuild\t"+level[h.Name]+"\n") {
+				t.Errorf("%s: want %s in its build info (%v)", h.Name, level[h.Name], err)
 			}
 		}
 	}

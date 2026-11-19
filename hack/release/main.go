@@ -65,7 +65,11 @@ func build(version, key, out string) (string, []byte, error) {
 	for _, arch := range []string{"arm64", "amd64"} {
 		bin := filepath.Join(tmp, arch)
 		cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w -X main.version="+version, "-o", bin, "./cmd/agentbox")
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+arch)
+		// The caller's Go settings must not reach the binaries. GOENV=off drops `go env -w` ones, which an empty GOFLAGS=
+		// would not override; v1 and v8.0 run on pre-AVX2 PCs and ARMv8.0 boards. GOTOOLCHAIN stays the caller's: it picks
+		// the Go version.
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+arch, "GOENV=off", "GOWORK=off", "GOFLAGS=",
+			"GOEXPERIMENT=", "GOFIPS140=off", "GOAMD64=v1", "GOARM64=v8.0")
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		if err := cmd.Run(); err != nil {
 			return "", nil, fmt.Errorf("go build linux/%s: %w", arch, err)
