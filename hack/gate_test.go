@@ -46,3 +46,65 @@ func TestGateBootMode(t *testing.T) {
 		}
 	}
 }
+
+// TestGateUnwritten runs gate.sh's dup-serial disk check under dash on real qcow2 images: a fresh image passes, and an
+// image the guest wrote fails, a Write Zeroes ("data": false) included, as does one qemu-img can't read.
+func TestGateUnwritten(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash not installed")
+	}
+	for _, b := range []string{"qemu-img", "qemu-io"} {
+		if _, err := exec.LookPath(b); err != nil {
+			t.Skip(b + " not installed")
+		}
+	}
+	src, err := os.ReadFile("gate.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop := regexp.MustCompile(`(?s)\n *for d in disk disk2; do.*?\n *done\n`).Find(src)
+	if loop == nil {
+		t.Fatal("the dup-serial disk loop not found in gate.sh")
+	}
+	for _, c := range []struct {
+		name, io string // qemu-io command on disk2.qcow2; "" leaves it fresh, "-" removes it
+		pass bool
+	}{
+		{"fresh", "", true},
+		{"zero write", "write -z 0 64k", false},
+		{"data write of zeros", "write -P 0 0 64k", false},
+		{"data write", "write -P 0xab 1M 4k", false},
+		{"discard of nothing written", "discard 0 64k", true},
+		{"missing", "-", false},
+	} {
+		dir := t.TempDir()
+		for _, d := range []string{"disk", "disk2"} {
+			if out, err := exec.Command("qemu-img", "create", "-q", "-f", "qcow2", filepath.Join(dir, d+".qcow2"), "40G").CombinedOutput(); err != nil {
+				t.Fatalf("qemu-img create: %v\n%s", err, out)
+			}
+		}
+		switch c.io {
+		case "":
+		case "-":
+			os.Remove(filepath.Join(dir, "disk2.qcow2"))
+		default:
+			if out, err := exec.Command("qemu-io", "-f", "qcow2", "-c", c.io, filepath.Join(dir, "disk2.qcow2")).CombinedOutput(); err != nil {
+				t.Fatalf("qemu-io %s: %v\n%s", c.io, err, out)
+			}
+		}
+		cmd := exec.Command(dash, "-c", "VM=. n=0"+string(loop)+"echo n=$n")
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", c.name, err, out)
+		}
+		want := "PASS disk2.qcow2 never written"
+		if !c.pass {
+			want = "FAIL disk2.qcow2 written or unreadable"
+		}
+		if !strings.Contains(string(out), "PASS disk.qcow2 never written") || !strings.Contains(string(out), want) {
+			t.Errorf("%s: want %q\n%s", c.name, want, out)
+		}
+	}
+}
