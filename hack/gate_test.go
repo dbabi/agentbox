@@ -69,7 +69,7 @@ func TestGateUnwritten(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name, io string // qemu-io command on disk2.qcow2; "" leaves it fresh, "-" removes it
-		pass bool
+		pass     bool
 	}{
 		{"fresh", "", true},
 		{"zero write", "write -z 0 64k", false},
