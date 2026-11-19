@@ -81,6 +81,26 @@ func validConfig(t *testing.T, enc, boot string) *Config {
 
 const testSHA = "5a4f3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a"
 
+// RE2's . stops at a newline, so this sees the bind line only; -[A-Za-z]*y finds y in any short-option cluster
+var reTrustsTang = regexp.MustCompile(`clevis luks bind.*[ \t]-[A-Za-z]*y`)
+
+// trustsTang reports whether a clevis luks bind line in s passes -y, which skips checking Tang's advertisement
+// against thp. A line continued with a trailing backslash counts as one line.
+func trustsTang(s string) bool { return reTrustsTang.MatchString(strings.ReplaceAll(s, "\\\n", " ")) }
+
+// TestTrustsTang checks the -y guard itself: the old pattern never matched -y right after bind.
+func TestTrustsTang(t *testing.T) {
+	for _, f := range []string{"-y -k f", "-yk f", "-yk/run/k", "-fy -k f", "-k f -d d -y", "-k f -yd d", " -y", "\t-y", "-k f \\\n        -y -d d"} {
+		if !trustsTang("      chroot /mnt/new clevis luks bind " + f + " sss '{}'\n") {
+			t.Errorf("misses -y in %q", f)
+		}
+	}
+	if trustsTang("      chroot /mnt/new clevis luks bind -k /run/agentbox-luks.key -d \"$LUKSDEV\" sss '{\"t\":2}'\n" +
+		"      chroot /mnt/new env DEBIAN_FRONTEND=noninteractive apt-get purge -y kdump-tools\n") {
+		t.Error("flags a -y on a later line")
+	}
+}
+
 func TestRenderModes(t *testing.T) {
 	encWant := map[string][]string{
 		EncTPM2Tang: {"keyfile: /run/agentbox-luks.key, options: [luks, x-initrd.attach, timeout=300s]}",
@@ -166,7 +186,7 @@ func TestRenderModes(t *testing.T) {
 					}
 					last = i
 				}
-				if regexp.MustCompile(`clevis luks bind .*(^| )-y( |$)`).MatchString(s) {
+				if trustsTang(s) {
 					t.Error("clevis luks bind must not auto-trust Tang (-y)")
 				}
 				for _, leak := range []string{"<no value>", "{{"} {
