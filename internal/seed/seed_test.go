@@ -261,6 +261,9 @@ func TestValidateRejects(t *testing.T) {
 		{"--dev http url off the vm host", "release url", EncNone, func(c *Config) { c.Dev, c.ReleaseURL = true, "http://192.168.1.5:7600/a.tgz" }},
 		{"--dev url without port", "release url", EncNone, func(c *Config) { c.Dev, c.ReleaseURL = true, "http://10.0.2.2/a.tgz" }},
 		{"--dev url with query", "release url", EncNone, func(c *Config) { c.Dev, c.ReleaseURL = true, "http://10.0.2.2:7600/a.tgz?$(id)" }},
+		{"release port 0", "release url", EncNone, func(c *Config) { c.ReleaseURL = "https://releases.example.com:0/a.tgz" }},
+		{"release port 70000", "release url", EncNone, func(c *Config) { c.ReleaseURL = "https://releases.example.com:70000/a.tgz" }},
+		{"--dev url port 99999", "release url", EncNone, func(c *Config) { c.Dev, c.ReleaseURL = true, "http://10.0.2.2:99999/a.tgz" }},
 		{"no release sha256", "release sha256", EncNone, func(c *Config) { c.ReleaseSHA256 = "" }},
 		{"short release sha256", "release sha256", EncNone, func(c *Config) { c.ReleaseSHA256 = testSHA[:63] }},
 		{"release sha256 with shell", "release sha256", EncNone, func(c *Config) { c.ReleaseSHA256 = testSHA[:60] + "$(x)" }},
@@ -270,6 +273,8 @@ func TestValidateRejects(t *testing.T) {
 		{"tang https", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "https://192.168.1.10" }},
 		{"tang public ip", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "http://203.0.113.5:7500" }},
 		{"tang bad ip", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "http://999.1.1.1" }},
+		{"tang port 0", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "http://192.168.1.10:0/tang" }},
+		{"tang port 65536", "tang url", EncTPM2Tang, func(c *Config) { c.TangURL = "http://192.168.1.10:65536" }},
 		{"tang url in tpm2 mode", "tang url/thp", EncTPM2, func(c *Config) { c.TangURL = "http://192.168.1.10" }},
 		{"bad encryption", "encryption", EncNone, func(c *Config) { c.Encryption = "luks" }},
 		{"bad boot", "boot", EncNone, func(c *Config) { c.Boot = "efi" }},
@@ -318,11 +323,19 @@ func TestValidateAccepts(t *testing.T) {
 			t.Errorf("user %q: %v", u, err)
 		}
 	}
-	for _, u := range []string{"https://releases.example.com/a.tgz", "http://10.0.2.2:7600/agentbox-0.0.1-gate.tgz"} {
+	for _, u := range []string{"https://releases.example.com/a.tgz", "http://10.0.2.2:7600/agentbox-0.0.1-gate.tgz",
+		"https://releases.example.com:65535/a.tgz", "http://10.0.2.2:1/a.tgz"} {
 		c := validConfig(t, EncNone, "uefi")
 		c.Dev, c.ReleaseURL = true, u
 		if err := c.Validate(); err != nil {
 			t.Errorf("--dev release url %q: %v", u, err)
+		}
+	}
+	for _, u := range []string{"http://192.168.1.10", "http://192.168.1.10:1/tang", "http://192.168.1.10:65535"} {
+		c := validConfig(t, EncTPM2Tang, "uefi")
+		c.TangURL = u
+		if err := c.Validate(); err != nil {
+			t.Errorf("tang url %q: %v", u, err)
 		}
 	}
 }

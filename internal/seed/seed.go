@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"math/big"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -108,8 +110,8 @@ func (c *Config) Validate() error {
 	}
 	switch c.Encryption {
 	case EncTPM2Tang:
-		if m := reTangURL.FindStringSubmatch(c.TangURL); m == nil {
-			bad("tang url %q: http://<LAN IPv4>[:port][/path] required (the 26.04 dracut initramfs has no DNS resolver or CA bundle)", c.TangURL)
+		if m := reTangURL.FindStringSubmatch(c.TangURL); m == nil || !portOK(c.TangURL) {
+			bad("tang url %q: http://<LAN IPv4>[:port][/path] required, port 1-65535 (the 26.04 dracut initramfs has no DNS resolver or CA bundle)", c.TangURL)
 		} else if ip, err := netip.ParseAddr(m[1]); err != nil || !ip.IsPrivate() {
 			bad("tang url %q: %s is not a private LAN address; tpm2+tang protects away from home only if Tang is unreachable from outside", c.TangURL, m[1])
 		}
@@ -137,13 +139,23 @@ func (c *Config) Validate() error {
 	if mk, err := base64.StdEncoding.DecodeString(c.MinisignPubKey); !reMinisign.MatchString(c.MinisignPubKey) || err != nil || len(mk) != 42 || string(mk[:2]) != "Ed" {
 		bad("minisign public key: expected the 56-char Ed25519 minisign key starting with RW")
 	}
-	if !reHTTPS.MatchString(c.ReleaseURL) && !(c.Dev && reDevURL.MatchString(c.ReleaseURL)) {
-		bad("release url %q: https://host[:port]/path without query string required (with --dev, also http://10.0.2.2:PORT/path)", c.ReleaseURL)
+	if !(reHTTPS.MatchString(c.ReleaseURL) || c.Dev && reDevURL.MatchString(c.ReleaseURL)) || !portOK(c.ReleaseURL) {
+		bad("release url %q: https://host[:port]/path without query string required, port 1-65535 (with --dev, also http://10.0.2.2:PORT/path)", c.ReleaseURL)
 	}
 	if !reSHA256.MatchString(c.ReleaseSHA256) {
 		bad("release sha256 %q: the tarball's SHA-256 is required, 64 lowercase hex digits (make release prints it); minisign alone would accept any older signed release", c.ReleaseSHA256)
 	}
 	return errors.Join(errs...)
+}
+
+// portOK reports whether URL u, already matched by one of the URL patterns above, has no port or one in 1-65535.
+func portOK(u string) bool {
+	p, err := url.Parse(u)
+	if err != nil {
+		return false
+	}
+	n, err := strconv.ParseUint(p.Port(), 10, 16)
+	return p.Port() == "" || err == nil && n > 0
 }
 
 // sshKeyOK checks the key blob's wire format: its type string must equal the line's key type.
