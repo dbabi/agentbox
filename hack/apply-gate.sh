@@ -9,7 +9,8 @@
 #          (Run again on a used box, the generation numbers are higher and the oldest one is pruned.)
 # breaks   a trial broken in GRUB, in the initrd (clevis removed; btrfs in none mode), in fstab (/boot bound to the
 #          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
-#          the committed generation with no console input. Then an emptied grubenv boots the committed generation.
+#          the committed generation with no console input. Then a clean apply commits, and an emptied grubenv boots that
+#          committed generation, not entry 0.
 # cuts     QMP power cuts (vm.sh cut) at five points of an apply, then a clean apply that commits. Those cuts hit a
 #          bad moment for GRUB only by chance, so one more apply, trial and commit runs logged (hack/powercut.sh log),
 #          and powercut.sh grub reads /bootpart as GRUB does after every write to it. Needs the podman machine.
@@ -41,6 +42,9 @@ root() { { echo x; cat; } | hack/vm.sh ssh 'sudo -S -p "" sh -s'; } # stdin: a s
 bootid() { vssh cat /proc/sys/kernel/random/boot_id 2>/dev/null || :; }
 booted() { vssh 'g=$(findmnt -no FSROOT /); echo "agentbox-${g#/@}-$(uname -r)"'; }
 committed() { vssh cat /bootpart/agentbox/committed; }
+# deadline_fired ENTRY: the boot before this one ended with the boot deadline rebooting ENTRY, not with a crash or the
+# watchdog (-b -1: journalctl rejects /proc's dashed boot_id)
+deadline_fired() { echo 'journalctl -b -1 -o cat -u agentbox-boot-deadline.service' | root | grep -qxF "agentbox: boot deadline: $1 is not committed; rebooting into the committed generation"; }
 running() { [ -f "$VM/qemu.pid" ] && kill -0 "$(cat "$VM/qemu.pid")" 2>/dev/null; }
 # wait_boot OLD SECONDS: until SSH answers from a boot other than OLD
 wait_boot() {
@@ -98,10 +102,15 @@ wait_gen() {
     sleep 5
   done
 }
-# fallback NAME SECONDS: reboot into the broken trial E; within SECONDS, with no console input, the box must run the
-# committed generation C again. A trial that comes up (and so needs health plus the deadline) is logged.
+# fallback NAME SECONDS [TRIED]: reboot into the broken trial E; within SECONDS, with no console input, the box must run
+# the committed generation C again, after GRUB took the one-shot boot of E. Settle marks a trial failed once any other
+# generation boots, so the console since the reboot must also show TRIED (the trial's kernel ran). A trial that comes
+# up (and so needs health plus the deadline) is logged.
 fallback() {
-  C=$(committed); old=$(bootid); t0=$(date +%s); seen=; reboot_vm
+  C=$(committed); old=$(bootid); t0=$(date +%s); seen=; TRIED=${3:-}
+  S=$(ls -t "$VM"/boot-*.log | head -n 1); off=$(( $(wc -c <"$S") + 1 )) # vm.sh boot logs every reboot to one file
+  I=$(vssh stat -c %i /boot/grub/grubenv)
+  reboot_vm
   while :; do
     id=$(bootid) b=
     [ -z "$id" ] || [ "$id" = "$old" ] || b=$(booted 2>/dev/null) || :
@@ -115,6 +124,9 @@ fallback() {
   done
   log "$1: back on $C after $(( $(date +%s) - t0 )) s"
   check "$1: falls back to the committed $C" '[ "$(committed)" = "$C" ]'
+  # GRUB's 00_header empties next_entry when it boots it, in place (same inode); Linux replaces grubenv by rename
+  check "$1: GRUB took the one-shot boot of $E" '[ -n "$I" ] && [ "$(vssh stat -c %i /boot/grub/grubenv)" = "$I" ] && vssh "grub-editenv /boot/grub/grubenv list" | grep -qx next_entry='
+  [ -z "$TRIED" ] || check "$1: the console shows the trial $M ran ($TRIED)" 'tail -c +"$off" "$S" | grep -aqwF -e "$TRIED"'
   settled || :
   check "$1: trial $M marked failed" 'echo "test -e /var/lib/agentbox/os/failed/$M.json && test ! -e /var/lib/agentbox/os/pending.json" | root'
   status
@@ -183,16 +195,16 @@ sc_breaks() {
   up
   plan --reinstall --install base-files
   build
-  echo "rm /bootpart/agentbox/gens/$M/vmlinuz-$K" | root >>"$LOG" 2>&1
+  echo "rm /bootpart/agentbox/gens/$M/vmlinuz-$K" | root >>"$LOG" 2>&1 || die "could not delete vmlinuz-$K"
   fallback "GRUB break (vmlinuz-$K deleted after update-grub)" 600
   plan --reinstall --install base-files
   build
   if [ "$ENC" = none ]; then
     echo "dracut --force --omit-drivers btrfs /bootpart/agentbox/gens/$M/initrd.img-$K $K && ! lsinitrd /bootpart/agentbox/gens/$M/initrd.img-$K | grep -q /btrfs.ko" | root >>"$LOG" 2>&1 || die "could not break the initrd"
-    fallback "initrd break (btrfs.ko removed)" 900
+    fallback "initrd break (btrfs.ko removed)" 900 "rootflags=subvol=@$M"
   else
     echo "dracut --force --omit 'clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2' /bootpart/agentbox/gens/$M/initrd.img-$K $K && ! lsinitrd /bootpart/agentbox/gens/$M/initrd.img-$K | grep -q clevis-luks-askpass" | root >>"$LOG" 2>&1 || die "could not break the initrd"
-    fallback "initrd break (clevis removed: LUKS prompt times out)" 1200
+    fallback "initrd break (clevis removed: LUKS prompt times out)" 1200 "rootflags=subvol=@$M"
   fi
   # the clone bug the fstab rewrite prevents: systemd mounts the parent's dir (and would mkdir a missing bind source),
   # so the boot succeeds; health's /boot check refuses it and the deadline falls back
@@ -200,12 +212,13 @@ sc_breaks() {
   build
   P=$(vssh findmnt -no FSROOT /); P=${P#/@} # the committed generation the box runs now
   with_top "sed -i 's|^/bootpart/agentbox/gens/$M /boot |/bootpart/agentbox/gens/$P /boot |' \$T/@$M/etc/fstab && grep -q '^/bootpart/agentbox/gens/$P /boot ' \$T/@$M/etc/fstab" || die "could not break fstab"
-  fallback "fstab break (/boot still bound to the parent's gens/$P)" $((DEADLINE + 900))
+  fallback "fstab break (/boot still bound to the parent's gens/$P)" $((DEADLINE + 900)) "rootflags=subvol=@$M"
+  check "fstab break: health refused $M for its /boot" "echo 'journalctl -u agentbox-health.service -o cat' | root | grep -qF \"not \$M's boot dir\""
   # a mount that can't happen: local-fs.target fails, and the emergency drop-in reboots after 120 s
   plan --reinstall --install base-files
   build
   with_top "sed -i 's|^/bootpart/agentbox/gens/$M /boot none bind[^ ]*|/dev/disk/by-uuid/00000000-0000-4000-8000-000000000000 /boot ext4 defaults|' \$T/@$M/etc/fstab && grep -q '^/dev/disk/by-uuid/00000000-0000-4000-8000-000000000000 /boot ' \$T/@$M/etc/fstab" || die "could not break fstab"
-  fallback "fstab break (/boot device missing: emergency mode)" 1200
+  fallback "fstab break (/boot device missing: emergency mode)" 1200 "rootflags=subvol=@$M"
   plan --reinstall --install base-files
   build
   with_top "printf '%s\n' '[Unit]' 'Description=gate: blocks boot forever' '[Service]' 'Type=oneshot' 'ExecStart=/bin/sleep infinity' 'TimeoutStartSec=infinity' > \$T/@$M/etc/systemd/system/agentbox-gate-block.service && ln -s ../agentbox-gate-block.service \$T/@$M/etc/systemd/system/multi-user.target.wants/" || die "could not add the blocking unit"
@@ -213,19 +226,26 @@ sc_breaks() {
   wait_gen "$E" "$old" 900 || die "blocking unit: the trial never came up"
   check "blocking unit: the trial $M boots and never finishes" "[ \"\$(vssh systemctl is-system-running)\" = starting ]"
   sleep 90
-  check "blocking unit: health does not commit it" '[ "$(committed)" = "$C" ]'
+  check "blocking unit: health ran on $M and did not commit it" '[ "$(committed)" = "$C" ] && echo "journalctl -b -u agentbox-health.service -o cat" | root | grep -qF "trial $E not committed yet"'
   old=$(bootid); t0=$(date +%s)
-  wait_gen "$C" "$old" $((DEADLINE + 600)) || die "blocking unit: the deadline never fell back"
-  log "blocking unit: back on $C $(( $(date +%s) - t0 )) s later (boot deadline)"
-  check "blocking unit: falls back to the committed $C" '[ "$(committed)" = "$C" ]'
+  wait_gen "$C" "$old" $((DEADLINE + 600)) || die "blocking unit: never fell back"
+  log "blocking unit: back on $C $(( $(date +%s) - t0 )) s later"
+  check "blocking unit: the boot deadline fell back to the committed $C" '[ "$(committed)" = "$C" ] && deadline_fired "$E"'
   settled || :
   check "blocking unit: trial $M marked failed" 'echo "test -e /var/lib/agentbox/os/failed/$M.json" | root'
   status
+  # a clean apply commits first: on a fresh box the committed gen-1 is entry 0 too (09_agentbox lists the oldest first),
+  # and a GRUB that ignored the fallback below would boot it all the same
+  plan --reinstall --install base-files
+  build; trial "before the empty grubenv"
   # grubenv emptied (what a cut during an in-place grub-editenv leaves): GRUB boots the committed entry through
   # 09_agentbox's fallback, not entry 0 (the oldest generation), and the deadline keeps that boot up
   C=$(committed); old=$(bootid)
-  echo ': > /boot/grub/grubenv && sync' | root >>"$LOG" 2>&1
+  Z=$(echo "awk '/^(menuentry|submenu) /{print; exit}' /boot/grub/grub.cfg" | root | sed -n "s/^menuentry .* --id '\([^']*\)'.*/\1/p")
+  check "empty grubenv: entry 0 ($Z) is not the committed $C" '[ -n "$Z" ] && [ "$Z" != "$C" ]'
+  echo ': > /boot/grub/grubenv && sync' | root >>"$LOG" 2>&1 || die "empty grubenv: could not empty it"
   reboot_vm; wait_boot "$old" 900 || die "empty grubenv: no SSH"
+  check "empty grubenv: the boot had no saved_entry" 'vssh "test -e /boot/grub/grubenv && ! grep -qa saved_entry= /boot/grub/grubenv"'
   check "empty grubenv: boots the committed $C, not entry 0" '[ "$(booted)" = "$C" ]'
   old=$(bootid); sleep $((DEADLINE + 60))
   check "empty grubenv: the boot deadline leaves the committed boot up" '[ -n "$old" ] && [ "$(bootid)" = "$old" ]'
