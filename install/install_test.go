@@ -47,7 +47,7 @@ func TestSyncBeforeRename(t *testing.T) {
 	for _, d := range []string{"etc/systemd/system", "usr/lib/sysusers.d", "usr/lib/tmpfiles.d"} {
 		os.MkdirAll(filepath.Join(box, d), 0o755)
 	}
-	for name, body := range map[string]string{"id": "echo 0", "dpkg": "echo arm64", "systemctl": ":", "sync": `echo sync >> "$TRACE"`,
+	for name, body := range map[string]string{"id": "echo 0", "dpkg": `[ "$1" = -s ] && echo "Status: install ok installed" || echo arm64`, "systemctl": ":", "sync": `echo sync >> "$TRACE"`,
 		"systemd-sysusers": `echo "sysusers $*" >> "$TRACE"`, "systemd-tmpfiles": `echo "tmpfiles $*" >> "$TRACE"`,
 		"getent": ":", "apt-get": "exit 1",
 		// GNU mv -T renames onto the link itself; dropping the link first does the same with BSD mv

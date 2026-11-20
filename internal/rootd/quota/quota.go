@@ -1,0 +1,313 @@
+// Package quota sets up the disk reserve (ARCHITECTURE.md §3.2, §4.1, §12): btrfs quotas in full mode, one parent
+// qgroup 2/0 over every store agents or apps can fill, limited to the file system size minus max(10%, 4 GiB), and
+// the CAS cap. Control state (releases, control/, rootd.db, audit/ with taint.db) and the OS generations stay
+// outside 2/0, so they always keep the reserve.
+package quota
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"syscall"
+
+	"agentbox/internal/rootd/gens"
+)
+
+const (
+	Agentbox   = "/var/lib/agentbox"
+	Data       = Agentbox + "/data" // @var_lib_agentbox_data
+	Parent     = "2/0"
+	minReserve = 4 << 30
+)
+
+// Fillable are the nested subvolumes this package creates (cas/ may already exist: `os plan` creates it too).
+var Fillable = []string{Agentbox + "/state", Agentbox + "/memory", gens.CASDir, Agentbox + "/git", Data + "/images"}
+
+// Members are the subvolumes assigned to 2/0 here. Agent subvolumes join through their 1/N, which rootd assigns at
+// agent.add. @var_lib_agentbox_data itself is a member too, so nothing an agent fills in data/ escapes the cap.
+var Members = append(append([]string{}, Fillable...), Data, "/srv")
+
+// Reserve is what 2/0 leaves free for control state and the OS: max(10%, 4 GiB) of the file system.
+func Reserve(size uint64) uint64 { return max(size/10, minReserve) }
+
+// ParentLimit is 2/0's referenced limit.
+func ParentLimit(size uint64) uint64 {
+	if size <= Reserve(size) {
+		return 0
+	}
+	return size - Reserve(size)
+}
+
+// CASMax is budgets.toml cas.max_bytes' default: 10% of the pool. shortcut: budgets.toml isn't read yet; it lands
+// with the budget ops, and the default applies until then.
+func CASMax(size uint64) uint64 { return size / 10 }
+
+func run(name string, args ...string) ([]byte, error) {
+	var stderr bytes.Buffer
+	c := exec.Command(name, args...)
+	c.Env = append(os.Environ(), "LC_ALL=C")
+	c.Stderr = &stderr
+	out, err := c.Output()
+	if err != nil {
+		return out, fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, bytes.TrimSpace(stderr.Bytes()))
+	}
+	return out, nil
+}
+
+// ensureSubvol creates p as a subvolume, or checks that it is one: a plain directory can't become one in place.
+func ensureSubvol(p string) error {
+	var st syscall.Stat_t
+	if err := syscall.Stat(p, &st); errors.Is(err, fs.ErrNotExist) {
+		_, err := run("btrfs", "subvolume", "create", p)
+		return err
+	} else if err != nil {
+		return err
+	}
+	if st.Ino != 256 { // the root directory of every btrfs subvolume
+		return fmt.Errorf("quota: %s is a plain directory, not a btrfs subvolume (§3.2), so qgroup 2/0 can't cap it", p)
+	}
+	return nil
+}
+
+func rootID(p string) (string, error) {
+	out, err := run("btrfs", "inspect-internal", "rootid", p)
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(string(out))
+	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+		return "", fmt.Errorf("quota: rootid %s: %q", p, id)
+	}
+	return "0/" + id, nil
+}
+
+func fsSize(p string) (uint64, error) {
+	var s syscall.Statfs_t
+	if err := syscall.Statfs(p, &s); err != nil {
+		return 0, err
+	}
+	return uint64(s.Blocks) * uint64(s.Bsize), nil
+}
+
+// Ensure brings quotas to the §4.1 state, idempotently: agentbox-reconcile runs it on every boot, so a hand edit or
+// a lost limit comes back at the next one.
+func Ensure() error {
+	for _, p := range Fillable {
+		if err := ensureSubvol(p); err != nil {
+			return err
+		}
+	}
+	mode, err := quotaMode()
+	if err != nil {
+		return err
+	}
+	switch mode {
+	case "":
+		// full mode (no -s): simple quotas let an unprivileged BTRFS_SUBVOL_QGROUP_INHERIT with an empty list skip
+		// auto-inherit, and they don't count shared extents
+		if _, err := run("btrfs", "quota", "enable", Agentbox); err != nil {
+			return err
+		}
+	case "qgroup":
+	default:
+		return fmt.Errorf("quota: btrfs quotas are in %q mode; agentbox needs full (qgroup) mode", mode)
+	}
+	if _, err := run("btrfs", "quota", "rescan", "-W", Agentbox); err != nil {
+		return err
+	}
+	qs, err := Show()
+	if err != nil {
+		return err
+	}
+	if _, ok := qs[Parent]; !ok {
+		if _, err := run("btrfs", "qgroup", "create", Parent, Agentbox); err != nil {
+			return err
+		}
+	}
+	size, err := fsSize(Agentbox)
+	if err != nil {
+		return err
+	}
+	if ParentLimit(size) == 0 {
+		return fmt.Errorf("quota: a %d-byte file system leaves nothing above the %d-byte reserve", size, Reserve(size))
+	}
+	for _, p := range Members {
+		id, err := rootID(p)
+		if err != nil {
+			return err
+		}
+		if !qs[id].hasParent(Parent) {
+			if _, err := run("btrfs", "qgroup", "assign", id, Parent, Agentbox); err != nil {
+				return err
+			}
+		}
+	}
+	if qs[Parent].MaxRfer != ParentLimit(size) {
+		if _, err := run("btrfs", "qgroup", "limit", strconv.FormatUint(ParentLimit(size), 10), Parent, Agentbox); err != nil {
+			return err
+		}
+	}
+	cas, err := rootID(gens.CASDir)
+	if err != nil {
+		return err
+	}
+	if qs[cas].MaxExcl != CASMax(size) {
+		if _, err := run("btrfs", "qgroup", "limit", "-e", strconv.FormatUint(CASMax(size), 10), cas, Agentbox); err != nil {
+			return err
+		}
+	}
+	// an assign can leave the numbers inconsistent until the rescan it scheduled finishes
+	if _, err := run("btrfs", "quota", "rescan", "-W", Agentbox); err != nil {
+		return err
+	}
+	return Verify()
+}
+
+// Verify checks the §4.1 state without changing anything.
+func Verify() error {
+	size, err := fsSize(Agentbox)
+	if err != nil {
+		return err
+	}
+	mode, err := quotaMode()
+	if err != nil {
+		return err
+	}
+	if mode != "qgroup" {
+		return fmt.Errorf("quota: mode %q, want qgroup", mode)
+	}
+	qs, err := Show()
+	if err != nil {
+		return err
+	}
+	if q := qs[Parent]; q.MaxRfer != ParentLimit(size) {
+		return fmt.Errorf("quota: %s max referenced %d, want %d", Parent, q.MaxRfer, ParentLimit(size))
+	}
+	for _, p := range Members {
+		id, err := rootID(p)
+		if err != nil {
+			return err
+		}
+		if !qs[id].hasParent(Parent) {
+			return fmt.Errorf("quota: %s (%s) is not under %s", p, id, Parent)
+		}
+	}
+	for _, p := range []string{Agentbox, "/"} {
+		id, err := rootID(p)
+		if err != nil {
+			return err
+		}
+		if qs[id].hasParent(Parent) {
+			return fmt.Errorf("quota: %s (%s) is under %s and would lose the reserve", p, id, Parent)
+		}
+	}
+	cas, err := rootID(gens.CASDir)
+	if err != nil {
+		return err
+	}
+	if qs[cas].MaxExcl != CASMax(size) {
+		return fmt.Errorf("quota: cas %s max exclusive %d, want %d", cas, qs[cas].MaxExcl, CASMax(size))
+	}
+	return nil
+}
+
+// Qgroup is one row of `btrfs qgroup show`. A zero limit means none.
+type Qgroup struct {
+	MaxRfer, MaxExcl uint64
+	Parents          []string
+}
+
+func (q Qgroup) hasParent(p string) bool {
+	for _, v := range q.Parents {
+		if v == p {
+			return true
+		}
+	}
+	return false
+}
+
+// Show returns every qgroup with its limits and parents.
+func Show() (map[string]Qgroup, error) {
+	out, err := run("btrfs", "--format=json", "qgroup", "show", "-p", "-r", "-e", Agentbox)
+	if err != nil {
+		return nil, err
+	}
+	return parseShow(out)
+}
+
+func parseShow(b []byte) (map[string]Qgroup, error) {
+	var doc struct {
+		Rows []struct {
+			ID      string          `json:"qgroupid"`
+			MaxRfer json.RawMessage `json:"max_referenced"`
+			MaxExcl json.RawMessage `json:"max_exclusive"`
+			Parents []string        `json:"parents"`
+		} `json:"qgroup-show"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return nil, fmt.Errorf("quota: qgroup show: %v", err)
+	}
+	lim := func(r json.RawMessage) (uint64, error) {
+		if string(r) == `"none"` {
+			return 0, nil
+		}
+		return strconv.ParseUint(strings.Trim(string(r), `"`), 10, 64)
+	}
+	qs := map[string]Qgroup{}
+	for _, r := range doc.Rows {
+		var q Qgroup
+		var err error
+		if q.MaxRfer, err = lim(r.MaxRfer); err != nil {
+			return nil, fmt.Errorf("quota: %s max_referenced %s", r.ID, r.MaxRfer)
+		}
+		if q.MaxExcl, err = lim(r.MaxExcl); err != nil {
+			return nil, fmt.Errorf("quota: %s max_exclusive %s", r.ID, r.MaxExcl)
+		}
+		q.Parents = r.Parents
+		qs[r.ID] = q
+	}
+	if len(qs) == 0 {
+		return nil, fmt.Errorf("quota: qgroup show listed no qgroups")
+	}
+	return qs, nil
+}
+
+// quotaMode is "" with quotas off, else the first word of `btrfs quota status`'s Mode (qgroup or squota).
+func quotaMode() (string, error) {
+	out, err := run("btrfs", "quota", "status", Agentbox)
+	if err != nil {
+		return "", err
+	}
+	return parseMode(string(out))
+}
+
+func parseMode(s string) (string, error) {
+	on, mode := "", ""
+	for _, l := range strings.Split(s, "\n") {
+		k, v, ok := strings.Cut(l, ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(k) {
+		case "Enabled":
+			on = strings.TrimSpace(v)
+		case "Mode":
+			if f := strings.Fields(v); len(f) > 0 {
+				mode = f[0]
+			}
+		}
+	}
+	switch {
+	case on == "no":
+		return "", nil
+	case on == "yes" && mode != "":
+		return mode, nil
+	}
+	return "", fmt.Errorf("quota: unexpected quota status %q", s)
+}

@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"agentbox/internal/ntfy"
 	"agentbox/internal/recovery"
+	"agentbox/internal/rootd/quota"
 	"agentbox/internal/seed"
 )
 
@@ -164,13 +166,15 @@ func cmdSeed(args []string) error {
 }
 
 // cmdReconcile is agentbox-reconcile.service (ARCHITECTURE.md §3.2): it re-applies the persistent control store to
-// whichever generation booted, before every agentbox unit. Week 1 skeleton: there is no control store yet.
+// whichever generation booted, before every agentbox unit: the disk reserve (§4.1) and packaged ntfy (§2).
 func cmdReconcile(args []string) error {
 	if err := parse(flag.NewFlagSet("reconcile", flag.ContinueOnError), args); err != nil {
 		return err
 	}
-	fmt.Println("reconcile: no control state to re-apply yet")
-	return nil
+	if err := quota.Ensure(); err != nil {
+		return err
+	}
+	return ntfy.Setup()
 }
 
 func cmdRecovery(args []string) error {

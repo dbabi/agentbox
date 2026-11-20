@@ -46,12 +46,18 @@ install -m 0644 "$R/$VER/sysusers.d/agentbox.conf" "$L/sysusers.d/agentbox.conf"
 systemd-sysusers "$L/sysusers.d/agentbox.conf"
 install -m 0644 "$R/$VER/tmpfiles.d/agentbox.conf" "$L/tmpfiles.d/agentbox.conf"
 systemd-tmpfiles --create "$L/tmpfiles.d/agentbox.conf"
-# fwcheck reads rootd.db with sqlite3; the ruleset must pass nft -c before any unit is enabled (§2).
-if ! getent passwd _ntfy >/dev/null || ! command -v sqlite3 >/dev/null; then
-  apt() { DEBIAN_FRONTEND=noninteractive apt-get -q -y -o DPkg::Lock::Timeout=300 "$@"; }
-  apt install ntfy sqlite3 || { apt update && apt install ntfy sqlite3; } || die "could not install ntfy and sqlite3"
+# Packaged ntfy (§2): agentbox-reconcile then writes its config, tmpfiles, ACLs and firewall drop-in, and enables it.
+# policy-rc.d keeps the postinst from starting ntfy on its default config (HTTP on :80, every interface).
+if ! dpkg -s ntfy 2>/dev/null | grep -qx 'Status: install ok installed'; then
+  [ ! -e /usr/sbin/policy-rc.d ] || die "/usr/sbin/policy-rc.d exists; remove it and rerun"
+  printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod 0755 /usr/sbin/policy-rc.d
+  trap 'rm -f /usr/sbin/policy-rc.d' EXIT
+  apt() { DEBIAN_FRONTEND=noninteractive apt-get -q -y -o DPkg::Lock::Timeout=300 --no-install-recommends "$@"; }
+  apt install ntfy || { apt update && apt install ntfy; } || die "apt-get install ntfy failed"
+  rm -f /usr/sbin/policy-rc.d; trap - EXIT
 fi
 getent passwd _ntfy >/dev/null || die "the ntfy package made no _ntfy user"
+# The ruleset names those users; it must pass nft -c before any unit is enabled (§2).
 "$R/$VER/bin/agentbox" fw load -c || die "the firewall ruleset does not pass nft -c"
 # PID 1 loads units before /var/lib/agentbox is mounted, so the units are copies on the root file system.
 install -m 0644 "$R/$VER"/systemd/* "$ETC/systemd/system/"
