@@ -37,10 +37,10 @@ A=/var/lib/agentbox/current/bin/agentbox D=/var/lib/agentbox/audit S=/run/agentb
 fails=0
 check() { if (eval "$2") >>/run/audit-gate.log 2>&1; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails+1)); fi; }
 # psend USER PRODUCER JSON...: a test producer that runs as USER on PRODUCER.sock; exit 0 only on an ACK of every record
-psend() { u=$1 p=$2; shift 2; runuser -u "$u" -- $A audit send --timeout 20s --socket $S/$p.sock "$@"; }
+psend() { _u=$1 _p=$2; shift 2; runuser -u "$_u" -- $A audit send --timeout 20s --socket $S/$_p.sock "$@"; } # _u, _p: the callers use u and p
 send() { psend root rootd "$@"; }
 # nack CODE USER PRODUCER JSON: refused with CODE
-nack() { c=$1; shift; if out=$(psend "$@"); then echo "ACKed: $out"; return 1; fi; echo "$out"; echo "$out" | grep -q "\"code\":\"$c\""; }
+nack() { _c=$1; shift; if out=$(psend "$@"); then echo "ACKed: $out"; return 1; fi; echo "$out"; echo "$out" | grep -q "\"code\":\"$_c\""; }
 # row HOLDER SUBJECT TAINTED EPOCH: taint.get on agentboxd.sock shows SUBJECT so
 row() { psend agentbox agentboxd "{\"type\":\"taint.get\",\"holder\":\"$1\"}" | grep -qF "{\"subject\":\"$2\",\"tainted\":$3,\"epoch\":$4}"; }
 newest() { ls $D | grep "^seg-[0-9]*\.jsonl$" | tail -n 1; }
@@ -157,9 +157,11 @@ crashat() { # UNIT-DROPIN-DIR POINT
   printf '[Service]\nExecStart=\nExecStart=%s auditd --segment-bytes 4096\n' $A > /run/systemd/system/agentbox-auditd.service.d/gate.conf
   rm -f /run/systemd/system/agentbox-audit-seal.service.d/gate.conf
   printf '[Service]\nEnvironment=AGENTBOX_TEST_CRASH=%s:%s/.gate-crash-%s\n' $2 $D $2 >> /run/systemd/system/$1.service.d/gate.conf
-  systemctl daemon-reload; systemctl restart agentbox-audit-seal.service agentbox-auditd.service
+  # the gate restarts these faster than StartLimitBurst allows
+  systemctl daemon-reload; systemctl reset-failed agentbox-audit-seal.service agentbox-auditd.service
+  systemctl restart agentbox-audit-seal.service agentbox-auditd.service
 }
-pad=$(head -c 600 /dev/zero | tr "\0" p)
+pad=$(printf "%600s" "" | tr " " p)
 for up in agentbox-auditd:close-written agentbox-auditd:sealed agentbox-audit-seal:immutable-set agentbox-audit-seal:next-created; do
   u=${up%%:*} pt=${up#*:}
   crashat $u $pt; n0=$(nsegs)
@@ -171,7 +173,7 @@ for up in agentbox-auditd:close-written agentbox-auditd:sealed agentbox-audit-se
   check "audit verify after the crash at $pt" verify
 done
 rm -f /run/systemd/system/agentbox-auditd.service.d/gate.conf /run/systemd/system/agentbox-audit-seal.service.d/gate.conf $D/.gate-crash-*
-systemctl daemon-reload; systemctl restart agentbox-audit-seal.service agentbox-auditd.service
+systemctl daemon-reload; systemctl reset-failed agentbox-audit-seal.service agentbox-auditd.service; systemctl restart agentbox-audit-seal.service agentbox-auditd.service
 check "back on the shipped units: ACK" 'send "{\"type\":\"TAINT\",\"subject\":\"task:after\",\"source\":\"s\"}"'
 check "no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 nsegs > /var/tmp/gate-nsegs
