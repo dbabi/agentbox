@@ -1,0 +1,56 @@
+# agentbox fw load (ARCHITECTURE.md §6.1, Appendix B): the whole file is one nft -f transaction. No destroy: the sets
+# rootd fills keep their elements. The three static sets are flushed and refilled in the same transaction, so an element
+# inserted into one of them can't survive a reload. Rendered from internal/fw; do not edit /etc/nftables.d/agentbox.nft.
+add table inet agentbox
+add chain inet agentbox output { type filter hook output priority filter; policy accept; }
+flush chain inet agentbox output
+add set inet agentbox confined { typeof meta skuid; flags interval; }
+add set inet agentbox private4 { typeof ip daddr; flags interval; }
+add set inet agentbox private6 { typeof ip6 daddr; flags interval; }
+flush set inet agentbox confined
+flush set inet agentbox private4
+flush set inet agentbox private6
+table inet agentbox {
+  set confined   { typeof meta skuid; flags interval; elements = { {{.Confined}} } }
+  set port_allow { typeof meta skuid . tcp dport; }
+  set proxy_dst4 { typeof ip daddr . tcp dport; flags timeout; }
+  set keys_dst4  { typeof ip daddr . tcp dport; flags timeout; }
+  set git_dst4   { typeof ip daddr . tcp dport; flags timeout; }
+  set proxy_dst6 { typeof ip6 daddr . tcp dport; flags timeout; }
+  set keys_dst6  { typeof ip6 daddr . tcp dport; flags timeout; }
+  set git_dst6   { typeof ip6 daddr . tcp dport; flags timeout; }
+  set ntfy_dst4  { typeof ip daddr . tcp dport; flags timeout; }
+  set ntfy_dst6  { typeof ip6 daddr . tcp dport; flags timeout; }
+  set private4   { typeof ip daddr; flags interval; elements = { {{.Private4}} } }
+  set private6   { typeof ip6 daddr; flags interval; elements = { {{.Private6}} } }
+  set allow_private4 { typeof meta skuid . ip daddr . tcp dport; }
+  set allow_private6 { typeof meta skuid . ip6 daddr . tcp dport; }
+  chain output {
+    type filter hook output priority filter; policy accept;
+    meta skuid @confined counter drop
+    ct direction original ct state established accept
+    ip daddr 127.0.0.1 tcp dport {{.Reserved}} ct state new meta skuid . tcp dport @port_allow accept
+    ip daddr 127.0.0.1 tcp dport {{.Reserved}} ct state new counter reject with tcp reset
+    ip6 daddr ::1 tcp dport {{.Reserved}} ct state new counter reject with tcp reset
+    meta skuid "_ntfy" ip daddr 127.0.0.53 meta l4proto { udp, tcp } th dport 53 accept
+    meta skuid { "agentbox-proxy", "agentbox-keys", "agentbox-git", "_ntfy" } fib daddr type { local, broadcast, multicast, anycast } counter drop
+    meta skuid . ip daddr . tcp dport @allow_private4 accept
+    meta skuid . ip6 daddr . tcp dport @allow_private6 accept
+    meta skuid { "agentbox-proxy", "agentbox-keys", "agentbox-git", "_ntfy" } ip daddr @private4 counter drop
+    meta skuid { "agentbox-proxy", "agentbox-keys", "agentbox-git", "_ntfy" } ip6 daddr @private6 counter drop
+    meta skuid "_ntfy" ip daddr . tcp dport @ntfy_dst4 accept
+    meta skuid "_ntfy" ip6 daddr . tcp dport @ntfy_dst6 accept
+    meta skuid "_ntfy" counter drop
+    meta skuid "agentbox-proxy" ip daddr . tcp dport @proxy_dst4 accept
+    meta skuid "agentbox-proxy" ip6 daddr . tcp dport @proxy_dst6 accept
+    meta skuid "agentbox-proxy" counter drop
+    meta skuid "agentbox-keys" ip daddr . tcp dport @keys_dst4 accept
+    meta skuid "agentbox-keys" ip6 daddr . tcp dport @keys_dst6 accept
+    meta skuid "agentbox-keys" counter drop
+    meta skuid "agentbox-git" ip daddr . tcp dport @git_dst4 accept
+    meta skuid "agentbox-git" ip6 daddr . tcp dport @git_dst6 accept
+    meta skuid "agentbox-git" counter drop
+    meta skuid { "agentbox", "agentbox-audit", "agentbox-approve", "agentbox-llm", "agentbox-llm-decide", "agentbox-ingress" } oif "lo" accept
+    meta skuid { "agentbox", "agentbox-audit", "agentbox-approve", "agentbox-llm", "agentbox-llm-decide", "agentbox-ingress" } counter drop
+  }
+}

@@ -1,7 +1,7 @@
 // Command release builds an agentbox release; run it as `make release` from the repo root (PLAN.md milestones row
-// 1–2). It writes agentbox-<ver>.tgz (install.sh, the systemd units, agentbox for linux/arm64 and linux/amd64) and
-// agentbox-<ver>.tgz.minisig. The tarball is reproducible (sorted entries, fixed mtime, root:root), so anyone can
-// rebuild a commit with the same Go version and compare the hash a seed pins with --release-sha256.
+// 1–2). It writes agentbox-<ver>.tgz (install.sh, the systemd units, the sysusers.d file, agentbox for linux/arm64 and
+// linux/amd64) and agentbox-<ver>.tgz.minisig. The tarball is reproducible (sorted entries, fixed mtime, root:root),
+// so anyone can rebuild a commit with the same Go version and compare the hash a seed pins with --release-sha256.
 package main
 
 import (
@@ -84,6 +84,8 @@ func build(version, key, out string) (string, []byte, error) {
 	if len(units) == 0 {
 		return "", nil, errors.New("no systemd/* units: run from the repo root")
 	}
+	sysusers, _ := filepath.Glob("sysusers.d/*")
+	units = append(units, sysusers...)
 	for _, u := range units {
 		files = append(files, file{u, u, 0o644})
 	}

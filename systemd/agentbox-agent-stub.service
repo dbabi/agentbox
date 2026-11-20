@@ -1,0 +1,11 @@
+# Stands in for an agent's user manager until the agent runtime exists (PLAN row 3 gate; the real drop-in is
+# ARCHITECTURE.md Appendix C): it starts only while fwcheck passes. Not enabled; the firewall gate starts it.
+[Unit]
+Description=agentbox agent stand-in (firewall gate)
+Requires=agentbox-reconcile.service agentbox-firewall.service
+After=agentbox-reconcile.service agentbox-firewall.service
+
+[Service]
+User=nobody
+ExecStartPre=+/var/lib/agentbox/current/bin/agentbox fwcheck
+ExecStart=/bin/sleep infinity
