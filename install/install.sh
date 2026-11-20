@@ -16,14 +16,16 @@ VER=$("$BIN" version) || die "$BIN does not run on this box"
 case $VER in ''|[!0-9A-Za-z]*|*[!0-9A-Za-z._~-]*) die "bad release version '$VER'" ;; esac
 A=/var/lib/agentbox
 ETC=/etc
+L=/usr/lib
 R=$A/releases
 N=$R/.$VER.new
 mkdir -p "$R"
 rm -rf "$N"
-mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d"
+mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d" "$N/tmpfiles.d"
 install -m 0755 "$BIN" "$N/bin/agentbox"
 install -m 0644 "$S"/systemd/* "$N/systemd/"
 install -m 0644 "$S"/sysusers.d/* "$N/sysusers.d/"
+install -m 0644 "$S"/tmpfiles.d/* "$N/tmpfiles.d/"
 if [ -d "$R/$VER" ]; then
   diff -r "$N" "$R/$VER" >/dev/null || { rm -rf "$N"; die "release $VER is already installed with different content"; }
   rm -rf "$N"
@@ -37,11 +39,14 @@ if [ "$cur" != "releases/$VER" ]; then
   [ -z "$cur" ] || { ln -sfn "$cur" "$A/.previous.new" && mv -T "$A/.previous.new" "$A/previous"; }
   ln -sfn "releases/$VER" "$A/.current.new" && mv -T "$A/.current.new" "$A/current"
 fi
-# The firewall names every service user and ntfy's packaged _ntfy (ARCHITECTURE.md Appendix B), and fwcheck reads
-# rootd.db with sqlite3: all of them must exist, and the ruleset must pass nft -c, before any unit is enabled (§2).
-mkdir -p "$ETC/sysusers.d"
-install -m 0644 "$R/$VER/sysusers.d/agentbox.conf" "$ETC/sysusers.d/"
-systemd-sysusers "$ETC/sysusers.d/agentbox.conf"
+# Users and dirs before any unit that names them: the firewall names every service user and ntfy's packaged _ntfy
+# (ARCHITECTURE.md Appendix B), and socket units resolve SocketUser= when they start (§2.1). Copies on the root file
+# system, like the units: systemd-sysusers and systemd-tmpfiles read them at every boot.
+install -m 0644 "$R/$VER/sysusers.d/agentbox.conf" "$L/sysusers.d/agentbox.conf"
+systemd-sysusers "$L/sysusers.d/agentbox.conf"
+install -m 0644 "$R/$VER/tmpfiles.d/agentbox.conf" "$L/tmpfiles.d/agentbox.conf"
+systemd-tmpfiles --create "$L/tmpfiles.d/agentbox.conf"
+# fwcheck reads rootd.db with sqlite3; the ruleset must pass nft -c before any unit is enabled (§2).
 if ! getent passwd _ntfy >/dev/null || ! command -v sqlite3 >/dev/null; then
   apt() { DEBIAN_FRONTEND=noninteractive apt-get -q -y -o DPkg::Lock::Timeout=300 "$@"; }
   apt install ntfy sqlite3 || { apt update && apt install ntfy sqlite3; } || die "could not install ntfy and sqlite3"

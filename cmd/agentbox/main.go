@@ -1,6 +1,6 @@
 // Command agentbox is the single binary for every agentbox service and CLI (ARCHITECTURE.md §2, §14).
 // Week 1 ships the operator-side commands (seed, recovery) and, on the box, the os.apply pipeline (os); week 3 adds
-// the firewall (fw, fwcheck).
+// the firewall (fw, fwcheck), agentbox-auditd and `audit verify`.
 package main
 
 import (
@@ -30,6 +30,10 @@ const usage = `usage:
   agentbox version
   agentbox reconcile   (agentbox-reconcile.service, on the box)
   agentbox fw load [-c] | check [--repair] | refill   (as root on the box; fwcheck = fw check)
+  agentbox auditd [--segment-bytes N] [--reserve-bytes N]   (agentbox-auditd.service, socket-activated)
+  agentbox rootd-seal   (agentbox-audit-seal.service until rootd serves the seal socket)
+  agentbox audit verify [--dir /var/lib/agentbox/audit]
+  agentbox audit send --socket /run/agentbox-audit/<producer>.sock [--timeout 10s] JSON...   (a test producer)
 `
 
 type multi []string
@@ -86,6 +90,12 @@ func run(args []string) error {
 		return cmdFW(args[1:])
 	case "fwcheck":
 		return cmdFWCheck(args[1:])
+	case "auditd":
+		return cmdAuditd(args[1:])
+	case "rootd-seal":
+		return cmdRootdSeal(args[1:])
+	case "audit":
+		return cmdAudit(args[1:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil

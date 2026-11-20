@@ -1,0 +1,16 @@
+# proxy's producer socket for agentbox-auditd (ARCHITECTURE.md §2.1): agentbox-audit:agentbox-proxy 0660; auditd also checks the
+# peer's uid with SO_PEERCRED. The dir comes from tmpfiles (0711).
+[Unit]
+Description=agentbox-auditd producer socket (proxy)
+
+[Socket]
+ListenStream=/run/agentbox-audit/proxy.sock
+SocketUser=agentbox-audit
+SocketGroup=agentbox-proxy
+SocketMode=0660
+FileDescriptorName=proxy
+Service=agentbox-auditd.service
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

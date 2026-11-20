@@ -1,0 +1,21 @@
+# Interim stand-in for rootd's half of the audit files (audit.Files): creates segments (agentbox-audit, 0640, +a) and
+# seals them (+i). Root with only the capabilities that needs; rootd replaces this unit.
+[Unit]
+Description=agentbox audit segment create and seal (rootd stand-in)
+Requires=agentbox-reconcile.service
+After=agentbox-reconcile.service
+
+[Service]
+ExecStart=/var/lib/agentbox/current/bin/agentbox rootd-seal
+Restart=always
+RestartSec=1
+CapabilityBoundingSet=CAP_LINUX_IMMUTABLE CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/agentbox/audit
+PrivateTmp=yes
+NoNewPrivileges=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service

@@ -1,0 +1,30 @@
+# agentbox-auditd (ARCHITECTURE.md §9): sole writer of the audit chain and taint.db. Producers reach it only through
+# the agentbox-auditd-<producer>.socket units, and every effect waits for its ACK, so with auditd down nothing executes.
+# Segments are created and sealed by rootd over agentbox-audit-seal.socket.
+[Unit]
+Description=agentbox audit daemon
+Requires=agentbox-reconcile.service agentbox-audit-seal.socket
+After=agentbox-reconcile.service agentbox-audit-seal.socket
+
+[Service]
+Type=notify
+User=agentbox-audit
+Group=agentbox-audit
+ExecStart=/var/lib/agentbox/current/bin/agentbox auditd
+Sockets=agentbox-auditd-rootd.socket agentbox-auditd-agentboxd.socket agentbox-auditd-proxy.socket agentbox-auditd-keys.socket agentbox-auditd-git.socket
+Restart=always
+RestartSec=1
+UMask=0027
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/agentbox/audit
+PrivateTmp=yes
+NoNewPrivileges=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
