@@ -158,12 +158,8 @@ func (s *Service) Resolve(ctx context.Context, svc, task string, e Entry) ([]net
 
 // syncElements recomputes set_elements from the unexpired set_answers: one row per element, the latest expiry.
 func syncElements(tx *sql.Tx, now int64) error {
-	q := `DELETE FROM set_elements WHERE set_name IN (` + strings.Repeat("?,", len(Sets)-1) + `?)`
-	args := make([]any, len(Sets))
-	for i, v := range Sets {
-		args[i] = v
-	}
-	if _, err := tx.Exec(q, args...); err != nil {
+	in, args := inSets()
+	if _, err := tx.Exec(`DELETE FROM set_elements WHERE set_name IN `+in, args...); err != nil {
 		return err
 	}
 	_, err := tx.Exec(`INSERT INTO set_elements SELECT set_name, element, MAX(expires_at) FROM set_answers
@@ -171,8 +167,19 @@ func syncElements(tx *sql.Tx, now int64) error {
 	return err
 }
 
+// inSets is the SQL "(?,...)" and its args for the dst sets: set_elements also holds fw's rows (port_allow,
+// allow_private4/6) with a NULL expiry.
+func inSets() (string, []any) {
+	args := make([]any, len(Sets))
+	for i, v := range Sets {
+		args[i] = v
+	}
+	return `(` + strings.Repeat("?,", len(Sets)-1) + `?)`, args
+}
+
 func elements(tx *sql.Tx) (map[string]int64, error) {
-	rows, err := tx.Query(`SELECT set_name, element, expires_at FROM set_elements`)
+	in, args := inSets()
+	rows, err := tx.Query(`SELECT set_name, element, expires_at FROM set_elements WHERE set_name IN `+in, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -184,9 +191,7 @@ func elements(tx *sql.Tx) (map[string]int64, error) {
 		if err := rows.Scan(&set, &el, &exp); err != nil {
 			return nil, err
 		}
-		if slices.Contains(Sets, set) {
-			m[set+"\x00"+el] = exp
-		}
+		m[set+"\x00"+el] = exp
 	}
 	return m, rows.Err()
 }

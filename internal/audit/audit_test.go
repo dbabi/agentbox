@@ -400,3 +400,26 @@ func TestClockStepThenRotate(t *testing.T) {
 		t.Fatalf("want a rotation, got %+v", rep)
 	}
 }
+
+// rootd dies at next-created while auditd stays up, then NTP steps the clock: the retried seal's new segment must
+// still start with open, the clock_step after it.
+func TestClockStepAcrossInterruptedSeal(t *testing.T) {
+	b := newBox(t)
+	b.crash = "next-created"
+	for i := 0; ; i++ {
+		if _, c := b.send("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`); c != "" {
+			break
+		}
+		if i > 100 {
+			t.Fatal("no rotation")
+		}
+	}
+	b.wall -= 2000
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+	rep := b.verify()
+	if last := rep[len(rep)-1]; last.ClockSteps != 1 {
+		t.Fatalf("want the step logged in the new segment, got %+v", rep)
+	}
+	b.start()
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+}

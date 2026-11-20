@@ -146,6 +146,10 @@ func TestResolveAndRefill(t *testing.T) {
 	if _, err := db.Exec(Schema); err != nil {
 		t.Fatal(err)
 	}
+	// fw's exact-set rows share set_elements with no expiry; the refill must leave them alone
+	if _, err := db.Exec(`INSERT INTO set_elements VALUES ('port_allow', '0 . 43100', NULL)`); err != nil {
+		t.Fatal(err)
+	}
 	pub4, pub6 := netip.MustParseAddr("93.184.215.14"), netip.MustParseAddr("2606:2800:21f:cb07::1")
 	own := netip.MustParseAddr("93.184.215.99")
 	now := time.UnixMilli(1_800_000_000_000)
@@ -232,9 +236,12 @@ func TestResolveAndRefill(t *testing.T) {
 		t.Fatalf("refill after expiry: %+v %v", res, err)
 	}
 	var n int
-	db.QueryRow(`SELECT count(*) FROM set_elements`).Scan(&n)
+	db.QueryRow(`SELECT count(*) FROM set_elements WHERE set_name != 'port_allow'`).Scan(&n)
 	if n != 0 {
 		t.Fatalf("%d expired rows in set_elements", n)
+	}
+	if db.QueryRow(`SELECT count(*) FROM set_elements WHERE set_name = 'port_allow'`).Scan(&n); n != 1 {
+		t.Fatal("the refill dropped fw's port_allow row")
 	}
 	if _, err := EditList(dir, "keys", Entry{"api.example.com", 443}, false); err != nil {
 		t.Fatal(err)

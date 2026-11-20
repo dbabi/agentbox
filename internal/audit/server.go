@@ -213,12 +213,14 @@ func (s *Server) repairTail() error {
 	return nil
 }
 
+// writeOpen logs a clock step since the previous segment's last record after open: a segment must start with open.
 func (s *Server) writeOpen() error {
+	d := s.clockStep()
 	if _, err := s.append(TypeOpen, "auditd", uint32(os.Getuid()), 0, nil); err != nil {
 		return err
 	}
 	s.openBoot = s.lastBoot
-	return nil
+	return s.logClockStep(d)
 }
 
 // rotate: stop ACKing (the caller holds mu), append close, fdatasync, close the fd, ask rootd to seal, open the next
@@ -275,7 +277,7 @@ func (s *Server) ready() error {
 // append writes one record with a single write on the O_APPEND fd, then fdatasync. A wall-clock step against
 // CLOCK_BOOTTIME since the previous record is logged first; it never rotates anything.
 func (s *Server) append(typ, producer string, uid uint32, pid int32, body json.RawMessage) (uint64, error) {
-	if typ != TypeClockStep && typ != TypeClose { // rotate logs it before close
+	if typ != TypeClockStep && typ != TypeClose && typ != TypeOpen { // rotate logs it before close, writeOpen after open
 		if err := s.noteClockStep(); err != nil {
 			return 0, err
 		}
@@ -300,11 +302,17 @@ func (s *Server) append(typ, producer string, uid uint32, pid int32, body json.R
 
 // noteClockStep appends clock_step{delta} when the wall clock moved more than 1 s apart from CLOCK_BOOTTIME since the
 // previous record.
-func (s *Server) noteClockStep() error {
+func (s *Server) noteClockStep() error { return s.logClockStep(s.clockStep()) }
+
+func (s *Server) clockStep() int64 {
 	if s.lastBoot == 0 {
-		return nil
+		return 0
 	}
-	if d := (s.Wall() - s.lastWall) - (s.Boot() - s.lastBoot); d > 1000 || d < -1000 {
+	return (s.Wall() - s.lastWall) - (s.Boot() - s.lastBoot)
+}
+
+func (s *Server) logClockStep(d int64) error {
+	if d > 1000 || d < -1000 {
 		b, _ := json.Marshal(clockStepBody{d})
 		_, err := s.append(TypeClockStep, "auditd", uint32(os.Getuid()), 0, b)
 		return err
