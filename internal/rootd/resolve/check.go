@@ -37,10 +37,11 @@ func inAny(a netip.Addr, ps []netip.Prefix) bool {
 	return false
 }
 
-// CheckPrefix is Appendix B checks 1 and 2: the address is in no special-purpose range, and a well-known-prefix NAT64
-// address does not wrap one. Other NAT64 addresses pass, so NAT64-only LANs work. It returns the failed check's name,
-// which goes only to audit detail.
-func CheckPrefix(a netip.Addr) string {
+// CheckPrefix is Appendix B checks 1 and 2: the address is in no special-purpose range, and an address under a NAT64
+// prefix does not wrap one. nsp are the network's own NAT64 prefixes (NAT64Prefixes); the well-known 64:ff9b::/96 is
+// always checked. Other NAT64 addresses pass, so NAT64-only LANs work. It returns the failed check's name, which goes
+// only to audit detail.
+func CheckPrefix(a netip.Addr, nsp ...netip.Prefix) string {
 	if a.Zone() != "" {
 		return "zoned"
 	}
@@ -53,13 +54,33 @@ func CheckPrefix(a netip.Addr) string {
 	if inAny(a, private6) {
 		return "private6"
 	}
-	if nat64.Contains(a) {
-		b := a.As16()
-		if inAny(netip.AddrFrom4([4]byte(b[12:])), private4) {
+	for _, p := range append([]netip.Prefix{nat64}, nsp...) {
+		if v4, ok := embedded4(a, p); ok && inAny(v4, private4) {
 			return "nat64_private"
 		}
 	}
 	return ""
+}
+
+// embedded4 is the IPv4 address a carries under NAT64 prefix p (RFC 6052 2.2: /32, /40, /48, /56, /64 or /96, with
+// bits 64-71 skipped).
+func embedded4(a netip.Addr, p netip.Prefix) (netip.Addr, bool) {
+	switch p.Bits() {
+	case 32, 40, 48, 56, 64, 96:
+	default:
+		return netip.Addr{}, false
+	}
+	if !a.Is6() || a.Is4In6() || !p.Contains(a) {
+		return netip.Addr{}, false
+	}
+	b := a.As16()
+	var v [4]byte
+	for i, o := 0, p.Bits()/8; i < 4; o++ {
+		if o != 8 {
+			v[i], i = b[o], i+1
+		}
+	}
+	return netip.AddrFrom4(v), true
 }
 
 // Entry is one allowlisted host:port, IDNA-canonical: ASCII A-labels, lower case.

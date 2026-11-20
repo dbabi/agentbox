@@ -2,17 +2,21 @@
 # TEST FIXTURE for hack/rootd-gate.sh, run inside the test VM (often as a broker or audit uid through runuser): small
 # socket clients that stand in for brokers and auditd until those areas merge. Never shipped.
 #   rg.py req SOCK JSON                      one request line; prints the reply line, or "closed" if rootd hung up
+#                                            (EOF or reset); 30 s of silence prints "timeout" and exits 1
 #   rg.py connect IP PORT [SECS]             TCP connect; exit 0 if it connects within SECS (default 3)
 #   rg.py udpdns IP                          a DNS query for example.com to IP:53; exit 0 if any reply comes back
 #   rg.py flow IP PORT HOST LOG SECS         one TCP connection, an HTTP/1.1 keep-alive HEAD every 2 s for SECS; each
 #                                            line in LOG is "<unix time> ok|cut <detail>"; exit 0 if never cut
 #   rg.py sendfd SOCK                        sends a request with an SCM_RIGHTS fd; exit 0 if rootd closed without a reply
+#                                            (not if it went silent)
 #   rg.py chain SEG PREV N [close|torn|broken] appends N records in auditd's record format to SEG (O_APPEND): an open
 #                                            chained to PREV (zeros if "") when SEG is empty, then intents; close adds
 #                                            close{seq, last_hash}; torn first writes a partial line, "\n" and its
 #                                            torn{offset, len, sha256}; broken adds a record whose prev is wrong. Prints
 #                                            the hash of the last record.
 import array, hashlib, json, os, socket, sys, time
+
+TIMEOUT = object()  # rootd neither answered nor closed: not a refusal
 
 def req(path, obj, fds=None):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -27,8 +31,10 @@ def req(path, obj, fds=None):
     while not buf.endswith(b"\n"):
         try:
             b = s.recv(65536)
-        except (ConnectionResetError, socket.timeout):
+        except ConnectionResetError:
             b = b""
+        except socket.timeout:
+            return TIMEOUT
         if not b:
             return None
         buf += b
@@ -107,6 +113,9 @@ def flow(ip, port, host, log, secs):
 def main(a):
     if a[0] == "req":
         r = req(a[1], a[2])
+        if r is TIMEOUT:
+            print("timeout")
+            return 1
         print(r if r is not None else "closed")
     elif a[0] == "connect":
         try:
@@ -128,7 +137,7 @@ def main(a):
         return flow(a[1], int(a[2]), a[3], a[4], int(a[5]))
     elif a[0] == "sendfd":
         r = req(a[1], {"op": "egress.list"}, fds=[0])
-        print(r if r is not None else "closed")
+        print("timeout" if r is TIMEOUT else r if r is not None else "closed")
         return 0 if r is None else 1
     elif a[0] == "chain":
         chain(a[1], a[2], int(a[3]), a[4] if len(a) > 4 else "")

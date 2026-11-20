@@ -3,6 +3,7 @@ package fw
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -281,5 +282,29 @@ func TestReservedOK(t *testing.T) {
 		if ReservedOK(v) != want {
 			t.Errorf("ReservedOK(%q) != %v", v, want)
 		}
+	}
+}
+
+// rootd records the fixed port_allow tuples itself; twice is the same as once, and they are what fwcheck then expects.
+func TestRecordFixed(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "rootd.db")
+	db, err := sql.Open("sqlite", "file:"+p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE set_elements(set_name TEXT NOT NULL, element TEXT NOT NULL, expires_at INTEGER,
+		PRIMARY KEY(set_name, element)) STRICT`); err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(RecordFixed(db), RecordFixed(db)); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := readDB(p)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows %+v %v", rows, err)
+	}
+	if bad := Compare(map[string][]string{"port_allow": {"0 . 43100", "0 . 43200"}}, rows, time.Now()); len(bad) != 0 {
+		t.Fatal(bad)
 	}
 }

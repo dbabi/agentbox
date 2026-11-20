@@ -3,12 +3,13 @@ package main
 import (
 	"encoding/binary"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
 func query(name string, qtype uint16, edns bool) []byte {
 	q := []byte{0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0}
-	for _, l := range []string{name[:3], name[4:]} {
+	for _, l := range strings.Split(name, ".") {
 		q = append(append(q, byte(len(l))), l...)
 	}
 	q = append(q, 0)
@@ -38,5 +39,9 @@ func TestAnswer(t *testing.T) {
 	}
 	if _, ok := answer(query("pub.else", 1, false), "test", recs); ok {
 		t.Error("a name outside the zone was answered")
+	}
+	recs["ipv4only.arpa"] = []netip.Addr{netip.MustParseAddr("2600:ffff:64::c000:aa")}
+	if r, ok := answer(query("ipv4only.arpa", 28, false), "test", recs); !ok || binary.BigEndian.Uint16(r[6:]) != 1 {
+		t.Errorf("a name given with -a outside the zone: %v %x", ok, r)
 	}
 }

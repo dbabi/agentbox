@@ -3,6 +3,7 @@ package resolve
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -27,6 +28,58 @@ func TestCheckPrefix(t *testing.T) {
 	} {
 		if got := CheckPrefix(netip.MustParseAddr(a)); got != want {
 			t.Errorf("CheckPrefix(%s) = %q, want %q", a, got, want)
+		}
+	}
+}
+
+// A network-specific NAT64 prefix (RFC 6052) wraps an IPv4 address just as 64:ff9b::/96 does, at any of its lengths.
+func TestCheckPrefixNSP(t *testing.T) {
+	nsp := []netip.Prefix{netip.MustParsePrefix("2a01:5c0:64::/96"), netip.MustParsePrefix("2a01:5c0:1:64::/64"),
+		netip.MustParsePrefix("2a01:5c00::/40")}
+	for a, want := range map[string]string{
+		"2a01:5c0:64::c0a8:101": "nat64_private", "2a01:5c0:64::808:808": "", "2a01:5c0:1:64:a:0:100:0": "nat64_private",
+		"2a01:5c00:7f:0:1::": "nat64_private", "2a01:5c00:c0:0:a0::": "nat64_private", "2a01:5c1::c0a8:101": "",
+		"64:ff9b::a00:1": "nat64_private",
+	} {
+		if got := CheckPrefix(netip.MustParseAddr(a), nsp...); got != want {
+			t.Errorf("CheckPrefix(%s) = %q, want %q", a, got, want)
+		}
+	}
+	if CheckPrefix(netip.MustParseAddr("2a01:5c0:64::c0a8:101")) != "" {
+		t.Error("without the NSP the address is just public IPv6")
+	}
+}
+
+func TestNAT64Prefixes(t *testing.T) {
+	dns := fakeDNS{"ipv4only.arpa": {netip.MustParseAddr("192.0.0.170"), netip.MustParseAddr("2a01:5c0:64::c000:aa"),
+		netip.MustParseAddr("2a01:5c00:c0:0:ab::")}}
+	ra := func(context.Context) ([]netip.Prefix, error) {
+		return []netip.Prefix{netip.MustParsePrefix("2a01:5c0:1:64::/64")}, nil
+	}
+	got, err := NAT64Prefixes(context.Background(), dns.ResolveHostname, ra)
+	want := []netip.Prefix{netip.MustParsePrefix("2a01:5c0:1:64::/64"), netip.MustParsePrefix("2a01:5c0:64::/96"),
+		netip.MustParsePrefix("2a01:5c00::/40")}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("got %v %v, want %v", got, err, want)
+	}
+	if got, err := NAT64Prefixes(context.Background(), fakeDNS{}.ResolveHostname, nil); err != nil || len(got) != 0 {
+		t.Fatalf("no DNS64, no RA: %v %v", got, err)
+	}
+	down := func(context.Context, string) ([]netip.Addr, error) { return nil, &Refused{Unavailable, "down"} }
+	if _, err := NAT64Prefixes(context.Background(), down, nil); err == nil {
+		t.Fatal("a failed ipv4only.arpa lookup must not read as no DNS64")
+	}
+}
+
+func TestParsePref64(t *testing.T) {
+	msg := `{"parameters":{"Interfaces":[{"Name":"lo"},{"Name":"eth0","NDisc":{"PREF64":[{"Prefix":[42,1,5,192,0,100,0,0,0,0,0,0,0,0,0,0],"PrefixLength":96,"LifetimeUSec":1800000000}]}}]}}`
+	got, err := parsePref64([]byte(msg))
+	if err != nil || !slices.Equal(got, []netip.Prefix{netip.MustParsePrefix("2a01:5c0:64::/96")}) {
+		t.Fatalf("%v %v", got, err)
+	}
+	for _, bad := range []string{`{"error":"io.systemd.System"}`, `{"parameters":{"Interfaces":[{"NDisc":{"PREF64":[{"Prefix":[1,2,3,4],"PrefixLength":96}]}}]}}`} {
+		if _, err := parsePref64([]byte(bad)); err == nil {
+			t.Errorf("%s parsed", bad)
 		}
 	}
 }
@@ -160,7 +213,13 @@ func TestResolveAndRefill(t *testing.T) {
 	s := &Service{
 		DB: db, Dir: dir, Now: func() time.Time { return now }, Timeout: 10 * time.Minute, Nft: nft,
 		Resolver: fakeDNS{"api.example.com": {pub4, pub6}, "own.example.com": {pub4, own}, "v4only.example.com": {pub4, pub6},
-			"priv.example.com": {pub4, netip.MustParseAddr("10.0.0.1")}},
+			"priv.example.com": {pub4, netip.MustParseAddr("10.0.0.1")},
+			// DNS64 with a network-specific prefix, and a name that publishes only an AAAA wrapping a LAN address
+			"ipv4only.arpa":   {netip.MustParseAddr("192.0.0.170"), netip.MustParseAddr("2a01:5c0:64::c000:aa")},
+			"nsp.example.com": {netip.MustParseAddr("2a01:5c0:64::c0a8:101")}, "ra.example.com": {netip.MustParseAddr("2a01:5c0:1:64:a:0:100:0")}},
+		Pref64: func(context.Context) ([]netip.Prefix, error) {
+			return []netip.Prefix{netip.MustParsePrefix("2a01:5c0:1:64::/64")}, nil
+		},
 		Route: func(a netip.Addr) string {
 			switch {
 			case a == own:
@@ -186,7 +245,7 @@ func TestResolveAndRefill(t *testing.T) {
 	if r, _ := resolve("keys", "api.example.com"); r != NotAllowlisted {
 		t.Fatalf("unlisted: %s", r)
 	}
-	for _, h := range []string{"api.example.com", "own.example.com", "priv.example.com", "nx.example.com"} {
+	for _, h := range []string{"api.example.com", "own.example.com", "priv.example.com", "nx.example.com", "nsp.example.com", "ra.example.com"} {
 		if _, err := EditList(dir, "keys", Entry{h, 443}, true); err != nil {
 			t.Fatal(err)
 		}
@@ -197,7 +256,8 @@ func TestResolveAndRefill(t *testing.T) {
 	if !nft.sets["keys_dst4"]["93.184.215.14 . 443"] || !nft.sets["keys_dst6"]["2606:2800:21f:cb07::1 . 443"] {
 		t.Fatalf("sets: %v", nft.sets)
 	}
-	for h, want := range map[string]string{"own.example.com": NonPublic, "priv.example.com": NonPublic, "nx.example.com": NoSuchName} {
+	for h, want := range map[string]string{"own.example.com": NonPublic, "priv.example.com": NonPublic, "nx.example.com": NoSuchName,
+		"nsp.example.com": NonPublic, "ra.example.com": NonPublic} {
 		if r, _ := resolve("keys", h); r != want {
 			t.Errorf("%s: %s, want %s", h, r, want)
 		}
@@ -263,5 +323,84 @@ func TestResolveAndRefill(t *testing.T) {
 	}
 	if len(denied) == 0 || !strings.Contains(strings.Join(denied, "\n"), "keys own.example.com:443 non_public") {
 		t.Fatalf("denials: %v", denied)
+	}
+}
+
+type failNft struct {
+	*fakeNft
+	fail bool
+}
+
+func (n *failNft) Run(script string) error {
+	if n.fail {
+		return errors.New("nft: injected failure")
+	}
+	return n.fakeNft.Run(script)
+}
+
+// A revocation whose nft run or conntrack cut fails (or is interrupted) keeps its rows, so the next refill cuts again;
+// and a row stays in set_elements for fw.ElementSlack past its expiry, as long as fwcheck accepts its kernel element.
+func TestRevocationRetriedAndSlack(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "rootd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(Schema); err != nil {
+		t.Fatal(err)
+	}
+	a1, a2 := netip.MustParseAddr("93.184.215.14"), netip.MustParseAddr("93.184.215.15")
+	now := time.UnixMilli(1_800_000_000_000)
+	nft := &failNft{fakeNft: &fakeNft{map[string]map[string]bool{}}}
+	flowsFail := 0
+	var cut []string
+	s := &Service{DB: db, Dir: dir, Now: func() time.Time { return now }, Timeout: 10 * time.Minute, Nft: nft,
+		Resolver: fakeDNS{"a.example.com": {a1}, "b.example.com": {a2}}, Route: func(netip.Addr) string { return "" },
+		Flows: func(a netip.Addr, p uint16) (int, error) {
+			if flowsFail > 0 {
+				flowsFail--
+				return 0, errors.New("conntrack: injected failure")
+			}
+			cut = append(cut, a.String())
+			return 1, nil
+		}}
+	rows := func(q string) (n int) { db.QueryRow(q).Scan(&n); return }
+	for _, h := range []string{"a.example.com", "b.example.com"} {
+		EditList(dir, "keys", Entry{h, 443}, true)
+		if _, _, err := s.Resolve(context.Background(), "keys", "", Entry{h, 443}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	EditList(dir, "keys", Entry{"a.example.com", 443}, false)
+	EditList(dir, "keys", Entry{"b.example.com", 443}, false)
+	nft.fail = true
+	if _, err := s.Refill(); err == nil {
+		t.Fatal("nft failure not reported")
+	}
+	nft.fail, flowsFail = false, 1
+	if _, err := s.Refill(); err == nil {
+		t.Fatal("conntrack failure not reported")
+	}
+	if n := rows(`SELECT count(*) FROM set_answers`); n != 2 {
+		t.Fatalf("a failed revocation dropped its rows: %d left", n)
+	}
+	if res, err := s.Refill(); err != nil || res.Revoked != 2 || len(cut) != 3 || rows(`SELECT count(*) FROM set_answers`) != 0 {
+		t.Fatalf("retry: %+v %v cut=%v", res, err, cut) // both cut on the retry, a2 also on the failed run (it went on)
+	}
+
+	EditList(dir, "keys", Entry{"a.example.com", 443}, true)
+	EditList(dir, "keys", Entry{"b.example.com", 443}, true)
+	s.Resolve(context.Background(), "keys", "", Entry{"a.example.com", 443})
+	now = now.Add(10*time.Minute + 2*time.Second)
+	s.Resolve(context.Background(), "keys", "", Entry{"b.example.com", 443})
+	if rows(`SELECT count(*) FROM set_elements WHERE element = '93.184.215.14 . 443'`) != 1 {
+		t.Fatal("a row 2 s past its expiry left set_elements while fwcheck may still see its element")
+	}
+	now = now.Add(4 * time.Second)
+	s.Resolve(context.Background(), "keys", "", Entry{"b.example.com", 443})
+	if rows(`SELECT count(*) FROM set_elements WHERE element = '93.184.215.14 . 443'`) != 0 {
+		t.Fatal("a row past the slack stayed")
 	}
 }

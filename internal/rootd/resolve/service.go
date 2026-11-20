@@ -3,6 +3,7 @@ package resolve
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -47,6 +48,8 @@ type Service struct {
 	// TaskAgent maps a live task to its agent, for the proxy's per-agent list. Until the task registry lands
 	// (weeks 4-6) it is nil, and the proxy resolves nothing.
 	TaskAgent func(task string) (string, bool)
+	// Pref64 lists the NAT64 prefixes networkd learned (Networkd.Pref64); nil skips that source.
+	Pref64 func(context.Context) ([]netip.Prefix, error)
 
 	mu sync.Mutex
 }
@@ -102,9 +105,13 @@ func (s *Service) Resolve(ctx context.Context, svc, task string, e Entry) ([]net
 		}
 		return nil, time.Time{}, s.deny(svc, e, r.Reason, r.Detail)
 	}
+	nsp, err := NAT64Prefixes(ctx, s.Resolver.ResolveHostname, s.Pref64)
+	if err != nil {
+		return nil, time.Time{}, s.deny(svc, e, Unavailable, "NAT64 prefix discovery: "+err.Error())
+	}
 	var use []netip.Addr
 	for _, a := range addrs {
-		why := CheckPrefix(a)
+		why := CheckPrefix(a, nsp...)
 		if why == "" {
 			why = s.Route(a)
 		}
@@ -156,8 +163,10 @@ func (s *Service) Resolve(ctx context.Context, svc, task string, e Entry) ([]net
 	return addrs, exp, nil
 }
 
-// syncElements recomputes set_elements from the unexpired set_answers: one row per element, the latest expiry.
+// syncElements recomputes set_elements from the set_answers that are unexpired, or expired within fw.ElementSlack:
+// the kernel element outlives its row's expiry by a moment, and fwcheck must still find the row.
 func syncElements(tx *sql.Tx, now int64) error {
+	now -= fw.ElementSlack.Milliseconds()
 	in, args := inSets()
 	if _, err := tx.Exec(`DELETE FROM set_elements WHERE set_name IN `+in, args...); err != nil {
 		return err
@@ -231,7 +240,9 @@ func answerElems(tx *sql.Tx, where string, args ...any) (map[string]bool, error)
 // elements leave the sets and their conntrack entries are deleted, which cuts established flows at once, even flows
 // whose element already expired. Expired answers stay AnswerRetention for that, but leave set_elements (the kernel
 // already dropped them; established flows survive expiry). Every live element is re-added with its remaining expiry,
-// and any element the kernel holds that rootd.db does not is removed. rootd runs it before READY=1, on its timer and
+// and any element the kernel holds that rootd.db does not is removed. The row changes commit only after nft and every
+// conntrack cut succeeded: until then rootd.db still names the revoked answers, so a failed or interrupted refill is
+// retried in full and fwcheck never sees an element whose row is gone. rootd runs it before READY=1, on its timer and
 // on an admin notify.
 func (s *Service) Refill() (RefillResult, error) {
 	var res RefillResult
@@ -295,9 +306,6 @@ func (s *Service) Refill() (RefillResult, error) {
 	if err != nil {
 		return res, err
 	}
-	if err := tx.Commit(); err != nil {
-		return res, err
-	}
 
 	var cut, gone []Elem
 	for k := range cutKeys {
@@ -353,14 +361,18 @@ func (s *Service) Refill() (RefillResult, error) {
 	if err := s.Nft.Run(DestroyScript(append(cut, gone...)) + AddScript(add, s.Timeout)); err != nil {
 		return res, err
 	}
+	var errs []error
 	for _, el := range cut {
 		n, err := s.Flows(el.Addr, el.Port)
 		res.Flows += n
 		if err != nil {
-			return res, fmt.Errorf("conntrack delete %s: %v", el.Key(), err)
+			errs = append(errs, fmt.Errorf("conntrack delete %s: %v", el.Key(), err))
 		}
 	}
-	return res, nil
+	if err := errors.Join(errs...); err != nil {
+		return res, err
+	}
+	return res, tx.Commit()
 }
 
 // Entries lists the elements rootd.db holds for set (fwcheck's expected state).

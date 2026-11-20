@@ -36,7 +36,10 @@ const (
 	// Reserved loopback service ports (§6.1): only (uid . port) tuples in port_allow may open them.
 	ReservedLo, ReservedHi = 43000, 45999
 	ElementTimeout         = 10 * time.Minute
-	reservedSysctl         = "/proc/sys/net/ipv4/ip_local_reserved_ports"
+	// ElementSlack is how long past its row's expiry a dst element may still be in the kernel: rootd computes the
+	// expiry before nft adds the element. fwcheck accepts it, and rootd keeps the row that long.
+	ElementSlack   = 5 * time.Second
+	reservedSysctl = "/proc/sys/net/ipv4/ip_local_reserved_ports"
 )
 
 // The static sets. rootd never inserts into them; rootd's address checks (Appendix B) use Private4 and Private6 too,
@@ -54,7 +57,10 @@ var (
 // rootd recorded and that have not expired, so an empty set passes.
 var (
 	ExactSets = []string{"port_allow", "allow_private4", "allow_private6"}
-	DstSets   = []string{"proxy_dst4", "proxy_dst6", "keys_dst4", "keys_dst6", "git_dst4", "git_dst6", "ntfy_dst4", "ntfy_dst6"}
+	// FixedPortAllow are the port_allow tuples every box has (Appendix B): root may open approvald's 127.0.0.1:43100
+	// and ntfy's :43200. rootd records them at start (RecordFixed); app tuples come with the apps.
+	FixedPortAllow = []string{"0 . 43100", "0 . 43200"}
+	DstSets        = []string{"proxy_dst4", "proxy_dst6", "keys_dst4", "keys_dst6", "git_dst4", "git_dst6", "ntfy_dst4", "ntfy_dst6"}
 )
 
 //go:embed agentbox.nft
@@ -304,8 +310,8 @@ func Compare(live map[string][]string, rows []Row, now time.Time) []string {
 		case slices.Contains(ExactSets, r.Set):
 			want[r.Set] = append(want[r.Set], e)
 		case ok[r.Set] != nil:
-			// 5 s of slack: an element nft still holds can outlive its row by a moment
-			if r.Expires == nil || *r.Expires > now.UnixMilli()-5000 {
+			// an element nft still holds can outlive its row's expiry by a moment
+			if r.Expires == nil || *r.Expires > now.UnixMilli()-ElementSlack.Milliseconds() {
 				ok[r.Set][e] = true
 			}
 		default:
@@ -509,6 +515,16 @@ func RefillScript(live map[string][]string, rows []Row) (string, error) {
 		}
 	}
 	return b.String(), nil
+}
+
+// RecordFixed writes the FixedPortAllow rows to rootd.db's set_elements; rootd runs it at start, before its refill.
+func RecordFixed(db *sql.DB) error {
+	for _, e := range FixedPortAllow {
+		if _, err := db.Exec(`INSERT OR IGNORE INTO set_elements VALUES ('port_allow', ?, NULL)`, e); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Refill runs RefillScript on rootd's open rootd.db as one nft transaction.

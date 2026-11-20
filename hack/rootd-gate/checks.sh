@@ -24,6 +24,26 @@ allow() { $A egress allow --svc "$1" --entry "$2" >/dev/null; }
 remove() { $A egress remove --svc "$1" --entry "$2"; }
 # as UID CMD...: a broker or test uid runs CMD
 as() { u=$1; shift; runuser -u "$u" -- "$@"; }
+# chain SEQ [ENTRY]: with ENTRY, exit 0 if auditd's chain has a DENY for it with a seq above SEQ; without, print the
+# newest seq (SEQ is ignored)
+chain() { python3 - "$@" "${AUDIT_DIR:-/var/lib/agentbox/audit}"/seg-*.jsonl <<'PY'
+import json, sys
+seq, entry, files = int(sys.argv[1]), sys.argv[2], sys.argv[3:]
+top = 0
+for f in files:
+    for l in open(f, errors="replace"):
+        try:
+            r = json.loads(l)
+        except ValueError:
+            continue
+        top = max(top, r.get("seq", 0))
+        if entry and r.get("seq", 0) > seq and r.get("type") == "DENY" and (r.get("body") or {}).get("entry") == entry:
+            sys.exit(0)
+if not entry:
+    print(top)
+sys.exit(1 if entry else 0)
+PY
+}
 dropin=/run/systemd/system/agentbox-rootd.service.d/90-rootd-gate.conf
 fast() { # test timings for this boot only (/run): 30 s elements, a 10 s timer
   mkdir -p "${dropin%/*}"
@@ -45,7 +65,10 @@ setup)
     -a cgnat.gate.test=100.64.0.1 -a doc.gate.test=198.51.100.7 -a mapped.gate.test=::ffff:8.8.8.8 \
     -a nat64p.gate.test=64:ff9b::a00:1 -a nat64ok.gate.test=64:ff9b::808:808 -a own.gate.test=192.88.99.15 \
     -a own6.gate.test=2600:ffff::15 -a onlink.gate.test=192.88.98.7 -a tail.gate.test=192.88.97.7 \
-    -a lo.gate.test=127.0.0.1 -a ll.gate.test=fe80::1 -a mc.gate.test=224.0.0.251 -a ula.gate.test=fd00::1
+    -a lo.gate.test=127.0.0.1 -a ll.gate.test=fe80::1 -a mc.gate.test=224.0.0.251 -a ula.gate.test=fd00::1 \
+    -a ipv4only.arpa=192.0.0.170,192.0.0.171,2600:ffff:64::c000:aa,2600:ffff:64::c000:ab \
+    -a nsp.gate.test=2600:ffff:64::c0a8:101
+  # DNS64 with a network-specific prefix (RFC 7050): ipv4only.arpa's AAAA puts 2600:ffff:64::/96 in front of 192.0.0.170
   mkdir -p /run/systemd/resolved.conf.d
   printf '[Resolve]\nDNS=127.0.0.153\nDomains=~.\n' > /run/systemd/resolved.conf.d/90-rootd-gate.conf
   systemctl restart systemd-resolved.service
@@ -95,17 +118,21 @@ main)
   check "test timings on (30 s elements, 10 s timer)" 'systemctl is-active -q agentbox-rootd.service && systemctl show -P ExecStart agentbox-rootd.service | grep -q "element-timeout 30s"'
 
   echo "== refused names: private, special-purpose, NAT64-wrapped, the box's own (Appendix B)"
-  for n in priv mixed cgnat doc mapped nat64p own own6 onlink tail lo ll mc ula; do allow keys $n.gate.test:443; done
+  t_deny=$(date +%s)
+  seq0=$(chain 0 "")
+  for n in priv mixed cgnat doc mapped nat64p nsp own own6 onlink tail lo ll mc ula; do allow keys $n.gate.test:443; done
   allow keys nat64ok.gate.test:443; allow keys hosts.gate.test:443; allow keys nx.gate.test:443
   before=$(nft list table inet agentbox | grep -c ' \. 443')
-  for n in priv mixed cgnat doc mapped nat64p own own6 onlink tail lo ll mc ula; do
+  for n in priv mixed cgnat doc mapped nat64p nsp own own6 onlink tail lo ll mc ula; do
     check "$n.gate.test is refused non_public" "[ \"\$(reason keys $n.gate.test 443)\" = non_public ]"
   done
-  check "none of their addresses reached any set" '[ "$(nft list table inet agentbox | grep -c " \. 443")" = "$before" ] && for a in 10.1.2.3 192.88.96.2 192.168.1.10 100.64.0.1 198.51.100.7 8.8.8.8 64:ff9b::a00:1 192.88.99.15 2600:ffff::15 192.88.98.7 192.88.97.7 127.0.0.1 fe80::1 224.0.0.251 fd00::1; do ! sets_have "$a . 443" || exit 1; done'
-  check "the refusal's detail names the address and check, in rootd's DENY log only" 'journalctl -u agentbox-rootd.service -o cat | grep -q "DENY by=rootd svc=keys entry=own.gate.test:443 code=non_public detail=\"192.88.99.15: route_not_unicast"'
-  check "the refusal is also a DENY record in auditd's chain" 'grep -h "own.gate.test:443" /var/lib/agentbox/audit/seg-*.jsonl | grep -q "\"DENY\""'
-  check "an on-link address is refused by the route check" 'journalctl -u agentbox-rootd.service -o cat | grep -q "entry=onlink.gate.test:443 code=non_public detail=\"192.88.98.7: route_on_link"'
-  check "a tailnet-like interface route is refused by the route check" 'journalctl -u agentbox-rootd.service -o cat | grep -q "entry=tail.gate.test:443 code=non_public detail=\"192.88.97.7: route_not_default_interface"'
+  check "none of their addresses reached any set" '[ "$(nft list table inet agentbox | grep -c " \. 443")" = "$before" ] && for a in 10.1.2.3 192.88.96.2 192.168.1.10 100.64.0.1 198.51.100.7 8.8.8.8 64:ff9b::a00:1 2600:ffff:64::c0a8:101 192.88.99.15 2600:ffff::15 192.88.98.7 192.88.97.7 127.0.0.1 fe80::1 224.0.0.251 fd00::1; do ! sets_have "$a . 443" || exit 1; done'
+  check "the refusal's detail names the address and check, in rootd's DENY log only" 'journalctl -u agentbox-rootd.service --since @$t_deny -o cat | grep -q "DENY by=rootd svc=keys entry=own.gate.test:443 code=non_public detail=\"192.88.99.15: route_not_unicast"'
+  # rootd sends DENY records from one throttled sender: give it a moment; only records after seq0 count
+  check "the refusal is also a DENY record in auditd's chain, after this run's start (seq > $seq0)" 'i=0; until chain $seq0 own.gate.test:443; do i=$((i+1)); [ $i -lt 10 ] || exit 1; sleep 1; done'
+  check "an address under the network's own NAT64 prefix (DNS64, RFC 7050) that wraps 192.168.x is refused" 'journalctl -u agentbox-rootd.service --since @$t_deny -o cat | grep -q "entry=nsp.gate.test:443 code=non_public detail=\"2600:ffff:64::c0a8:101: nat64_private"'
+  check "an on-link address is refused by the route check" 'journalctl -u agentbox-rootd.service --since @$t_deny -o cat | grep -q "entry=onlink.gate.test:443 code=non_public detail=\"192.88.98.7: route_on_link"'
+  check "a tailnet-like interface route is refused by the route check" 'journalctl -u agentbox-rootd.service --since @$t_deny -o cat | grep -q "entry=tail.gate.test:443 code=non_public detail=\"192.88.97.7: route_not_default_interface"'
   check "a NAT64 address wrapping a public IPv4 passes" '[ "$(reason keys nat64ok.gate.test 443)" = ok ] && set_has keys_dst6 "64:ff9b::808:808 . 443"'
   check "/etc/hosts answers nothing (NO_SYNTHESIZE, NO_ZONE): no_such_name" '[ "$(reason keys hosts.gate.test 443)" = no_such_name ] && ! sets_have 192.88.96.9'
   check "NXDOMAIN: no_such_name"                  '[ "$(reason keys nx.gate.test 443)" = no_such_name ]'
@@ -126,7 +153,10 @@ main)
   IPS=$(addrs keys "$FLOW_HOST" "$FLOW_PORT"); IP=$(v4 "$IPS")
   note "rootd resolved $FLOW for keys: $IPS"
   check "after rootd resolved it keys connects to $IP:$FLOW_PORT" '[ -n "$IP" ] && as agentbox-keys $RG connect $IP $FLOW_PORT 5'
-  check "but not to $IP on another port"         '! as agentbox-keys $RG connect $IP 81 3'
+  # a port the host does answer on (root, unconfined, reaches it), so only keys_dst4's port match can refuse it
+  OP=443; [ "$FLOW_PORT" != 443 ] || OP=80
+  kd() { nft list chain inet agentbox output | grep -F 'meta skuid "agentbox-keys" counter drop' | grep -o 'packets [0-9]*' | awk '{print $2}'; }
+  check "but not to $IP:$OP, which answers root: keys' catch-all drop takes it" '$RG connect $IP $OP 5 && b=$(kd) && ! as agentbox-keys $RG connect $IP $OP 3 && [ "$(kd)" -gt "$b" ]'
   check "git can't use keys' answer"             '! as agentbox-git $RG connect $IP $FLOW_PORT 3'
   check "the proxy can't use keys' answer"       '! as agentbox-proxy $RG connect $IP $FLOW_PORT 3'
   check "a public address nobody resolved stays blocked (1.1.1.1:80)" '! as agentbox-keys $RG connect 1.1.1.1 80 3'

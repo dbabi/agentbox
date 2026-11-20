@@ -42,10 +42,19 @@ type Varlink struct{ Path string }
 
 // ResolveHostname returns every address resolved answers for name, in its order.
 func (v Varlink) ResolveHostname(ctx context.Context, name string) ([]netip.Addr, error) {
-	var d net.Dialer
-	c, err := d.DialContext(ctx, "unix", v.Path)
+	msg, err := varlinkCall(ctx, v.Path, "io.systemd.Resolve.ResolveHostname", map[string]any{"name": name, "flags": ResolveFlags})
 	if err != nil {
 		return nil, &Refused{Unavailable, err.Error()}
+	}
+	return parseVarlink(msg)
+}
+
+// varlinkCall sends one method call on the Varlink socket at path and returns its one reply.
+func varlinkCall(ctx context.Context, path, method string, params map[string]any) ([]byte, error) {
+	var d net.Dialer
+	c, err := d.DialContext(ctx, "unix", path)
+	if err != nil {
+		return nil, err
 	}
 	defer c.Close()
 	if dl, ok := ctx.Deadline(); ok {
@@ -53,16 +62,15 @@ func (v Varlink) ResolveHostname(ctx context.Context, name string) ([]netip.Addr
 	} else {
 		c.SetDeadline(time.Now().Add(30 * time.Second))
 	}
-	req, _ := json.Marshal(map[string]any{"method": "io.systemd.Resolve.ResolveHostname",
-		"parameters": map[string]any{"name": name, "flags": ResolveFlags}})
+	req, _ := json.Marshal(map[string]any{"method": method, "parameters": params})
 	if _, err := c.Write(append(req, 0)); err != nil {
-		return nil, &Refused{Unavailable, err.Error()}
+		return nil, err
 	}
 	msg, err := bufio.NewReader(c).ReadBytes(0)
 	if err != nil {
-		return nil, &Refused{Unavailable, err.Error()}
+		return nil, err
 	}
-	return parseVarlink(bytes.TrimSuffix(msg, []byte{0}))
+	return bytes.TrimSuffix(msg, []byte{0}), nil
 }
 
 func parseVarlink(msg []byte) ([]netip.Addr, error) {

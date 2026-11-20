@@ -16,8 +16,8 @@
 #          - a keys flow survives its element's expiry (conntrack), while a new connection is refused
 #          - `nft flush ruleset`: within 60 s the health timer's fwcheck alerts and the table is back, sets refilled
 #          - after a reboot: the sets are back and the stand-in starts at boot, with no failed unit
-# The sets rootd fills come from the real agentbox-rootd.service: the gate writes the rows rootd would have written
-# (set_elements for port_allow, set_answers for dst answers, with their entries on the allowlists) and asks rootd to
+# The sets rootd fills come from the real agentbox-rootd.service: rootd records the fixed port_allow tuples itself, and
+# the gate writes the dst answers rootd would have written (set_answers, with their entries on the allowlists) and asks rootd to
 # refill (`agentbox egress refill`); a firewall restart restarts rootd through Requires=, and rootd refills before READY=1.
 # Checks print PASS/FAIL to .vm/fw-gate.txt, command output goes to .vm/fw-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
@@ -59,7 +59,14 @@ for o in json.load(sys.stdin)["nftables"]:
 drops() { nft list chain inet agentbox output | grep -o 'packets [0-9]*' | awk '{s += $2} END {print s + 0}'; }
 dropped() { b=$(drops); r=$(as "$@"); a=$(drops); echo "$* -> $r, drop counters $b -> $a"
   case $r in EPERM|TimeoutError) [ "$a" -gt "$b" ] ;; *) false ;; esac; }
+# rdropped PATTERN USER HOST PORT [udp]: the one output rule whose text holds PATTERN dropped it (its own counter moved)
+rcount() { nft list chain inet agentbox output | grep -F -- "$1" | grep -o 'packets [0-9]*' | awk '{s += $2} END {print s + 0}'; }
+rdropped() { pat=$1; shift; b=$(rcount "$pat"); r=$(as "$@"); a=$(rcount "$pat"); echo "$* -> $r, '$pat' counter $b -> $a"
+  case $r in EPERM|TimeoutError) [ "$a" -gt "$b" ] ;; *) false ;; esac; }
 expires() { nft -j list set inet agentbox "$1" | grep -o '"expires": [0-9]*' | grep -o '[0-9]*$'; }
+# port_allow as one line; rootd records the fixed tuples itself (fw.FixedPortAllow)
+pa() { elems port_allow | sort | paste -sd " " -; }
+PA='{"concat": [0, 43100]} {"concat": [0, 43200]}'
 IP=$(cat /var/tmp/fw-ip 2>/dev/null || :)
 EOF
 }
@@ -114,12 +121,12 @@ check "rootd is up at boot, after the firewall, and fwcheck passes" 'systemctl i
 check "the agent stand-in starts while the firewall is intact" 'systemctl start agentbox-agent-stub.service && systemctl is-active agentbox-agent-stub.service && systemctl stop agentbox-agent-stub.service'
 check "the test address $IP (ports.ubuntu.com) is public: not in private4" '[ -n "$IP" ] && ! nft get element inet agentbox private4 "{ $IP }"'
 
-# the rows rootd would have written before adding each element (rootd.db set_elements and set_answers, Appendix E);
-# the proxy's answer is for an entry on its allowlist, or rootd's refill revokes it
+check "rootd recorded the fixed port_allow tuples itself (0 . 43100, 0 . 43200) and filled port_allow from them" '[ "$(python3 -c "import sqlite3; print(\",\".join(sorted(r[0] for r in sqlite3.connect(\"file:$DB?mode=ro\", uri=True).execute(\"select element from set_elements where set_name = \x27port_allow\x27\"))))")" = "0 . 43100,0 . 43200" ] && [ "$(pa)" = "$PA" ]'
+# the row rootd would have written before adding the proxy's element (rootd.db set_answers, Appendix E); the answer is
+# for an entry on its allowlist, or rootd's refill revokes it
 $A egress allow --svc proxy --entry ports.ubuntu.com:80 >>$L 2>&1
-sql "INSERT INTO set_elements VALUES ('port_allow', '0 . 43100', NULL);
-  INSERT INTO set_answers VALUES ('proxy ports.ubuntu.com:80', 'proxy_dst4', '$IP . 80', $(nowms) + 600000);"
-check "rootd's refill fills port_allow and proxy_dst4 from rootd.db, with the remaining timeout; fwcheck passes" '$A egress refill && [ "$(elems port_allow)" = "{\"concat\": [0, 43100]}" ] && [ "$(elems proxy_dst4)" = "{\"concat\": [\"$IP\", 80]}" ] && [ "$(expires proxy_dst4)" -le 600 ] && $A fwcheck'
+sql "INSERT INTO set_answers VALUES ('proxy ports.ubuntu.com:80', 'proxy_dst4', '$IP . 80', $(nowms) + 600000);"
+check "rootd's refill fills proxy_dst4 from rootd.db, with the remaining timeout; fwcheck passes" '$A egress refill && [ "$(pa)" = "$PA" ] && [ "$(elems proxy_dst4)" = "{\"concat\": [\"$IP\", 80]}" ] && [ "$(expires proxy_dst4)" -le 600 ] && $A fwcheck'
 
 # Firewall altered: agents can't start. The health timer would repair in between, so it waits.
 systemctl stop agentbox-health.timer
@@ -142,16 +149,18 @@ altered "nftables.service unmasked" 'systemctl unmask nftables.service' 'systemc
 check "a table with an extra hooked chain fails the firewall load itself (fail closed); deleting it restores" 'nft add chain inet agentbox evil "{ type filter hook output priority -10; policy accept; }" && ! systemctl restart agentbox-firewall.service && ! systemctl is-active agentbox-firewall.service && journalctl -u agentbox-firewall.service -n 20 -o cat | grep -q "stateless hash" && nft delete chain inet agentbox evil && systemctl reset-failed && restore'
 
 # Reload, restart and fw load keep the sets
-p=$(elems port_allow) d=$(elems proxy_dst4) e1=$(expires proxy_dst4)
-check "reload, restart and fw load keep port_allow and proxy_dst4; the element's expiry keeps running" 'systemctl reload agentbox-firewall.service && systemctl restart agentbox-firewall.service && $A fw load && [ "$(elems port_allow)" = "$p" ] && [ "$(elems proxy_dst4)" = "$d" ] && [ -n "$p" ] && [ -n "$d" ] && [ "$(expires proxy_dst4)" -le "$e1" ] && $A fwcheck'
+p=$(pa) d=$(elems proxy_dst4) e1=$(expires proxy_dst4)
+check "reload, restart and fw load keep port_allow and proxy_dst4; the element's expiry keeps running" 'systemctl reload agentbox-firewall.service && systemctl restart agentbox-firewall.service && $A fw load && [ "$(pa)" = "$p" ] && [ "$(elems proxy_dst4)" = "$d" ] && [ -n "$p" ] && [ -n "$d" ] && [ "$(expires proxy_dst4)" -le "$e1" ] && $A fwcheck'
 check "after the reloads, the agent stand-in starts" 'systemctl start agentbox-agent-stub.service && systemctl is-active agentbox-agent-stub.service'
 
 # Reserved loopback ports
 python3 /var/tmp/listen.py >>$L 2>&1 & LP=$!; sleep 2
 check "200 root loopback connections to 127.0.0.1:43100 all succeed" '[ "$(python3 /var/tmp/many.py)" = 200 ]'
 check "uid nobody to 127.0.0.1:43100 (no port_allow tuple): reset" '[ "$(as nobody 127.0.0.1 43100)" = ECONNREFUSED ]'
-check "root to 127.0.0.1:43101 (listening, not in port_allow): reset" '[ "$(python3 /var/tmp/conn.py 127.0.0.1 43101)" = ECONNREFUSED ]'
-check "root to [::1]:43100 (listening): reset" '[ "$(python3 /var/tmp/conn.py ::1 43100)" = ECONNREFUSED ]'
+# a listener that failed to bind would give the same ECONNREFUSED: check it is up, and that the reject rule sent it
+rejects() { nft list chain inet agentbox output | grep -F "$1" | grep -F "reject with tcp reset" | grep -o 'packets [0-9]*' | awk '{print $2}'; }
+check "root to 127.0.0.1:43101 (listening, not in port_allow): reset by the reject rule" '[ -n "$(ss -Hltn "sport = :43101")" ] && b=$(rejects "ip daddr 127.0.0.1") && [ "$(python3 /var/tmp/conn.py 127.0.0.1 43101)" = ECONNREFUSED ] && [ "$(rejects "ip daddr 127.0.0.1")" -gt "$b" ]'
+check "root to [::1]:43100 (listening): reset by the reject rule" '[ -n "$(ss -Hltn "src [::1]:43100")" ] && b=$(rejects "ip6 daddr ::1") && [ "$(python3 /var/tmp/conn.py ::1 43100)" = ECONNREFUSED ] && [ "$(rejects "ip6 daddr ::1")" -gt "$b" ]'
 kill $LP
 
 # A broker reaches only what rootd put in its own set
@@ -159,7 +168,11 @@ check "agentbox-proxy reaches $IP:80 (in proxy_dst4)" '[ "$(as agentbox-proxy $I
 check "agentbox-proxy can't reach $IP:443 (port not in its set): dropped" 'dropped agentbox-proxy $IP 443'
 check "agentbox-keys and agentbox-git can't reach $IP:80 (not in their sets): dropped" 'dropped agentbox-keys $IP 80 && dropped agentbox-git $IP 80'
 check "agentbox-proxy can't reach 1.1.1.1:443 (an IP rootd never resolved): dropped" 'dropped agentbox-proxy 1.1.1.1 443'
-check "agentbox-proxy can't reach 10.0.2.2:22 (private4) or DNS on 127.0.0.53:53 (local): dropped" 'dropped agentbox-proxy 10.0.2.2 22 && dropped agentbox-proxy 127.0.0.53 53 udp'
+# in proxy_dst4 on purpose, so the per-uid catch-all drop can't stand in for the private4 and fib rules
+nft add element inet agentbox proxy_dst4 '{ 10.0.2.2 . 22 timeout 5m, 127.0.0.53 . 53 timeout 5m }'
+check "agentbox-proxy can't reach 10.0.2.2:22 even with it in proxy_dst4: the private4 rule drops it" 'rdropped "ip daddr @private4 counter" agentbox-proxy 10.0.2.2 22'
+check "agentbox-proxy can't reach DNS on 127.0.0.53:53 (tcp in proxy_dst4, and udp): the fib local rule drops it" 'rdropped "fib daddr type" agentbox-proxy 127.0.0.53 53 && rdropped "fib daddr type" agentbox-proxy 127.0.0.53 53 udp'
+nft delete element inet agentbox proxy_dst4 '{ 10.0.2.2 . 22, 127.0.0.53 . 53 }'
 check "a confined uid (70001) can't reach $IP:80: dropped" 'dropped 70001 $IP 80'
 check "root still reaches $IP:80 (only agentbox uids are confined)" '[ "$(python3 /var/tmp/conn.py $IP 80)" = ok ]'
 
@@ -181,14 +194,19 @@ wait $FP || :
 check "the keys flow opened before the expiry still gets its HTTP answer (ct established)" 'grep -q "^HTTP/1.1 " /var/tmp/flow.out'
 $A egress remove --svc keys --entry ports.ubuntu.com:80 >>$L 2>&1
 
-# nft flush ruleset: the health timer's fwcheck alerts and restores within 60 s
-systemctl stop agentbox-agent-stub.service; systemctl start agentbox-health.timer; sleep 2
+# nft flush ruleset: the health timer's fwcheck alerts and restores within 60 s. Starting the timer fires its catch-up
+# run at once; the flush comes right after that run ends, so the repair has to wait out a whole period (the worst case)
+systemctl stop agentbox-agent-stub.service
+i0=$(systemctl show -P InactiveEnterTimestampMonotonic agentbox-health.service)
+systemctl start agentbox-health.timer
+for i in $(seq 60); do [ "$(systemctl show -P InactiveEnterTimestampMonotonic agentbox-health.service)" != "$i0" ] && break; sleep 0.5; done
+check "the health timer's catch-up run finished just before the flush" '[ "$(systemctl show -P InactiveEnterTimestampMonotonic agentbox-health.service)" != "$i0" ]'
 t0=$(date +%s); nft flush ruleset; t1=0
 for i in $(seq 90); do nft list table inet agentbox >/dev/null 2>&1 && { t1=$(date +%s); break; }; sleep 1; done
 echo "flush at $t0, table back at $t1: $((t1 - t0)) s" >>$L
 check "nft flush ruleset: the table is back within 60 s ($((t1 - t0)) s)" '[ $t1 -gt 0 ] && [ $((t1 - t0)) -le 60 ]'
 sleep 5
-check "nft flush ruleset: fwcheck alerted, restarted the firewall, and the refill restored rootd's sets" 'journalctl -u agentbox-health.service --since @$t0 -o cat | grep -q "agentbox: ALERT: firewall altered: nft list table inet agentbox" && journalctl -u agentbox-health.service --since @$t0 -o cat | grep -q "agentbox: firewall restored" && [ "$(elems port_allow)" = "$p" ] && [ "$(elems proxy_dst4)" = "$d" ] && $A fwcheck'
+check "nft flush ruleset: fwcheck alerted, restarted the firewall, and the refill restored rootd's sets" 'journalctl -u agentbox-health.service --since @$t0 -o cat | grep -q "agentbox: ALERT: firewall altered: nft list table inet agentbox" && journalctl -u agentbox-health.service --since @$t0 -o cat | grep -q "agentbox: firewall restored" && [ "$(pa)" = "$p" ] && [ "$(elems proxy_dst4)" = "$d" ] && $A fwcheck'
 check "after the repair, the agent stand-in starts" 'systemctl start agentbox-agent-stub.service && systemctl is-active agentbox-agent-stub.service'
 
 # for the reboot: a fresh answer, and the stand-in starts at boot like an agent's user manager
@@ -202,7 +220,7 @@ EOF
 phase2() { cat <<'EOF'
 echo "== after reboot" >>$L
 check "reboot: firewall, rootd and agent stand-in active; no failed units" '[ "$(systemctl is-system-running --wait)" = running ] && systemctl is-active agentbox-firewall.service agentbox-rootd.service agentbox-agent-stub.service'
-check "reboot: the static sets are loaded and rootd's sets are back from rootd.db" 'nft list set inet agentbox confined | grep -qF 70001-70999 && [ "$(elems private4 | wc -l)" = 13 ] && [ "$(elems port_allow)" = "{\"concat\": [0, 43100]}" ] && [ "$(elems proxy_dst4)" = "{\"concat\": [\"$IP\", 80]}" ]'
+check "reboot: the static sets are loaded and rootd's sets are back from rootd.db" 'nft list set inet agentbox confined | grep -qF 70001-70999 && [ "$(elems private4 | wc -l)" = 13 ] && [ "$(pa)" = "$PA" ] && [ "$(elems proxy_dst4)" = "{\"concat\": [\"$IP\", 80]}" ]'
 check "reboot: fwcheck passes; agentbox-proxy reaches $IP:80 and nothing else" '$A fwcheck && [ "$(as agentbox-proxy $IP 80)" = ok ] && dropped agentbox-proxy 1.1.1.1 443'
 check "reboot: the agent stand-in's own fwcheck ran and passed at boot" 'journalctl -b -u agentbox-agent-stub.service -o cat | grep -q "Started agentbox-agent-stub.service\|Started agentbox agent stand-in" && ! journalctl -b -u agentbox-agent-stub.service -o cat | grep -q "agentbox: fwcheck: "'
 echo "fails=$fails"
@@ -229,8 +247,7 @@ sc_checks() {
   while running; do sleep 2; done
 }
 
-: >"$LOG"
-[ "$1" != install ] || : >"$OUT"
+: >"$LOG"; : >"$OUT"
 for s; do
   case "$s" in install|checks) log "== $s"; "sc_$s" ;; *) die "unknown scenario $s" ;; esac
 done

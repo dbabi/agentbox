@@ -1,5 +1,5 @@
 // Command gate-dns is a test DNS server for hack/rootd-gate.sh, run inside the test VM: it answers A and AAAA queries
-// for names under -zone from -a flags (NXDOMAIN for any other name in the zone) and relays every other query to
+// for names under -zone, and for any other name, from -a flags (NXDOMAIN for any other name in the zone), and relays every other query to
 // -upstream unchanged, so the box keeps working while resolved uses it as its only server. Test fixture: never shipped.
 package main
 
@@ -159,12 +159,12 @@ func question(q []byte) (string, uint16, int, error) {
 // answer builds the reply for a query in zone; ok is false for names outside it.
 func answer(q []byte, zone string, recs records) ([]byte, bool) {
 	name, qtype, end, err := question(q)
-	if err != nil || (name != zone && !strings.HasSuffix(name, "."+zone)) {
+	addrs, known := recs[name] // a name given with -a is answered even outside the zone (ipv4only.arpa)
+	if err != nil || (!known && name != zone && !strings.HasSuffix(name, "."+zone)) {
 		return nil, false
 	}
 	r := append([]byte(nil), q[:end]...)
 	flags := uint16(0x8400) | binary.BigEndian.Uint16(q[2:])&0x0100 | 0x0080 // QR AA, copy RD, RA
-	addrs, known := recs[name]
 	if !known {
 		flags |= 3 // NXDOMAIN
 	}

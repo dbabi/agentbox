@@ -132,14 +132,23 @@ func Run(cfg Config) error {
 		return err
 	}
 	defer db.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	da := newDenyAudit(func(r map[string]any) { sendDeny(cfg.AuditSocket, r) })
+	go da.run(ctx)
 	svc := &resolve.Service{
 		DB: db, Dir: cfg.EgressDir, Resolver: resolve.Varlink{Path: resolve.ResolvedSocket},
 		Route: nl.CheckRoute, Nft: resolve.Nft{Path: "nft"}, Flows: nl.DeleteFlows,
-		Now: time.Now, Timeout: cfg.ElementTimeout,
+		Now: time.Now, Timeout: cfg.ElementTimeout, Pref64: resolve.Networkd{Path: resolve.NetworkdSocket}.Pref64,
 		Deny: func(svc, entry, reason, detail string) {
 			log.Printf("DENY by=rootd svc=%s entry=%s code=%s detail=%q", svc, entry, reason, detail)
-			go sendDeny(cfg.AuditSocket, svc, entry, reason, detail)
+			if !da.deny(svc, entry, reason, detail) {
+				log.Printf("DENY not audited: queue full")
+			}
 		},
+	}
+	if err := fw.RecordFixed(db); err != nil { // the fixed port_allow rows, before the refill puts them in the set
+		return fmt.Errorf("port_allow rows: %v", err)
 	}
 	res, err := refill(db, svc)
 	if err != nil {
@@ -160,8 +169,6 @@ func Run(cfg Config) error {
 	if err := notify("READY=1\nSTATUS=sets match rootd.db"); err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 	s.refresh(ctx) // ntfy_dst at start, then on the timer
 	t := time.NewTicker(cfg.RefillInterval)
 	defer t.Stop()
@@ -207,7 +214,7 @@ func (s *server) refresh(ctx context.Context) {
 
 // sendDeny is a best-effort DENY record on auditd's rootd producer socket (§9): a refusal is not an effect, so
 // nothing waits on its ACK, and the journal line above stays the fallback when auditd is down.
-func sendDeny(sock, svc, entry, code, detail string) {
+func sendDeny(sock string, rec map[string]any) {
 	c, err := net.DialTimeout("unix", sock, 2*time.Second)
 	if err != nil {
 		log.Printf("DENY not audited: %v", err)
@@ -215,7 +222,7 @@ func sendDeny(sock, svc, entry, code, detail string) {
 	}
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(5 * time.Second))
-	b, _ := json.Marshal(map[string]string{"type": "DENY", "by": "rootd", "svc": svc, "entry": entry, "code": code, "detail": detail})
+	b, _ := json.Marshal(rec)
 	if _, err := c.Write(append(b, '\n')); err != nil {
 		log.Printf("DENY not audited: %v", err)
 		return
