@@ -11,9 +11,9 @@ Each **passed** row names its suite (round, commit). Evidence: `~/workplace/agen
 
 | Piece | State |
 |---|---|
-| `agentbox recovery keygen` / `decrypt` | done: RSA-4096 key, OAEP-SHA256, proven interoperable with the installer's `openssl pkeyutl` call |
+| `agentbox recovery keygen` / `decrypt` | done: RSA-4096 key, OAEP-SHA256, proven interoperable with the installer's `openssl pkeyutl` call (`TestInstallerOpenSSLLine`, `go test` on `40d9832`) |
 | `agentbox seed` | done: renders the autoinstall seed (`tpm2+tang`, `tpm2`, `none`; UEFI or BIOS), validates every input against subiquity 26.04.1's rules, builds a 0600 cidata ISO |
-| Release pipeline and firstboot | done: `make release`, `install.sh`, `agentbox-reconcile.service`, `agentbox os mark-last-good`; firstboot refuses a tampered tarball, an older signed release and a wrong-key signature, and installs nothing |
+| Release pipeline and firstboot | done: `make release`, `install.sh`, `agentbox-reconcile.service`, `agentbox os mark-last-good`; firstboot refuses a tampered tarball, an older signed release and a wrong-key signature, and installs nothing. `gates-none` (r1, `40d9832`) |
 | `hack/verify-seed.py` | done: real YAML parse, structure asserts, `dash -n` on every embedded script (also run by `go test`) |
 | QEMU arm64 install, Secure Boot on: `none`, `tpm2`, `tpm2+tang` | **passed:** unattended install and first boot through shim and GRUB; LUKS2 unlocks through clevis in the dracut initramfs; Tang down means no unlock and a reboot about 490 s later; a typed recovery key unlocks; Tang back unlocks with no input. Suites: `gates-none` (r1, `40d9832`), `gates-tpm2` and `gates-tpm2-tang-down-typed-recovery` (r2, `46df5a6`) |
 | QEMU arm64 install, Secure Boot off (`DIRECT_KERNEL=1`) | **passed:** `secureboot-off-direct-kernel-none` (r1, `40d9832`) |
@@ -82,7 +82,8 @@ serial matches anything but exactly one disk, or (encrypted modes) when there is
 
 ## Old-PC gate (needs the owner)
 PLAN row 1-2 ends with "Old PC passes in week 2": the install and `os.apply` checks on the old x86 PC. The VMs run UEFI
-only on arm64 and BIOS only on amd64 (`hack/apply-gate.sh <mode> bios` exists on amd64, but `os.apply` on BIOS has one pre-merge run and no regression suite), so the PC runs the
+only on arm64 and BIOS only on amd64 (`hack/apply-gate.sh <mode> bios` exists on amd64,
+but `os.apply` on BIOS has one pre-merge run and no regression suite), so the PC runs the
 first `os.apply` on real hardware, and a UEFI PC the first amd64 UEFI install. About 1 h hands-on, plus the install.
 1. Publish a release the PC can fetch: `make release VERSION=<ver> MINISIGN_KEY=<your key>`, then put
    `dist/agentbox-<ver>.tgz` and its `.minisig` side by side at one https URL with a CA-trusted certificate and no query
@@ -125,7 +126,9 @@ with no keys enrolled); the disk is NVMe, so the seed needs `--disk-serial QEMU_
 with SeaBIOS under TCG, several times slower; the disk is SATA, `--disk-serial QEMU_HARDDISK_QM00001`
 (`DISKBUS=virtio` uses `QM00001` on both). `hack/vm.sh install` boots the zero-touch ISO through the firmware, as real
 hardware does; `DIRECT_KERNEL=1` boots the stock ISO's kernel with `-kernel` instead (UEFI: with `SECUREBOOT=0`).
-The firmware and the ISOs are pinned in `hack/SHA256SUMS`. `hack/vm.sh ssh` logs in as `boxadmin` with the throwaway key in `.vm/id_vm`. For `tpm2+tang`, run `hack/vm.sh tang up` first (needs podman); it prints the
+The firmware and the ISOs are pinned in `hack/SHA256SUMS`.
+`hack/vm.sh ssh` logs in as `boxadmin` with the throwaway key in `.vm/id_vm`.
+For `tpm2+tang`, run `hack/vm.sh tang up` first (needs podman); it prints the
 `--tang-url` and `--tang-thp` seed flags. `hack/gate.sh tpm2 bios` runs a gate on the amd64 VM.
 
 `hack/gate.sh` needs minisign (`brew install minisign`). It signs its test releases with a throwaway key

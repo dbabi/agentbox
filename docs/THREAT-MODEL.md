@@ -70,5 +70,5 @@ Source of truth: `~/workplace/ai-os-research/ARCHITECTURE.md` v5.2, §10. Update
 | blklogwrites once left a 15.7 MiB hole in a virtio install log (cause unknown) | `replay-log`, `powercut.sh check` and `boot` fail loudly at a hole |
 | Power-cut replay needs a plain btrfs partition | Encrypted disks are not replayed: `powercut-fidelity` runs in `none`. QMP cuts (`os-apply-powercuts-tpm2`) run in `tpm2` only. `vm.sh cut` models only a disk with no volatile write cache. |
 | QEMU's user network (slirp) lets the guest reach every Mac service on `127.0.0.1` through `10.0.2.2` | The gates use it for Tang and release-serve. Restrict it before agents run in the VM (PLAN, before weeks 5–6). |
-| The arm64 VM has no hardware watchdog | arm64 tests softdog only; the i6300esb path runs on amd64. x86 watchdog detection is unit-tested only. |
+| The arm64 VM has no hardware watchdog | arm64 tests softdog only; the i6300esb path runs on amd64. Watchdog detection on real x86 hardware is unit-tested only (the old-PC gate checks it). |
 | HVF guests stop while the Mac sleeps | Long gates need AC power and an open lid; `vm.sh` does not count sleep against the install timeout. |
