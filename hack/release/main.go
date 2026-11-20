@@ -31,30 +31,38 @@ var maxTarball int64 = 64 << 20
 func main() {
 	version := flag.String("version", "", "release version, e.g. 2026.11.1")
 	key := flag.String("key", "", "minisign secret key file")
+	unsigned := flag.Bool("unsigned", false, "build without signing (CI); hack/sign-release.sh rebuilds, compares and signs")
 	out := flag.String("out", "dist", "output directory")
 	flag.Parse()
-	tgz, sum, err := build(*version, *key, *out)
+	tgz, sum, err := build(*version, *key, *out, !*unsigned)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "release:", err)
 		os.Exit(1)
 	}
+	if *unsigned {
+		fmt.Printf("wrote %s (unsigned)\nsha256 %x\n", tgz, sum)
+		return
+	}
 	fmt.Printf("wrote %s and %s.minisig\nseed flags: --release-url https://<host>/<path>/%s --release-sha256 %x\n", tgz, tgz, filepath.Base(tgz), sum)
 }
 
-// build writes and signs the release; it runs in the repo root.
-func build(version, key, out string) (string, []byte, error) {
+// build writes the release and, if sign is set, signs it; it runs in the repo root.
+func build(version, key, out string, sign bool) (string, []byte, error) {
 	if !reVersion.MatchString(version) {
 		return "", nil, fmt.Errorf("VERSION=%q: need [0-9A-Za-z][0-9A-Za-z._~-]*, at most 64 chars (it names the release dir on the box)", version)
 	}
-	if key == "" {
-		return "", nil, errors.New("MINISIGN_KEY (the minisign secret key file) is required")
-	}
-	if _, err := os.Stat(key); err != nil {
-		return "", nil, err
-	}
-	minisign, err := exec.LookPath("minisign")
-	if err != nil {
-		return "", nil, errors.New("minisign not installed (brew install minisign / apt install minisign)")
+	var minisign string
+	if sign {
+		if key == "" {
+			return "", nil, errors.New("MINISIGN_KEY (the minisign secret key file) is required")
+		}
+		if _, err := os.Stat(key); err != nil {
+			return "", nil, err
+		}
+		var err error
+		if minisign, err = exec.LookPath("minisign"); err != nil {
+			return "", nil, errors.New("minisign not installed (brew install minisign / apt install minisign)")
+		}
 	}
 	tmp, err := os.MkdirTemp("", "agentbox-release-")
 	if err != nil {
@@ -132,8 +140,8 @@ func build(version, key, out string) (string, []byte, error) {
 	if err == nil {
 		err = os.Rename(f.Name(), tgz)
 	}
-	if err != nil {
-		return "", nil, err
+	if err != nil || !sign {
+		return tgz, h.Sum(nil), err
 	}
 	// The trusted comment is signed, and a fixed one keeps the signature reproducible (Ed25519 is deterministic).
 	cmd := exec.Command(minisign, "-S", "-s", key, "-m", tgz, "-t", "agentbox "+version)

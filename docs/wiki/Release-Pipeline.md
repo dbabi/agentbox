@@ -383,3 +383,14 @@ OS package updates use a different path, `agentbox os plan` and `agentbox os app
 | `systemd/` | The units that ship in the release. |
 | `internal/seed/` | The seed generator. `seed.go` checks the release flags. `user-data.tmpl` holds the firstboot script and its unit. |
 | `hack/release-serve/main.go` | The plain-HTTP server for VM tests. |
+
+## Releases on GitHub
+
+A release is made in two halves. CI builds it, and the owner signs it. The minisign secret key never goes to GitHub.
+
+1. Push a tag: `git tag v<ver> && git push origin v<ver>`.
+2. `.github/workflows/release.yml` runs the tests and builds `agentbox-<ver>.tgz` with `go run ./hack/release -unsigned`. It records the commit and the Go version in `BUILDINFO`, writes `SHA256SUMS`, adds a GitHub build-provenance attestation, and drafts the release.
+3. The owner runs `hack/sign-release.sh v<ver>`. It downloads the draft's tarball, checks `SHA256SUMS` and the provenance with `gh attestation verify`, and rebuilds the same commit with the same Go version. It signs only if the two tarballs are byte-identical. Then it uploads `agentbox-<ver>.tgz.minisig` and publishes the release.
+4. The script prints the seed flags: `--release-url https://github.com/dbabi/agentbox/releases/download/v<ver>/agentbox-<ver>.tgz --release-sha256 <sum>`.
+
+`MINISIGN_KEY` defaults to `~/agentbox-keys/minisign.key`, with its public key next to it as `minisign.pub`. A draft stays unsigned, and a seed refuses it, until step 3 runs.
