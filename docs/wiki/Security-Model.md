@@ -290,7 +290,7 @@ How to report:
 1. Open the repository's **Security and quality** tab, or find it under the **...** menu.
 2. Choose **Report a vulnerability**. The direct link is `https://github.com/dbabi/agentbox/security/advisories/new`.
 
-The tab name is from GitHub's docs at the time of writing, and GitHub can rename it. (Placeholder: the maintainers must turn on private vulnerability reporting first. Then they must open the direct link once to check that it works.)
+GitHub can rename the tab; the direct link stays the same.
 
 If you see no **Report a vulnerability** button, open an issue that asks for a security contact. Put no details in it.
 
@@ -312,9 +312,9 @@ Never send:
 
 Remove any disk serials, host names and addresses that you do not want to share.
 
-In scope: the code in the repository. That covers `agentbox seed`, the installer it renders, firstboot and `install.sh`. It also covers `agentbox os`, `agentbox recovery`, `make release`, and the test harness, which runs on your machine. (Placeholder: the owner has not confirmed this scope yet.)
+In scope: the code in the repository. That covers `agentbox seed`, the installer it renders, firstboot and `install.sh`. It also covers `agentbox os`, `agentbox recovery`, `make release`, and the test harness, which runs on your machine.
 
-Out of scope (placeholder: the owner has not confirmed this list yet):
+Out of scope:
 
 - parts that are designed but not built (open a normal issue for design feedback);
 - bugs in Ubuntu packages (report those to Ubuntu);
@@ -322,7 +322,7 @@ Out of scope (placeholder: the owner has not confirmed this list yet):
 
 What to expect: agentbox is an early alpha with no releases. A fix to agentbox needs a reinstall.
 
-There is no bug bounty, and no promised response time yet. Please give the maintainers time to fix a problem before you publish it. (Placeholder: the owner has not confirmed these terms yet.)
+There is no bug bounty. Replies are best effort, with no fixed response time. Please give the maintainers time to fix a problem before you publish it.
 
 ## See also
 

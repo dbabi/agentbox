@@ -11,7 +11,7 @@ This page covers how to set up, change, test and submit code.
 2. Keep each change small, with a test that fails without it.
 3. Run `go vet ./... && go test ./...`.
 4. If the change touches the install, the boot or `os apply`, run the gate that covers it.
-5. Sign off every commit with `git commit -s`. (Placeholder: the owner has not confirmed this rule yet.)
+5. Write the commit message as [Commit messages](#commit-messages) shows.
 
 ## How we work
 
@@ -73,7 +73,7 @@ The arm64 UEFI gates use macOS's hypervisor (HVF), so they run only on a Mac.
 
    macOS's own `openssl` is LibreSSL. With it, `TestInstallerOpenSSLLine` skips.
 
-5. Clone and build. Replace `<owner>` with the account that hosts the repository.
+5. Clone and build.
 
    ```sh
    git clone https://github.com/dbabi/agentbox.git
@@ -88,9 +88,7 @@ The arm64 UEFI gates use macOS's hypervisor (HVF), so they run only on a Mac.
 
 ### Linux
 
-CI is set up to run the unit tests on Ubuntu 26.04, then the amd64 BIOS gates under KVM.
-At the time of writing, CI had not run yet.
-The unit tests and the gates had run only on macOS.
+CI runs on GitHub Actions on Ubuntu 26.04: `lint` and `test` on every push and pull request, and the amd64 BIOS gates under KVM on every push to `main`, weekly and on manual dispatch.
 
 For the unit tests:
 
@@ -393,9 +391,9 @@ The next run rebuilds the image.
 
 How the docs relate to the design:
 
-- The design lives in design notes that are not published yet: an architecture document and the 16-week build plan. At the time of writing, both are at version 5.2.
+- The design lives in [`docs/design/`](../design/): [`ARCHITECTURE.md`](../design/ARCHITECTURE.md), the 16-week build plan [`PLAN.md`](../design/PLAN.md), the audit [`LEDGER.md`](../design/LEDGER.md) and [`PROPOSALS-v5.3.md`](../design/PROPOSALS-v5.3.md). At the time of writing, both the architecture and the plan are at version 5.3.
 - The design says what is planned. The code and the gates say what is built. When they disagree, the docs follow the code.
-- Code comments cite the design by file and section, for example `ARCHITECTURE.md §3.3` or `PLAN.md week 2`. Keep these citations when you move code. If you need the text of a section, ask in an issue.
+- Code comments cite the design by file and section, for example `ARCHITECTURE.md §3.3` or `PLAN.md week 2`. Keep these citations when you move code.
 - The plan builds in order. Each milestone ends with a gate, and that gate must pass before the next milestone starts. Open an issue before you start on a planned component. [Roadmap](Roadmap.md) lists the milestones.
 - `docs/THREAT-MODEL.md` is the only design document in the repo. It summarizes the design's security model.
 
@@ -431,7 +429,6 @@ The body:
 3. Names the test or gate that proves it. Many commits end with a `Test:` or `Gate:` line for this.
 
 Wrap body lines at about 72 characters.
-End with your sign-off.
 
 ```
 <area>: <what changed>
@@ -441,42 +438,20 @@ End with your sign-off.
 <What the change does, and why that fixes it.>
 
 Test: <the test, and what it checks>
-
-Signed-off-by: Your Name <you@example.com>
 ```
 
 ## Pull requests
 
 - Open pull requests against `main`.
-- CI is set up to run on every pull request and every push to `main`. It runs `go vet` and `go test` on Ubuntu 26.04. Then it runs `hack/gate.sh none bios` and `hack/gate.sh tpm2 bios` under KVM. At the time of writing, CI had not run yet.
+- CI runs on every pull request and every push to `main`, on Ubuntu 26.04: the `lint` job (gofmt, `go vet`, staticcheck, shellcheck, govulncheck) and the `test` job (`go test`). On every push to `main`, weekly, and on manual dispatch, the `bios` job also runs `hack/gate.sh none bios` and `hack/gate.sh tpm2 bios` under KVM.
 - CI does not run the arm64 UEFI gates or the `os apply` gates. If your change needs one, run it on a Mac. Put the command, the commit and the PASS and FAIL counts in the pull request.
 - Never commit or attach `.vm/keys`, `.vm/id_vm`, a seed (`user-data`, `seed.iso` or a `.vm/gate-seed-*` directory), a `recovery.key` or a `luks.key`. The gate logs (`.vm/gate-*.txt`, `.vm/gate-*.log`, `.vm/install.log`, `.vm/boot-*.log`) are safe to attach. CI uploads the same files. A seed holds the admin password hash. `.gitignore` covers `recovery.key`, `luks.key`, `.vm/` and a `seed/` folder at the repo root, but check `git status` before you commit.
 - Do not put the details of a security problem in a public issue. [Security Model](Security-Model.md) says how to report it privately.
 
-## License and sign-off
+## License
 
 - agentbox is under the Apache License 2.0. See [`LICENSE`](../../LICENSE).
 - Your contribution is under the same license. Section 5 of the license says so.
 - There is no contributor license agreement (CLA).
-- Sign off every commit instead. A sign-off says that you agree to the [Developer Certificate of Origin 1.1](https://developercertificate.org/). In short: you have the right to submit the change under the project's license, and you know that the change and your sign-off are public.
-- (Placeholder: the owner has not confirmed this sign-off rule yet. No commit so far has a sign-off, and no CI check enforces one.)
+- No sign-off line is needed. Section 5 of the license covers every contribution you submit.
 - Do not add license headers to files. `LICENSE` covers the whole repo.
-
-`git commit -s` adds the sign-off.
-It takes the name and email from your git config:
-
-```
-Signed-off-by: Your Name <you@example.com>
-```
-
-Forgot it on the last commit? Add it:
-
-```sh
-git commit --amend -s --no-edit
-```
-
-Forgot it on several commits? Add it to every commit since `main`:
-
-```sh
-git rebase --signoff main
-```

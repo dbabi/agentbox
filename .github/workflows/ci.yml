@@ -7,7 +7,7 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    - cron: '17 6 * * 1' # weekly: the BIOS gates cost about 2 x 70 min of private-repo minutes
+    - cron: '17 6 * * 1' # weekly, so the gates also catch drift in the Ubuntu archive
 permissions:
   contents: read
 jobs:
@@ -38,7 +38,7 @@ jobs:
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
   bios:
     needs: test
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request' # PRs get lint and test; main gets the BIOS gates too
     runs-on: ubuntu-26.04 # 24.04's swtpm 0.7 has no --ctrl terminate, which vm.sh uses
     timeout-minutes: 120
     strategy:

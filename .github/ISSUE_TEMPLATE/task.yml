@@ -31,5 +31,5 @@ body:
     id: evidence
     attributes:
       label: Evidence path
-      description: Where the proof will go, for example `~/workplace/agentbox-evidence/<suite>/`.
+      description: Where the proof will go, for example a CI run link, or the gate's `.vm/gate-*.txt` result attached to the pull request.
     validations: {required: true}

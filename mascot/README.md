@@ -13,7 +13,7 @@ This page is the style guide for Snib: the story, the palette, the sizes, the ru
 
 Snib (it rhymes with "crib") is a small lockbox with feet. Its name is a Scots word for the little catch that bolts a door. Snib lives on a small server with no screen, and it gives every agent task a sealed room of its own. The gold padlock rides on its antenna, outside the box, because the keys never go in: the box holds no secrets, and before an agent does anything risky, Snib waits for its human to sign. The mint light on its side glows while an agent works. The tiny fang is its mischief. Let the agents make a mess in there. Snib can always roll back.
 
-The story follows the agentbox design, and most of that design is not built yet. The [Roadmap](https://github.com/<owner>/agentbox/wiki/Roadmap) lists what is built and what is planned.
+The story follows the agentbox design, and most of that design is not built yet. The [Roadmap](../docs/wiki/Roadmap.md) lists what is built and what is planned.
 
 ## Palette
 
@@ -226,7 +226,7 @@ Credit line:
 
 ```text
 Snib, the agentbox mascot, by the agentbox contributors. CC BY 4.0: https://creativecommons.org/licenses/by/4.0/
-Source: https://github.com/<owner>/agentbox/tree/main/mascot
+Source: https://github.com/dbabi/agentbox/tree/main/mascot
 ```
 
 Neither license grants trademark rights. CC BY 4.0 also does not let you suggest that the agentbox project endorses you or your use of the art.

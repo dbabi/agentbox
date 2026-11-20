@@ -46,7 +46,6 @@ All gates ran in QEMU VMs on an Apple Silicon Mac. Most ran on arm64 UEFI with S
 | `tpm2+tang` install on the amd64 BIOS VM | Not run. The BIOS gates ran `none` and `tpm2` only. |
 | `os apply` on amd64 | One passing run on the amd64 BIOS VM. It ran on a fix branch before the branch merged. |
 | Power cuts during `os apply` in `none` and `tpm2+tang` modes | Not run. QMP power cuts ran in `tpm2` mode only. |
-| CI on Linux | The GitHub Actions workflow exists. It would run the unit tests and the amd64 BIOS install gates under KVM. It has never run, because the repository had no remote at the time of writing. |
 
 ## Known gaps
 
