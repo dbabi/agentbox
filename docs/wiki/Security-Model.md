@@ -133,7 +133,7 @@ The VM gates check these, with a software TPM (swtpm): unattended unlock in `tpm
 - If either check fails, firstboot installs nothing. It retries every 60 s.
 - Every install gate serves firstboot a tampered tarball, an older signed release, and a release signed by another key. Firstboot refuses all three.
 - `hack/remaster-iso.sh` and `hack/vm.sh install` refuse a stock Ubuntu ISO that does not match its pin in `hack/SHA256SUMS`.
-- Two release builds of one commit on one machine gave byte-identical tarballs. Builds on other machines have not been compared yet.
+- Release builds are reproducible: a CI build on Linux and a rebuild on a Mac with the same Go version gave byte-identical tarballs. `hack/sign-release.sh` signs only when they match.
 
 [Release Pipeline](Release-Pipeline.md) has the details.
 

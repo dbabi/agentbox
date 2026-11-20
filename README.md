@@ -189,7 +189,7 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 | A/B generations | Each OS version is a btrfs subvolume, plus its own `/boot` directory on the unencrypted boot partition. `/home`, `/var/log`, `/srv` and agentbox data live outside it. |
 | `os plan` and `os apply` | Plans a package change. Then it builds the change offline, in a network-less `systemd-nspawn` container, from the exact `.deb` files you approved. |
 | Trial boot and fallback | A new generation boots once and commits only if healthy. A broken trial falls back with no console input. |
-| Release pipeline | `make release` builds a tarball and a minisign signature. Two builds on one machine gave the same bytes. Builds on other machines have not been compared yet. First boot checks a pinned SHA-256, then the signature. |
+| Release pipeline | `make release` builds a tarball and a minisign signature. A CI build on Linux and a rebuild on a Mac with the same Go version are byte-identical; `hack/sign-release.sh` signs only when they match. First boot checks a pinned SHA-256, then the signature. |
 | Zero-touch ISO | `hack/remaster-iso.sh` adds `autoinstall ds=nocloud` to the stock ISO's boot menu. It changes only GRUB's config and its checksum line. |
 | Test harness | QEMU gates for the install, `os apply`, power cuts and disk-write replay, with swtpm and a test Tang container. |
 

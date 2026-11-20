@@ -109,7 +109,7 @@ Anyone can rebuild a commit and compare the hash with the one a seed pins. Four 
 - Use the same Go version.
 - Use the same `VERSION`. It is built into the binaries.
 
-At the time of writing, these builds have been compared on one Mac only. Builds on different machines have not been compared yet.
+A CI build on Linux (ubuntu-26.04) and a rebuild on an Apple Silicon Mac, both with go1.26.11, gave byte-identical tarballs (v0.0.1-rc.2, 2026-11-20).
 
 ## 3. Check and host the release
 
