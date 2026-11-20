@@ -59,3 +59,16 @@ Source of truth: `~/workplace/ai-os-research/ARCHITECTURE.md` v5.2, §10. Update
 | One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late | |
 | Jev egress when enabled | |
 | Approximate metering for subscription sessions | |
+| Until `osbuild-fetch@` lands, `agentbox os plan` runs apt as root on the host; apt's update hooks are cleared, but `apt-get update` and download output, and a closure-mismatch error, reach the admin's terminal raw (the approval listing quotes every origin) | Weeks 11–12: `osbuild-fetch@` |
+| The stock `10_linux` entries stay in `grub.cfg`: nothing selects them unattended, but one booted by hand runs the btrfs top level without `rootflags` and leaves `recordfail` set | |
+| `ua-timer`, `motd-news`, `apport-autoreport` and `update-notifier-download` stay enabled and contact the network (they change no packages) | |
+
+## Test-model limits (what the gates can't show)
+| Limit | Effect |
+|---|---|
+| QEMU 11.1's NVMe controller ignores FUA | In an NVMe power-cut log, FUA writes are never flush marks: the replay at the last flush can be the disk just before the final journal commit. Use `DISKBUS=virtio` for exact durability points. |
+| blklogwrites once left a 15.7 MiB hole in a virtio install log (cause unknown) | `replay-log`, `powercut.sh check` and `boot` fail loudly at a hole |
+| Power-cut replay needs a plain btrfs partition | Encrypted disks are not replayed; power-cut suites run in `tpm2` mode only. `vm.sh cut` models only a disk with no volatile write cache. |
+| QEMU's user network (slirp) lets the guest reach every Mac service on `127.0.0.1` through `10.0.2.2` | The gates use it for Tang and release-serve. Restrict it before agents run in the VM (PLAN, before weeks 5–6). |
+| The arm64 VM has no hardware watchdog | arm64 tests softdog only; the i6300esb path runs on amd64. x86 watchdog detection is unit-tested only. |
+| HVF guests stop while the Mac sleeps | Long gates need AC power and an open lid; `vm.sh` does not count sleep against the install timeout. |

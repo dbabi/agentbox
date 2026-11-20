@@ -6,19 +6,23 @@ A headless home for AI agents on stock Ubuntu Server 26.04. Agents get full free
 - **Plan:** `~/workplace/ai-os-research/PLAN.md`
 - **Threat model:** `docs/THREAT-MODEL.md`
 
-## Status: week 1, days 1-3
+## Status: weeks 1-2 (2026-11-20)
+Every suite below passed on `main` at `40d9832` and `46df5a6`, after the review fixes. Evidence: `~/workplace/agentbox-evidence/regress/`.
+
 | Piece | State |
 |---|---|
 | `agentbox recovery keygen` / `decrypt` | done: RSA-4096 key, OAEP-SHA256, proven interoperable with the installer's `openssl pkeyutl` call |
-| `agentbox seed` | done: renders the autoinstall seed (`tpm2+tang`, `tpm2`, `none`; UEFI or BIOS), validates every input against subiquity 26.04.1's rules, builds a cidata ISO |
+| `agentbox seed` | done: renders the autoinstall seed (`tpm2+tang`, `tpm2`, `none`; UEFI or BIOS), validates every input against subiquity 26.04.1's rules, builds a 0600 cidata ISO |
 | Release pipeline and firstboot | done: `make release`, `install.sh`, `agentbox-reconcile.service`, `agentbox os mark-last-good`; firstboot refuses a tampered tarball, an older signed release and a wrong-key signature, and installs nothing |
 | `hack/verify-seed.py` | done: real YAML parse, structure asserts, `dash -n` on every embedded script (also run by `go test`) |
-| QEMU arm64 install, `none` | **passed:** unattended install, boots `@gen-1` through `09_agentbox`, persistent subvolumes, zram, logs in `@var_log` |
-| QEMU arm64 install, `tpm2` (swtpm) | **passed:** LUKS2 unlocks unattended through clevis in the dracut initramfs; `recovery.bin` decrypts to a key that opens LUKS |
-| `agentbox os plan` / `apply` / `health` / `mark-last-good` / `status` | week-1 `os.apply` on the box (ARCHITECTURE §3.3): closure plan with `.deb` hashes, approval by plan sha256, user-namespaced offline nspawn build, initrd gate, one-time boot, commit by the health timer, retention. Gates: `hack/apply-gate.sh none\|tpm2\|tpm2+tang` |
-| `hack/remaster-iso.sh` (zero-touch USB) | done: the pinned ISO with `autoinstall ds=nocloud` on GRUB's linux line; `vm.sh install` boots it through the firmware (shim and GRUB on UEFI), with no `-kernel` |
-| QEMU arm64 install, `tpm2`, Secure Boot on | **passed:** resolute's AAVMF (pinned), shim-verified boot, kernel lockdown, `mokutil --sb-state` enabled |
+| QEMU arm64 install, Secure Boot on: `none`, `tpm2`, `tpm2+tang` | **passed:** unattended install and first boot through shim and GRUB; LUKS2 unlocks through clevis in the dracut initramfs; Tang down means no unlock and a reboot about 490 s later; a typed recovery key unlocks; Tang back unlocks with no input |
+| QEMU arm64 install, Secure Boot off (`DIRECT_KERNEL=1`) | **passed** |
+| Disk guard: two disks with one `ID_SERIAL` | **passed:** the install stops before storage, and neither disk is written |
 | QEMU amd64 BIOS install (q35, SeaBIOS, SATA, swtpm, TCG) | **passed:** `none` and `tpm2` (an install takes 60-80 min under TCG) |
+| `agentbox os plan` / `apply` / `health` / `mark-last-good` / `status` | **passed:** `os.apply` per ARCHITECTURE §3.3. Three cycles with a kernel and systemd upgrade (`tpm2`, `tpm2+tang`); GRUB, initrd, fstab and blocking-unit breaks fall back with no console input (all three modes); QMP power cuts at six points fall back (`tpm2`). Gates: `hack/apply-gate.sh` |
+| Power-cut fidelity (`hack/powercut.sh`) | **passed:** `btrfs check` clean at every flush of a logged boot; replayed disks boot and settle; GRUB finds its entry after every `/bootpart` write of a logged apply |
+| `hack/remaster-iso.sh` (zero-touch USB) | done: the pinned ISO with `autoinstall ds=nocloud` on GRUB's linux line; `vm.sh install` boots it through the firmware (shim and GRUB on UEFI), with no `-kernel` |
+| GitHub CI (`.github/workflows/ci.yml`) | **not run:** needs a remote and a push |
 | Old x86 PC | **not run:** needs its owner and the PC (see [Old-PC gate](#old-pc-gate-needs-the-owner)) |
 
 ## Quick start (operator machine)
