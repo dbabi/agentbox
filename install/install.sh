@@ -39,5 +39,6 @@ fi
 install -m 0644 "$R/$VER"/systemd/* /etc/systemd/system/
 systemctl daemon-reload
 # Enables every shipped unit that has an [Install] section; agentbox-firstboot itself starts agentbox-reconcile.service.
+# shellcheck disable=SC2046 # split on purpose: one unit name per word, and unit names have no spaces
 systemctl enable $(grep -l '^\[Install\]' "$R/$VER"/systemd/* | sed 's|.*/||')
 sync # firstboot marks itself done next; a power cut must not leave it done with 0-byte unit copies

@@ -125,6 +125,7 @@ wait_gen() {
 # the committed generation C again, after GRUB took the one-shot boot of E. Settle marks a trial failed once any other
 # generation boots, so the console since the reboot must also show TRIED (the trial's kernel ran). A trial that comes
 # up (and so needs health plus the deadline) is logged.
+# shellcheck disable=SC2034 # off and I are read by the check strings, which check evals
 fallback() {
   C=$(committed); old=$(bootid); t0=$(date +%s); seen=; TRIED=${3:-}
   S=$(ls -t "$VM"/boot-*.log | head -n 1); off=$(( $(wc -c <"$S") + 1 )) # vm.sh boot logs every reboot to one file

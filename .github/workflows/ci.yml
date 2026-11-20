@@ -21,6 +21,21 @@ jobs:
       # GitHub sets CI=true, so the tests that need these tools fail instead of skipping
       - run: sudo apt-get update && sudo apt-get install -y minisign xorriso python3-yaml
       - run: go vet ./... && go test ./...
+  lint:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with: {go-version-file: go.mod, cache: false}
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: gofmt
+        run: test -z "$(gofmt -l . | tee /dev/stderr)"
+      - run: go vet ./...
+      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./... # 2026.2.2
+      # warning and up: the info-level SC2016 hits are check strings that gate.sh and apply-gate.sh eval on purpose
+      - run: shellcheck -S warning hack/*.sh install/*.sh
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
   bios:
     needs: test
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

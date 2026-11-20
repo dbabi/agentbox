@@ -1,0 +1,38 @@
+name: Gate failure
+description: A gate or a test suite fails.
+labels: [type/gate]
+body:
+  - type: markdown
+    attributes:
+      value: Paste the FAIL and ABORT lines. Never attach `.vm/keys`, `.vm/id_vm`, a seed, `recovery.key` or `luks.key`.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The FAIL or ABORT lines, and the last line printed.
+      render: text
+    validations: {required: true}
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: The check that should pass, and its PLAN gate item.
+    validations: {required: true}
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse --short HEAD`.
+    validations: {required: true}
+  - type: input
+    id: command
+    attributes:
+      label: Suite or command
+      description: For example `hack/apply-gate.sh tpm2 install setup cycles breaks`.
+    validations: {required: true}
+  - type: input
+    id: evidence
+    attributes:
+      label: Evidence path
+      description: For example `.vm/gate-tpm2.txt`, `.vm/install.log` or the CI run URL.
+    validations: {required: true}

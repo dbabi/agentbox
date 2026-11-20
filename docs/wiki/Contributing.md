@@ -13,6 +13,33 @@ This page covers how to set up, change, test and submit code.
 4. If the change touches the install, the boot or `os apply`, run the gate that covers it.
 5. Sign off every commit with `git commit -s`. (Placeholder: the owner has not confirmed this rule yet.)
 
+## How we work
+
+Every change starts with an issue.
+
+1. Find or open the issue. Use a template: Bug, Task or Gate failure. Security problems go to [SECURITY.md](../../SECURITY.md), not to an issue.
+2. Branch from `main` as `issue-<n>-<slug>`, for example `issue-12-fwcheck-timer`.
+3. Open a pull request with `Closes #<n>` in the body. Fill in the template: what changed, the tests and gates you ran with their results, the evidence and the risks.
+4. Wait for CI to pass. The `test` and `lint` jobs must be green.
+5. Squash merge. The squash commit follows the [commit message](#commit-messages) rules.
+
+The board is the GitHub project "agentbox" (Project 1 of `dbabi`).
+Every open issue is on it.
+An item moves Backlog, then Ready, then In progress, then In review, then Done.
+
+- Backlog: planned, not ready to start.
+- Ready: can start now. Issues labeled `needs-human` sit here until the owner does them.
+- In progress: someone works on it. Move it here when you push the branch.
+- In review: the pull request is open.
+- Done: the pull request is merged and the issue is closed.
+
+Each issue has one `area/*` label and one `type/*` label, and a milestone for its PLAN row.
+`blocked` means it waits on another issue; say which one in a comment.
+
+The repository is private and on the free plan.
+Branch protection is not available there.
+So these rules hold by convention, not by a setting: nobody pushes straight to `main`, and nobody merges with CI red.
+
 ## Set up
 
 ### Apple Silicon Mac

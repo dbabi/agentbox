@@ -1,0 +1,35 @@
+name: Task
+description: A piece of planned work, a chore or a docs change.
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Why this task exists. Say what is missing or what prompted it.
+    validations: {required: true}
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: What is true when the task is done. Use a checklist.
+      value: |
+        - [ ]
+    validations: {required: true}
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: The commit you looked at.
+    validations: {required: true}
+  - type: input
+    id: command
+    attributes:
+      label: Suite or command
+      description: The test, gate or command that proves the task is done.
+    validations: {required: true}
+  - type: input
+    id: evidence
+    attributes:
+      label: Evidence path
+      description: Where the proof will go, for example `~/workplace/agentbox-evidence/<suite>/`.
+    validations: {required: true}

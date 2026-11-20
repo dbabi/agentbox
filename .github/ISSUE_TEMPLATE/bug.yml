@@ -1,0 +1,37 @@
+name: Bug
+description: Something agentbox does is wrong.
+labels: [type/bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not report a security problem here. See SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did and what you saw. Paste the exact error.
+    validations: {required: true}
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: What should have happened.
+    validations: {required: true}
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse --short HEAD`, or `agentbox version` on the box.
+    validations: {required: true}
+  - type: input
+    id: command
+    attributes:
+      label: Suite or command
+      description: The command you ran, for example `hack/gate.sh tpm2` or `agentbox os plan`.
+    validations: {required: true}
+  - type: input
+    id: evidence
+    attributes:
+      label: Evidence path
+      description: Where the logs are, for example `.vm/gate-tpm2.txt`. Never attach `.vm/keys`, a seed or a key file.
+    validations: {required: true}
