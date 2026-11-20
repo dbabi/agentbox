@@ -295,15 +295,15 @@ agentbox stands on the work of many open-source projects. It builds on Ubuntu Se
 
 <p align="center"><img src="mascot/agentbox-mascot.png" alt="The agentbox mascot in pixel art" width="128"></p>
 
-[wiki]: https://github.com/dbabi/agentbox/wiki
-[gs]: https://github.com/dbabi/agentbox/wiki/Getting-Started
-[gs-dry]: https://github.com/dbabi/agentbox/wiki/Getting-Started#step-5-render-a-test-seed-dry-run-no-vm
-[hw]: https://github.com/dbabi/agentbox/wiki/Installing-on-Real-Hardware
-[enc]: https://github.com/dbabi/agentbox/wiki/Encryption-and-Recovery
-[gens]: https://github.com/dbabi/agentbox/wiki/Generations-and-Updates
-[tests]: https://github.com/dbabi/agentbox/wiki/Testing-and-Gates
-[arch]: https://github.com/dbabi/agentbox/wiki/Architecture
-[sec]: https://github.com/dbabi/agentbox/wiki/Security-Model
-[road]: https://github.com/dbabi/agentbox/wiki/Roadmap
-[contrib]: https://github.com/dbabi/agentbox/wiki/Contributing
-[report]: https://github.com/dbabi/agentbox/wiki/Security-Model#reporting-a-vulnerability
+[wiki]: docs/wiki/README.md
+[gs]: docs/wiki/Getting-Started.md
+[gs-dry]: docs/wiki/Getting-Started.md#step-5-render-a-test-seed-dry-run-no-vm
+[hw]: docs/wiki/Installing-on-Real-Hardware.md
+[enc]: docs/wiki/Encryption-and-Recovery.md
+[gens]: docs/wiki/Generations-and-Updates.md
+[tests]: docs/wiki/Testing-and-Gates.md
+[arch]: docs/wiki/Architecture.md
+[sec]: docs/wiki/Security-Model.md
+[road]: docs/wiki/Roadmap.md
+[contrib]: docs/wiki/Contributing.md
+[report]: docs/wiki/Security-Model.md#reporting-a-vulnerability
