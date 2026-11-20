@@ -50,8 +50,9 @@ for stage; do
     R=$(mktemp -d "$VM/rel.XXXXXX")
     make -s release VERSION="$V" MINISIGN_KEY="$VM/keys/minisign.key" DIST="$R" >/dev/null
     vssh 'rm -rf /tmp/rel && mkdir /tmp/rel && tar -xz -C /tmp/rel' < "$R/agentbox-$V.tgz"
-    # install.sh only enables: start the sockets here (a boot would), and restart rootd if it runs
-    echo 'sh /tmp/rel/install.sh --from-firstboot && systemctl start agentbox-rootd-admin.socket agentbox-audit-seal.socket agentbox-rootd-resolve-proxy.socket agentbox-rootd-resolve-keys.socket agentbox-rootd-resolve-git.socket && { ! systemctl is-active -q agentbox-rootd.service || systemctl restart agentbox-rootd.service; }' | vmroot >>"$LOG" 2>&1 || die "install.sh $V failed; see $LOG"
+    # install.sh only enables: start the sockets here (a boot would). systemd refuses to start a new socket while its
+    # service runs, so rootd stops first.
+    echo 'sh /tmp/rel/install.sh --from-firstboot && systemctl stop agentbox-rootd.service && systemctl start agentbox-rootd-admin.socket agentbox-audit-seal.socket agentbox-rootd-resolve-proxy.socket agentbox-rootd-resolve-keys.socket agentbox-rootd-resolve-git.socket agentbox-rootd.service' | vmroot >>"$LOG" 2>&1 || die "install.sh $V failed; see $LOG"
     rm -rf "$R"
     echo "installed release $V"
     ;;
