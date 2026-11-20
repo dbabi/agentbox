@@ -6,6 +6,8 @@
 Description=agentbox firewall
 Requires=agentbox-reconcile.service
 After=agentbox-reconcile.service
+# fwcheck --repair restarts this unit after every alteration: no start limit may leave the table unrestored
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

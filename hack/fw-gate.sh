@@ -11,7 +11,7 @@
 #            the stand-in from starting; a hooked extra chain fails the firewall load itself
 #          - reload, restart and `fw load` keep every set's elements, and an element's expiry keeps running
 #          - 200 root connections to 127.0.0.1:43100 succeed; other uids, other reserved ports and ::1 get a reset
-#          - a broker uid reaches only the address and port in its own dst set (EPERM for the rest, private ranges and
+#          - a broker uid reaches only the address and port in its own dst set (dropped for the rest, private ranges and
 #            DNS included); a confined uid reaches nothing
 #          - a keys flow survives its element's expiry (conntrack), while a new connection is refused
 #          - `nft flush ruleset`: within 60 s the health timer's fwcheck alerts and the table is back, sets refilled
@@ -50,6 +50,11 @@ elems() { nft -j list set inet agentbox "$1" | python3 -c 'import json,sys
 for o in json.load(sys.stdin)["nftables"]:
   for e in o.get("set",{}).get("elem",[]):
     print(json.dumps(e["elem"]["val"] if isinstance(e,dict) and "elem" in e else e))'; }
+# dropped USER HOST PORT [udp]: nft dropped it. A dropped TCP SYN is retransmitted, so connect ends in a timeout, not
+# EPERM (a dropped UDP send gets EPERM); the chain's drop counters must have moved too
+drops() { nft list chain inet agentbox output | grep -o 'packets [0-9]*' | awk '{s += $2} END {print s + 0}'; }
+dropped() { b=$(drops); r=$(as "$@"); a=$(drops); echo "$* -> $r, drop counters $b -> $a"
+  case $r in EPERM|TimeoutError) [ "$a" -gt "$b" ] ;; *) false ;; esac; }
 expires() { nft -j list set inet agentbox "$1" | grep -o '"expires": [0-9]*' | grep -o '[0-9]*$'; }
 IP=$(cat /var/tmp/fw-ip 2>/dev/null || :)
 EOF
@@ -63,7 +68,7 @@ import errno, socket, sys
 host, port = sys.argv[1], int(sys.argv[2])
 udp = len(sys.argv) > 3
 s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_DGRAM if udp else socket.SOCK_STREAM)
-s.settimeout(10)
+s.settimeout(3)
 try:
     s.connect((host, port))
     if udp:
@@ -128,7 +133,9 @@ check "rootd's refill fills port_allow and proxy_dst4 from rootd.db, with the re
 
 # Firewall altered: agents can't start. The health timer would repair in between, so it waits.
 systemctl stop agentbox-health.timer
-restore() { systemctl reset-failed agentbox-agent-stub.service 2>/dev/null; systemctl restart agentbox-firewall.service && $A fwcheck; }
+# restore: what fwcheck --repair does; the refill runs in the restart Requires= queues after the firewall's
+restore() { systemctl reset-failed agentbox-agent-stub.service 2>/dev/null; systemctl restart agentbox-firewall.service || return 1
+  for i in 1 2 3 4 5 6 7 8 9 10; do $A fwcheck && return 0; sleep 1; done; return 1; }
 altered() { t=$(date +%s); sleep 1
   check "altered ($1): fwcheck refuses, the agent stand-in does not start" "$2"' >/dev/null && ! systemctl start agentbox-agent-stub.service && ! systemctl is-active agentbox-agent-stub.service && journalctl -u agentbox-agent-stub.service --since @'$t' -o cat | grep -q "agentbox: fwcheck: "'
   check "altered ($1): a firewall restart repairs it, the stand-in starts" "${3:-:} && restore && systemctl start agentbox-agent-stub.service && systemctl stop agentbox-agent-stub.service"; }
@@ -158,11 +165,11 @@ kill $LP
 
 # A broker reaches only what rootd put in its own set
 check "agentbox-proxy reaches $IP:80 (in proxy_dst4)" '[ "$(as agentbox-proxy $IP 80)" = ok ]'
-check "agentbox-proxy can't reach $IP:443 (port not in its set): EPERM" '[ "$(as agentbox-proxy $IP 443)" = EPERM ]'
-check "agentbox-keys and agentbox-git can't reach $IP:80 (not in their sets): EPERM" '[ "$(as agentbox-keys $IP 80)" = EPERM ] && [ "$(as agentbox-git $IP 80)" = EPERM ]'
-check "agentbox-proxy can't reach 1.1.1.1:443 (an IP rootd never resolved): EPERM" '[ "$(as agentbox-proxy 1.1.1.1 443)" = EPERM ]'
-check "agentbox-proxy can't reach 10.0.2.2:22 (private4) or DNS on 127.0.0.53:53 (local): EPERM" '[ "$(as agentbox-proxy 10.0.2.2 22)" = EPERM ] && [ "$(as agentbox-proxy 127.0.0.53 53 udp)" = EPERM ]'
-check "a confined uid (70001) can't reach $IP:80: EPERM" '[ "$(as 70001 $IP 80)" = EPERM ]'
+check "agentbox-proxy can't reach $IP:443 (port not in its set): dropped" 'dropped agentbox-proxy $IP 443'
+check "agentbox-keys and agentbox-git can't reach $IP:80 (not in their sets): dropped" 'dropped agentbox-keys $IP 80 && dropped agentbox-git $IP 80'
+check "agentbox-proxy can't reach 1.1.1.1:443 (an IP rootd never resolved): dropped" 'dropped agentbox-proxy 1.1.1.1 443'
+check "agentbox-proxy can't reach 10.0.2.2:22 (private4) or DNS on 127.0.0.53:53 (local): dropped" 'dropped agentbox-proxy 10.0.2.2 22 && dropped agentbox-proxy 127.0.0.53 53 udp'
+check "a confined uid (70001) can't reach $IP:80: dropped" 'dropped 70001 $IP 80'
 check "root still reaches $IP:80 (only agentbox uids are confined)" '[ "$(python3 /var/tmp/conn.py $IP 80)" = ok ]'
 
 # A long broker flow survives its element's expiry: the established accept comes before the set checks
@@ -177,7 +184,7 @@ print(s.recv(64).split(b"\r\n")[0].decode())
 P
 setpriv --reuid=agentbox-keys --regid="$(id -g agentbox-keys)" --clear-groups python3 /var/tmp/flow.py $IP > /var/tmp/flow.out 2>>$L & FP=$!
 sleep 8
-check "keys_dst4's element for $IP:80 expired (5 s); a new keys connection gets EPERM" '[ -z "$(elems keys_dst4)" ] && [ "$(as agentbox-keys $IP 80)" = EPERM ]'
+check "keys_dst4's element for $IP:80 expired (5 s); a new keys connection is dropped" '[ -z "$(elems keys_dst4)" ] && dropped agentbox-keys $IP 80'
 wait $FP || :
 check "the keys flow opened before the expiry still gets its HTTP answer (ct established)" 'grep -q "^HTTP/1.1 " /var/tmp/flow.out'
 sqlite3 $DB "DELETE FROM set_elements WHERE set_name = 'keys_dst4';"
@@ -204,7 +211,7 @@ phase2() { cat <<'EOF'
 echo "== after reboot" >>$L
 check "reboot: firewall, rootd stand-in and agent stand-in active; no failed units" '[ "$(systemctl is-system-running --wait)" = running ] && systemctl is-active agentbox-firewall.service agentbox-rootd-standin.service agentbox-agent-stub.service'
 check "reboot: the static sets are loaded and rootd's sets are back from rootd.db" 'nft list set inet agentbox confined | grep -qF 70001-70999 && [ "$(elems private4 | wc -l)" = 13 ] && [ "$(elems port_allow)" = "{\"concat\": [0, 43100]}" ] && [ "$(elems proxy_dst4)" = "{\"concat\": [\"$IP\", 80]}" ]'
-check "reboot: fwcheck passes; agentbox-proxy reaches $IP:80 and nothing else" '$A fwcheck && [ "$(as agentbox-proxy $IP 80)" = ok ] && [ "$(as agentbox-proxy 1.1.1.1 443)" = EPERM ]'
+check "reboot: fwcheck passes; agentbox-proxy reaches $IP:80 and nothing else" '$A fwcheck && [ "$(as agentbox-proxy $IP 80)" = ok ] && dropped agentbox-proxy 1.1.1.1 443'
 check "reboot: the agent stand-in's own fwcheck ran and passed at boot" 'journalctl -b -u agentbox-agent-stub.service -o cat | grep -q "Started agentbox-agent-stub.service\|Started agentbox agent stand-in" && ! journalctl -b -u agentbox-agent-stub.service -o cat | grep -q "agentbox: fwcheck: "'
 echo "fails=$fails"
 EOF
