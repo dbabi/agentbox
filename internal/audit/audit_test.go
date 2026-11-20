@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -422,4 +423,228 @@ func TestClockStepAcrossInterruptedSeal(t *testing.T) {
 	}
 	b.start()
 	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+}
+
+// rotate sends records until the crash hook fires at point.
+func (b *box) rotate(point string) {
+	b.t.Helper()
+	b.crash = point
+	for i := 0; i < 200; i++ {
+		if _, c := b.send("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`); c != "" {
+			return
+		}
+	}
+	b.t.Fatalf("no crash at %s", point)
+}
+
+func (b *box) newest() uint64 {
+	ns, _ := Segments(b.dir)
+	return ns[len(ns)-1]
+}
+
+// fault replaces the segment writes for one test: w and y return ok=false to fall through to the real call.
+func fault(t *testing.T, w func(f *os.File, b []byte) (int, error, bool), y func(f *os.File) (error, bool)) {
+	ow, oy := writeFile, syncFile
+	t.Cleanup(func() { writeFile, syncFile = ow, oy })
+	if w != nil {
+		writeFile = func(f *os.File, b []byte) (int, error) {
+			if n, err, ok := w(f, b); ok {
+				return n, err
+			}
+			return ow(f, b)
+		}
+	}
+	if y != nil {
+		syncFile = func(f *os.File) error {
+			if err, ok := y(f); ok {
+				return err
+			}
+			return oy(f)
+		}
+	}
+}
+
+// after a fault: ACKs resume, the chain verifies, and so does a fresh start on it
+func (b *box) recovers() {
+	b.t.Helper()
+	for i := 0; i < 30; i++ {
+		b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`)
+	}
+	b.verify()
+	b.start()
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T3","source":"s"}`)
+	b.verify()
+}
+
+// The audit dir is agentbox-audit's: a symlink or hard link planted at a segment name must not make rootd chown,
+// chmod or chattr the file it points at.
+func TestSegmentLinkRefused(t *testing.T) {
+	victim := filepath.Join(t.TempDir(), "victim")
+	os.WriteFile(victim, []byte("x\n"), 0o604)
+	untouched := func(what string) {
+		t.Helper()
+		if fi, err := os.Stat(victim); err != nil || fi.Mode().Perm() != 0o604 {
+			t.Fatalf("%s: the link's target changed: %v %v", what, fi.Mode(), err)
+		}
+	}
+	dir := t.TempDir()
+	fs := &Files{Dir: dir, UID: os.Getuid(), GID: os.Getgid()}
+	os.Symlink(victim, filepath.Join(dir, SegName(1)))
+	if err := fs.Create(1); err == nil {
+		t.Fatal("Create(1) followed a symlinked seg-000001")
+	}
+	untouched("Create")
+
+	b := newBox(t)
+	b.rotate("close-written") // seg N ends in close; seg N+1 does not exist yet
+	n := b.newest()
+	data, _ := os.ReadFile(filepath.Join(b.dir, SegName(n)))
+	sc, err := ScanSegment(data, "", 0, false)
+	if err != nil || !sc.Closed {
+		t.Fatalf("%v %+v", err, sc)
+	}
+	next := filepath.Join(b.dir, SegName(n+1))
+	fs = &Files{Dir: b.dir, UID: os.Getuid(), GID: os.Getgid()}
+	os.Symlink(victim, next)
+	if err := fs.Seal(n, sc.LastHash); err == nil {
+		t.Fatal("Seal followed a symlinked next segment")
+	}
+	untouched("Seal, symlink")
+	os.Remove(next)
+	if err := os.Link(victim, next); err != nil {
+		t.Skip(err)
+	}
+	if err := fs.Seal(n, sc.LastHash); err == nil {
+		t.Fatal("Seal took a hard-linked next segment")
+	}
+	untouched("Seal, hard link")
+}
+
+// rootd stopped after +i, before the next segment: a restarted auditd must not open the immutable segment for write.
+func TestRestartOnImmutableSegment(t *testing.T) {
+	b := newBox(t)
+	b.rotate("immutable-set")
+	sealed := filepath.Join(b.dir, SegName(b.newest()))
+	of := openFile
+	t.Cleanup(func() { openFile = of })
+	openFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		if name == sealed && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
+			return nil, &os.PathError{Op: "open", Path: name, Err: syscall.EPERM} // what +i does
+		}
+		return of(name, flag, perm)
+	}
+	b.start()
+	b.recovers()
+}
+
+// rootd killed between creating the next segment and handing it to agentbox-audit: no seg N+1 exists yet, so a
+// restarted auditd finds a closed seg N and asks for the seal again.
+func TestCrashInCreateSeg(t *testing.T) {
+	b := newBox(t)
+	b.rotate("tmp-created")
+	n := b.newest()
+	if _, err := os.Stat(filepath.Join(b.dir, "."+SegName(n+1)+".new")); err != nil {
+		t.Fatalf("no temporary segment: %v", err)
+	}
+	b.start()
+	if b.newest() != n+1 {
+		t.Fatalf("the restart did not finish the seal: newest %d", b.newest())
+	}
+	if m, _ := filepath.Glob(filepath.Join(b.dir, ".seg-*")); len(m) != 0 {
+		t.Fatalf("leftover %v", m)
+	}
+	b.recovers()
+}
+
+// The new segment's open record fails to write (disk full right after the seal): no record may come before it.
+func TestOpenWriteFails(t *testing.T) {
+	for _, partial := range []int{0, 20} {
+		b := newBox(t)
+		armed := true
+		fault(t, func(f *os.File, p []byte) (int, error, bool) {
+			if !armed || !strings.Contains(string(p), `"type":"open"`) {
+				return 0, nil, false
+			}
+			armed = false
+			n, _ := f.Write(p[:partial])
+			return n, syscall.EIO, true
+		}, nil)
+		for i := 0; armed; i++ {
+			if i > 200 {
+				t.Fatal("the fault never fired")
+			}
+			b.send("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+		}
+		b.recovers()
+	}
+}
+
+// A record is cut short, then the torn record that declares it fails: the next record must still declare the bytes.
+func TestTornWriteFails(t *testing.T) {
+	for _, partial := range []int{0, 30} {
+		b := newBox(t)
+		b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+		step := 0
+		fault(t, func(f *os.File, p []byte) (int, error, bool) {
+			switch {
+			case step == 0 && strings.Contains(string(p), "task:F"):
+				step++
+				n, _ := f.Write(p[:40])
+				return n, syscall.EIO, true
+			case step == 1 && strings.Contains(string(p), `"type":"torn"`):
+				step++
+				n, _ := f.Write(p[:partial])
+				return n, syscall.ENOSPC, true
+			}
+			return 0, nil, false
+		}, nil)
+		b.nack("proxy", `{"type":"TAINT","subject":"task:F","source":"s"}`, CodeUnavailable)
+		b.nack("proxy", `{"type":"TAINT","subject":"task:G","source":"s"}`, CodeUnavailable)
+		if step != 2 {
+			t.Fatalf("faults fired: %d", step)
+		}
+		b.avail = 100 << 30
+		b.recovers()
+	}
+}
+
+// close is written but its fdatasync fails: nothing may be appended after close, and the seal still happens.
+func TestCloseSyncFails(t *testing.T) {
+	for _, e := range []error{syscall.EIO, syscall.ENOSPC} {
+		b := newBox(t)
+		closed, armed := false, true
+		fault(t, func(f *os.File, p []byte) (int, error, bool) {
+			closed = strings.Contains(string(p), `"type":"close"`)
+			return 0, nil, false
+		}, func(f *os.File) (error, bool) {
+			if armed && closed {
+				armed = false
+				return e, true
+			}
+			return nil, false
+		})
+		for i := 0; armed; i++ {
+			if i > 200 {
+				t.Fatal("the fault never fired")
+			}
+			b.send("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+		}
+		b.recovers()
+		if rep := b.verify(); len(rep) < 2 || !rep[0].Closed {
+			t.Fatalf("%v: no seal after the failed sync: %+v", e, rep)
+		}
+	}
+}
+
+// auditd killed right after the seal, then NTP steps the clock before it restarts: the new segment logs the step.
+func TestClockStepAcrossRestartOntoEmptySegment(t *testing.T) {
+	b := newBox(t)
+	b.rotate("sealed")
+	b.wall -= 2000
+	b.start()
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+	rep := b.verify()
+	if last := rep[len(rep)-1]; last.ClockSteps != 1 {
+		t.Fatalf("want the step logged in the new segment, got %+v", rep)
+	}
 }

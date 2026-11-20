@@ -60,6 +60,7 @@ type Server struct {
 	lastWall int64
 	lastBoot int64
 	sealing  bool // close is written; the segment still needs rootd's seal and its successor's open
+	needOpen bool // the open segment has no open record yet: nothing else may be appended first
 	torn     bool // a failed append may have left bytes past end
 	diskFull bool
 }
@@ -148,11 +149,17 @@ func (s *Server) openChain() error {
 			return err
 		}
 		s.seq, s.last = p.Last.Seq, p.LastHash
+		if p.Last.BootID == s.BootID { // so writeOpen logs a clock step since that close
+			s.lastWall, s.lastBoot = p.Last.TsWall, p.Last.TsBoot
+		}
 	}
-	if s.f, err = os.OpenFile(filepath.Join(s.Dir, SegName(n)), os.O_WRONLY|os.O_APPEND, 0); err != nil {
-		return err
+	// a closed segment may already be +i, which refuses any open for write; finishSeal opens its successor
+	if !sc.Closed {
+		if s.f, err = openFile(filepath.Join(s.Dir, SegName(n)), os.O_WRONLY|os.O_APPEND, 0); err != nil {
+			return err
+		}
 	}
-	if sc.Undeclared() > 0 {
+	if sc.Undeclared() > 0 && !sc.Closed {
 		if err := s.markTorn(data[sc.End:]); err != nil {
 			return err
 		}
@@ -168,6 +175,7 @@ func (s *Server) openChain() error {
 		s.sealing = true
 		err = s.finishSeal()
 	case sc.OpenRec == nil:
+		s.needOpen = true
 		return s.writeOpen()
 	case sc.OpenRec.BootID != s.BootID:
 		err = s.rotate() // first start in a new boot
@@ -184,16 +192,20 @@ func (s *Server) openChain() error {
 func (s *Server) markTorn(tail []byte) error {
 	off := s.end
 	if len(tail) > 0 && tail[len(tail)-1] != '\n' {
-		if _, err := s.f.Write([]byte{'\n'}); err != nil {
+		if _, err := writeFile(s.f, []byte{'\n'}); err != nil {
 			return err
 		}
 		tail = append(tail[:len(tail):len(tail)], '\n')
 	}
-	s.end = off + int64(len(tail))
+	s.end = off + int64(len(tail)) // append counts the torn record from here
 	s.logf("audit: %s: torn tail of %d bytes at offset %d", SegName(s.seg), len(tail), off)
 	b, _ := json.Marshal(tornBody{off, int64(len(tail)), lineHash(tail)})
-	_, err := s.append(TypeTorn, "auditd", uint32(os.Getuid()), 0, b)
-	return err
+	if _, err := s.append(TypeTorn, "auditd", uint32(os.Getuid()), 0, b); err != nil {
+		// undeclared again: the retry's tail runs from off, the "\n" and any partial torn bytes included
+		s.end, s.torn = off, true
+		return err
+	}
+	return nil
 }
 
 // repairTail runs after a failed append: whatever reached the file past end is declared torn before the next record.
@@ -219,6 +231,7 @@ func (s *Server) writeOpen() error {
 	if _, err := s.append(TypeOpen, "auditd", uint32(os.Getuid()), 0, nil); err != nil {
 		return err
 	}
+	s.needOpen = false
 	s.openBoot = s.lastBoot
 	return s.logClockStep(d)
 }
@@ -230,16 +243,23 @@ func (s *Server) rotate() error {
 		return err
 	}
 	b, _ := json.Marshal(closeBody{s.seq, s.last})
-	if _, err := s.append(TypeClose, "auditd", uint32(os.Getuid()), 0, b); err != nil {
+	seq := s.seq
+	_, err := s.append(TypeClose, "auditd", uint32(os.Getuid()), 0, b)
+	if s.seq != seq {
+		s.sealing = true // close is in the file even if fdatasync failed: nothing may follow it; finishSeal syncs again
+	}
+	if err != nil {
 		return err
 	}
-	s.sealing = true
 	s.crash("close-written")
 	return s.finishSeal()
 }
 
 func (s *Server) finishSeal() error {
 	if s.f != nil {
+		if err := syncFile(s.f); err != nil {
+			return err
+		}
 		s.f.Close()
 		s.f = nil
 	}
@@ -247,11 +267,11 @@ func (s *Server) finishSeal() error {
 		return fmt.Errorf("audit.seal %s: %w", SegName(s.seg), err)
 	}
 	s.crash("sealed")
-	f, err := os.OpenFile(filepath.Join(s.Dir, SegName(s.seg+1)), os.O_WRONLY|os.O_APPEND, 0)
+	f, err := openFile(filepath.Join(s.Dir, SegName(s.seg+1)), os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		return err
 	}
-	s.f, s.seg, s.end, s.sealing = f, s.seg+1, 0, false
+	s.f, s.seg, s.end, s.sealing, s.needOpen = f, s.seg+1, 0, false, true
 	return s.writeOpen()
 }
 
@@ -268,6 +288,11 @@ func (s *Server) ready() error {
 			return err
 		}
 	}
+	if s.needOpen {
+		if err := s.writeOpen(); err != nil {
+			return err
+		}
+	}
 	if s.end >= s.SegmentBytes || s.Boot()-s.openBoot >= s.SegmentAgeMs {
 		return s.rotate()
 	}
@@ -277,7 +302,8 @@ func (s *Server) ready() error {
 // append writes one record with a single write on the O_APPEND fd, then fdatasync. A wall-clock step against
 // CLOCK_BOOTTIME since the previous record is logged first; it never rotates anything.
 func (s *Server) append(typ, producer string, uid uint32, pid int32, body json.RawMessage) (uint64, error) {
-	if typ != TypeClockStep && typ != TypeClose && typ != TypeOpen { // rotate logs it before close, writeOpen after open
+	// rotate logs it before close, writeOpen after open; a torn record before open waits for open too
+	if typ != TypeClockStep && typ != TypeClose && typ != TypeOpen && !s.needOpen {
 		if err := s.noteClockStep(); err != nil {
 			return 0, err
 		}
@@ -288,7 +314,7 @@ func (s *Server) append(typ, producer string, uid uint32, pid int32, body json.R
 	if err != nil {
 		return 0, err
 	}
-	n, err := s.f.Write(append(line, '\n'))
+	n, err := writeFile(s.f, append(line, '\n'))
 	if err != nil {
 		if n > 0 {
 			s.torn = true
@@ -297,8 +323,15 @@ func (s *Server) append(typ, producer string, uid uint32, pid int32, body json.R
 	}
 	s.seq, s.last, s.end, s.lastWall, s.lastBoot = r.Seq, lineHash(line), s.end+int64(n), wall, boot
 	// the line is in the file even if fdatasync fails, so the chain goes on from it; the record is just not ACKed
-	return r.Seq, fdatasync(s.f)
+	return r.Seq, syncFile(s.f)
 }
+
+// The segment fd's open, write and sync; tests replace them to inject faults.
+var (
+	openFile  = os.OpenFile
+	writeFile = (*os.File).Write
+	syncFile  = fdatasync
+)
 
 // noteClockStep appends clock_step{delta} when the wall clock moved more than 1 s apart from CLOCK_BOOTTIME since the
 // previous record.
@@ -375,7 +408,7 @@ func (s *Server) enterDiskFull(why string) {
 
 // alert writes a critical alert record when the chain can take it; the journal line above is the fallback.
 func (s *Server) alert(reason string) {
-	if s.f == nil || s.sealing || (s.torn && s.repairTail() != nil) {
+	if s.f == nil || s.sealing || (s.torn && s.repairTail() != nil) || (s.needOpen && s.writeOpen() != nil) {
 		return
 	}
 	b, _ := json.Marshal(map[string]string{"reason": reason})

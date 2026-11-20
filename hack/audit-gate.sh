@@ -9,7 +9,8 @@
 #          taint.get names task or session per writer; disk full (fallocate) refuses everything but rootd admin ops, and
 #          taint.clear still runs; a torn tail, a backward clock step across UTC midnight, and SIGKILL at each of the
 #          four seal steps (auditd after close and after the seal, rootd's seal after +i and after creating the next
-#          segment) don't stop ACKs; then a reboot rotates; `agentbox audit verify` passes after each.
+#          segment), and rootd's after +i and mid-create with auditd restarted at once, don't stop ACKs; then a reboot
+#          rotates; `agentbox audit verify` passes after each.
 # Checks print PASS/FAIL to .vm/audit-gate.txt, command output goes to .vm/audit-gate.log; exit 1 on any FAIL. The VM is
 # powered off at the end. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -155,19 +156,27 @@ check "audit verify after the clock steps; segments are named by sequence only" 
 mkdir -p /run/systemd/system/agentbox-auditd.service.d /run/systemd/system/agentbox-rootd.service.d
 crashat() { # UNIT-DROPIN-DIR POINT
   printf '[Service]\nExecStart=\nExecStart=%s auditd --segment-bytes 4096\n' $A > /run/systemd/system/agentbox-auditd.service.d/gate.conf
-  rm -f /run/systemd/system/agentbox-rootd.service.d/gate.conf
+  rm -f /run/systemd/system/agentbox-rootd.service.d/gate.conf $D/.gate-crash-$2 # a point may come twice
   printf '[Service]\nEnvironment=AGENTBOX_TEST_CRASH=%s:%s/.gate-crash-%s\n' $2 $D $2 >> /run/systemd/system/$1.service.d/gate.conf
   # the gate restarts these faster than StartLimitBurst allows
   systemctl daemon-reload; systemctl reset-failed agentbox-rootd.service agentbox-auditd.service
   systemctl restart agentbox-rootd.service agentbox-auditd.service
 }
 pad=$(printf "%600s" "" | tr " " p)
-for up in agentbox-auditd:close-written agentbox-auditd:sealed agentbox-rootd:immutable-set agentbox-rootd:next-created; do
-  u=${up%%:*} pt=${up#*:}
+# +restart: auditd is restarted right after rootd's crash, before any retry finishes the seal, so it starts on a
+# segment that is already +i with no successor (immutable-set) or has only rootd's temporary next segment (tmp-created)
+for up in agentbox-auditd:close-written agentbox-auditd:sealed agentbox-rootd:immutable-set agentbox-rootd:next-created \
+    agentbox-rootd:immutable-set+restart agentbox-rootd:tmp-created+restart; do
+  u=${up%%:*} pt=${up#*:} re=; case $pt in *+restart) pt=${pt%+restart} re=1 ;; esac
   crashat $u $pt; n0=$(nsegs)
-  check "SIGKILL in $u at $pt: it fired, ACKs resume, a new segment is open, every older one is +i" 'i=0 acked=0
+  check "SIGKILL in $u at $pt${re:+, auditd restarted}: it fired, ACKs resume, a new segment is open, every older one is +i" 'i=0 acked=0 rs=
     until [ -e $D/.gate-crash-$pt ] && [ $acked = 1 ]; do i=$((i+1)); [ $i -lt 60 ] || exit 1
-      if send "{\"type\":\"TAINT\",\"subject\":\"task:crash-$i\",\"source\":\"$pad\"}" >/dev/null 2>&1; then [ -e $D/.gate-crash-$pt ] && acked=1; else sleep 1; fi; done
+      if send "{\"type\":\"TAINT\",\"subject\":\"task:crash-$i\",\"source\":\"$pad\"}" >/dev/null 2>&1; then [ -e $D/.gate-crash-$pt ] && acked=1
+      else
+        if [ -n "$re" ] && [ -z "$rs" ] && [ -e $D/.gate-crash-$pt ]; then systemctl restart agentbox-auditd.service; rs=1; fi
+        sleep 1
+      fi; done
+    [ -z "$re" ] || [ "$rs" = 1 ] || exit 1
     [ $(nsegs) -gt $n0 ] && journalctl -b -u $u.service -o cat | grep -q "AGENTBOX_TEST_CRASH: SIGKILL at $pt" &&
     for s in $(ls $D | grep "^seg-[0-9]*\.jsonl$" | grep -vx $(newest)); do lsattr $D/$s | cut -d" " -f1 | grep -q i || exit 1; done'
   check "audit verify after the crash at $pt" verify

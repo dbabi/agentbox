@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -56,7 +57,7 @@ func (fs *Files) Seal(seg uint64, lastHash string) error {
 		return fmt.Errorf("audit.seal: %s is neither the newest segment nor the one before it (have %v)", SegName(seg), ns)
 	}
 	p := filepath.Join(fs.Dir, SegName(seg))
-	f, err := os.Open(p)
+	f, err := openSeg(p, os.O_RDONLY)
 	if err != nil {
 		return err
 	}
@@ -87,12 +88,27 @@ func (fs *Files) Seal(seg uint64, lastHash string) error {
 	return nil
 }
 
-// createSeg makes seg n, or finishes a half-made one: owner and mode first, since +a then forbids changing them.
+// createSeg makes seg n, or finishes a half-made one. The file gets its owner and mode under a temporary name, so seg n
+// never exists as a root-owned file auditd can't read; +a comes last, since it forbids the rename and any chown.
 func (fs *Files) createSeg(n uint64) error {
 	p := filepath.Join(fs.Dir, SegName(n))
-	f, err := os.OpenFile(p, os.O_RDONLY|os.O_CREATE|os.O_EXCL, 0o640)
-	if errors.Is(err, os.ErrExist) {
-		f, err = os.Open(p)
+	tmp := filepath.Join(fs.Dir, "."+SegName(n)+".new")
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) { // a crash's leftover
+		return err
+	}
+	f, err := openSeg(p, os.O_RDONLY)
+	if errors.Is(err, os.ErrNotExist) {
+		if f, err = openSeg(tmp, os.O_RDONLY|os.O_CREATE|os.O_EXCL); err != nil {
+			return err
+		}
+		fs.crash("tmp-created")
+		if err = errors.Join(f.Chown(fs.UID, fs.GID), f.Chmod(0o640)); err == nil {
+			err = os.Rename(tmp, p)
+		}
+		if err != nil {
+			f.Close()
+			return err
+		}
 	}
 	if err != nil {
 		return err
@@ -111,6 +127,27 @@ func (fs *Files) createSeg(n uint64) error {
 		}
 	}
 	return syncDir(fs.Dir)
+}
+
+// openSeg opens a segment as root without following a symlink, and refuses anything but a regular file with one
+// link: the audit dir belongs to agentbox-audit, so auditd's uid could plant either to aim rootd's chown and chattr at
+// another file. O_NONBLOCK keeps a planted FIFO from hanging the open.
+func openSeg(p string, flag int) (*os.File, error) {
+	f, err := os.OpenFile(p, flag|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o640)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err == nil {
+		if st, ok := fi.Sys().(*syscall.Stat_t); !fi.Mode().IsRegular() || !ok || uint64(st.Nlink) != 1 {
+			err = fmt.Errorf("%s: not a regular file with one link", p)
+		}
+	}
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 func syncDir(dir string) error {
