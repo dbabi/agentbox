@@ -50,7 +50,7 @@ func TestParseMode(t *testing.T) {
 	for s, want := range map[string]string{
 		"Quotas on /var/lib/agentbox:\n  Enabled: no\n": "",
 		"Quotas on /var/lib/agentbox:\n  Enabled:                 yes\n  Mode:                    qgroup (full accounting)\n  Inconsistent:            no\n": "qgroup",
-		"Quotas on /x:\n  Enabled: yes\n  Mode: squota (simple accounting)\n": "squota",
+		"Quotas on /x:\n  Enabled: yes\n  Mode: squota (simple accounting)\n":                                                                                "squota",
 	} {
 		if got, err := parseMode(s); err != nil || got != want {
 			t.Errorf("parseMode(%q) = %q, %v; want %q", s, got, err, want)
