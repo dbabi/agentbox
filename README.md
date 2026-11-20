@@ -7,7 +7,7 @@ A headless home for AI agents on stock Ubuntu Server 26.04. Agents get full free
 - **Threat model:** `docs/THREAT-MODEL.md`
 
 ## Status: weeks 1-2 (2026-11-20)
-Every suite below passed on `main` at `40d9832` and `46df5a6`, after the review fixes. Evidence: `~/workplace/agentbox-evidence/regress/`.
+Each **passed** row names its suite (round, commit). Evidence: `~/workplace/agentbox-evidence/regress/r<round>/<suite>/`.
 
 | Piece | State |
 |---|---|
@@ -15,13 +15,13 @@ Every suite below passed on `main` at `40d9832` and `46df5a6`, after the review 
 | `agentbox seed` | done: renders the autoinstall seed (`tpm2+tang`, `tpm2`, `none`; UEFI or BIOS), validates every input against subiquity 26.04.1's rules, builds a 0600 cidata ISO |
 | Release pipeline and firstboot | done: `make release`, `install.sh`, `agentbox-reconcile.service`, `agentbox os mark-last-good`; firstboot refuses a tampered tarball, an older signed release and a wrong-key signature, and installs nothing |
 | `hack/verify-seed.py` | done: real YAML parse, structure asserts, `dash -n` on every embedded script (also run by `go test`) |
-| QEMU arm64 install, Secure Boot on: `none`, `tpm2`, `tpm2+tang` | **passed:** unattended install and first boot through shim and GRUB; LUKS2 unlocks through clevis in the dracut initramfs; Tang down means no unlock and a reboot about 490 s later; a typed recovery key unlocks; Tang back unlocks with no input |
-| QEMU arm64 install, Secure Boot off (`DIRECT_KERNEL=1`) | **passed** |
-| Disk guard: two disks with one `ID_SERIAL` | **passed:** the install stops before storage, and neither disk is written |
-| QEMU amd64 BIOS install (q35, SeaBIOS, SATA, swtpm, TCG) | **passed:** `none` and `tpm2` (an install takes 60-80 min under TCG) |
-| `agentbox os plan` / `apply` / `health` / `mark-last-good` / `status` | **passed:** `os.apply` per ARCHITECTURE §3.3. Three cycles with a kernel and systemd upgrade (`tpm2`, `tpm2+tang`); GRUB, initrd, fstab and blocking-unit breaks fall back with no console input (all three modes); QMP power cuts at six points fall back (`tpm2`). Gates: `hack/apply-gate.sh` |
-| Power-cut fidelity (`hack/powercut.sh`) | **passed:** `btrfs check` clean at every flush of a logged boot; replayed disks boot and settle; GRUB finds its entry after every `/bootpart` write of a logged apply |
-| `hack/remaster-iso.sh` (zero-touch USB) | done: the pinned ISO with `autoinstall ds=nocloud` on GRUB's linux line; `vm.sh install` boots it through the firmware (shim and GRUB on UEFI), with no `-kernel` |
+| QEMU arm64 install, Secure Boot on: `none`, `tpm2`, `tpm2+tang` | **passed:** unattended install and first boot through shim and GRUB; LUKS2 unlocks through clevis in the dracut initramfs; Tang down means no unlock and a reboot about 490 s later; a typed recovery key unlocks; Tang back unlocks with no input. Suites: `gates-none` (r1, `40d9832`), `gates-tpm2` and `gates-tpm2-tang-down-typed-recovery` (r2, `46df5a6`) |
+| QEMU arm64 install, Secure Boot off (`DIRECT_KERNEL=1`) | **passed:** `secureboot-off-direct-kernel-none` (r1, `40d9832`) |
+| Disk guard: two disks with one `ID_SERIAL` | **passed:** the install stops before storage, and neither disk is written. `dup-serial-abort` (r1, `40d9832`) |
+| QEMU amd64 BIOS install (q35, SeaBIOS, SATA, swtpm, TCG) | **passed:** `none` and `tpm2` (an install takes 60-80 min under TCG). `bios-amd64-none` (r3, `46df5a6`), `bios-amd64-tpm2` (r1, `40d9832`) |
+| `agentbox os plan` / `apply` / `health` / `mark-last-good` / `status` | **passed:** `os.apply` per ARCHITECTURE §3.3. Three cycles with a kernel and systemd upgrade (`tpm2`, `tpm2+tang`); GRUB, initrd, fstab and blocking-unit breaks fall back with no console input (all three modes); QMP power cuts at six points fall back (`tpm2`). Gates: `hack/apply-gate.sh`. `os-apply-cycles-tpm2`, `os-apply-cycles-tpm2-tang`, `os-apply-breaks-tpm2`, `os-apply-powercuts-tpm2` (r1, `40d9832`); `os-apply-breaks-tpm2-tang`, `os-apply-breaks-none` (r2, `46df5a6`) |
+| Power-cut fidelity (`hack/powercut.sh`) | **passed:** `btrfs check` clean at every flush of a logged boot; replayed disks boot and settle. `powercut-fidelity` (r2, `46df5a6`); the GRUB-view replay of a logged apply ran in `os-apply-powercuts-tpm2` (r1, `40d9832`) |
+| `hack/remaster-iso.sh` (zero-touch USB) | done: the pinned ISO with `autoinstall ds=nocloud` on GRUB's linux line; `vm.sh install` boots it through the firmware (shim and GRUB on UEFI), with no `-kernel`. `zero-touch-iso` (r1, `40d9832`) |
 | GitHub CI (`.github/workflows/ci.yml`) | **not run:** needs a remote and a push |
 | Old x86 PC | **not run:** needs its owner and the PC (see [Old-PC gate](#old-pc-gate-needs-the-owner)) |
 
@@ -82,7 +82,7 @@ serial matches anything but exactly one disk, or (encrypted modes) when there is
 
 ## Old-PC gate (needs the owner)
 PLAN row 1-2 ends with "Old PC passes in week 2": the install and `os.apply` checks on the old x86 PC. The VMs run UEFI
-only on arm64 and BIOS only on amd64 (`os.apply` on both: `hack/apply-gate.sh <mode> bios` on amd64), so the PC runs the
+only on arm64 and BIOS only on amd64 (`hack/apply-gate.sh <mode> bios` exists on amd64, but `os.apply` on BIOS has one pre-merge run and no regression suite), so the PC runs the
 first `os.apply` on real hardware, and a UEFI PC the first amd64 UEFI install. About 1 h hands-on, plus the install.
 1. Publish a release the PC can fetch: `make release VERSION=<ver> MINISIGN_KEY=<your key>`, then put
    `dist/agentbox-<ver>.tgz` and its `.minisig` side by side at one https URL with a CA-trusted certificate and no query
