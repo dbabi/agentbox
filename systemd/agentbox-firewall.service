@@ -1,0 +1,17 @@
+# The inet agentbox table (ARCHITECTURE.md §6.1, Appendix B). `fw load` is one add-only nft -f transaction, so a
+# restart or reload keeps every element rootd added; it fails unless the live table then hashes like the ruleset. Every
+# agentbox unit Requires= this one, so a failed load keeps them all down, and `systemctl restart` (fwcheck --repair)
+# restarts them. No ExecStop: stopping must not open anything.
+[Unit]
+Description=agentbox firewall
+Requires=agentbox-reconcile.service
+After=agentbox-reconcile.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/var/lib/agentbox/current/bin/agentbox fw load
+ExecReload=/var/lib/agentbox/current/bin/agentbox fw load
+
+[Install]
+WantedBy=multi-user.target

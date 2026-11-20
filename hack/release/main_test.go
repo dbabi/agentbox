@@ -64,12 +64,14 @@ func TestBuild(t *testing.T) {
 	mode := map[string]int64{"bin/linux-amd64/agentbox": 0o755, "bin/linux-arm64/agentbox": 0o755, "install.sh": 0o755}
 	want := "bin/linux-amd64/agentbox bin/linux-arm64/agentbox install.sh"
 	units, _ := filepath.Glob("systemd/*") // sorted, and every unit in the repo ships
+	sysusers, _ := filepath.Glob("sysusers.d/*")
+	units = append(units, sysusers...)
 	for _, u := range units {
 		mode[u] = 0o644
 		want += " " + u
 	}
-	if !strings.Contains(want, "systemd/agentbox-reconcile.service") {
-		t.Fatal("systemd/agentbox-reconcile.service is missing from the repo")
+	if !strings.Contains(want, "systemd/agentbox-reconcile.service") || !strings.Contains(want, "sysusers.d/agentbox.conf") {
+		t.Fatal("systemd/agentbox-reconcile.service or sysusers.d/agentbox.conf is missing from the repo")
 	}
 	var names []string
 	for tr := tar.NewReader(zr); ; {

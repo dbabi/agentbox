@@ -1,5 +1,6 @@
 // Command agentbox is the single binary for every agentbox service and CLI (ARCHITECTURE.md §2, §14).
-// Week 1 ships the operator-side commands (seed, recovery) and, on the box, the os.apply pipeline (os).
+// Week 1 ships the operator-side commands (seed, recovery) and, on the box, the os.apply pipeline (os); week 3 adds
+// the firewall (fw, fwcheck).
 package main
 
 import (
@@ -28,6 +29,7 @@ const usage = `usage:
   agentbox os health | mark-last-good | status
   agentbox version
   agentbox reconcile   (agentbox-reconcile.service, on the box)
+  agentbox fw load [-c] | check [--repair] | refill   (as root on the box; fwcheck = fw check)
 `
 
 type multi []string
@@ -80,6 +82,10 @@ func run(args []string) error {
 		return nil
 	case "reconcile":
 		return cmdReconcile(args[1:])
+	case "fw":
+		return cmdFW(args[1:])
+	case "fwcheck":
+		return cmdFWCheck(args[1:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil

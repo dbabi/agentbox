@@ -15,13 +15,15 @@ BIN="$S/bin/linux-$ARCH/agentbox"
 VER=$("$BIN" version) || die "$BIN does not run on this box"
 case $VER in ''|[!0-9A-Za-z]*|*[!0-9A-Za-z._~-]*) die "bad release version '$VER'" ;; esac
 A=/var/lib/agentbox
+ETC=/etc
 R=$A/releases
 N=$R/.$VER.new
 mkdir -p "$R"
 rm -rf "$N"
-mkdir -p "$N/bin" "$N/systemd"
+mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d"
 install -m 0755 "$BIN" "$N/bin/agentbox"
 install -m 0644 "$S"/systemd/* "$N/systemd/"
+install -m 0644 "$S"/sysusers.d/* "$N/sysusers.d/"
 if [ -d "$R/$VER" ]; then
   diff -r "$N" "$R/$VER" >/dev/null || { rm -rf "$N"; die "release $VER is already installed with different content"; }
   rm -rf "$N"
@@ -35,8 +37,19 @@ if [ "$cur" != "releases/$VER" ]; then
   [ -z "$cur" ] || { ln -sfn "$cur" "$A/.previous.new" && mv -T "$A/.previous.new" "$A/previous"; }
   ln -sfn "releases/$VER" "$A/.current.new" && mv -T "$A/.current.new" "$A/current"
 fi
+# The firewall names every service user and ntfy's packaged _ntfy (ARCHITECTURE.md Appendix B), and fwcheck reads
+# rootd.db with sqlite3: all of them must exist, and the ruleset must pass nft -c, before any unit is enabled (§2).
+mkdir -p "$ETC/sysusers.d"
+install -m 0644 "$R/$VER/sysusers.d/agentbox.conf" "$ETC/sysusers.d/"
+systemd-sysusers "$ETC/sysusers.d/agentbox.conf"
+if ! getent passwd _ntfy >/dev/null || ! command -v sqlite3 >/dev/null; then
+  apt() { DEBIAN_FRONTEND=noninteractive apt-get -q -y -o DPkg::Lock::Timeout=300 "$@"; }
+  apt install ntfy sqlite3 || { apt update && apt install ntfy sqlite3; } || die "could not install ntfy and sqlite3"
+fi
+getent passwd _ntfy >/dev/null || die "the ntfy package made no _ntfy user"
+"$R/$VER/bin/agentbox" fw load -c || die "the firewall ruleset does not pass nft -c"
 # PID 1 loads units before /var/lib/agentbox is mounted, so the units are copies on the root file system.
-install -m 0644 "$R/$VER"/systemd/* /etc/systemd/system/
+install -m 0644 "$R/$VER"/systemd/* "$ETC/systemd/system/"
 systemctl daemon-reload
 # Enables every shipped unit that has an [Install] section; agentbox-firstboot itself starts agentbox-reconcile.service.
 systemctl enable $(grep -l '^\[Install\]' "$R/$VER"/systemd/* | sed 's|.*/||')

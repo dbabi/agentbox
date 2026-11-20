@@ -1,11 +1,12 @@
-# Repeats the health check: a trial commits on the first healthy run; the committed generation only alerts.
+# Repeats the health check: a trial commits on the first healthy run; the committed generation only alerts. Every 50 s
+# from each start, so fwcheck restores a flushed or edited table within 60 s (§6.1).
 [Unit]
-Description=agentbox health check every minute
+Description=agentbox health check and fwcheck every 50 s
 
 [Timer]
 OnBootSec=1min
-OnUnitInactiveSec=1min
-AccuracySec=5s
+OnUnitActiveSec=50s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target

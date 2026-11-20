@@ -28,19 +28,24 @@ func TestSyncBeforeRename(t *testing.T) {
 	}
 	box, bin, rel := t.TempDir(), t.TempDir(), t.TempDir()
 	s := string(src)
-	for _, p := range []string{"A=/var/lib/agentbox\n", " /etc/systemd/system/\n"} {
+	for _, p := range []string{"A=/var/lib/agentbox\n", "ETC=/etc\n"} {
 		if strings.Count(s, p) != 1 {
 			t.Fatalf("install.sh: want %q once, or the run below writes to the real path", p)
 		}
 	}
-	s = strings.NewReplacer("A=/var/lib/agentbox\n", "A="+box+"/var/lib/agentbox\n", " /etc/systemd/system/\n", " "+box+"/etc/\n").Replace(s)
+	if strings.Count(s, "/etc/") != 0 {
+		t.Fatal("install.sh: every /etc path must go through $ETC, or the run below writes to the real one")
+	}
+	s = strings.NewReplacer("A=/var/lib/agentbox\n", "A="+box+"/var/lib/agentbox\n", "ETC=/etc\n", "ETC="+box+"/etc\n").Replace(s)
 	for name, body := range map[string]string{"install.sh": s, "bin/linux-arm64/agentbox": "#!/bin/sh\necho 1.0.0\n",
-		"systemd/agentbox-x.service": "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=multi-user.target\n"} {
+		"systemd/agentbox-x.service": "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=multi-user.target\n",
+		"sysusers.d/agentbox.conf":   "u agentbox -\n"} {
 		os.MkdirAll(filepath.Dir(filepath.Join(rel, name)), 0o755)
 		os.WriteFile(filepath.Join(rel, name), []byte(body), 0o755)
 	}
-	os.MkdirAll(filepath.Join(box, "etc"), 0o755)
+	os.MkdirAll(filepath.Join(box, "etc/systemd/system"), 0o755)
 	for name, body := range map[string]string{"id": "echo 0", "dpkg": "echo arm64", "systemctl": ":", "sync": `echo sync >> "$TRACE"`,
+		"systemd-sysusers": ":", "getent": ":", "apt-get": "exit 1",
 		// GNU mv -T renames onto the link itself; dropping the link first does the same with BSD mv
 		"mv": `echo "mv $*" >> "$TRACE"; [ "$1" != -T ] || { shift; rm -f "$2"; }; exec "` + mv + `" "$@"`} {
 		os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
