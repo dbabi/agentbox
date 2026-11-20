@@ -1,6 +1,9 @@
 # Every 5 minutes; elements time out after 10 (ARCHITECTURE.md §6.1, Appendix B).
+# Requires= on the firewall here too: a timer whose service can't be queued fails, the dependency stays down quietly.
 [Unit]
 Description=agentbox ntfy_dst refresh every 5 minutes
+Requires=agentbox-firewall.service
+After=agentbox-firewall.service
 
 [Timer]
 OnActiveSec=0
