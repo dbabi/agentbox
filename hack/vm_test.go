@@ -162,6 +162,57 @@ func TestVMInstallPin(t *testing.T) {
 	}
 }
 
+// TestVMInstallSleep runs vm.sh install with a fake clock that jumps 10000 s once, as when the host sleeps: that gap does
+// not count against INSTALL_TIMEOUT=100, so the install still finishes, and an installer error after it names the sleep.
+// QEMU is a fake that ends the install (or errors) once the clock has been read a set number of times.
+func TestVMInstallSleep(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash not installed")
+	}
+	src, err := os.ReadFile("vm.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	iso := "ubuntu-26.04.1-live-server-amd64.iso"
+	for _, tc := range []struct{ name, line, then, want string }{
+		{"finish", "reboot: Restarting system", "", "install ok"},
+		{"error", "An error occurred", "exec /bin/sleep 30", "the host slept 10005 s mid-install"}, // subiquity waits at its prompt
+	} {
+		root, bin, seed := t.TempDir(), t.TempDir(), t.TempDir()
+		hack, vm := filepath.Join(root, "hack"), filepath.Join(root, ".vm")
+		os.MkdirAll(hack, 0o755)
+		os.MkdirAll(vm, 0o755)
+		os.WriteFile(filepath.Join(hack, "vm.sh"), src, 0o755)
+		os.WriteFile(filepath.Join(vm, iso), []byte("iso\n"), 0o644)
+		h := sha256.Sum256([]byte("iso\n"))
+		os.WriteFile(filepath.Join(hack, "SHA256SUMS"), []byte(hex.EncodeToString(h[:])+"  "+iso+"\n"), 0o644)
+		os.WriteFile(filepath.Join(seed, "user-data"), []byte("#cloud-config\n#\n# encryption=none boot=bios\nserial: \"QEMU_HARDDISK_QM00001\"\n"), 0o644)
+		os.WriteFile(filepath.Join(seed, "meta-data"), nil, 0o644)
+		n := filepath.Join(bin, "n")
+		fakes := map[string]string{
+			"xorriso": "exit 0", "qemu-img": "exit 0", "sleep": "exit 0",
+			// the 4th read jumps 10000 s; every other read is 5 s after the one before
+			"date": `[ "$1" = +%s ] || exec /bin/date "$@"; c=$(cat "` + n + `" 2>/dev/null || echo 0); echo $((c+1)) > "` + n + `"
+[ "$c" -ge 3 ] && echo $((1000 + 5*c + 10000)) || echo $((1000 + 5*c))`,
+			// 15 reads: 70 s awake, under INSTALL_TIMEOUT=100 only if the 10000 s jump does not count
+			"qemu-system-x86_64": `while [ "$(cat "` + n + `" 2>/dev/null || echo 0)" -lt 15 ]; do /bin/sleep 0.05; done
+echo "` + tc.line + `" >> "` + filepath.Join(vm, "install.log") + `"
+` + tc.then,
+		}
+		for b, body := range fakes {
+			os.WriteFile(filepath.Join(bin, b), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
+		}
+		c := exec.Command(dash, filepath.Join(hack, "vm.sh"), "install", seed)
+		c.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "AGENTBOX_ISO_DIR="+vm, "DISKBUS=sata",
+			"DIRECT_KERNEL=1", "INSTALL_TIMEOUT=100", "AGENTBOX_VM_ID=0")
+		out, err := c.CombinedOutput()
+		if !strings.Contains(string(out), tc.want) || (err == nil) != (tc.name == "finish") {
+			t.Errorf("%s: want %q: %v\n%s", tc.name, tc.want, err, out)
+		}
+	}
+}
+
 // TestRemasterISO runs remaster-iso.sh on a small ISO with the stock grub.cfg shapes (arm64's `$cmdline  ---  console=tty0`,
 // amd64's trailing `--- `, a tab, a non-casper line): every casper linux line gets `autoinstall ds=nocloud` before ` ---`
 // and the extra args at the end, /md5sum.txt follows, and an unpinned ISO or unsafe extra args are refused.

@@ -3,6 +3,7 @@
 #   uefi: arm64 virt + HVF on Apple Silicon, resolute's AAVMF with Secure Boot on (SECUREBOOT=0: no keys enrolled)
 #   bios: amd64 q35 + SeaBIOS under TCG (KVM where the host has it), SATA disk; slow on the Mac
 #   hack/vm.sh install <seed-dir>   unattended install; fails on installer errors or after INSTALL_TIMEOUT s
+#                                   with the host awake (host sleep does not count)
 #                                   (DUP_DISK=1: also attach a second disk with the same serial; nvme or virtio)
 #   hack/vm.sh boot                 boot the installed disk (SSH on 127.0.0.1:2222+ID; console also on .vm/console.sock)
 #   hack/vm.sh tang up|down|thp     Tang for tpm2+tang seeds on 127.0.0.1:7500+ID, guest URL http://10.0.2.2:7500+ID (needs podman)
@@ -157,10 +158,17 @@ install)
   [ "${DUP_DISK:-0}" = 1 ] && qemu-img create -q -f qcow2 "$VM/disk2.qcow2" 40G
   : > "$VM/install.log"
   run_qemu -no-reboot "$@" -drive "if=virtio,format=raw,readonly=on,file=$(qopt "$VM/seed.iso")" -serial "file:$VM/install.log" &
-  q=$!; end=$(( $(date +%s) + ${INSTALL_TIMEOUT:-$T} ))
+  # A host that sleeps (a laptop lid) freezes QEMU and the guest clock with it, so a poll gap over a minute is host sleep:
+  # it does not count against the timeout, and a failure after it says so (apt then fails on the stale guest clock).
+  q=$! left=${INSTALL_TIMEOUT:-$T} last=$(date +%s) slept=0
   while kill -0 "$q" 2>/dev/null; do
-    if /usr/bin/grep -aqE 'An error occurred|Continue with autoinstall' "$VM/install.log" || [ "$(date +%s)" -gt "$end" ]; then
-      kill "$q" 2>/dev/null || :; die "install failed or timed out; see $VM/install.log"
+    now=$(date +%s); gap=$((now - last)); last=$now
+    if [ "$gap" -gt 60 ]; then slept=$((slept + gap)); else left=$((left - gap)); fi
+    if /usr/bin/grep -aqE 'An error occurred|Continue with autoinstall' "$VM/install.log" || [ "$left" -lt 0 ]; then
+      kill "$q" 2>/dev/null || :
+      [ "$slept" = 0 ] || die "install failed or timed out, and the host slept ${slept} s mid-install, which leaves the guest" \
+        "clock behind: rerun on AC power with the lid open; see $VM/install.log"
+      die "install failed or timed out; see $VM/install.log"
     fi
     sleep 5
   done
