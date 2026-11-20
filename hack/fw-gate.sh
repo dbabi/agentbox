@@ -119,6 +119,8 @@ cat > /etc/systemd/system/agentbox-rootd-standin.service <<'U'
 Description=rootd stand-in (fw-gate fixture): rootd's start step, agentbox fw refill
 Requires=agentbox-firewall.service
 After=agentbox-firewall.service
+# the gate restarts the firewall a dozen times in a minute; the default start limit would leave the refill undone
+StartLimitIntervalSec=0
 [Service]
 Type=oneshot
 RemainAfterExit=yes
@@ -136,8 +138,9 @@ systemctl stop agentbox-health.timer
 # restore: what fwcheck --repair does; the refill runs in the restart Requires= queues after the firewall's
 restore() { systemctl reset-failed agentbox-agent-stub.service 2>/dev/null; systemctl restart agentbox-firewall.service || return 1
   for i in 1 2 3 4 5 6 7 8 9 10; do $A fwcheck && return 0; sleep 1; done; return 1; }
+# $2 runs in braces: a redirection inside it (echo 0 > /proc/...) must not be overridden by the >/dev/null
 altered() { t=$(date +%s); sleep 1
-  check "altered ($1): fwcheck refuses, the agent stand-in does not start" "$2"' >/dev/null && ! systemctl start agentbox-agent-stub.service && ! systemctl is-active agentbox-agent-stub.service && journalctl -u agentbox-agent-stub.service --since @'$t' -o cat | grep -q "agentbox: fwcheck: "'
+  check "altered ($1): fwcheck refuses, the agent stand-in does not start" "{ $2; }"' >/dev/null && ! systemctl start agentbox-agent-stub.service && ! systemctl is-active agentbox-agent-stub.service && journalctl -u agentbox-agent-stub.service --since @'$t' -o cat | grep -q "agentbox: fwcheck: "'
   check "altered ($1): a firewall restart repairs it, the stand-in starts" "${3:-:} && restore && systemctl start agentbox-agent-stub.service && systemctl stop agentbox-agent-stub.service"; }
 altered "a rule inserted ahead of the confined drop" 'nft insert rule inet agentbox output meta skuid 70001 accept'
 altered "the confined drop deleted" 'nft delete rule inet agentbox output handle $(nft -a list chain inet agentbox output | awk "/@confined/ {print \$NF}")'
@@ -231,7 +234,8 @@ sc_checks() {
   echo 'systemctl reboot' | root >/dev/null 2>&1 || :
   wait_boot "$old" 900 || die "no SSH after the reboot"
   { prelude; phase2; } | vmrun | tee -a "$OUT"
-  echo "cat /var/tmp/fw-gate.log; journalctl -b -1 -b 0 --no-pager -o short-iso -u agentbox-firewall.service -u agentbox-health.service -u agentbox-agent-stub.service -u agentbox-rootd-standin.service" | root >>"$LOG" 2>&1 || :
+  u="-u agentbox-firewall.service -u agentbox-health.service -u agentbox-agent-stub.service -u agentbox-rootd-standin.service"
+  echo "cat /var/tmp/fw-gate.log; for b in -1 0; do journalctl -b \$b --no-pager -o short-iso $u; done" | root >>"$LOG" 2>&1 || :
   echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
   while running; do sleep 2; done
 }
