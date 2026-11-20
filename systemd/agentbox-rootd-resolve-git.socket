@@ -1,0 +1,16 @@
+# Resolution requests from agentbox-git only (§6.3) (ARCHITECTURE.md §2.1).
+# PID 1 binds it with this owner and mode; rootd checks SO_PEERCRED on every connection.
+[Unit]
+Description=agentbox rootd resolve-git socket
+
+[Socket]
+ListenStream=/run/agentbox-rootd/resolve-git.sock
+SocketUser=root
+SocketGroup=agentbox-git
+SocketMode=0660
+DirectoryMode=0711
+FileDescriptorName=resolve-git
+Service=agentbox-rootd.service
+
+[Install]
+WantedBy=sockets.target

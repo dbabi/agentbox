@@ -1,6 +1,6 @@
-# rootd's audit.create/audit.seal socket for agentbox-auditd (ARCHITECTURE.md §9): only rootd can set +a and +i.
-# Served by agentbox-audit-seal.service until rootd lands; then rootd's unit takes it with Sockets= and calls
-# audit.ServeSeal, and that service goes away.
+# audit.create and audit.seal from agentbox-auditd only (ARCHITECTURE.md §9): only rootd can set +a and +i. Same unit
+# name, path and FileDescriptorName as the auditd area's stand-in socket; here rootd serves it.
+# PID 1 binds it with this owner and mode; rootd checks SO_PEERCRED on every connection.
 [Unit]
 Description=agentbox audit seal socket
 
@@ -9,9 +9,9 @@ ListenStream=/run/agentbox-rootd/audit-seal.sock
 SocketUser=root
 SocketGroup=agentbox-audit
 SocketMode=0660
+DirectoryMode=0711
 FileDescriptorName=audit-seal
-Service=agentbox-audit-seal.service
-RemoveOnStop=yes
+Service=agentbox-rootd.service
 
 [Install]
 WantedBy=sockets.target

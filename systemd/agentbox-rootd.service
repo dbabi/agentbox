@@ -1,0 +1,31 @@
+# agentbox-rootd (ARCHITECTURE.md §2): the root executor. Week 3: rootd.db, the activated sockets below with their
+# SO_PEERCRED checks, the resolver that alone fills the broker dst sets (§6.1, Appendix B), audit segment creation and
+# sealing (§9). READY=1 only once the nft sets match rootd.db, so brokers and user managers ordered after it never see
+# a half-filled set. No IP sockets: resolution goes over resolved's Varlink (AF_UNIX), nft and conntrack over netlink.
+[Unit]
+Description=agentbox rootd
+Requires=agentbox-reconcile.service agentbox-firewall.service
+After=agentbox-reconcile.service agentbox-firewall.service systemd-resolved.service
+Wants=systemd-resolved.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/var/lib/agentbox/current/bin/agentbox rootd
+Sockets=agentbox-rootd-admin.socket agentbox-audit-seal.socket agentbox-rootd-resolve-proxy.socket agentbox-rootd-resolve-keys.socket agentbox-rootd-resolve-git.socket
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/agentbox
+PrivateTmp=yes
+NoNewPrivileges=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

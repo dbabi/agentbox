@@ -1,0 +1,16 @@
+# Resolution requests from agentbox-keys only (§6.3) (ARCHITECTURE.md §2.1).
+# PID 1 binds it with this owner and mode; rootd checks SO_PEERCRED on every connection.
+[Unit]
+Description=agentbox rootd resolve-keys socket
+
+[Socket]
+ListenStream=/run/agentbox-rootd/resolve-keys.sock
+SocketUser=root
+SocketGroup=agentbox-keys
+SocketMode=0660
+DirectoryMode=0711
+FileDescriptorName=resolve-keys
+Service=agentbox-rootd.service
+
+[Install]
+WantedBy=sockets.target
