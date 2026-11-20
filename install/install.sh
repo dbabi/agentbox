@@ -15,6 +15,7 @@ BIN="$S/bin/linux-$ARCH/agentbox"
 VER=$("$BIN" version) || die "$BIN does not run on this box"
 case $VER in ''|[!0-9A-Za-z]*|*[!0-9A-Za-z._~-]*) die "bad release version '$VER'" ;; esac
 A=/var/lib/agentbox
+L=/usr/lib
 R=$A/releases
 N=$R/.$VER.new
 mkdir -p "$R"
@@ -22,6 +23,7 @@ rm -rf "$N"
 mkdir -p "$N/bin" "$N/systemd"
 install -m 0755 "$BIN" "$N/bin/agentbox"
 install -m 0644 "$S"/systemd/* "$N/systemd/"
+install -m 0644 "$S/sysusers.conf" "$S/tmpfiles.conf" "$N/"
 if [ -d "$R/$VER" ]; then
   diff -r "$N" "$R/$VER" >/dev/null || { rm -rf "$N"; die "release $VER is already installed with different content"; }
   rm -rf "$N"
@@ -35,6 +37,12 @@ if [ "$cur" != "releases/$VER" ]; then
   [ -z "$cur" ] || { ln -sfn "$cur" "$A/.previous.new" && mv -T "$A/.previous.new" "$A/previous"; }
   ln -sfn "releases/$VER" "$A/.current.new" && mv -T "$A/.current.new" "$A/current"
 fi
+# Users and dirs before any unit that names them (socket units resolve SocketUser= when they start). Copies on the root
+# file system, like the units: systemd-sysusers and systemd-tmpfiles read them at every boot.
+install -m 0644 "$R/$VER/sysusers.conf" "$L/sysusers.d/agentbox.conf"
+systemd-sysusers "$L/sysusers.d/agentbox.conf"
+install -m 0644 "$R/$VER/tmpfiles.conf" "$L/tmpfiles.d/agentbox.conf"
+systemd-tmpfiles --create "$L/tmpfiles.d/agentbox.conf"
 # PID 1 loads units before /var/lib/agentbox is mounted, so the units are copies on the root file system.
 install -m 0644 "$R/$VER"/systemd/* /etc/systemd/system/
 systemctl daemon-reload

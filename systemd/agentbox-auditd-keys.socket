@@ -1,0 +1,16 @@
+# keys's producer socket for agentbox-auditd (ARCHITECTURE.md §2.1): agentbox-audit:agentbox-keys 0660; auditd also checks the
+# peer's uid with SO_PEERCRED. The dir comes from tmpfiles (0711).
+[Unit]
+Description=agentbox-auditd producer socket (keys)
+
+[Socket]
+ListenStream=/run/agentbox-audit/keys.sock
+SocketUser=agentbox-audit
+SocketGroup=agentbox-keys
+SocketMode=0660
+FileDescriptorName=keys
+Service=agentbox-auditd.service
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

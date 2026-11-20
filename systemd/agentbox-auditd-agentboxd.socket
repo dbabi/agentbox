@@ -1,0 +1,16 @@
+# agentboxd's producer socket for agentbox-auditd (ARCHITECTURE.md §2.1): agentbox-audit:agentbox 0660; auditd also checks the
+# peer's uid with SO_PEERCRED. The dir comes from tmpfiles (0711).
+[Unit]
+Description=agentbox-auditd producer socket (agentboxd)
+
+[Socket]
+ListenStream=/run/agentbox-audit/agentboxd.sock
+SocketUser=agentbox-audit
+SocketGroup=agentbox
+SocketMode=0660
+FileDescriptorName=agentboxd
+Service=agentbox-auditd.service
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
