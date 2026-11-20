@@ -394,3 +394,17 @@ A release is made in two halves. CI builds it, and the owner signs it. The minis
 4. The script prints the seed flags: `--release-url https://github.com/dbabi/agentbox/releases/download/v<ver>/agentbox-<ver>.tgz --release-sha256 <sum>`.
 
 `MINISIGN_KEY` defaults to `~/agentbox-keys/minisign.key`, with its public key next to it as `minisign.pub`. A draft stays unsigned, and a seed refuses it, until step 3 runs.
+
+## The release key
+
+Official releases are signed with this minisign key (key ID `6D16B43B32D11140`), also in [`keys/release-minisign.pub`](../../keys/release-minisign.pub):
+
+```
+RWRAEdEyO7QWbdF1dnHQ3YdfMIDTWPP1KF4ZoQB22/ICPAqWLI6Z5e1f
+```
+
+Pass it to the seed with `--minisign-pubkey RWRAEdEyO7QWbdF1dnHQ3YdfMIDTWPP1KF4ZoQB22/ICPAqWLI6Z5e1f`. Check a downloaded release by hand with:
+
+```sh
+minisign -Vm agentbox-<ver>.tgz -P RWRAEdEyO7QWbdF1dnHQ3YdfMIDTWPP1KF4ZoQB22/ICPAqWLI6Z5e1f
+```
