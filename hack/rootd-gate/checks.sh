@@ -155,7 +155,8 @@ main)
   check "after rootd resolved it keys connects to $IP:$FLOW_PORT" '[ -n "$IP" ] && as agentbox-keys $RG connect $IP $FLOW_PORT 5'
   # a port the host does answer on (root, unconfined, reaches it), so only keys_dst4's port match can refuse it
   OP=443; [ "$FLOW_PORT" != 443 ] || OP=80
-  kd() { nft list chain inet agentbox output | grep -F 'meta skuid "agentbox-keys" counter' | grep -o 'packets [0-9]*' | awk '{print $2}'; }
+  # nft may print the uid as a name, quoted or not, or as a number
+  kd() { nft list chain inet agentbox output | grep -E "meta skuid (\"?agentbox-keys\"?|$(id -u agentbox-keys)) counter" | grep -o 'packets [0-9]*' | awk '{print $2}'; }
   check "but not to $IP:$OP, which answers root: keys' catch-all drop takes it" '$RG connect $IP $OP 5 && b=$(kd) && ! as agentbox-keys $RG connect $IP $OP 3 && [ "$(kd)" -gt "$b" ]'
   check "git can't use keys' answer"             '! as agentbox-git $RG connect $IP $FLOW_PORT 3'
   check "the proxy can't use keys' answer"       '! as agentbox-proxy $RG connect $IP $FLOW_PORT 3'
