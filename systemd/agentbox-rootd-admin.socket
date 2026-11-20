@@ -1,0 +1,16 @@
+# Admin ops for root and agentbox-admin members (ARCHITECTURE.md §2.1).
+# PID 1 binds it with this owner and mode; rootd checks SO_PEERCRED on every connection.
+[Unit]
+Description=agentbox rootd admin socket
+
+[Socket]
+ListenStream=/run/agentbox-rootd/rootd-admin.sock
+SocketUser=root
+SocketGroup=agentbox-admin
+SocketMode=0660
+DirectoryMode=0711
+FileDescriptorName=admin
+Service=agentbox-rootd.service
+
+[Install]
+WantedBy=sockets.target

@@ -28,6 +28,8 @@ const usage = `usage:
   agentbox os health | mark-last-good | status
   agentbox version
   agentbox reconcile   (agentbox-reconcile.service, on the box)
+  agentbox rootd [--element-timeout 10m] [--refill-interval 5m]   (agentbox-rootd.service, on the box)
+  agentbox egress list | refill | allow|remove --svc keys|git|proxy --entry HOST:PORT   (admin, on the box)
 `
 
 type multi []string
@@ -80,6 +82,10 @@ func run(args []string) error {
 		return nil
 	case "reconcile":
 		return cmdReconcile(args[1:])
+	case "rootd":
+		return cmdRootd(args[1:])
+	case "egress":
+		return cmdEgress(args[1:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil

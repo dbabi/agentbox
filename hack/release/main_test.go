@@ -61,13 +61,15 @@ func TestBuild(t *testing.T) {
 	}
 	machine := map[string]elf.Machine{"bin/linux-amd64/agentbox": elf.EM_X86_64, "bin/linux-arm64/agentbox": elf.EM_AARCH64}
 	level := map[string]string{"bin/linux-amd64/agentbox": "GOAMD64=v1", "bin/linux-arm64/agentbox": "GOARM64=v8.0"}
-	mode := map[string]int64{"bin/linux-amd64/agentbox": 0o755, "bin/linux-arm64/agentbox": 0o755, "install.sh": 0o755}
+	mode := map[string]int64{"bin/linux-amd64/agentbox": 0o755, "bin/linux-arm64/agentbox": 0o755, "install.sh": 0o755,
+		"sysusers.d/agentbox.conf": 0o644, "tmpfiles.d/agentbox.conf": 0o644}
 	want := "bin/linux-amd64/agentbox bin/linux-arm64/agentbox install.sh"
 	units, _ := filepath.Glob("systemd/*") // sorted, and every unit in the repo ships
 	for _, u := range units {
 		mode[u] = 0o644
 		want += " " + u
 	}
+	want += " sysusers.d/agentbox.conf tmpfiles.d/agentbox.conf"
 	if !strings.Contains(want, "systemd/agentbox-reconcile.service") {
 		t.Fatal("systemd/agentbox-reconcile.service is missing from the repo")
 	}

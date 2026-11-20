@@ -19,9 +19,11 @@ R=$A/releases
 N=$R/.$VER.new
 mkdir -p "$R"
 rm -rf "$N"
-mkdir -p "$N/bin" "$N/systemd"
+mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d" "$N/tmpfiles.d"
 install -m 0755 "$BIN" "$N/bin/agentbox"
 install -m 0644 "$S"/systemd/* "$N/systemd/"
+install -m 0644 "$S/sysusers.d/agentbox.conf" "$N/sysusers.d/"
+install -m 0644 "$S/tmpfiles.d/agentbox.conf" "$N/tmpfiles.d/"
 if [ -d "$R/$VER" ]; then
   diff -r "$N" "$R/$VER" >/dev/null || { rm -rf "$N"; die "release $VER is already installed with different content"; }
   rm -rf "$N"
@@ -35,6 +37,11 @@ if [ "$cur" != "releases/$VER" ]; then
   [ -z "$cur" ] || { ln -sfn "$cur" "$A/.previous.new" && mv -T "$A/.previous.new" "$A/previous"; }
   ln -sfn "releases/$VER" "$A/.current.new" && mv -T "$A/.current.new" "$A/current"
 fi
+# Service users and runtime dirs before the units: the socket units name these groups and the dirs (§2.1, §12).
+install -m 0644 "$R/$VER/sysusers.d/agentbox.conf" /usr/lib/sysusers.d/agentbox.conf
+install -m 0644 "$R/$VER/tmpfiles.d/agentbox.conf" /usr/lib/tmpfiles.d/agentbox.conf
+systemd-sysusers agentbox.conf
+systemd-tmpfiles --create agentbox.conf
 # PID 1 loads units before /var/lib/agentbox is mounted, so the units are copies on the root file system.
 install -m 0644 "$R/$VER"/systemd/* /etc/systemd/system/
 systemctl daemon-reload

@@ -65,7 +65,8 @@ func build(version, key, out string) (string, []byte, error) {
 		name, src string
 		mode      int64
 	}
-	files := []file{{"install.sh", "install/install.sh", 0o755}}
+	files := []file{{"install.sh", "install/install.sh", 0o755},
+		{"sysusers.d/agentbox.conf", "sysusers.d/agentbox.conf", 0o644}, {"tmpfiles.d/agentbox.conf", "tmpfiles.d/agentbox.conf", 0o644}}
 	for _, arch := range []string{"arm64", "amd64"} {
 		bin := filepath.Join(tmp, arch)
 		cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w -X main.version="+version, "-o", bin, "./cmd/agentbox")
