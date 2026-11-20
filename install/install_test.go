@@ -40,7 +40,7 @@ func TestSyncBeforeRename(t *testing.T) {
 		os.WriteFile(filepath.Join(rel, name), []byte(body), 0o755)
 	}
 	os.MkdirAll(filepath.Join(box, "etc"), 0o755)
-	for name, body := range map[string]string{"id": "echo 0", "dpkg": "echo arm64", "systemctl": ":", "sync": `echo sync >> "$TRACE"`,
+	for name, body := range map[string]string{"id": "echo 0", "dpkg": `[ "$1" = -s ] && echo "Status: install ok installed" || echo arm64`, "getent": ":", "systemctl": ":", "sync": `echo sync >> "$TRACE"`,
 		// GNU mv -T renames onto the link itself; dropping the link first does the same with BSD mv
 		"mv": `echo "mv $*" >> "$TRACE"; [ "$1" != -T ] || { shift; rm -f "$2"; }; exec "` + mv + `" "$@"`} {
 		os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755)

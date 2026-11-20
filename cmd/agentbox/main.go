@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"agentbox/internal/ntfy"
 	"agentbox/internal/recovery"
+	"agentbox/internal/rootd/quota"
 	"agentbox/internal/seed"
 )
 
@@ -28,6 +30,8 @@ const usage = `usage:
   agentbox os health | mark-last-good | status
   agentbox version
   agentbox reconcile   (agentbox-reconcile.service, on the box)
+  agentbox fwcheck     (ExecStartPre of ntfy and every agent unit: ntfy's uid and ntfy_dst sets)
+  agentbox ntfy refresh-dst   (agentbox-ntfy-dst.timer: resolve ntfy.sh, fill ntfy_dst4/6)
 `
 
 type multi []string
@@ -80,6 +84,13 @@ func run(args []string) error {
 		return nil
 	case "reconcile":
 		return cmdReconcile(args[1:])
+	case "fwcheck":
+		return cmdFwcheck(args[1:])
+	case "ntfy":
+		if len(args) != 2 || args[1] != "refresh-dst" {
+			return errors.New("usage: agentbox ntfy refresh-dst")
+		}
+		return ntfy.RefreshDst(time.Now())
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
@@ -142,13 +153,27 @@ func cmdSeed(args []string) error {
 }
 
 // cmdReconcile is agentbox-reconcile.service (ARCHITECTURE.md §3.2): it re-applies the persistent control store to
-// whichever generation booted, before every agentbox unit. Week 1 skeleton: there is no control store yet.
+// whichever generation booted, before every agentbox unit: the disk reserve (§4.1) and packaged ntfy (§2).
 func cmdReconcile(args []string) error {
 	if err := parse(flag.NewFlagSet("reconcile", flag.ContinueOnError), args); err != nil {
 		return err
 	}
-	fmt.Println("reconcile: no control state to re-apply yet")
-	return nil
+	if err := quota.Ensure(); err != nil {
+		return err
+	}
+	return ntfy.Setup()
+}
+
+// cmdFwcheck is the firewall gate's check (§6.1). Week 3 ntfy half: the unit's identity and the ntfy_dst sets;
+// the firewall area adds the ruleset hash and the other set checks.
+func cmdFwcheck(args []string) error {
+	if err := parse(flag.NewFlagSet("fwcheck", flag.ContinueOnError), args); err != nil {
+		return err
+	}
+	if err := ntfy.CheckUser(); err != nil {
+		return err
+	}
+	return ntfy.CheckDst(time.Now())
 }
 
 func cmdRecovery(args []string) error {

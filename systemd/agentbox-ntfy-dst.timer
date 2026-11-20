@@ -1,0 +1,11 @@
+# Every 5 minutes; elements time out after 10 (ARCHITECTURE.md §6.1, Appendix B).
+[Unit]
+Description=agentbox ntfy_dst refresh every 5 minutes
+
+[Timer]
+OnActiveSec=0
+OnUnitActiveSec=5min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

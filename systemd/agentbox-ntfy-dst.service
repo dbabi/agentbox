@@ -1,0 +1,11 @@
+# Fills ntfy_dst4/ntfy_dst6 with checked ntfy.sh answers (ARCHITECTURE.md §6.1). shortcut: a stand-in for rootd's
+# internal 5-minute timer until the rootd daemon lands; then rootd calls ntfy.RefreshDst itself and this unit goes.
+[Unit]
+Description=agentbox ntfy_dst refresh
+Requires=agentbox-reconcile.service agentbox-firewall.service
+After=agentbox-reconcile.service agentbox-firewall.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/var/lib/agentbox/current/bin/agentbox ntfy refresh-dst

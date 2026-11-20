@@ -35,6 +35,17 @@ if [ "$cur" != "releases/$VER" ]; then
   [ -z "$cur" ] || { ln -sfn "$cur" "$A/.previous.new" && mv -T "$A/.previous.new" "$A/previous"; }
   ln -sfn "releases/$VER" "$A/.current.new" && mv -T "$A/.current.new" "$A/current"
 fi
+# Packaged ntfy (ARCHITECTURE.md §2): agentbox-reconcile then writes its config, tmpfiles, ACLs and firewall drop-in, and
+# enables it. policy-rc.d keeps the postinst from starting ntfy on its default config (HTTP on :80, every interface).
+if ! dpkg -s ntfy 2>/dev/null | grep -qx 'Status: install ok installed'; then
+  [ ! -e /usr/sbin/policy-rc.d ] || die "/usr/sbin/policy-rc.d exists; remove it and rerun"
+  printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod 0755 /usr/sbin/policy-rc.d
+  trap 'rm -f /usr/sbin/policy-rc.d' EXIT
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ntfy ||
+    { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ntfy; } || die "apt-get install ntfy failed"
+  rm -f /usr/sbin/policy-rc.d; trap - EXIT
+fi
+getent passwd _ntfy >/dev/null || die "the ntfy package made no _ntfy user"
 # PID 1 loads units before /var/lib/agentbox is mounted, so the units are copies on the root file system.
 install -m 0644 "$R/$VER"/systemd/* /etc/systemd/system/
 systemctl daemon-reload
