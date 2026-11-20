@@ -16,8 +16,9 @@
 #          - a keys flow survives its element's expiry (conntrack), while a new connection is refused
 #          - `nft flush ruleset`: within 60 s the health timer's fwcheck alerts and the table is back, sets refilled
 #          - after a reboot: the sets are back and the stand-in starts at boot, with no failed unit
-# rootd does not exist yet. A fixture unit stands in for its start step (`agentbox fw refill`, which rootd runs before
-# READY=1), with Requires= on the firewall like rootd, and a sqlite3-made rootd.db holds the rows rootd would write.
+# The sets rootd fills come from the real agentbox-rootd.service: the gate writes the rows rootd would have written
+# (set_elements for port_allow, set_answers for dst answers, with their entries on the allowlists) and asks rootd to
+# refill (`agentbox egress refill`); a firewall restart restarts rootd through Requires=, and rootd refills before READY=1.
 # Checks print PASS/FAIL to .vm/fw-gate.txt, command output goes to .vm/fw-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -43,6 +44,9 @@ wait_boot() { end=$(( $(date +%s) + $2 ))
 prelude() { cat <<'EOF'
 set -u
 fails=0 A=/var/lib/agentbox/current/bin/agentbox DB=/var/lib/agentbox/rootd.db L=/var/tmp/fw-gate.log
+# sql STATEMENTS: write rootd.db as rootd would (rootd keeps it open in WAL mode; python's sqlite3 waits on its lock)
+sql() { python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1], timeout=30); c.executescript(sys.argv[2]); c.commit()' $DB "$1"; }
+nowms() { echo $(( $(date +%s) * 1000 )); }
 check() { echo "== $1" >>$L; if (eval "$2") >>$L 2>&1; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails+1)); fi; }
 # as USER HOST PORT [udp]: what a connect (and, for udp, a send) by USER gets: ok, EPERM, ECONNREFUSED, ...
 as() { u=$1; shift; setpriv --reuid="$u" --regid="$(id -g "$u" 2>/dev/null || echo "$u")" --clear-groups python3 /var/tmp/conn.py "$@"; }
@@ -106,36 +110,20 @@ check "boot: agentbox-firewall.service active, /etc/nftables.d/agentbox.nft and 
 check "boot: no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 check "nftables.service masked; ntfy.service User=_ntfy; ip_local_reserved_ports covers 43000-45999" '[ "$(systemctl is-enabled nftables.service)" = masked ] && [ "$(systemctl show -p User --value ntfy.service)" = _ntfy ] && grep -q 43000-45999 /proc/sys/net/ipv4/ip_local_reserved_ports'
 check "static sets as Appendix B: confined, private4, private6" 'nft list set inet agentbox confined | grep -qF "elements = { 70001-70999, 71001-71999, 1879048192-2013265919 }" && [ "$(elems private4 | wc -l)" = 13 ] && [ "$(elems private6 | wc -l)" = 9 ]'
-check "fwcheck passes on a box with no rootd.db" '[ ! -e $DB ] && $A fwcheck'
+check "rootd is up at boot, after the firewall, and fwcheck passes" 'systemctl is-active agentbox-rootd.service && [ -e $DB ] && $A fwcheck'
 check "the agent stand-in starts while the firewall is intact" 'systemctl start agentbox-agent-stub.service && systemctl is-active agentbox-agent-stub.service && systemctl stop agentbox-agent-stub.service'
 check "the test address $IP (ports.ubuntu.com) is public: not in private4" '[ -n "$IP" ] && ! nft get element inet agentbox private4 "{ $IP }"'
 
-# the rows rootd would have written before adding each element (rootd.db set_elements, Appendix E)
-now=$(date +%s)
-sqlite3 $DB "CREATE TABLE set_elements(set_name TEXT NOT NULL, element TEXT NOT NULL, expires_at INTEGER, PRIMARY KEY(set_name, element)) STRICT;
-  INSERT INTO set_elements VALUES ('port_allow', '0 . 43100', NULL), ('proxy_dst4', '$IP . 80', $now + 600);"
-cat > /etc/systemd/system/agentbox-rootd-standin.service <<'U'
-[Unit]
-Description=rootd stand-in (fw-gate fixture): rootd's start step, agentbox fw refill
-Requires=agentbox-firewall.service
-After=agentbox-firewall.service
-# the gate restarts the firewall a dozen times in a minute; the default start limit would leave the refill undone
-StartLimitIntervalSec=0
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/var/lib/agentbox/current/bin/agentbox fw refill
-[Install]
-WantedBy=multi-user.target
-U
-mkdir -p /etc/systemd/system/agentbox-agent-stub.service.d
-printf '%s\n' '[Unit]' 'Requires=agentbox-rootd-standin.service' 'After=agentbox-rootd-standin.service' > /etc/systemd/system/agentbox-agent-stub.service.d/gate.conf
-systemctl daemon-reload; systemctl enable agentbox-rootd-standin.service >>$L 2>&1
-check "rootd's refill fills port_allow and proxy_dst4 from rootd.db, with the remaining timeout; fwcheck passes" 'systemctl start agentbox-rootd-standin.service && [ "$(elems port_allow)" = "{\"concat\": [0, 43100]}" ] && [ "$(elems proxy_dst4)" = "{\"concat\": [\"$IP\", 80]}" ] && [ "$(expires proxy_dst4)" -le 600 ] && $A fwcheck'
+# the rows rootd would have written before adding each element (rootd.db set_elements and set_answers, Appendix E);
+# the proxy's answer is for an entry on its allowlist, or rootd's refill revokes it
+$A egress allow --svc proxy --entry ports.ubuntu.com:80 >>$L 2>&1
+sql "INSERT INTO set_elements VALUES ('port_allow', '0 . 43100', NULL);
+  INSERT INTO set_answers VALUES ('proxy ports.ubuntu.com:80', 'proxy_dst4', '$IP . 80', $(nowms) + 600000);"
+check "rootd's refill fills port_allow and proxy_dst4 from rootd.db, with the remaining timeout; fwcheck passes" '$A egress refill && [ "$(elems port_allow)" = "{\"concat\": [0, 43100]}" ] && [ "$(elems proxy_dst4)" = "{\"concat\": [\"$IP\", 80]}" ] && [ "$(expires proxy_dst4)" -le 600 ] && $A fwcheck'
 
 # Firewall altered: agents can't start. The health timer would repair in between, so it waits.
 systemctl stop agentbox-health.timer
-# restore: what fwcheck --repair does; the refill runs in the restart Requires= queues after the firewall's
+# restore: what fwcheck --repair does; rootd's refill runs in the restart Requires= queues after the firewall's
 restore() { systemctl reset-failed agentbox-agent-stub.service 2>/dev/null; systemctl restart agentbox-firewall.service || return 1
   for i in 1 2 3 4 5 6 7 8 9 10; do $A fwcheck && return 0; sleep 1; done; return 1; }
 # $2 runs in braces: a redirection inside it (echo 0 > /proc/...) must not be overridden by the >/dev/null
@@ -176,8 +164,9 @@ check "a confined uid (70001) can't reach $IP:80: dropped" 'dropped 70001 $IP 80
 check "root still reaches $IP:80 (only agentbox uids are confined)" '[ "$(python3 /var/tmp/conn.py $IP 80)" = ok ]'
 
 # A long broker flow survives its element's expiry: the established accept comes before the set checks
-sqlite3 $DB "INSERT INTO set_elements VALUES ('keys_dst4', '$IP . 80', $(date +%s) + 5);"
-systemctl restart agentbox-rootd-standin.service
+$A egress allow --svc keys --entry ports.ubuntu.com:80 >>$L 2>&1
+sql "INSERT INTO set_answers VALUES ('keys ports.ubuntu.com:80', 'keys_dst4', '$IP . 80', $(nowms) + 5000);"
+$A egress refill >>$L 2>&1
 cat > /var/tmp/flow.py <<'P'
 import socket, sys, time
 s = socket.create_connection((sys.argv[1], 80), timeout=10)
@@ -190,7 +179,7 @@ sleep 8
 check "keys_dst4's element for $IP:80 expired (5 s); a new keys connection is dropped" '[ -z "$(elems keys_dst4)" ] && dropped agentbox-keys $IP 80'
 wait $FP || :
 check "the keys flow opened before the expiry still gets its HTTP answer (ct established)" 'grep -q "^HTTP/1.1 " /var/tmp/flow.out'
-sqlite3 $DB "DELETE FROM set_elements WHERE set_name = 'keys_dst4';"
+$A egress remove --svc keys --entry ports.ubuntu.com:80 >>$L 2>&1
 
 # nft flush ruleset: the health timer's fwcheck alerts and restores within 60 s
 systemctl stop agentbox-agent-stub.service; systemctl start agentbox-health.timer; sleep 2
@@ -203,7 +192,7 @@ check "nft flush ruleset: fwcheck alerted, restarted the firewall, and the refil
 check "after the repair, the agent stand-in starts" 'systemctl start agentbox-agent-stub.service && systemctl is-active agentbox-agent-stub.service'
 
 # for the reboot: a fresh answer, and the stand-in starts at boot like an agent's user manager
-sqlite3 $DB "UPDATE set_elements SET expires_at = $(date +%s) + 600 WHERE set_name = 'proxy_dst4';"
+sql "UPDATE set_answers SET expires_at = $(nowms) + 600000 WHERE set_name = 'proxy_dst4';"; $A egress refill >>$L 2>&1
 ln -sf ../agentbox-agent-stub.service /etc/systemd/system/multi-user.target.wants/agentbox-agent-stub.service
 systemctl reset-failed
 echo "fails=$fails"
@@ -212,7 +201,7 @@ EOF
 
 phase2() { cat <<'EOF'
 echo "== after reboot" >>$L
-check "reboot: firewall, rootd stand-in and agent stand-in active; no failed units" '[ "$(systemctl is-system-running --wait)" = running ] && systemctl is-active agentbox-firewall.service agentbox-rootd-standin.service agentbox-agent-stub.service'
+check "reboot: firewall, rootd and agent stand-in active; no failed units" '[ "$(systemctl is-system-running --wait)" = running ] && systemctl is-active agentbox-firewall.service agentbox-rootd.service agentbox-agent-stub.service'
 check "reboot: the static sets are loaded and rootd's sets are back from rootd.db" 'nft list set inet agentbox confined | grep -qF 70001-70999 && [ "$(elems private4 | wc -l)" = 13 ] && [ "$(elems port_allow)" = "{\"concat\": [0, 43100]}" ] && [ "$(elems proxy_dst4)" = "{\"concat\": [\"$IP\", 80]}" ]'
 check "reboot: fwcheck passes; agentbox-proxy reaches $IP:80 and nothing else" '$A fwcheck && [ "$(as agentbox-proxy $IP 80)" = ok ] && dropped agentbox-proxy 1.1.1.1 443'
 check "reboot: the agent stand-in's own fwcheck ran and passed at boot" 'journalctl -b -u agentbox-agent-stub.service -o cat | grep -q "Started agentbox-agent-stub.service\|Started agentbox agent stand-in" && ! journalctl -b -u agentbox-agent-stub.service -o cat | grep -q "agentbox: fwcheck: "'
@@ -234,7 +223,7 @@ sc_checks() {
   echo 'systemctl reboot' | root >/dev/null 2>&1 || :
   wait_boot "$old" 900 || die "no SSH after the reboot"
   { prelude; phase2; } | vmrun | tee -a "$OUT"
-  u="-u agentbox-firewall.service -u agentbox-health.service -u agentbox-agent-stub.service -u agentbox-rootd-standin.service"
+  u="-u agentbox-firewall.service -u agentbox-health.service -u agentbox-agent-stub.service -u agentbox-rootd.service"
   echo "cat /var/tmp/fw-gate.log; for b in -1 0; do journalctl -b \$b --no-pager -o short-iso $u; done" | root >>"$LOG" 2>&1 || :
   echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
   while running; do sleep 2; done

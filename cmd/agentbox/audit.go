@@ -136,29 +136,6 @@ func cmdAuditd(args []string) error {
 	return <-errc
 }
 
-// cmdRootdSeal serves audit.create and audit.seal (audit.Files) for agentbox-auditd. Interim unit: rootd takes this
-// socket over (Sockets=agentbox-audit-seal.socket) and calls audit.ServeSeal itself when it lands.
-func cmdRootdSeal(args []string) error {
-	fs := flag.NewFlagSet("rootd-seal", flag.ContinueOnError)
-	dir := fs.String("dir", auditDir, "audit directory")
-	if err := parse(fs, args); err != nil {
-		return err
-	}
-	ls, err := listenFDs()
-	if err != nil {
-		return err
-	}
-	l, ok := ls["audit-seal"]
-	if !ok || len(ls) != 1 {
-		return errors.New("rootd-seal: want exactly the audit-seal socket")
-	}
-	uid, gid, err := uidOf("agentbox-audit")
-	if err != nil {
-		return err
-	}
-	return audit.ServeSeal(l, &audit.Files{Dir: *dir, UID: int(uid), GID: int(gid), Crash: crashHook()}, uid, logf)
-}
-
 func cmdAudit(args []string) error {
 	if len(args) == 0 {
 		return errors.New("audit: expected verify or send")

@@ -33,14 +33,7 @@ fast() { # test timings for this boot only (/run): 30 s elements, a 10 s timer
 
 case $1 in
 setup)
-  # The firewall stub, unless the release ships the firewall area's own unit.
-  if [ -e /var/lib/agentbox/current/systemd/agentbox-firewall.service ]; then note "the release ships agentbox-firewall.service: no stub"
-  else
-    install -D -m 0644 /run/rg/firewall-stub.nft /etc/nftables.d/agentbox-stub.nft
-    install -m 0644 /run/rg/agentbox-firewall.service /etc/systemd/system/agentbox-firewall.service
-    systemctl daemon-reload && systemctl enable --now agentbox-firewall.service >/dev/null 2>&1
-    note "installed the firewall stub (hack/rootd-gate/firewall-stub.nft)"
-  fi
+  check "the release's firewall is up and fwcheck passes" 'systemctl is-active -q agentbox-firewall.service && $A fwcheck'
   # Addresses that look public but are the box's own, on-link or routed off the default interface (Appendix B check 3).
   ip addr add 192.88.99.15/32 dev "$IF"; ip -6 addr add 2600:ffff::15/128 dev "$IF" nodad
   ip route add 192.88.98.0/24 dev "$IF"
@@ -110,6 +103,7 @@ main)
   done
   check "none of their addresses reached any set" '[ "$(nft list table inet agentbox | grep -c " \. 443")" = "$before" ] && for a in 10.1.2.3 192.88.96.2 192.168.1.10 100.64.0.1 198.51.100.7 8.8.8.8 64:ff9b::a00:1 192.88.99.15 2600:ffff::15 192.88.98.7 192.88.97.7 127.0.0.1 fe80::1 224.0.0.251 fd00::1; do ! sets_have "$a . 443" || exit 1; done'
   check "the refusal's detail names the address and check, in rootd's DENY log only" 'journalctl -u agentbox-rootd.service -o cat | grep -q "DENY by=rootd svc=keys entry=own.gate.test:443 code=non_public detail=\"192.88.99.15: route_not_unicast"'
+  check "the refusal is also a DENY record in auditd's chain" 'grep -h "own.gate.test:443" /var/lib/agentbox/audit/seg-*.jsonl | grep -q "\"DENY\""'
   check "an on-link address is refused by the route check" 'journalctl -u agentbox-rootd.service -o cat | grep -q "entry=onlink.gate.test:443 code=non_public detail=\"192.88.98.7: route_on_link"'
   check "a tailnet-like interface route is refused by the route check" 'journalctl -u agentbox-rootd.service -o cat | grep -q "entry=tail.gate.test:443 code=non_public detail=\"192.88.97.7: route_not_default_interface"'
   check "a NAT64 address wrapping a public IPv4 passes" '[ "$(reason keys nat64ok.gate.test 443)" = ok ] && set_has keys_dst6 "64:ff9b::808:808 . 443"'
@@ -165,12 +159,17 @@ main)
   check "a removed entry no longer resolves"      '[ "$(reason keys "$FLOW_HOST" "$FLOW_PORT")" = not_allowlisted ]'
   cp /run/rg/flow.log /run/rg/flow-kept.log
 
-  echo "== audit segments (§9): rootd creates and seals them for auditd (auditd's audit-seal.sock interface)"
+  echo "== audit segments (§9): rootd creates and seals them for auditd (audit.Files on audit-seal.sock)"
   D=/var/lib/agentbox/audit
+  check "audit dir agentbox-audit:agentbox-audit 0750 (tmpfiles.d)" '[ "$(stat -c %U:%G:%a $D)" = agentbox-audit:agentbox-audit:750 ]'
+  # agentbox-auditd owns the real dir's chain; these calls run on a scratch dir that rootd seals for this test only
+  D=/var/lib/agentbox/rg-audit
+  rm -rf $D; install -d -o agentbox-audit -g agentbox-audit -m 0750 $D
+  printf '[Service]\nExecStart=\nExecStart=%s rootd --element-timeout 30s --refill-interval 10s --audit-dir %s\n' "$A" "$D" > "$dropin"
+  systemctl daemon-reload && systemctl restart agentbox-rootd.service
   S1=$D/seg-000001.jsonl
   call() { as agentbox-audit $RG req $R/audit-seal.sock "$1"; }
   seal() { call "{\"call\":\"audit.seal\",\"seg\":$1,\"last_hash\":\"$2\"}"; }
-  check "audit dir agentbox-audit:agentbox-audit 0750 (tmpfiles.d)" '[ "$(stat -c %U:%G:%a $D)" = agentbox-audit:agentbox-audit:750 ]'
   check "audit.create refuses any segment but the first" 'call "{\"call\":\"audit.create\",\"seg\":2}" | grep -q "\"ok\":false" && [ ! -e $D/seg-000002.jsonl ]'
   check "audit.create seg 1: agentbox-audit 0640, append-only, not immutable" 'call "{\"call\":\"audit.create\",\"seg\":1}" | grep -q "\"ok\":true" && [ "$(stat -c %U:%G:%a $S1)" = agentbox-audit:agentbox-audit:640 ] && lsattr $S1 | cut -c1-22 | grep -q a && ! lsattr $S1 | cut -c1-22 | grep -q i'
   check "audit.create is idempotent"              'call "{\"call\":\"audit.create\",\"seg\":1}" | grep -q "\"ok\":true"'
@@ -208,7 +207,8 @@ for s in ["proxy_dst4","proxy_dst6","keys_dst4","keys_dst6","git_dst4","git_dst6
             v = el["elem"]["val"]["concat"] if "elem" in el else el["concat"]
             assert (s, "%s . %d" % tuple(v)) in db, (s, v)
 EOF'
-  check "audit: the open segment is still seg-000004, sealed ones keep +i" '[ "$(ls /var/lib/agentbox/audit | grep -c seg-)" = 4 ] && lsattr /var/lib/agentbox/audit/seg-000003.jsonl | cut -c1-22 | grep -q i'
+  check "audit: the scratch dir's open segment is still seg-000004, sealed ones keep +i" '[ "$(ls /var/lib/agentbox/rg-audit | grep -c seg-)" = 4 ] && lsattr /var/lib/agentbox/rg-audit/seg-000003.jsonl | cut -c1-22 | grep -q i'
+  check "auditd's own chain verifies after the reboot" '$A audit verify'
   check "no failed units"                         '[ -z "$(systemctl --failed --no-legend --plain)" ]'
   ;;
 
@@ -218,6 +218,7 @@ cleanup)
   ip addr del 192.88.99.15/32 dev "$IF" 2>/dev/null; ip -6 addr del 2600:ffff::15/128 dev "$IF" 2>/dev/null
   ip route del 192.88.98.0/24 dev "$IF" 2>/dev/null; ip link del rg0 2>/dev/null
   sed -i '/hosts.gate.test/d' /etc/hosts
+  chattr -R -ia /var/lib/agentbox/rg-audit 2>/dev/null; rm -rf /var/lib/agentbox/rg-audit
   ;;
 esac
 echo "fails=$fails"

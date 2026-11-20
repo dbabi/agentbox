@@ -2,7 +2,7 @@
 # agentbox-auditd gates (PLAN.md milestone row 3, ARCHITECTURE.md §9, §5.2 taint fence) on the local QEMU VM.
 #   hack/audit-gate.sh [install] [audit]   default: both, in order
 # install  hack/gate.sh none: the unattended install, then firstboot installs the release that ships auditd, its
-#          producer sockets and the seal stand-in (make release, install.sh, systemd/), from --dev release URLs.
+#          producer sockets and rootd, which seals (make release, install.sh, systemd/), from --dev release URLs.
 # audit    on that box, as root: socket owners and modes, SO_PEERCRED; auditd down (stopped, or hung with a producer
 #          waiting) means the test producer's effect never runs; the taint write rules from every producer socket; a
 #          clear only as a rootd admin taint.clear INTENT then RESULT, after which the row stays with its epoch moved;
@@ -152,17 +152,17 @@ date -u -s "@$(( now + 5 ))" >/dev/null; timedatectl set-ntp true >/dev/null 2>&
 check "audit verify after the clock steps; segments are named by sequence only" 'verify && [ -z "$(ls $D | grep -v -e "^seg-[0-9]\{6\}\.jsonl$" -e "^taint\.db" -e "^\.reserve$")" ]'
 
 # Crash mid-seal: SIGKILL at each seal step, with 4 KiB segments so records rotate them
-mkdir -p /run/systemd/system/agentbox-auditd.service.d /run/systemd/system/agentbox-audit-seal.service.d
+mkdir -p /run/systemd/system/agentbox-auditd.service.d /run/systemd/system/agentbox-rootd.service.d
 crashat() { # UNIT-DROPIN-DIR POINT
   printf '[Service]\nExecStart=\nExecStart=%s auditd --segment-bytes 4096\n' $A > /run/systemd/system/agentbox-auditd.service.d/gate.conf
-  rm -f /run/systemd/system/agentbox-audit-seal.service.d/gate.conf
+  rm -f /run/systemd/system/agentbox-rootd.service.d/gate.conf
   printf '[Service]\nEnvironment=AGENTBOX_TEST_CRASH=%s:%s/.gate-crash-%s\n' $2 $D $2 >> /run/systemd/system/$1.service.d/gate.conf
   # the gate restarts these faster than StartLimitBurst allows
-  systemctl daemon-reload; systemctl reset-failed agentbox-audit-seal.service agentbox-auditd.service
-  systemctl restart agentbox-audit-seal.service agentbox-auditd.service
+  systemctl daemon-reload; systemctl reset-failed agentbox-rootd.service agentbox-auditd.service
+  systemctl restart agentbox-rootd.service agentbox-auditd.service
 }
 pad=$(printf "%600s" "" | tr " " p)
-for up in agentbox-auditd:close-written agentbox-auditd:sealed agentbox-audit-seal:immutable-set agentbox-audit-seal:next-created; do
+for up in agentbox-auditd:close-written agentbox-auditd:sealed agentbox-rootd:immutable-set agentbox-rootd:next-created; do
   u=${up%%:*} pt=${up#*:}
   crashat $u $pt; n0=$(nsegs)
   check "SIGKILL in $u at $pt: it fired, ACKs resume, a new segment is open, every older one is +i" 'i=0 acked=0
@@ -172,12 +172,12 @@ for up in agentbox-auditd:close-written agentbox-auditd:sealed agentbox-audit-se
     for s in $(ls $D | grep "^seg-[0-9]*\.jsonl$" | grep -vx $(newest)); do lsattr $D/$s | cut -d" " -f1 | grep -q i || exit 1; done'
   check "audit verify after the crash at $pt" verify
 done
-rm -f /run/systemd/system/agentbox-auditd.service.d/gate.conf /run/systemd/system/agentbox-audit-seal.service.d/gate.conf $D/.gate-crash-*
-systemctl daemon-reload; systemctl reset-failed agentbox-audit-seal.service agentbox-auditd.service; systemctl restart agentbox-audit-seal.service agentbox-auditd.service
+rm -f /run/systemd/system/agentbox-auditd.service.d/gate.conf /run/systemd/system/agentbox-rootd.service.d/gate.conf $D/.gate-crash-*
+systemctl daemon-reload; systemctl reset-failed agentbox-rootd.service agentbox-auditd.service; systemctl restart agentbox-rootd.service agentbox-auditd.service
 check "back on the shipped units: ACK" 'send "{\"type\":\"TAINT\",\"subject\":\"task:after\",\"source\":\"s\"}"'
 check "no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 nsegs > /var/tmp/gate-nsegs
-cp /run/audit-gate.log /var/tmp/audit-gate-1.log; journalctl -b -u agentbox-auditd.service -u agentbox-audit-seal.service -o short-precise > /var/tmp/audit-gate-1.journal
+cp /run/audit-gate.log /var/tmp/audit-gate-1.log; journalctl -b -u agentbox-auditd.service -u agentbox-rootd.service -o short-precise > /var/tmp/audit-gate-1.journal
 echo "audit-fails=$fails"
 EOF
   b=$(bootid)

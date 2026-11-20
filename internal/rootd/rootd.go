@@ -5,6 +5,8 @@
 package rootd
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -21,9 +23,10 @@ import (
 	"syscall"
 	"time"
 
+	"agentbox/internal/audit"
+	"agentbox/internal/fw"
 	"agentbox/internal/rootd/nl"
 	"agentbox/internal/rootd/resolve"
-	"agentbox/internal/rootd/seal"
 
 	_ "modernc.org/sqlite"
 )
@@ -35,12 +38,14 @@ type Config struct {
 	AuditDir       string        // audit/
 	ElementTimeout time.Duration // dst set element timeout (Appendix B: 10 min)
 	RefillInterval time.Duration // timer refill and ntfy_dst refresh (§6.1: 5 min)
+	AuditSocket    string        // auditd's rootd producer socket, for DENY records
+	SealCrash      func(string)  // audit.Files' crash-mid-seal test hook (AGENTBOX_TEST_CRASH); nil in production
 }
 
 // Socket names: each .socket unit sets FileDescriptorName= to one of these.
 const (
 	sockAdmin = "admin"
-	sockSeal  = "audit-seal" // auditd's audit-seal.sock (wk/w3-auditd): audit.create and audit.seal
+	sockSeal  = "audit-seal" // auditd's audit-seal.sock: audit.create and audit.seal (audit.SealClient)
 )
 
 // OpenDB opens rootd.db with WAL and synchronous=FULL (§2, App. E) and creates the week-3 tables.
@@ -132,18 +137,23 @@ func Run(cfg Config) error {
 		Route: nl.CheckRoute, Nft: resolve.Nft{Path: "nft"}, Flows: nl.DeleteFlows,
 		Now: time.Now, Timeout: cfg.ElementTimeout,
 		Deny: func(svc, entry, reason, detail string) {
-			// shortcut: DENY goes to the journal until auditd's producer socket lands (week 3 auditd area)
 			log.Printf("DENY by=rootd svc=%s entry=%s code=%s detail=%q", svc, entry, reason, detail)
+			go sendDeny(cfg.AuditSocket, svc, entry, reason, detail)
 		},
 	}
-	res, err := svc.Refill()
+	res, err := refill(db, svc)
 	if err != nil {
 		return fmt.Errorf("sets do not match rootd.db: %v", err)
 	}
 	log.Printf("sets match rootd.db: %d live elements re-added, %d revoked, %d expired, %d unknown removed",
 		res.Added, res.Revoked, res.Expired, res.Extra)
 
-	s := &server{cfg: cfg, svc: svc, seal: &seal.Files{Dir: cfg.AuditDir, FS: seal.Box{}}}
+	auid, aok := lookupUID("agentbox-audit")
+	agid, gok := lookupGID("agentbox-audit")
+	if !aok || !gok {
+		return errors.New("no agentbox-audit user or group (sysusers.d/agentbox.conf)")
+	}
+	s := &server{cfg: cfg, db: db, svc: svc, seal: &audit.Files{Dir: cfg.AuditDir, UID: int(auid), GID: int(agid), Crash: cfg.SealCrash}}
 	for name, ln := range lns {
 		go s.accept(name, ln)
 	}
@@ -163,7 +173,7 @@ func Run(cfg Config) error {
 			}
 			return nil
 		case <-t.C:
-			if res, err := svc.Refill(); err != nil {
+			if res, err := refill(db, svc); err != nil {
 				log.Printf("timer refill: %v", err)
 			} else if res != (resolve.RefillResult{Added: res.Added}) {
 				log.Printf("timer refill: %+v", res)
@@ -173,16 +183,47 @@ func Run(cfg Config) error {
 	}
 }
 
+// refill makes every set rootd fills match rootd.db: the exact sets (fw.Refill), then the dst sets.
+func refill(db *sql.DB, svc *resolve.Service) (resolve.RefillResult, error) {
+	if err := fw.Refill(db); err != nil {
+		return resolve.RefillResult{}, fmt.Errorf("port_allow, allow_private4/6: %v", err)
+	}
+	return svc.Refill()
+}
+
 type server struct {
 	cfg  Config
+	db   *sql.DB
 	svc  *resolve.Service
-	seal seal.Sealer
+	seal audit.Sealer
 }
 
 // refresh re-resolves ntfy.sh:443 into ntfy_dst (§6.1). A failure only logs: ntfy is down until the next try.
 func (s *server) refresh(ctx context.Context) {
 	if _, _, err := s.svc.Resolve(ctx, "ntfy", "", resolve.NtfyEntry); err != nil {
 		log.Printf("ntfy_dst refresh: %v", err)
+	}
+}
+
+// sendDeny is a best-effort DENY record on auditd's rootd producer socket (§9): a refusal is not an effect, so
+// nothing waits on its ACK, and the journal line above stays the fallback when auditd is down.
+func sendDeny(sock, svc, entry, code, detail string) {
+	c, err := net.DialTimeout("unix", sock, 2*time.Second)
+	if err != nil {
+		log.Printf("DENY not audited: %v", err)
+		return
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	b, _ := json.Marshal(map[string]string{"type": "DENY", "by": "rootd", "svc": svc, "entry": entry, "code": code, "detail": detail})
+	if _, err := c.Write(append(b, '\n')); err != nil {
+		log.Printf("DENY not audited: %v", err)
+		return
+	}
+	line, err := bufio.NewReader(c).ReadBytes('\n')
+	var rep audit.Reply
+	if err != nil || json.Unmarshal(line, &rep) != nil || !rep.OK {
+		log.Printf("DENY not audited: %v %s", err, bytes.TrimSpace(line))
 	}
 }
 
@@ -292,7 +333,7 @@ func (s *server) admin(r request) reply {
 
 // refill is the notify path: an allowlist change or an admin refill runs it at once, not at the next timer tick.
 func (s *server) refill(r request) reply {
-	res, err := s.svc.Refill()
+	res, err := refill(s.db, s.svc)
 	if err != nil {
 		return reply{"ok": false, "error": err.Error()}
 	}

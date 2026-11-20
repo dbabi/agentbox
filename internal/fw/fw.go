@@ -2,13 +2,15 @@
 //
 // Load is agentbox-firewall.service: one add-only nft -f transaction, then a check that the live table is the one the
 // ruleset makes. Check is fwcheck: the normalized stateless hash, the static sets, the sets rootd fills (compared to
-// rootd.db's set_elements rows, Appendix E), the reserved loopback ports, ntfy's uid and the masked nftables.service.
-// Refill makes rootd's sets match rootd.db; rootd runs it at start, before READY=1.
+// rootd.db's set_elements rows, Appendix E), the reserved loopback ports and the masked nftables.service. Refill makes
+// the exact sets (port_allow, allow_private*) match rootd.db; rootd runs it at start, before READY=1, next to its own
+// dst set refill (internal/rootd/resolve).
 package fw
 
 import (
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
@@ -23,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -197,33 +201,54 @@ func isUint(s string) bool {
 	return err == nil && s != "" && s[0] != '+'
 }
 
-// Row is one rootd.db set_elements row (Appendix E). Expires is unix seconds; nil means no timeout.
+// Row is one rootd.db set_elements row (Appendix E). Expires is Unix milliseconds UTC; nil means no timeout.
 type Row struct {
-	Set     string `json:"set_name"`
-	Elem    string `json:"element"`
-	Expires *int64 `json:"expires_at"`
+	Set     string
+	Elem    string
+	Expires *int64
 }
 
-// ReadRows reads set_elements read-only. A missing rootd.db means rootd has never run, so it has recorded no element.
-// shortcut: the sqlite3 CLI instead of a Go SQLite driver (stdlib only, no module proxy here); switch to rootd's
-// driver once rootd.db code lands.
-func ReadRows(db string) ([]Row, error) {
-	if _, err := os.Stat(db); errors.Is(err, os.ErrNotExist) {
+// ReadRows reads set_elements from rootd's open rootd.db (the modernc.org/sqlite driver rootd registers).
+func ReadRows(db *sql.DB) ([]Row, error) {
+	rs, err := db.Query(`SELECT set_name, element, expires_at FROM set_elements`)
+	if err != nil {
+		return nil, fmt.Errorf("rootd.db set_elements: %w", err)
+	}
+	defer rs.Close()
+	var rows []Row
+	for rs.Next() {
+		var r Row
+		var exp sql.NullInt64
+		if err := rs.Scan(&r.Set, &r.Elem, &exp); err != nil {
+			return nil, err
+		}
+		if exp.Valid {
+			r.Expires = &exp.Int64
+		}
+		rows = append(rows, r)
+	}
+	return rows, rs.Err()
+}
+
+// readDB is fwcheck's read-only look at rootd.db. A missing rootd.db or set_elements table means rootd has never run,
+// so it has recorded no element.
+func readDB(path string) ([]Row, error) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	out, err := exec.Command("sqlite3", "-readonly", "-json", "-cmd", ".timeout 5000", db,
-		"SELECT set_name, element, expires_at FROM set_elements").Output()
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
-		return nil, fmt.Errorf("read %s set_elements: %w", db, cmdErr(err))
+		return nil, err
 	}
-	var rows []Row
-	if len(bytes.TrimSpace(out)) == 0 {
-		return nil, nil // sqlite3 prints nothing for no rows
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='set_elements'`).Scan(&n); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if err := json.Unmarshal(out, &rows); err != nil {
-		return nil, fmt.Errorf("read %s set_elements: %w", db, err)
+	if n == 0 {
+		return nil, nil
 	}
-	return rows, nil
+	return ReadRows(db)
 }
 
 // Static checks the static sets against the constants (rootd never inserts into them); each problem is one line.
@@ -279,8 +304,8 @@ func Compare(live map[string][]string, rows []Row, now time.Time) []string {
 		case slices.Contains(ExactSets, r.Set):
 			want[r.Set] = append(want[r.Set], e)
 		case ok[r.Set] != nil:
-			// 5 s of slack: an element nft still holds can outlive its row's second by a moment
-			if r.Expires == nil || *r.Expires > now.Unix()-5 {
+			// 5 s of slack: an element nft still holds can outlive its row by a moment
+			if r.Expires == nil || *r.Expires > now.UnixMilli()-5000 {
 				ok[r.Set][e] = true
 			}
 		default:
@@ -426,7 +451,7 @@ func Check(db string, now time.Time) ([]string, error) {
 		return nil, err
 	}
 	if t.Elems != nil {
-		rows, err := ReadRows(db)
+		rows, err := readDB(db)
 		if err != nil {
 			return nil, err
 		}
@@ -435,48 +460,40 @@ func Check(db string, now time.Time) ([]string, error) {
 	if b, err := os.ReadFile(reservedSysctl); err != nil || !ReservedOK(string(b)) {
 		bad = append(bad, fmt.Sprintf("%s is %q, not covering %d-%d", reservedSysctl, strings.TrimSpace(string(b)), ReservedLo, ReservedHi))
 	}
-	if u, _ := exec.Command("systemctl", "show", "-p", "User", "--value", "ntfy.service").Output(); strings.TrimSpace(string(u)) != "_ntfy" {
-		bad = append(bad, fmt.Sprintf("ntfy.service runs as %q, not _ntfy, the uid the ruleset names", strings.TrimSpace(string(u))))
-	}
 	if s, _ := exec.Command("systemctl", "is-enabled", "nftables.service").Output(); strings.TrimSpace(string(s)) != "masked" {
 		bad = append(bad, fmt.Sprintf("nftables.service is %q, not masked (its config and ExecStop flush the whole ruleset)", strings.TrimSpace(string(s))))
 	}
 	return bad, nil
 }
 
-// RefillScript returns the nft commands that make rootd's sets match its rows: add what is missing (a dst answer with
-// its remaining timeout), delete what rootd never recorded or has expired. Elements already there are left alone, so
-// their expiry keeps running.
-func RefillScript(live map[string][]string, rows []Row, now time.Time) (string, error) {
-	type want struct{ left time.Duration } // 0: no timeout
-	sets := map[string]map[string]want{}
-	for _, s := range append(slices.Clone(ExactSets), DstSets...) {
-		sets[s] = map[string]want{}
+// RefillScript returns the nft commands that make the exact sets match rootd's rows: add what is missing, delete what
+// rootd never recorded. Elements already there are left alone. Dst rows are checked but left to rootd's resolver,
+// which also revokes by entry and cuts conntrack.
+func RefillScript(live map[string][]string, rows []Row) (string, error) {
+	sets := map[string]map[string]bool{}
+	for _, s := range ExactSets {
+		sets[s] = map[string]bool{}
 	}
 	for _, r := range rows {
 		e, err := Canon(r.Elem)
 		if err != nil {
 			return "", err
 		}
+		if slices.Contains(DstSets, r.Set) {
+			continue
+		}
 		m := sets[r.Set]
 		if m == nil {
 			return "", fmt.Errorf("rootd.db names set %q, which rootd may not fill", r.Set)
 		}
-		var w want
-		if r.Expires != nil && slices.Contains(DstSets, r.Set) {
-			if w.left = time.Unix(*r.Expires, 0).Sub(now).Truncate(time.Second); w.left <= 0 {
-				continue
-			}
-		}
-		m[e] = w
+		m[e] = true
 	}
 	var b strings.Builder
-	names := append(slices.Clone(ExactSets), DstSets...)
-	for _, s := range names {
+	for _, s := range ExactSets {
 		have := map[string]bool{}
 		for _, e := range live[s] {
 			have[e] = true
-			if _, ok := sets[s][e]; !ok {
+			if !sets[s][e] {
 				fmt.Fprintf(&b, "delete element inet agentbox %s { %s }\n", s, e)
 			}
 		}
@@ -488,18 +505,14 @@ func RefillScript(live map[string][]string, rows []Row, now time.Time) (string, 
 		}
 		sort.Strings(add)
 		for _, e := range add {
-			if w := sets[s][e]; w.left > 0 {
-				fmt.Fprintf(&b, "add element inet agentbox %s { %s timeout %ds expires %ds }\n", s, e, int64(max(w.left, ElementTimeout)/time.Second), int64(w.left/time.Second))
-			} else {
-				fmt.Fprintf(&b, "add element inet agentbox %s { %s }\n", s, e)
-			}
+			fmt.Fprintf(&b, "add element inet agentbox %s { %s }\n", s, e)
 		}
 	}
 	return b.String(), nil
 }
 
-// Refill runs RefillScript as one nft transaction.
-func Refill(db string, now time.Time) error {
+// Refill runs RefillScript on rootd's open rootd.db as one nft transaction.
+func Refill(db *sql.DB) error {
 	rows, err := ReadRows(db)
 	if err != nil {
 		return err
@@ -508,7 +521,7 @@ func Refill(db string, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	s, err := RefillScript(t.Elems, rows, now)
+	s, err := RefillScript(t.Elems, rows)
 	if err != nil || s == "" {
 		return err
 	}

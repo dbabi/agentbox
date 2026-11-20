@@ -31,9 +31,8 @@ const usage = `usage:
   agentbox os health | mark-last-good | status
   agentbox version
   agentbox reconcile   (agentbox-reconcile.service, on the box)
-  agentbox fw load [-c] | check [--repair] | refill   (as root on the box; fwcheck = fw check)
+  agentbox fw load [-c] | check [--repair]   (as root on the box; fwcheck = fw check)
   agentbox auditd [--segment-bytes N] [--reserve-bytes N]   (agentbox-auditd.service, socket-activated)
-  agentbox rootd-seal   (agentbox-audit-seal.service until rootd serves the seal socket)
   agentbox audit verify [--dir /var/lib/agentbox/audit]
   agentbox audit send --socket /run/agentbox-audit/<producer>.sock [--timeout 10s] JSON...   (a test producer)
   agentbox rootd [--element-timeout 10m] [--refill-interval 5m]   (agentbox-rootd.service, on the box)
@@ -96,8 +95,6 @@ func run(args []string) error {
 		return cmdFWCheck(args[1:])
 	case "auditd":
 		return cmdAuditd(args[1:])
-	case "rootd-seal":
-		return cmdRootdSeal(args[1:])
 	case "audit":
 		return cmdAudit(args[1:])
 	case "rootd":

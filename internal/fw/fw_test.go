@@ -1,8 +1,10 @@
 package fw
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -187,8 +189,8 @@ func i64(v int64) *int64 { return &v }
 
 func TestCompare(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
-	rows := []Row{{"port_allow", "0 . 43100", nil}, {"proxy_dst4", "1.2.3.4 . 443", i64(now.Unix() + 300)},
-		{"keys_dst4", "5.6.7.8 . 443", i64(now.Unix() - 60)}}
+	rows := []Row{{"port_allow", "0 . 43100", nil}, {"proxy_dst4", "1.2.3.4 . 443", i64(now.UnixMilli() + 300_000)},
+		{"keys_dst4", "5.6.7.8 . 443", i64(now.UnixMilli() - 60_000)}}
 	live := map[string][]string{"port_allow": {"0 . 43100"}, "proxy_dst4": {"1.2.3.4 . 443"}}
 	if bad := Compare(live, rows, now); len(bad) > 0 {
 		t.Fatalf("matching sets: %v", bad)
@@ -223,29 +225,53 @@ func TestCompare(t *testing.T) {
 func TestRefillScript(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	rows := []Row{{"port_allow", "0 . 43100", nil}, {"port_allow", "0 . 43200", nil},
-		{"proxy_dst4", "1.2.3.4 . 443", i64(now.Unix() + 312)}, {"proxy_dst6", "2001:db8::1 . 443", i64(now.Unix() + 900)},
-		{"keys_dst4", "5.6.7.8 . 443", i64(now.Unix() - 1)}}
+		{"proxy_dst4", "1.2.3.4 . 443", i64(now.UnixMilli() + 312_000)}, {"keys_dst4", "5.6.7.8 . 443", i64(now.UnixMilli() - 1000)}}
 	live := map[string][]string{"port_allow": {"0 . 43100", "1000 . 43100"}, "keys_dst4": {"5.6.7.8 . 443"}, "proxy_dst4": {}}
-	got, err := RefillScript(live, rows, now)
+	got, err := RefillScript(live, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// the dst sets are rootd's resolver's: untouched here
 	want := `delete element inet agentbox port_allow { 1000 . 43100 }
 add element inet agentbox port_allow { 0 . 43200 }
-add element inet agentbox proxy_dst4 { 1.2.3.4 . 443 timeout 600s expires 312s }
-add element inet agentbox proxy_dst6 { 2001:db8::1 . 443 timeout 900s expires 900s }
-delete element inet agentbox keys_dst4 { 5.6.7.8 . 443 }
 `
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
-	if s, err := RefillScript(map[string][]string{"port_allow": {"0 . 43100"}}, rows[:1], now); err != nil || s != "" {
+	if s, err := RefillScript(map[string][]string{"port_allow": {"0 . 43100"}}, rows[:1]); err != nil || s != "" {
 		t.Errorf("matching sets: %q, %v", s, err)
 	}
 	for _, r := range []Row{{"private4", "10.0.0.0/8", nil}, {"port_allow", "0 . 1 } ; flush ruleset ; add element inet agentbox port_allow { 0 . 2", nil}} {
-		if _, err := RefillScript(nil, []Row{r}, now); err == nil {
+		if _, err := RefillScript(nil, []Row{r}); err == nil {
 			t.Errorf("row %v: want an error", r)
 		}
+	}
+}
+
+func TestReadDB(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "rootd.db")
+	if rows, err := readDB(p); rows != nil || err != nil {
+		t.Fatalf("no rootd.db: %v %v", rows, err)
+	}
+	db, err := sql.Open("sqlite", "file:"+p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE x(a)`); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := readDB(p); rows != nil || err != nil {
+		t.Fatalf("no set_elements table: %v %v", rows, err)
+	}
+	if _, err := db.Exec(`CREATE TABLE set_elements(set_name TEXT NOT NULL, element TEXT NOT NULL, expires_at INTEGER,
+		PRIMARY KEY(set_name, element)) STRICT; INSERT INTO set_elements VALUES ('port_allow', '0 . 43100', NULL),
+		('keys_dst4', '1.2.3.4 . 443', 1800000000000)`); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := readDB(p)
+	if err != nil || len(rows) != 2 || rows[0].Expires != nil || rows[1].Expires == nil || *rows[1].Expires != 1_800_000_000_000 {
+		t.Fatalf("rows %+v %v", rows, err)
 	}
 }
 

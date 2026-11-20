@@ -8,13 +8,12 @@
 #          control state and generations outside it, the CAS cap; reconcile is idempotent. An agent-data writer at its
 #          1/N quota gets EDQUOT while system state keeps writing; so does a writer that fills 2/0 itself (its limit
 #          lowered for the test), and the next reconcile restores the limit.
-# ntfy     with no agentbox-firewall.service on the box, ntfy stays down. The gate then adds a stub firewall unit
-#          (Appendix B's ntfy rules only; skipped once the real unit ships) and reboots: ntfy runs as _ntfy from the
-#          packaged unit with the drop-in, ss shows only its Unix socket (no TCP or UDP listener), the socket dir is
-#          setgid _ntfy:agentbox-notify, topic ACLs hold, rootd's refresh fills ntfy_dst4/6 with checked ntfy.sh answers
-#          and _ntfy reaches only those. A stub agent unit (Requires= the firewall, ExecStartPre=+fwcheck, as an agent's
-#          user@ drop-in) starts; with ntfy's unit set to any other user, or a ntfy_dst element rootd didn't add,
-#          fwcheck fails and it can't start.
+# ntfy     ntfy is up behind the release's agentbox-firewall.service. The gate enables the shipped agent stand-in
+#          (agentbox-agent-stub.service: Requires= the firewall and rootd, ExecStartPre=+fwcheck, as an agent's user@
+#          drop-in) and reboots: ntfy runs as _ntfy from the packaged unit with the drop-in, ss shows only its Unix
+#          socket (no TCP or UDP listener), the socket dir is setgid _ntfy:agentbox-notify, topic ACLs hold, rootd fills
+#          ntfy_dst4/6 with checked ntfy.sh answers and _ntfy reaches only those. The stand-in starts; with ntfy's unit
+#          set to any other user, or a ntfy_dst element rootd didn't add, fwcheck fails and it can't start.
 # PASS/FAIL lines go to .vm/quota-ntfy-gate.txt, command output to .vm/quota-ntfy-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -92,7 +91,7 @@ ntfy)
   up
   { echo "$PRELUDE"; cat <<'EOF'; } | guest
 check "ntfy 2.11 from the archive; _ntfy from its sysusers entry" 'dpkg -s ntfy | grep -q "^Version: 2\.11\." && getent passwd _ntfy && grep -Eq "^u\s+_ntfy\s" /usr/lib/sysusers.d/ntfy.conf'
-check "ntfy enabled, but down with no agentbox-firewall.service (Requires=), and not failed" '[ "$(systemctl is-enabled ntfy)" = enabled ] && { systemctl cat agentbox-firewall.service || [ "$(systemctl is-active ntfy)" = inactive ]; }'
+check "ntfy enabled and up behind agentbox-firewall.service" '[ "$(systemctl is-enabled ntfy)" = enabled ] && systemctl is-active agentbox-firewall.service ntfy'
 check "reconcile is ordered before ntfy" 'systemctl show -P Before agentbox-reconcile.service | grep -qw ntfy.service'
 check "drop-in: Requires= and After= agentbox-firewall.service, ExecStartPre=+fwcheck" 'systemctl show -P Requires ntfy | grep -qw agentbox-firewall.service && systemctl show -P After ntfy | grep -qw agentbox-firewall.service && systemctl show -P ExecStartPre ntfy | grep -q "agentbox fwcheck"'
 for f in /etc/ntfy/server.yml /etc/tmpfiles.d/agentbox-ntfy.conf /etc/systemd/system/ntfy.service.d/50-agentbox.conf; do
@@ -101,47 +100,11 @@ check "server.yml: no HTTP listener, Unix socket 0660, deny-all with an auth-fil
 check "agentbox-notify group; notify token root-only" 'getent group agentbox-notify && [ "$(stat -c "%U %a" $M/control/ntfy/notify.token)" = "root 600" ]'
 echo "fails=$fails"
 EOF
-  # The stub firewall stands in for the firewall area's agentbox-firewall.service: Appendix B's ntfy rules only.
-  root >>"$LOG" 2>&1 <<'EOF'
-systemctl cat agentbox-firewall.service >/dev/null 2>&1 && exit 0
-mkdir -p /etc/agentbox-gate
-cat > /etc/agentbox-gate/ntfy-fw.nft <<'NFT'
-add table inet agentbox
-add chain inet agentbox output { type filter hook output priority filter; policy accept; }
-flush chain inet agentbox output
-table inet agentbox {
-  set ntfy_dst4 { typeof ip daddr . tcp dport; flags timeout; }
-  set ntfy_dst6 { typeof ip6 daddr . tcp dport; flags timeout; }
-  set private4 { typeof ip daddr; flags interval; elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12,
-                 192.0.0.0/24, 192.0.2.0/24, 192.168.0.0/16, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/3 } }
-  set private6 { typeof ip6 daddr; flags interval; elements = { ::/127, ::ffff:0:0/96, 64:ff9b:1::/48, 100::/64, 2001:db8::/32, fc00::/7,
-                 fe80::/10, fec0::/10, ff00::/8 } }
-  chain output {
-    type filter hook output priority filter; policy accept;
-    ct direction original ct state established accept
-    meta skuid "_ntfy" ip daddr 127.0.0.53 meta l4proto { udp, tcp } th dport 53 accept
-    meta skuid "_ntfy" fib daddr type { local, broadcast, multicast, anycast } counter drop
-    meta skuid "_ntfy" ip daddr @private4 counter drop
-    meta skuid "_ntfy" ip6 daddr @private6 counter drop
-    meta skuid "_ntfy" ip daddr . tcp dport @ntfy_dst4 accept
-    meta skuid "_ntfy" ip6 daddr . tcp dport @ntfy_dst6 accept
-    meta skuid "_ntfy" counter drop
-  }
-}
-NFT
-printf '%s\n' '# hack/quota-ntfy-gate.sh stub: Appendix B ntfy rules only, until the firewall area ships this unit' '[Unit]' \
-  'Description=agentbox firewall (gate stub)' '[Service]' 'Type=oneshot' 'RemainAfterExit=yes' \
-  'ExecStart=/usr/sbin/nft -f /etc/agentbox-gate/ntfy-fw.nft' '[Install]' 'WantedBy=multi-user.target' \
-  > /etc/systemd/system/agentbox-firewall.service
-printf '%s\n' '# hack/quota-ntfy-gate.sh stub for an agent unit (an agent user@ drop-in has the same three lines, Appendix C)' \
-  '[Unit]' 'Requires=agentbox-firewall.service agentbox-reconcile.service' 'After=agentbox-firewall.service agentbox-reconcile.service' \
-  '[Service]' 'Type=oneshot' 'RemainAfterExit=yes' 'ExecStartPre=+/var/lib/agentbox/current/bin/agentbox fwcheck' 'ExecStart=/bin/true' \
-  '[Install]' 'WantedBy=multi-user.target' > /etc/systemd/system/agentbox-agentstub.service
-systemctl daemon-reload && systemctl enable agentbox-firewall.service agentbox-agentstub.service
-EOF
+  # the shipped agent stand-in starts at boot, like an agent's user manager
+  echo 'ln -sf ../agentbox-agent-stub.service /etc/systemd/system/multi-user.target.wants/agentbox-agent-stub.service && systemctl daemon-reload' | root >>"$LOG" 2>&1
   reboot_vm
   { echo "$PRELUDE"; cat <<'EOF'; } | guest
-check "boot finishes with ntfy and the stub agent unit up" '[ "$(timeout 600 systemctl is-system-running --wait)" = running ] && systemctl is-active ntfy agentbox-agentstub'
+check "boot finishes with ntfy and the stub agent unit up" '[ "$(timeout 600 systemctl is-system-running --wait)" = running ] && systemctl is-active ntfy agentbox-agent-stub'
 check "ntfy's unit runs as _ntfy, and so does its process (all four uids)" '[ "$(systemctl show -P User ntfy)" = _ntfy ] && u=$(id -u _ntfy) && grep -Eq "^Uid:\s+$u\s+$u\s+$u\s+$u$" /proc/$(systemctl show -P MainPID ntfy)/status'
 check "ss: ntfy has no TCP or UDP listener" '! ss -Htulnp | grep -q "\"ntfy\""'
 check "ss: ntfy's only listener is /run/ntfy/ntfy.sock" '[ "$(ss -Hxlp | grep "\"ntfy\"" | awk "{print \$5}")" = /run/ntfy/ntfy.sock ]'
@@ -154,8 +117,8 @@ check "ACL: anonymous publish refused (deny-all)" '[ "$(c -d gate http://localho
 check "ACL: agentbox-notify publishes to agentbox-*" '[ "$(c -H "Authorization: Bearer $T" -d gate http://localhost/agentbox-gate)" = 200 ]'
 check "ACL: agentbox-notify can't publish outside agentbox-*" '[ "$(c -H "Authorization: Bearer $T" -d gate http://localhost/other)" = 403 ]'
 check "ACL: agentbox-notify is write-only (no read)" '[ "$(c -H "Authorization: Bearer $T" "http://localhost/agentbox-gate/json?poll=1")" = 403 ]'
-check "ntfy_dst refresh timer enabled and ran" '[ "$(systemctl is-enabled agentbox-ntfy-dst.timer)" = enabled ] && [ "$(systemctl show -P Result agentbox-ntfy-dst.service)" = success ] && [ "$(systemctl show -P ExecMainStatus agentbox-ntfy-dst.service)" = 0 ] && [ -s /var/lib/agentbox/resolve/ntfy_dst.json ]'
-check "ntfy_dst4/6 hold exactly resolved's ntfy.sh A (and with an IPv6 default route, AAAA) answers on :443, each with a 10 min timeout" 'systemctl start agentbox-ntfy-dst.service &&
+check "rootd recorded its ntfy.sh:443 answers in rootd.db (set_answers)" 'python3 -c "import sqlite3; c=sqlite3.connect(\"file:$M/rootd.db?mode=ro\", uri=True); exit(0 if c.execute(\"select count(*) from set_answers where entry=\x27ntfy ntfy.sh:443\x27\").fetchone()[0] else 1)"'
+check "ntfy_dst4/6 hold exactly resolved's ntfy.sh A (and with an IPv6 default route, AAAA) answers on :443, each with a 10 min timeout" 'systemctl restart agentbox-rootd.service && sleep 5 &&
   want=$({ resolvectl query --legend=no -t A ntfy.sh; resolvectl query --legend=no -t AAAA ntfy.sh; } | awk -v v6="$(ip -6 route show default)" "\$2 == \"IN\" && (v6 != \"\" || \$3 == \"A\") {print \$4}" | sort) && [ -n "$want" ] &&
   got=$(nft -j list set inet agentbox ntfy_dst4; nft -j list set inet agentbox ntfy_dst6) &&
   [ "$(echo "$got" | python3 -c "import json,sys; d=sys.stdin.read().replace(\"}{\",\"}\n{\"); print(\"\n\".join(sorted(e[\"elem\"][\"val\"][\"concat\"][0] for l in d.splitlines() for o in json.loads(l)[\"nftables\"] if \"set\" in o for e in o[\"set\"].get(\"elem\",[]) if e[\"elem\"][\"val\"][\"concat\"][1]==443 and e[\"elem\"][\"timeout\"]==600)))")" = "$want" ]'
@@ -163,16 +126,16 @@ check "_ntfy reaches ntfy.sh:443 through ntfy_dst" 'runuser -u _ntfy -- curl -s 
 check "_ntfy can't reach any other host (1.1.1.1:443)" '! runuser -u _ntfy -- curl -s -m 5 -o /dev/null https://1.1.1.1/'
 check "fwcheck passes" '$A fwcheck'
 nft add element inet agentbox ntfy_dst4 "{ 1.1.1.1 . 443 timeout 10m }"
-check "a ntfy_dst element rootd didn't add: fwcheck fails" '! $A fwcheck 2>&1 && $A fwcheck 2>&1 | grep -q "ntfy_dst4 holds 1.1.1.1 . 443"'
-check "  ... and the agent unit can't start" '! systemctl restart agentbox-agentstub'
+check "a ntfy_dst element rootd didn't add: fwcheck fails" '! $A fwcheck 2>&1 && $A fwcheck 2>&1 | grep -q "set ntfy_dst4: element 1.1.1.1 . 443 is not an unexpired rootd answer"'
+check "  ... and the agent unit can't start" '! systemctl restart agentbox-agent-stub'
 nft delete element inet agentbox ntfy_dst4 "{ 1.1.1.1 . 443 }"; systemctl reset-failed
-check "  ... removed: the agent unit starts" 'systemctl restart agentbox-agentstub'
+check "  ... removed: the agent unit starts" 'systemctl restart agentbox-agent-stub'
 mkdir -p /run/systemd/system/ntfy.service.d && printf "[Service]\nUser=nobody\n" > /run/systemd/system/ntfy.service.d/90-gate.conf && systemctl daemon-reload
 check "ntfy's unit as uid nobody: fwcheck fails" '$A fwcheck 2>&1 | grep -q "ntfy.service runs as user \"nobody\", not _ntfy"'
-check "  ... and the agent unit can't start" '! systemctl restart agentbox-agentstub'
+check "  ... and the agent unit can't start" '! systemctl restart agentbox-agent-stub'
 check "  ... and ntfy itself can't start" '! systemctl restart ntfy && [ "$(systemctl show -P MainPID ntfy)" = 0 ]'
 rm /run/systemd/system/ntfy.service.d/90-gate.conf; systemctl daemon-reload; systemctl reset-failed
-check "  ... back to _ntfy: ntfy and the agent unit start" 'systemctl restart ntfy && systemctl restart agentbox-agentstub'
+check "  ... back to _ntfy: ntfy and the agent unit start" 'systemctl restart ntfy && systemctl restart agentbox-agent-stub'
 check "no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 echo "fails=$fails"
 EOF

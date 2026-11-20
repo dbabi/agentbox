@@ -3,8 +3,10 @@
 # Segments are created and sealed by rootd over agentbox-audit-seal.socket.
 [Unit]
 Description=agentbox audit daemon
-Requires=agentbox-reconcile.service agentbox-audit-seal.socket
-After=agentbox-reconcile.service agentbox-audit-seal.socket
+Requires=agentbox-reconcile.service agentbox-firewall.service agentbox-audit-seal.socket
+After=agentbox-reconcile.service agentbox-firewall.service agentbox-audit-seal.socket
+# every firewall repair restarts it through Requires=; the start limit must never leave it down
+StartLimitIntervalSec=0
 
 [Service]
 Type=notify

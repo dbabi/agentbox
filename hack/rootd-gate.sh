@@ -13,9 +13,8 @@
 #          only what rootd resolved; READY=1 after the sets match rootd.db, timer and notify refills, a reboot refill; a
 #          keys-like flow surviving element expiry and cut by removing its entry; audit segment creation and sealing.
 # FLOW=host:port (default example.com:80) is the public HTTP server the flow check holds a connection to; the VM reaches
-# it through slirp, so the host needs internet. Until the firewall area merges, checks.sh installs
-# hack/rootd-gate/firewall-stub.nft as agentbox-firewall.service. Checks print PASS/FAIL to .vm/rootd-gate.txt;
-# exit 1 on any FAIL. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
+# it through slirp, so the host needs internet. The firewall is the release's own agentbox-firewall.service. Checks
+# print PASS/FAIL to .vm/rootd-gate.txt; exit 1 on any FAIL. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -60,7 +59,7 @@ for stage; do
     running || up
     case $(cat "$VM/arch") in arm64) GA=arm64 ;; amd64) GA=amd64 ;; esac
     CGO_ENABLED=0 GOOS=linux GOARCH=$GA go build -o "$VM/gate-dns" ./hack/gate-dns
-    for f in rg.py checks.sh firewall-stub.nft agentbox-firewall.service; do tovm "hack/rootd-gate/$f" /run/rg/$f; done
+    for f in rg.py checks.sh; do tovm "hack/rootd-gate/$f" /run/rg/$f; done
     tovm "$VM/gate-dns" /run/rg/gate-dns
     CHECKED=1
     rm -f "$VM/gate-dns"

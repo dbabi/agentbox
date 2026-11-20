@@ -1,5 +1,5 @@
-# audit.create and audit.seal from agentbox-auditd only (ARCHITECTURE.md §9): only rootd can set +a and +i. Same unit
-# name, path and FileDescriptorName as the auditd area's stand-in socket; here rootd serves it.
+# audit.create and audit.seal from agentbox-auditd only (ARCHITECTURE.md §9): only rootd can set +a and +i, so rootd
+# serves audit.Files here.
 # PID 1 binds it with this owner and mode; rootd checks SO_PEERCRED on every connection.
 [Unit]
 Description=agentbox audit seal socket

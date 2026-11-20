@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"agentbox/internal/fw"
 	"agentbox/internal/rootd/nl"
 )
 
@@ -24,7 +25,7 @@ CREATE TABLE IF NOT EXISTS set_answers(entry TEXT NOT NULL, set_name TEXT NOT NU
 `
 
 // Sets are the destination sets rootd owns.
-var Sets = []string{"proxy_dst4", "proxy_dst6", "keys_dst4", "keys_dst6", "git_dst4", "git_dst6", "ntfy_dst4", "ntfy_dst6"}
+var Sets = fw.DstSets
 
 // Service is rootd's resolver. Every field but Deny and TaskAgent is required.
 type Service struct {

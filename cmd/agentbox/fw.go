@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"agentbox/internal/fw"
+	"agentbox/internal/ntfy"
 )
 
-// cmdFW runs `agentbox fw load|check|refill` and `agentbox fwcheck` as root on the box (ARCHITECTURE.md §6.1).
+// cmdFW runs `agentbox fw load|check` and `agentbox fwcheck` as root on the box (ARCHITECTURE.md §6.1).
 func cmdFW(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("fw: expected load, check or refill\n%s", usage)
+		return fmt.Errorf("fw: expected load or check\n%s", usage)
 	}
 	fs := flag.NewFlagSet("fw "+args[0], flag.ContinueOnError)
 	switch args[0] {
@@ -30,12 +31,6 @@ func cmdFW(args []string) error {
 		return fw.Load()
 	case "check":
 		return cmdFWCheck(args[1:])
-	case "refill":
-		// rootd's start step (it calls fw.Refill before READY=1); here for recovery and the week-3 gate, before rootd exists
-		if err := parse(fs, args[1:]); err != nil {
-			return err
-		}
-		return fw.Refill(fw.RootdDB, time.Now())
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return flag.ErrHelp
@@ -51,7 +46,7 @@ func cmdFWCheck(args []string) error {
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	bad, err := fw.Check(fw.RootdDB, time.Now())
+	bad, err := fwCheck()
 	if err == nil && len(bad) == 0 {
 		return nil
 	}
@@ -67,7 +62,7 @@ func cmdFWCheck(args []string) error {
 	}
 	// systemctl returns once the firewall is up; rootd's refill runs in the restarts that Requires= queued after it
 	for i := 0; i < 15; i++ {
-		if bad, err = fw.Check(fw.RootdDB, time.Now()); err == nil && len(bad) == 0 {
+		if bad, err = fwCheck(); err == nil && len(bad) == 0 {
 			fmt.Fprintln(os.Stderr, "agentbox: firewall restored")
 			return nil
 		}
@@ -77,4 +72,13 @@ func cmdFWCheck(args []string) error {
 		bad = append(bad, err.Error())
 	}
 	return errors.New("fwcheck: still altered after the restart: " + strings.Join(bad, "; "))
+}
+
+// fwCheck is the table and set checks plus ntfy's: its unit and its running process are _ntfy, the uid the ruleset names.
+func fwCheck() ([]string, error) {
+	bad, err := fw.Check(fw.RootdDB, time.Now())
+	if err := ntfy.CheckUser(); err != nil {
+		bad = append(bad, strings.TrimPrefix(err.Error(), "fwcheck: "))
+	}
+	return bad, err
 }

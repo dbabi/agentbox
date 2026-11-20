@@ -9,16 +9,14 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+
+	"agentbox/internal/fw"
 )
 
-// Private4 and Private6 are Appendix B's private4 and private6 sets: the one list that rootd's check and the nft sets
-// come from, and that fwcheck compares the loaded sets to.
+// Appendix B's private4 and private6 sets come from fw's one list: the nft sets the firewall loads, and fwcheck
+// compares them to it.
 var (
-	Private4 = []string{"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
-		"192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/3"}
-	Private6 = []string{"::/127", "::ffff:0:0/96", "64:ff9b:1::/48", "100::/64", "2001:db8::/32", "fc00::/7",
-		"fe80::/10", "fec0::/10", "ff00::/8"}
-	private4, private6 = prefixes(Private4), prefixes(Private6)
+	private4, private6 = prefixes(fw.Private4), prefixes(fw.Private6)
 	nat64              = netip.MustParsePrefix("64:ff9b::/96")
 )
 

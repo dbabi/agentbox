@@ -7,6 +7,8 @@ Description=agentbox rootd
 Requires=agentbox-reconcile.service agentbox-firewall.service
 After=agentbox-reconcile.service agentbox-firewall.service systemd-resolved.service
 Wants=systemd-resolved.service
+# every firewall repair restarts it through Requires=; the start limit must never leave it down
+StartLimitIntervalSec=0
 
 [Service]
 Type=notify

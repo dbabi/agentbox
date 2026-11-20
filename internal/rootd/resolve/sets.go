@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Table is the nft table the firewall area loads (Appendix B); rootd only adds and removes elements of its sets.
+// Table is the nft table agentbox-firewall.service loads (Appendix B); rootd only adds and removes elements of its sets.
 const Table = "inet agentbox"
 
 // Elem is one destination-set element: <svc>_dst4 or <svc>_dst6, addr . port.

@@ -9,9 +9,9 @@ import (
 	"net"
 	"time"
 
+	"agentbox/internal/fw"
 	"agentbox/internal/rootd"
 	"agentbox/internal/rootd/resolve"
-	"agentbox/internal/rootd/seal"
 )
 
 // AdminSocket is rootd-admin.sock (§2.1): root and agentbox-admin members.
@@ -20,9 +20,11 @@ const AdminSocket = "/run/agentbox-rootd/rootd-admin.sock"
 // cmdRootd is agentbox-rootd.service.
 func cmdRootd(args []string) error {
 	fs := flag.NewFlagSet("rootd", flag.ContinueOnError)
-	cfg := rootd.Config{DB: "/var/lib/agentbox/rootd.db", EgressDir: resolve.EgressDir, AuditDir: seal.Dir}
+	cfg := rootd.Config{DB: fw.RootdDB, EgressDir: resolve.EgressDir, AuditDir: auditDir,
+		AuditSocket: "/run/agentbox-audit/rootd.sock", SealCrash: crashHook()}
 	fs.DurationVar(&cfg.ElementTimeout, "element-timeout", 10*time.Minute, "dst set element timeout (Appendix B: 10m; shorter only for test VMs)")
 	fs.DurationVar(&cfg.RefillInterval, "refill-interval", 5*time.Minute, "timer refill and ntfy_dst refresh (§6.1: 5m)")
+	fs.StringVar(&cfg.AuditDir, "audit-dir", cfg.AuditDir, "the audit segments rootd creates and seals (another dir only for test VMs)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
