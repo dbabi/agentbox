@@ -151,7 +151,7 @@ main)
 
   echo "== a keys-like flow survives element expiry and is cut when its entry is removed"
   IPS=$(addrs keys "$FLOW_HOST" "$FLOW_PORT"); IP=$(v4 "$IPS"); t0=$(date +%s)
-  rm -f /run/rg/flow.log
+  install -o agentbox-keys -m 0644 /dev/null /run/rg/flow.log # the flow runs as agentbox-keys; /run/rg is root 0755
   as agentbox-keys $RG flow "$IP" "$FLOW_PORT" "$FLOW_HOST" /run/rg/flow.log 600 & FP=$!
   sleep 50 # 30 s timeout, plus a timer refill
   check "the element expired: $IP . $FLOW_PORT is gone from keys_dst4" '! set_has keys_dst4 "$IP . $FLOW_PORT"'
