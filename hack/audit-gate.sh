@@ -78,7 +78,7 @@ check "every producer gets an ACK on its own socket" 'for up in root:rootd agent
 
 # auditd down: nothing executes. The effect is `touch`, run only after the test producer's ACK.
 systemctl stop agentbox-auditd.service $SOCKS
-check "auditd and its sockets stopped: the INTENT gets no ACK and the effect never runs" '! send "{\"type\":\"INTENT\",\"opId\":\"down-1\",\"name\":\"app.start\"}" && touch /run/gate-eff1; [ ! -e /run/gate-eff1 ]'
+check "auditd and its sockets stopped: the INTENT gets no ACK and the effect never runs" 'send "{\"type\":\"INTENT\",\"opId\":\"down-1\",\"name\":\"app.start\"}" && touch /run/gate-eff1; [ ! -e /run/gate-eff1 ]'
 systemctl start $SOCKS agentbox-auditd.service
 kill -STOP "$(mainpid)"
 ( send "{\"type\":\"INTENT\",\"opId\":\"down-2\",\"name\":\"app.start\"}" >/run/gate-eff2.reply && touch /run/gate-eff2 ) &
@@ -95,7 +95,8 @@ check "a producer raises taint; writers register; taint.get names task and sessi
   row task:g1 workspace:a true 1 && psend agentbox agentboxd "{\"type\":\"taint.get\",\"holder\":\"task:g1\"}" | grep -qF "\"holder\":\"task:g1\",\"kind\":\"task\"" &&
   psend agentbox agentboxd "{\"type\":\"taint.get\",\"holder\":\"session:g2\"}" | grep -qF "\"holder\":\"session:g2\",\"kind\":\"session\""'
 check "re-taint from another producer keeps the epoch" 'psend agentbox-keys keys "{\"type\":\"TAINT\",\"subject\":\"workspace:a\",\"source\":\"keys\"}" && row task:g1 workspace:a true 1'
-check "an INTENT bound to a moved epoch is NACKed STALE and its effect never runs" 'nack STALE root rootd "{\"type\":\"INTENT\",\"opId\":\"st-1\",\"name\":\"app.deploy\",\"taintEpochs\":{\"workspace:a\":0}}" && touch /run/gate-eff3; [ ! -e /run/gate-eff3 ]'
+check "an INTENT bound to a moved epoch is NACKed STALE and its effect never runs" 'send "{\"type\":\"INTENT\",\"opId\":\"st-1\",\"name\":\"app.deploy\",\"taintEpochs\":{\"workspace:a\":0}}" && touch /run/gate-eff3; [ ! -e /run/gate-eff3 ] &&
+  nack STALE root rootd "{\"type\":\"INTENT\",\"opId\":\"st-1\",\"name\":\"app.deploy\",\"taintEpochs\":{\"workspace:a\":0}}"'
 v0=$(grep -ho "\"type\":\"violation\"" $D/seg-*.jsonl | wc -l)
 for up in agentbox:agentboxd agentbox-proxy:proxy agentbox-keys:keys agentbox-git:git; do u=${up%%:*} p=${up#*:}
   check "$p.sock: tainted=0 is a violation" 'nack VIOLATION $u $p "{\"type\":\"TAINT\",\"subject\":\"workspace:a\",\"source\":\"s\",\"tainted\":0}"'
@@ -122,7 +123,8 @@ fallocate -l $((av - 300 * 1024 * 1024)) /var/tmp/gate-fill; sync
 check "disk full: a producer TAINT is refused DISK_FULL, the reserve is deleted, a critical alert is logged" '
   nack DISK_FULL agentbox-proxy proxy "{\"type\":\"TAINT\",\"subject\":\"workspace:z\",\"source\":\"p\"}" && [ ! -e $D/.reserve ] &&
   grep -qF "\"type\":\"alert\"" $D/$(newest) && grep -qF "disk_full" $D/$(newest) && journalctl -u agentbox-auditd.service -b -o cat | grep -q "CRITICAL: disk-full mode"'
-check "disk full: a non-admin rootd INTENT is refused and its effect never runs" '! send "{\"type\":\"INTENT\",\"opId\":\"df-1\",\"name\":\"app.start\"}" && touch /run/gate-eff4; [ ! -e /run/gate-eff4 ]'
+check "disk full: a non-admin rootd INTENT is refused and its effect never runs" 'send "{\"type\":\"INTENT\",\"opId\":\"df-1\",\"name\":\"app.start\"}" && touch /run/gate-eff4; [ ! -e /run/gate-eff4 ] &&
+  nack DISK_FULL root rootd "{\"type\":\"INTENT\",\"opId\":\"df-1\",\"name\":\"app.start\"}"'
 check "disk full: taint.clear (rootd-admin) is ACKed and executes" '
   send "{\"type\":\"INTENT\",\"opId\":\"cl-2\",\"name\":\"taint.clear\",\"origin\":\"admin\",\"signer\":\"gate\",\"args\":{\"subject\":\"workspace:b\",\"contentId\":\"snap2\"},\"taintEpochs\":{\"workspace:b\":1}}" &&
   send "{\"type\":\"RESULT\",\"opId\":\"cl-2\",\"status\":\"executed\"}" | grep -q "\"applied\":true" && row task:g3 workspace:b false 2'
@@ -173,6 +175,7 @@ systemctl daemon-reload; systemctl restart agentbox-audit-seal.service agentbox-
 check "back on the shipped units: ACK" 'send "{\"type\":\"TAINT\",\"subject\":\"task:after\",\"source\":\"s\"}"'
 check "no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 nsegs > /var/tmp/gate-nsegs
+cp /run/audit-gate.log /var/tmp/audit-gate-1.log; journalctl -b -u agentbox-auditd.service -u agentbox-audit-seal.service -o short-precise > /var/tmp/audit-gate-1.journal
 echo "audit-fails=$fails"
 EOF
   b=$(bootid)
@@ -188,7 +191,7 @@ check "no failed units after the reboot" '[ -z "$(systemctl --failed --no-legend
 cat /run/audit-verify.txt; rm -f /var/tmp/gate-nsegs
 echo "audit-fails=$fails"
 EOF
-  echo 'cat /run/audit-gate.log' | root >>"$LOG" 2>&1 || :
+  echo 'cat /var/tmp/audit-gate-1.log /var/tmp/audit-gate-1.journal /run/audit-gate.log' | root >>"$LOG" 2>&1 || :
   vm_off
 }
 

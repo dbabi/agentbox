@@ -388,3 +388,15 @@ func TestPeerCred(t *testing.T) {
 		t.Fatalf("own uid: %+v %v", rep, err)
 	}
 }
+
+// A clock step logged as the first thing of a rotation must come before close, so close still names its predecessor.
+func TestClockStepThenRotate(t *testing.T) {
+	b := newBox(t)
+	for i := 0; i < 30; i++ {
+		b.wall -= 3_600_000 // every record follows a backward step
+		b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"`+strings.Repeat("p", 200)+`"}`)
+	}
+	if rep := b.verify(); len(rep) < 2 {
+		t.Fatalf("want a rotation, got %+v", rep)
+	}
+}

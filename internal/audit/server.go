@@ -224,6 +224,9 @@ func (s *Server) writeOpen() error {
 // rotate: stop ACKing (the caller holds mu), append close, fdatasync, close the fd, ask rootd to seal, open the next
 // segment with open{prev = hash(close)} (§9).
 func (s *Server) rotate() error {
+	if err := s.noteClockStep(); err != nil { // before close's body: close must name the record right before it
+		return err
+	}
 	b, _ := json.Marshal(closeBody{s.seq, s.last})
 	if _, err := s.append(TypeClose, "auditd", uint32(os.Getuid()), 0, b); err != nil {
 		return err
@@ -272,15 +275,12 @@ func (s *Server) ready() error {
 // append writes one record with a single write on the O_APPEND fd, then fdatasync. A wall-clock step against
 // CLOCK_BOOTTIME since the previous record is logged first; it never rotates anything.
 func (s *Server) append(typ, producer string, uid uint32, pid int32, body json.RawMessage) (uint64, error) {
-	wall, boot := s.Wall(), s.Boot()
-	if typ != TypeClockStep && s.lastBoot != 0 {
-		if d := (wall - s.lastWall) - (boot - s.lastBoot); d > 1000 || d < -1000 {
-			b, _ := json.Marshal(clockStepBody{d})
-			if _, err := s.append(TypeClockStep, "auditd", uint32(os.Getuid()), 0, b); err != nil {
-				return 0, err
-			}
+	if typ != TypeClockStep && typ != TypeClose { // rotate logs it before close
+		if err := s.noteClockStep(); err != nil {
+			return 0, err
 		}
 	}
+	wall, boot := s.Wall(), s.Boot()
 	r := Record{Seq: s.seq + 1, Prev: s.last, TsWall: wall, TsBoot: boot, BootID: s.BootID, Type: typ, Producer: producer, UID: uid, PID: pid, Body: body}
 	line, err := json.Marshal(r)
 	if err != nil {
@@ -296,6 +296,20 @@ func (s *Server) append(typ, producer string, uid uint32, pid int32, body json.R
 	s.seq, s.last, s.end, s.lastWall, s.lastBoot = r.Seq, lineHash(line), s.end+int64(n), wall, boot
 	// the line is in the file even if fdatasync fails, so the chain goes on from it; the record is just not ACKed
 	return r.Seq, fdatasync(s.f)
+}
+
+// noteClockStep appends clock_step{delta} when the wall clock moved more than 1 s apart from CLOCK_BOOTTIME since the
+// previous record.
+func (s *Server) noteClockStep() error {
+	if s.lastBoot == 0 {
+		return nil
+	}
+	if d := (s.Wall() - s.lastWall) - (s.Boot() - s.lastBoot); d > 1000 || d < -1000 {
+		b, _ := json.Marshal(clockStepBody{d})
+		_, err := s.append(TypeClockStep, "auditd", uint32(os.Getuid()), 0, b)
+		return err
+	}
+	return nil
 }
 
 func (s *Server) reservePath() string { return filepath.Join(s.Dir, ".reserve") }
