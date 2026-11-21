@@ -4,8 +4,9 @@
 # install  hack/gate.sh none: the unattended install and its gates; firstboot installs this checkout's release (make
 #          release, install.sh, systemd/), so agentbox-firewall.service and the stub come from the real install path.
 # checks   on the installed box, as root:
-#          - the firewall loads at boot, fwcheck passes, and the agent stand-in (agentbox-agent-stub.service:
-#            Requires=agentbox-firewall.service, ExecStartPre=+agentbox fwcheck) starts
+#          - the firewall loads at boot, the live table has no log statement (drops stay silent), fwcheck passes, and
+#            the agent stand-in (agentbox-agent-stub.service: Requires=agentbox-firewall.service,
+#            ExecStartPre=+agentbox fwcheck) starts
 #          - each alteration (a rule inserted or deleted, a static element removed, an element rootd never recorded in a
 #            dst set or port_allow, ntfy under another uid, the reserved-ports sysctl, nftables.service unmasked) keeps
 #            the stand-in from starting; a hooked extra chain fails the firewall load itself
@@ -117,6 +118,7 @@ check "boot: agentbox-firewall.service active, /etc/nftables.d/agentbox.nft and 
 check "boot: no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 check "nftables.service masked; ntfy.service User=_ntfy; ip_local_reserved_ports covers 43000-45999" '[ "$(systemctl is-enabled nftables.service)" = masked ] && [ "$(systemctl show -p User --value ntfy.service)" = _ntfy ] && grep -q 43000-45999 /proc/sys/net/ipv4/ip_local_reserved_ports'
 check "static sets as Appendix B: confined, private4, private6" 'nft list set inet agentbox confined | grep -qF "elements = { 70001-70999, 71001-71999, 1879048192-2013265919 }" && [ "$(elems private4 | wc -l)" = 13 ] && [ "$(elems private6 | wc -l)" = 9 ]'
+check "the live table logs nothing: no log, queue, dup or fwd statement, so drops stay silent (§6.1)" '! nft -j list table inet agentbox | grep -qE "\"(log|queue|dup|fwd)\":"'
 check "rootd is up at boot, after the firewall, and fwcheck passes" 'systemctl is-active agentbox-rootd.service && [ -e $DB ] && $A fwcheck'
 check "the agent stand-in starts while the firewall is intact" 'systemctl start agentbox-agent-stub.service && systemctl is-active agentbox-agent-stub.service && systemctl stop agentbox-agent-stub.service'
 check "the test address $IP (ports.ubuntu.com) is public: not in private4" '[ -n "$IP" ] && ! nft get element inet agentbox private4 "{ $IP }"'
