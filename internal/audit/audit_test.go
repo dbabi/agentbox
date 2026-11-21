@@ -2,6 +2,7 @@ package audit
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -48,6 +49,9 @@ func (b *box) start() {
 		Wall: func() int64 { b.wall += 10; return b.wall }, Boot: func() int64 { b.boot += 10; return b.boot },
 		Avail: func() (uint64, error) { return b.avail, nil }, Logf: b.t.Logf}
 	if err := b.s.Start(); err != nil {
+		if errors.Is(err, syscall.EPERM) && strings.Contains(err.Error(), "chattr") {
+			b.t.Skipf("needs CAP_LINUX_IMMUTABLE, as rootd has (§9): %v", err) // Linux CI runs go test unprivileged
+		}
 		b.t.Fatalf("Start: %v", err)
 	}
 }

@@ -7,7 +7,7 @@ import (
 
 // ctnetlink (linux/netfilter/nfnetlink_conntrack.h).
 const (
-	ctNew        = 1<<8 | 0
+	ctNew        = 1 << 8 // | IPCTNL_MSG_CT_NEW, which is 0
 	ctGet        = 1<<8 | 1
 	ctDelete     = 1<<8 | 2
 	ctaTupleOrig = 1
