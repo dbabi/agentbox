@@ -36,8 +36,8 @@ An item moves Backlog, then Ready, then In progress, then In review, then Done.
 Each issue has one `area/*` label and one `type/*` label, and the GitHub milestone it belongs to.
 `blocked` means it waits on another issue; say which one in a comment.
 
-Branch protection is not turned on for `main`.
-So these rules hold by convention, not by a setting: nobody pushes straight to `main`, and nobody merges with CI red.
+A ruleset protects `main`. Every change goes through a pull request.
+The `test` and `lint` checks must pass, and pull requests merge by squash only. Force pushes and branch deletion are blocked.
 
 ## Set up
 
