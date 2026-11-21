@@ -52,11 +52,12 @@ func (s fakeSeal) touch(seg uint64) error {
 	return f.Close()
 }
 
-// FuzzHandle sends request lines to one long-lived auditd, so state carries from input to input (writers, subjects,
-// ops, rotation). After every line the chain must still verify.
+// FuzzHandle sends a short history of request lines (one per input line; sel[i] picks line i's producer) to a fresh
+// auditd, so a crasher holds every line that built the state it needs (writers, subjects, ops, rotation) and replays
+// the same way under go test. After every line the chain must still verify.
 func FuzzHandle(f *testing.F) {
 	producers := []string{rootdProducer, "agentboxd", "proxy", "taskrun"}
-	for _, l := range []string{
+	seeds := []string{
 		`{"type":"TAINT","subject":"task:T1","source":"connect:example.com"}`,
 		`{"type":"WRITER_ADD","subject":"workspace:a","holder":"task:T1"}`,
 		`{"type":"SUBJECT_ADD","subject":"session:s1"}`,
@@ -67,50 +68,39 @@ func FuzzHandle(f *testing.F) {
 		`{"type":"DENY","id":"dn_01JF0000000000000000000000","code":"EGRESS_NOT_ALLOWLISTED","by":"proxy","subject":{"host":"x.example","port":443},"count":1,"first":1,"last":1}`,
 		`{"type":"TAINT","subject":"task:T1","tainted":0,"epoch":3}`,
 		`{"type":"open"}`,
-	} {
+	}
+	for _, l := range seeds {
 		for i := range producers {
-			f.Add(uint8(i), []byte(l))
+			f.Add([]byte{uint8(i)}, []byte(l))
 		}
 	}
-	var s *Server
-	var dir string
-	n := 0
-	var wall, boot int64 = 1_800_000_000_000, 5000
-	f.Cleanup(func() {
-		if s != nil {
-			s.Close()
-			os.RemoveAll(dir)
+	f.Add([]byte{2, 0, 0, 1, 0}, []byte(strings.Join(seeds[:5], "\n"))) // taint, writer, subject, then an op on them
+	f.Fuzz(func(t *testing.T, sel, lines []byte) {
+		dir := t.TempDir()
+		var wall, boot int64 = 1_800_000_000_000, 5000
+		s := &Server{Dir: dir, Seal: fakeSeal{dir}, SegmentBytes: 4096, ReserveBytes: 1 << 20, BootID: "boot-1",
+			Wall: func() int64 { wall += 10; return wall }, Boot: func() int64 { boot += 10; return boot },
+			Avail: func() (uint64, error) { return 100 << 30, nil }}
+		if err := s.Start(); err != nil {
+			t.Fatal(err)
 		}
-	})
-	f.Fuzz(func(t *testing.T, pi uint8, line []byte) {
-		if s == nil || n%2000 == 0 { // a fresh box now and then keeps the chain short and the disk small
-			if s != nil {
-				s.Close()
-				os.RemoveAll(dir)
+		defer s.Close()
+		for i, line := range bytes.SplitN(lines, []byte("\n"), 64) { // 64 lines keep one input's chain short
+			p := producers[0]
+			if len(sel) > 0 {
+				p = producers[int(sel[i%len(sel)])%len(producers)]
 			}
-			var err error
-			if dir, err = os.MkdirTemp("", "agentbox-fuzz-audit"); err != nil {
-				t.Fatal(err)
+			uid := uint32(1000)
+			if p == rootdProducer {
+				uid = 0
 			}
-			s = &Server{Dir: dir, Seal: fakeSeal{dir}, SegmentBytes: 4096, ReserveBytes: 1 << 20, BootID: "boot-1",
-				Wall: func() int64 { wall += 10; return wall }, Boot: func() int64 { boot += 10; return boot },
-				Avail: func() (uint64, error) { return 100 << 30, nil }}
-			if err := s.Start(); err != nil {
-				t.Fatal(err)
+			rep := s.Handle(p, uid, 42, line)
+			if rep.OK == (rep.Code != "") {
+				t.Fatalf("line %d: reply %+v", i, rep)
 			}
-		}
-		n++
-		p := producers[int(pi)%len(producers)]
-		uid := uint32(1000)
-		if p == rootdProducer {
-			uid = 0
-		}
-		rep := s.Handle(p, uid, 42, line)
-		if rep.OK == (rep.Code != "") {
-			t.Fatalf("reply %+v", rep)
-		}
-		if rep, err := VerifyDir(dir); err != nil {
-			t.Fatalf("after %q from %s: %v (%+v)", line, p, err, rep)
+			if rep, err := VerifyDir(dir); err != nil {
+				t.Fatalf("after line %d %q from %s: %v (%+v)", i, line, p, err, rep)
+			}
 		}
 	})
 }

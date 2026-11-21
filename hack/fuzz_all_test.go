@@ -59,3 +59,48 @@ esac
 		t.Errorf("-l lists %q", l)
 	}
 }
+
+// TestFuzzAllListFails: a package whose tests do not build, a failing go list, or no targets at all must fail both -l
+// and the run, not shrink the target list.
+func TestFuzzAllListFails(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash not installed")
+	}
+	src, err := os.ReadFile("fuzz-all.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "hack"), 0o755)
+	os.WriteFile(filepath.Join(root, "hack", "fuzz-all.sh"), src, 0o755)
+	for name, fake := range map[string]string{
+		"test build fails": `case "$1 $2" in
+"list ./...") echo x/a; echo x/b ;;
+"test -list") [ "$4" = x/a ] && { echo "x/a/broken_test.go:1: undefined: undefinedThing" >&2; exit 1; }; echo FuzzB ;;
+*) echo "fuzz: elapsed: 1s, execs: 42 (42/sec)" ;;
+esac`,
+		"go list fails": `case "$1 $2" in
+"list ./...") echo x/a; exit 1 ;;
+"test -list") echo FuzzA ;;
+*) echo "fuzz: elapsed: 1s, execs: 42 (42/sec)" ;;
+esac`,
+		"no targets": `case "$1 $2" in
+"list ./...") echo x/a ;;
+"test -list") echo TestNot; echo "ok $4 0.1s" ;;
+*) echo "fuzz: elapsed: 1s, execs: 42 (42/sec)" ;;
+esac`,
+	} {
+		bin := t.TempDir()
+		os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\n"+fake+"\n"), 0o755)
+		for _, arg := range []string{"-l", "1s"} {
+			cmd := exec.Command(dash, filepath.Join(root, "hack", "fuzz-all.sh"), arg)
+			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "OUT="+filepath.Join(t.TempDir(), "out"))
+			if b, err := cmd.CombinedOutput(); err == nil {
+				t.Errorf("%s: fuzz-all.sh %s exited 0:\n%s", name, arg, b)
+			} else if !strings.Contains(string(b), "fuzz-all: ") {
+				t.Errorf("%s: fuzz-all.sh %s gave no reason:\n%s", name, arg, b)
+			}
+		}
+	}
+}
