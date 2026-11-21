@@ -23,7 +23,8 @@ func TestCheckPrefix(t *testing.T) {
 		"10.1.2.3": "private4", "100.64.0.1": "private4", "127.0.0.1": "private4", "169.254.1.1": "private4",
 		"198.51.100.7": "private4", "224.0.0.251": "private4", "255.255.255.255": "private4", "0.1.2.3": "private4",
 		"::1": "private6", "::ffff:8.8.8.8": "private6", "fd00::1": "private6", "fe80::1": "private6", "ff02::1": "private6",
-		"2001:db8::1": "private6", "64:ff9b:1::1": "private6", "100::1": "private6",
+		"2001:db8::1": "private6", "64:ff9b:1::1": "private6", "100::1": "private6", "3fff::10": "private6",
+		"2001:2::5": "private6", "2001:1ff::1": "private6", "5f00::1": "private6", "2001:200::1": "",
 		"64:ff9b::a00:1": "nat64_private", "64:ff9b::7f00:1": "nat64_private", "fe80::1%eth0": "zoned",
 	} {
 		if got := CheckPrefix(netip.MustParseAddr(a)); got != want {
