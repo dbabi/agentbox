@@ -190,13 +190,14 @@ func (s *Server) openChain() error {
 	return err
 }
 
-// markTorn declares the bytes past the last complete record: "\x00\n" first if they lack a "\n", then torn{offset, len,
-// sha256}, chained to the last complete record. Nothing is truncated, so +a never has to come off (§9). The NUL keeps
-// a record cut just before its "\n" from becoming valid JSON, and so a live record.
+// markTorn declares the bytes past the last complete record: "#\n" first if they lack a "\n", then torn{offset, len,
+// sha256}, chained to the last complete record. Nothing is truncated, so +a never has to come off (§9). The "#" keeps
+// a record cut just before its "\n" from becoming valid JSON, and so a live record; it is printable, so segments stay
+// text for grep and the like.
 func (s *Server) markTorn(tail []byte) error {
 	off := s.end
 	if len(tail) > 0 && tail[len(tail)-1] != '\n' {
-		end := []byte{0, '\n'}
+		end := []byte("#\n")
 		if _, err := writeFile(s.f, end); err != nil {
 			return err
 		}
