@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"v\":1,\"id\":\"aa_00000000000000000000000000\",\"Code\":\"INVALID_ARGS\",\"BY\":\"gate\",\"rule\":\"aaaa.aaaaa\",\"neXt\":\"fix\",\"suBjeCt\":{\"field\":\"/0000\"},\"msg\":\"The request does not match the op's schema; fix the field named in subject.\"}0")

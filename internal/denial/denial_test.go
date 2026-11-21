@@ -1,6 +1,7 @@
 package denial
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -41,5 +42,19 @@ func TestNewID(t *testing.T) {
 			t.Fatalf("bad, repeated or out-of-order id %q after %q", id, prev)
 		}
 		seen[id], prev = true, id
+	}
+}
+
+// Valid takes only json.Marshal's encoding: trailing data or a case-folded key used to pass.
+func TestValidCanonicalOnly(t *testing.T) {
+	b, _ := json.Marshal(New(UnknownOp, "gate", "gate.unknown_op", "file.write", "", ""))
+	if !Valid(b) {
+		t.Fatalf("refused %s", b)
+	}
+	for _, bad := range [][]byte{append(b, '0'), append(b, " {}"...), bytes.Replace(b, []byte(`"code"`), []byte(`"Code"`), 1),
+		bytes.Replace(b, []byte(`{"v":1,`), []byte(`{"v":1,"v":1,`), 1)} {
+		if Valid(bad) {
+			t.Errorf("accepted %s", bad)
+		}
 	}
 }

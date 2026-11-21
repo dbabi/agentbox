@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 )
 
 // Creators that make an entry at boot or install, so Check requires it.
@@ -166,6 +167,15 @@ func templated(s string) bool { return strings.Contains(s, "<") }
 // bind matches s against pattern, where a <name> is one path element or one name. A name bound in b must take its
 // bound value, so a per-task socket's group is its dir's; the result adds the names bound here.
 func bind(pattern, s string, b map[string]string) (map[string]string, bool) {
+	// a live name that is not UTF-8 matches nothing: bound into the next pattern, it would make that regexp panic
+	if !utf8.ValidString(pattern) || !utf8.ValidString(s) {
+		return nil, false
+	}
+	for _, v := range b {
+		if !utf8.ValidString(v) {
+			return nil, false
+		}
+	}
 	re, last, names := "^", 0, []string{}
 	for _, ix := range tmpl.FindAllStringIndex(pattern, -1) {
 		re += regexp.QuoteMeta(pattern[last:ix[0]])
