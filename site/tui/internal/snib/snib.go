@@ -166,8 +166,8 @@ func ASCII(rows []string) string {
 	return b.String()
 }
 
-// SVG renders rows as an inline SVG at size px (a whole multiple of the grid width): one <rect> per run of
-// same-colored pixels. With a title it is role="img"; without one it is a decorative, aria-hidden copy.
+// SVG renders rows as an inline SVG at size px (a whole multiple of the grid width), with one <path> per color.
+// With a title it is role="img"; without one it is a decorative, aria-hidden copy.
 func SVG(palette map[string]string, rows []string, px int, title string) string {
 	var b strings.Builder
 	w, h := len(rows[0]), len(rows)
@@ -185,9 +185,11 @@ func SVG(palette map[string]string, rows []string, px int, title string) string 
 	return b.String()
 }
 
-// Rects is the <rect> run list for one frame, so the web can stack idle frames as <g> layers.
+// Rects draws one frame: one <path> per color, one "M x y h n v1 h-n z" run per row of same-colored pixels.
+// The web stacks idle frames as <g> layers of these. Paths are about 5 times smaller than one <rect> per run.
 func Rects(palette map[string]string, rows []string) string {
-	var b strings.Builder
+	runs := map[byte]*strings.Builder{}
+	var order []byte
 	for y, r := range rows {
 		for x := 0; x < len(r); {
 			k := r[x]
@@ -196,10 +198,18 @@ func Rects(palette map[string]string, rows []string) string {
 				n++
 			}
 			if k != '.' {
-				fmt.Fprintf(&b, `<rect x="%d" y="%d" width="%d" height="1" fill="%s"/>`, x, y, n, palette[string(k)])
+				if runs[k] == nil {
+					runs[k] = &strings.Builder{}
+					order = append(order, k)
+				}
+				fmt.Fprintf(runs[k], "M%d %dh%dv1h-%dz", x, y, n, n)
 			}
 			x += n
 		}
+	}
+	var b strings.Builder
+	for _, k := range order {
+		fmt.Fprintf(&b, `<path fill="%s" d="%s"/>`, palette[string(k)], runs[k].String())
 	}
 	return b.String()
 }
