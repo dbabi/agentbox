@@ -1,7 +1,8 @@
 # Resolution requests from agentbox-proxy only (§6.3) (ARCHITECTURE.md §2.1).
-# PID 1 binds it with this owner and mode; rootd checks SO_PEERCRED on every connection.
+# PID 1 binds it with this owner and mode; the service checks SO_PEERCRED on every connection.
+# Generated from internal/sockets: go test ./internal/sockets -update
 [Unit]
-Description=agentbox rootd resolve-proxy socket
+Description=agentbox socket /run/agentbox-rootd/resolve-proxy.sock
 
 [Socket]
 ListenStream=/run/agentbox-rootd/resolve-proxy.sock

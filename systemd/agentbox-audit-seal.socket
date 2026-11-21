@@ -1,8 +1,8 @@
-# audit.create and audit.seal from agentbox-auditd only (ARCHITECTURE.md §9): only rootd can set +a and +i, so rootd
-# serves audit.Files here.
-# PID 1 binds it with this owner and mode; rootd checks SO_PEERCRED on every connection.
+# audit.create and audit.seal from agentbox-auditd only (§9) (ARCHITECTURE.md §2.1).
+# PID 1 binds it with this owner and mode; the service checks SO_PEERCRED on every connection.
+# Generated from internal/sockets: go test ./internal/sockets -update
 [Unit]
-Description=agentbox audit seal socket
+Description=agentbox socket /run/agentbox-rootd/audit-seal.sock
 
 [Socket]
 ListenStream=/run/agentbox-rootd/audit-seal.sock
