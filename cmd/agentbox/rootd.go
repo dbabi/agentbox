@@ -37,7 +37,23 @@ func cmdRootd(args []string) error {
 	if cfg.ElementTimeout < 10*time.Second || cfg.ElementTimeout > 10*time.Minute || cfg.RefillInterval < 5*time.Second || cfg.RefillInterval >= cfg.ElementTimeout {
 		return errors.New("rootd: need 10s <= --element-timeout <= 10m and 5s <= --refill-interval < --element-timeout (ntfy_dst must refresh before it expires)")
 	}
+	cfg.Effects, cfg.RawAudit = testEffects()
 	return rootd.Run(cfg)
+}
+
+// testEffects is the agentboxd gate's fault injection (hack/agentboxd-gate.sh), unset in production. No agent op has
+// a week-4 effect, so AGENTBOX_TEST_GATE_EFFECT=<dir> gives file.write one: it writes the content to <dir>/<op id>,
+// which shows whether an effect ran. AGENTBOX_TEST_AUDIT_RAW=1 sends INTENT args without their audit classes.
+func testEffects() (map[string]rootd.Effect, bool) {
+	dir := os.Getenv("AGENTBOX_TEST_GATE_EFFECT")
+	raw := os.Getenv("AGENTBOX_TEST_AUDIT_RAW") == "1"
+	if dir == "" {
+		return nil, raw
+	}
+	return map[string]rootd.Effect{"file.write": func(id string, args map[string]any) (map[string]any, error) {
+		c, _ := args["content"].(string)
+		return nil, os.WriteFile(filepath.Join(dir, id), []byte(c), 0o600)
+	}}, raw
 }
 
 // cmdEgress is the admin CLI for the broker allowlists, over rootd-admin.sock.

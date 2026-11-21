@@ -1,0 +1,16 @@
+# agentboxd's forwarded task ops (ARCHITECTURE.md §2.1, §5.2): agentbox:agentbox 0600; rootd also takes only uid
+# agentbox by SO_PEERCRED.
+[Unit]
+Description=agentbox rootd gate socket (rootd.sock)
+
+[Socket]
+ListenStream=/run/agentbox-rootd/rootd.sock
+SocketUser=agentbox
+SocketGroup=agentbox
+SocketMode=0600
+DirectoryMode=0711
+FileDescriptorName=rootd
+Service=agentbox-rootd.service
+
+[Install]
+WantedBy=sockets.target

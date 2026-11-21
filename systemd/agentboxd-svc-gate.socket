@@ -1,0 +1,16 @@
+# Task registration and revocation, rootd to agentboxd (ARCHITECTURE.md §2.1): agentbox:root 0600; agentboxd also
+# takes only uid 0 by SO_PEERCRED. The dir comes from tmpfiles (0711).
+[Unit]
+Description=agentboxd task registration socket (svc-gate)
+
+[Socket]
+ListenStream=/run/agentbox-rootd/svc-gate.sock
+SocketUser=agentbox
+SocketGroup=root
+SocketMode=0600
+FileDescriptorName=svc-gate
+Service=agentboxd.service
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

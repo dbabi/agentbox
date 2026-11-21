@@ -34,14 +34,16 @@ import (
 
 // Config is rootd's command line (agentbox rootd).
 type Config struct {
-	DB             string        // rootd.db
-	EgressDir      string        // control/egress
-	AuditDir       string        // audit/
-	ElementTimeout time.Duration // dst set element timeout (Appendix B: 10 min)
-	RefillInterval time.Duration // timer refill and ntfy_dst refresh (§6.1: 5 min)
-	AuditSocket    string        // auditd's rootd producer socket, for DENY records
-	GenDir         string        // the release's gen/: the files generated from the op registry (ops.Check)
-	SealCrash      func(string)  // audit.Files' crash-mid-seal test hook (AGENTBOX_TEST_CRASH); nil in production
+	DB             string            // rootd.db
+	EgressDir      string            // control/egress
+	AuditDir       string            // audit/
+	ElementTimeout time.Duration     // dst set element timeout (Appendix B: 10 min)
+	RefillInterval time.Duration     // timer refill and ntfy_dst refresh (§6.1: 5 min)
+	AuditSocket    string            // auditd's rootd producer socket, for DENY records
+	GenDir         string            // the release's gen/: the files generated from the op registry (ops.Check)
+	SealCrash      func(string)      // audit.Files' crash-mid-seal test hook (AGENTBOX_TEST_CRASH); nil in production
+	Effects        map[string]Effect // the agent ops rootd can execute, by name
+	RawAudit       bool              // AGENTBOX_TEST_AUDIT_RAW: INTENT args without their audit classes (test VMs only)
 }
 
 // Socket names: each .socket unit sets FileDescriptorName= to one of these.
@@ -235,8 +237,11 @@ func auditSend(sock string, rec map[string]any) error {
 	}
 	line, err := bufio.NewReader(c).ReadBytes('\n')
 	var rep audit.Reply
-	if err != nil || json.Unmarshal(line, &rep) != nil || !rep.OK {
+	if err != nil || json.Unmarshal(line, &rep) != nil {
 		return fmt.Errorf("no ACK: %v %s", err, bytes.TrimSpace(line))
+	}
+	if !rep.OK {
+		return &auditNACK{rep.Code, rep.Detail}
 	}
 	return nil
 }
@@ -277,6 +282,11 @@ type request struct {
 	Call     string `json:"call,omitempty"` // audit-seal.sock: auditd's audit.create or audit.seal
 	Seg      uint64 `json:"seg,omitempty"`
 	LastHash string `json:"last_hash,omitempty"`
+	// rootd.sock task.op (§5.2): agentboxd names the task, agent and chain; args are the agent's, checked again here
+	Name  string          `json:"name,omitempty"`
+	Args  json.RawMessage `json:"args,omitempty"`
+	Agent string          `json:"agent,omitempty"`
+	Chain []string        `json:"chain,omitempty"`
 }
 
 type reply map[string]any
@@ -300,6 +310,8 @@ func (s *server) handle(sock string, r request) reply {
 		return reply{"ok": true}
 	case sock == sockAdmin:
 		return s.admin(r)
+	case sock == sockGate && r.Op == "task.op":
+		return s.taskOp(r)
 	case len(sock) > 8 && sock[:8] == "resolve-" && r.Op == "resolve":
 		svc := sock[8:]
 		e, err := resolve.ParseEntry(r.Host + ":" + strconv.Itoa(r.Port))

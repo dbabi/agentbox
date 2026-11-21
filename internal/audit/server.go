@@ -463,15 +463,16 @@ type request struct {
 	Args        struct {
 		Subject   string `json:"subject"`
 		ContentID string `json:"contentId"`
-		Workspace string `json:"workspace"`
-		Snapshot  string `json:"snapshot"`
+		ID        string `json:"id"` // workspace.restore: the snapshot id
 	} `json:"args"`
-	Subject   string `json:"subject"`
-	Source    string `json:"source"`
-	Reader    string `json:"reader"`
-	Holder    string `json:"holder"`
-	Workspace string `json:"workspace"`
-	Task      string `json:"task"`
+	Agent     string          `json:"agent"`
+	Outputs   json.RawMessage `json:"outputs"`
+	Subject   string          `json:"subject"`
+	Source    string          `json:"source"`
+	Reader    string          `json:"reader"`
+	Holder    string          `json:"holder"`
+	Workspace string          `json:"workspace"`
+	Task      string          `json:"task"`
 }
 
 type opView struct {
@@ -560,6 +561,12 @@ func (s *Server) Handle(p string, uid uint32, pid int32, line []byte) Reply {
 	// The DENY schema from the codes table (§9): an unknown code, a free-text field or an unhashed hash field is NACKed.
 	if err := ops.CheckDenyRecord(r.Type, body); err != nil {
 		return Reply{Code: CodeBadRecord, Detail: err.Error()}
+	}
+	if r.Type == "INTENT" {
+		if err := sinkCheck(r.Name, raw["args"], "/args", false); err != nil {
+			s.logf("audit: %s from %s NACKed: %v", r.Type, p, err) // the pointer only, never the value
+			return Reply{Code: CodeBadRecord, Detail: err.Error()}
+		}
 	}
 	s.checkSpace()
 	if s.diskFull && !s.admitDiskFull(isRootd, &r) {
@@ -667,9 +674,9 @@ func (s *Server) apply(tx *sql.Tx, p string, r *request, now int64) (Reply, func
 				return bad("taint.clear: taintEpochs must bind the subject's epoch")
 			}
 		case "workspace.restore":
-			target, content = r.Args.Workspace, r.Args.Snapshot
+			target, content = "workspace:"+r.Agent, r.Args.ID // the executor's own workspace (§5.3)
 			if !strings.HasPrefix(target, "workspace:") || !validSubject(target) || !validSubject("snap:"+content) || r.Signer == "" {
-				return bad("workspace.restore: a signed restore of workspace:<agent> from a snapshot id")
+				return bad("workspace.restore: a signed restore of the agent's workspace from a snapshot id")
 			}
 			if err := restore(tx, target, "snap:"+content, "restore:"+content, now); err != nil {
 				return Reply{}, nil, err
@@ -697,6 +704,10 @@ func (s *Server) apply(tx *sql.Tx, p string, r *request, now int64) (Reply, func
 		}
 		if r.Status == "" {
 			return bad("RESULT needs status")
+		}
+		if err := sinkCheck(name, r.Outputs, "/outputs", true); err != nil {
+			s.logf("audit: RESULT from %s NACKed: %v", p, err)
+			return bad(err.Error())
 		}
 		var rep Reply
 		if name == "taint.clear" && r.Status == "executed" {
@@ -768,6 +779,28 @@ func (s *Server) apply(tx *sql.Tx, p string, r *request, now int64) (Reply, func
 		return Reply{}, nil, err
 	}
 	return Reply{}, nil, nil // best-effort records: logged only
+}
+
+// sinkCheck is §9's enforcement at the sink: a registry op's args (or outputs) must carry its audit classes applied,
+// so no drop-class field, every hash-class field as {sha256, len}, nothing undeclared, and no keep string over 1 KiB.
+// An op outside the registry (rootd's own admin edits) gets the 1 KiB rule only.
+func sinkCheck(name string, raw json.RawMessage, at string, out bool) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	v, err := ops.Decode(raw)
+	if err != nil {
+		return fmt.Errorf("%s: not JSON", at)
+	}
+	o, ok := ops.Lookup(name)
+	if !ok {
+		return ops.CheckKeep(v, at)
+	}
+	fs := o.Args
+	if out {
+		fs = o.Out
+	}
+	return ops.CheckAudit(fs, v, at)
 }
 
 func isFalsy(v json.RawMessage) bool {
