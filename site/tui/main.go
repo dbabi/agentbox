@@ -1,6 +1,8 @@
-// Command tui shows the agentbox site in a terminal. This first cut prints pages; the Bubble Tea app comes next.
+// Command tui shows the agentbox site in a terminal, or serves it over SSH.
 //
+//	go run github.com/dbabi/agentbox/site/tui@latest
 //	go run github.com/dbabi/agentbox/site/tui@latest -plain security
+//	go run . serve        # SSH on 127.0.0.1:23234, then: ssh -p 23234 -t 127.0.0.1 security
 //	go run . -art guarding
 package main
 
@@ -10,14 +12,23 @@ import (
 	"os"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/dbabi/agentbox/site/tui/content"
+	"github.com/dbabi/agentbox/site/tui/internal/serve"
 	"github.com/dbabi/agentbox/site/tui/internal/snib"
+	"github.com/dbabi/agentbox/site/tui/internal/tui"
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "serve" || os.Args[1] == "ssh") {
+		runServe(os.Args[2:])
+		return
+	}
 	plain := flag.Bool("plain", false, "print the page as plain text, with no color or art (for screen readers and pipes)")
 	page := flag.String("page", "home", "page to show: "+strings.Join(slugs(), ", "))
 	art := flag.String("art", "", "print only Snib in this pose: happy, thinking, guarding, sleeping")
+	motion := flag.Bool("motion", true, "play the idle loop on the snib tab")
 	flag.Parse()
 	if flag.NArg() > 0 {
 		*page = flag.Arg(0)
@@ -35,18 +46,36 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	if !*plain {
-		pose := p.Pose
-		if pose == "all" {
-			pose = "happy"
-		}
-		out, err := drawSnib(pose, noColor)
-		if err != nil {
-			fail(err)
-		}
-		fmt.Print(out)
+	if *plain {
+		fmt.Print(Plain(p, 76))
+		return
 	}
-	fmt.Print(Plain(p, 76))
+	m, err := tui.New(tui.Options{Page: p.Slug, Motion: *motion})
+	if err != nil {
+		fail(err)
+	}
+	if _, err := tea.NewProgram(m).Run(); err != nil {
+		fail(err)
+	}
+}
+
+func runServe(args []string) {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	def := serve.DefaultAddr
+	if v := os.Getenv("AGENTBOX_SITE_LISTEN"); v != "" {
+		def = v
+	}
+	addr := fs.String("listen", def, "host:port to listen on (env AGENTBOX_SITE_LISTEN). keep it loopback unless you mean to expose it")
+	key := fs.String("host-key", "", "ed25519 host key file, outside any git work tree. default: a new in-memory key per start")
+	_ = fs.Parse(args)
+	srv, err := serve.New(serve.Config{Addr: *addr, HostKeyPath: *key})
+	if err != nil {
+		fail(err)
+	}
+	fmt.Fprintf(os.Stderr, "agentbox-site: ssh -p PORT -t HOST [page], on %s. ctrl-c stops it\n", *addr)
+	if err := srv.ListenAndServe(); err != nil {
+		fail(err)
+	}
 }
 
 func drawSnib(pose string, noColor bool) (string, error) {
