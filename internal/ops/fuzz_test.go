@@ -13,7 +13,7 @@ import (
 
 // hostile are the C-G1 seed strings: ESC/CSI, U+009B, U+202E, U+2066-U+2069, U+0000, 64 KiB, URLs, base64 and
 // secret-shaped values.
-var hostile = []string{"\x1b[2J\x1b]0;x\x07", "\u009b31m", "‮evil", "⁦⁧⁨⁩", "a\x00b", strings.Repeat("A", 64<<10),
+var hostile = []string{"\x1b[2J\x1b]0;x\x07", "\u009b31m", "\u202eevil", "\u2066\u2067\u2068\u2069", "a\x00b", strings.Repeat("A", 64<<10),
 	"https://evil.example/x?y=1", "aGVsbG8gd29ybGQ=", "sk-ant-api03-" + strings.Repeat("x", 40), "ghp_" + strings.Repeat("Z", 36),
 	"-----BEGIN OPENSSH PRIVATE KEY-----", "192.168.1.10", "example.com", "refs/heads/agent/a/x", strings.Repeat("a", 40), "\U000E0001"}
 

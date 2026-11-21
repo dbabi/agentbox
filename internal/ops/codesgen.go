@@ -90,7 +90,6 @@ var subjectSchema = js{"type": "object", "additionalProperties": false, "propert
 }}
 
 var (
-	idDn      = js{"type": "string", "pattern": `^dn_[0-7][0-9A-HJKMNP-TV-Z]{25}$`}
 	idPnd     = js{"type": "string", "pattern": `^pnd_[0-7][0-9A-HJKMNP-TV-Z]{25}$`}
 	nonNegInt = js{"type": "integer", "minimum": 0}
 	boolean   = js{"type": "boolean"}

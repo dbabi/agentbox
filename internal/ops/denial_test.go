@@ -122,7 +122,7 @@ func TestDenyLeaks(t *testing.T) {
 			t.Fatalf("%s leaks: %s", c.name, d.JSON())
 		}
 	}
-	for _, h := range []string{"192.168.1.10", "10.0.0.1", "[::1]", "a.b‮.com", "EXAMPLE.COM", "x.example\x00", "xn--.example", "1.2.3.4.5"} {
+	for _, h := range []string{"192.168.1.10", "10.0.0.1", "[::1]", "a.b\u202e.com", "EXAMPLE.COM", "x.example\x00", "xn--.example", "1.2.3.4.5"} {
 		if ValidHost(h) {
 			t.Errorf("host %q passes", h)
 		}
