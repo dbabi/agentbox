@@ -6,6 +6,18 @@ A headless home for AI agents on stock Ubuntu Server 26.04. Agents get full free
 - **Plan:** `~/workplace/ai-os-research/PLAN.md`
 - **Threat model:** `docs/THREAT-MODEL.md`
 
+## Status: week 3 (2026-11-20)
+**Passed** at `dbd8c9f`, on a fresh `none`-mode arm64 UEFI install with Secure Boot on. Suites are in `~/workplace/agentbox-evidence/week3-suites.json`; evidence in `~/workplace/agentbox-evidence/week3/reg1/<suite>/` (`w3-quota-ntfy`: `week3/reg2/`). The weeks 1-2 smoke suites (`gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso`) passed again at `dbd8c9f`. Item-by-item gate table: PLAN.md, "Where we are".
+
+| Piece | State |
+|---|---|
+| Firewall (`agentbox fw`, `fwcheck`, `agentbox-firewall.service`) | **passed:** add-only load with hash and per-set checks; any alteration keeps agents down; reload and reboot keep rootd's sets; `nft flush ruleset` repaired in 50 s with an alert; conntrack keeps established flows; drops stay silent. `w3-firewall` |
+| auditd (`agentbox-auditd`, `agentbox audit verify`) | **passed:** ACK before every effect; down means nothing executes; taint epochs and write rules (only rootd's admin path clears, the row survives); disk-full mode still runs admin ops; torn tail, clock step across midnight and crash at each seal step don't stop ACKs. `w3-auditd` |
+| rootd skeleton and resolver (`agentbox-rootd`) | **passed:** resolved over Varlink, non-public answers refused; brokers reach only what rootd resolved; `Type=notify` refill; egress edits audited; log sealing (`+a`, `+i`). `w3-rootd` |
+| qgroups and packaged ntfy | **passed:** `2/0` reserve and CAS cap, EDQUOT while system state still writes; ntfy as `_ntfy` on a Unix socket only, behind the firewall. `w3-quota-ntfy` |
+| Broker units hiding resolved's AF_UNIX interfaces | **not built:** the broker units don't exist yet (residual in `docs/THREAT-MODEL.md`) |
+| Week-3 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | **not run** |
+
 ## Status: weeks 1-2 (2026-11-20)
 Each **passed** row names its suite (round, commit). Evidence: `~/workplace/agentbox-evidence/regress/r<round>/<suite>/`.
 

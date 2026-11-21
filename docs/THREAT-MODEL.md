@@ -56,6 +56,7 @@ Source of truth: `~/workplace/ai-os-research/ARCHITECTURE.md` v5.2, §10. Update
 | A compromised proxy, keys or git can omit taint for content it delivers | v2: a second taint check at the task gate on response classes |
 | A compromised auditd can forge ACKs and mask taint until off-box verification catches it | v2: rootd keeps its own append-only taint record and refuses on regression |
 | Until the broker units land, nothing hides resolved's AF_UNIX interfaces (Varlink socket mode 0666, D-Bus `ResolveHostname`) from the broker uids: nft sees only IP, so a broker process could resolve, and leak data in query names, there | Each broker unit sets `InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket` (§6.1); `TestBrokerUnitsHideResolved` and the rootd gate check it per unit |
+| While the disk is full (below the audit reserve), auditd refuses DENY and other best-effort records with `DISK_FULL`: denials in that window leave no audit record, only the critical disk-full alert | Ship audit off-box |
 | Root can always remove confinement: after a root-level flush, brokers are unconfined for up to 60 s, until the next `fwcheck` | |
 | One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late | |
 | Jev egress when enabled | |
