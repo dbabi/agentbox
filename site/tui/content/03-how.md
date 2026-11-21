@@ -46,12 +46,12 @@ $ make release VERSION=0.0.1 MINISIGN_KEY="$HOME/agentbox-keys/minisign.key"
  |  no network, no keys         proxy keys git |
  |  (designed)                  (designed)     |
  |  ------------------------------------------ |
- |  built: firewall  auditd  rootd  quotas     |
- |         generations  releases  LUKS2        |
+ |  built: firewall  auditd  rootd (skeleton)  |
+ |         quotas  generations  releases LUKS2 |
  +---------------------------------------------+
 ```
 # the same picture in words:
 - a task container has no network and no keys. [designed]
 - it talks to brokers over unix sockets. only brokers reach the internet. [designed]
 - risky operations wait for a signature from your laptop. [designed]
-- under them, the built layer: firewall, auditd, rootd, disk quotas, OS generations, signed releases and LUKS2 disk encryption. [built]
+- under them, the built layer: firewall, auditd, the rootd skeleton, disk quotas, OS generations, signed releases and LUKS2 disk encryption. [built]

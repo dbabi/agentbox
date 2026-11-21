@@ -10,7 +10,6 @@
 <meta name="description" content="how agentbox works, in five parts. four are built. the agent runtime is designed.">
 <meta property="og:title" content="how · agentbox">
 <meta property="og:description" content="how agentbox works, in five parts. four are built. the agent runtime is designed.">
-<meta property="og:image" content="../social-preview.png">
 <link rel="icon" type="image/png" sizes="32x32" href="../favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="../favicon-16.png">
 <link rel="stylesheet" href="../style.css">
@@ -56,7 +55,7 @@
 <p class="ln c" tabindex="-1">make release builds a tarball and a minisign signature.</p>
 <p class="ln c" tabindex="-1">a Linux CI build and a Mac rebuild are byte-identical before signing.</p>
 <p class="ln c" tabindex="-1">first boot checks a pinned SHA-256, then the signature. there is no official release yet.</p>
-<div class="ln cmd" tabindex="-1"><pre><code>make release VERSION=0.0.1 MINISIGN_KEY=&#34;$HOME/agentbox-keys/minisign.key&#34;</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<div class="ln cmd" tabindex="-1"><pre><code>make release VERSION=0.0.1 MINISIGN_KEY=&#34;$HOME/<wbr>agentbox-keys/<wbr>minisign.key&#34;</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
 <ul class="b">
 <li class="ln" tabindex="-1"><a href="https://github.com/dbabi/agentbox/blob/main/docs/wiki/Release-Pipeline.md">Release pipeline</a></li>
 </ul>
@@ -84,24 +83,23 @@
  |  no network, no keys         proxy keys git |
  |  (designed)                  (designed)     |
  |  ------------------------------------------ |
- |  built: firewall  auditd  rootd  quotas     |
- |         generations  releases  LUKS2        |
+ |  built: firewall  auditd  rootd (skeleton)  |
+ |         quotas  generations  releases LUKS2 |
  +---------------------------------------------+</pre></figure>
 <p class="ln c" tabindex="-1">the same picture in words:</p>
 <ul class="b">
 <li class="ln" tabindex="-1">a task container has no network and no keys. <span class="tag t-dim">[designed]</span></li>
 <li class="ln" tabindex="-1">it talks to brokers over unix sockets. only brokers reach the internet. <span class="tag t-dim">[designed]</span></li>
 <li class="ln" tabindex="-1">risky operations wait for a signature from your laptop. <span class="tag t-dim">[designed]</span></li>
-<li class="ln" tabindex="-1">under them, the built layer: firewall, auditd, rootd, disk quotas, OS generations, signed releases and LUKS2 disk encryption. <span class="tag t-ok">[built]</span></li>
+<li class="ln" tabindex="-1">under them, the built layer: firewall, auditd, the rootd skeleton, disk quotas, OS generations, signed releases and LUKS2 disk encryption. <span class="tag t-ok">[built]</span></li>
 </ul>
 </main>
 <footer class="bot">
 <p id="out" class="out" aria-live="polite"></p>
 <div class="row">
-<label for="prompt" class="ps"><span class="u">snib@agentbox</span>:<span class="w">~/how</span>$</label>
-<span class="field"><input id="prompt" maxlength="64" list="names" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="out"><span class="caret" aria-hidden="true"></span></span>
-<datalist id="names"><option value="home"><option value="install"><option value="how"><option value="security"><option value="roadmap"><option value="docs"><option value="snib"><option value="help"><option value="ls"></datalist>
-<span class="chip">alpha · weeks 1-3 of 20 · VMs only · no agent runtime yet</span>
+<label for="prompt" class="ps"><span class="u">snib@agentbox</span><span class="at">:</span><span class="w">~/how</span>$</label>
+<span class="field"><input id="prompt" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="out"><span class="caret" aria-hidden="true"></span></span>
+<span class="chip">alpha · phases 1-3 of 16 · VMs only · no agent runtime yet</span>
 <span class="hints" aria-hidden="true">j/k move  enter open  / prompt</span>
 <button type="button" class="js hb" id="helpbtn" hidden>? help</button>
 </div>

@@ -29,6 +29,11 @@ var images = map[string]string{
 	"social-preview.png":   "social-preview.png",
 }
 
+// baseURL is the absolute URL the site is served from. og:image needs an absolute URL, so it is left out while
+// this is empty. shortcut: 404.html uses root-absolute paths, so it works only at a domain root; set this and
+// a path prefix before any deploy under a project path such as user.github.io/agentbox/.
+const baseURL = ""
+
 const csp = "default-src 'self'; img-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'"
 
 func main() {
@@ -106,7 +111,7 @@ func render(pages []content.Page, p content.Page, root string) (string, error) {
 	var b strings.Builder
 	title := p.Title + " · agentbox"
 	if p.Key == 1 {
-		title = "wip: agentbox (week 3 of 20)" // a nod to terminal.shop's tab title
+		title = "agentbox: early alpha"
 	}
 	desc := "agentbox: a headless OS for AI coding agents. early alpha."
 	for _, l := range p.Lines {
@@ -131,8 +136,7 @@ func render(pages []content.Page, p content.Page, root string) (string, error) {
 <meta name="description" content="%s">
 <meta property="og:title" content="%s">
 <meta property="og:description" content="%s">
-<meta property="og:image" content="%ssocial-preview.png">
-<link rel="icon" type="image/png" sizes="32x32" href="%sfavicon-32.png">
+%s<link rel="icon" type="image/png" sizes="32x32" href="%sfavicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="%sfavicon-16.png">
 <link rel="stylesheet" href="%sstyle.css">
 <script src="%skeys.js" defer></script>
@@ -142,7 +146,7 @@ func render(pages []content.Page, p content.Page, root string) (string, error) {
 <header class="top">
 <nav aria-label="pages"><ul>
 <li class="brand"><span aria-hidden="true">▣</span> agentbox</li>
-`, csp, esc(title), esc(desc), esc(title), esc(desc), root, root, root, root, root, esc(content.MainCommand))
+`, csp, esc(title), esc(desc), esc(title), esc(desc), ogImage(), root, root, root, root, esc(content.MainCommand))
 	for _, t := range pages {
 		href := root + t.Slug + "/"
 		if t.Key == 1 {
@@ -179,13 +183,8 @@ func render(pages []content.Page, p content.Page, root string) (string, error) {
 <footer class="bot">
 <p id="out" class="out" aria-live="polite"></p>
 <div class="row">
-<label for="prompt" class="ps"><span class="u">snib@agentbox</span>:<span class="w">%s</span>$</label>
-<span class="field"><input id="prompt" maxlength="64" list="names" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="out"><span class="caret" aria-hidden="true"></span></span>
-<datalist id="names">`, esc(cwd))
-	for _, t := range pages {
-		fmt.Fprintf(&b, `<option value="%s">`, esc(t.Slug))
-	}
-	fmt.Fprintf(&b, `<option value="help"><option value="ls"></datalist>
+<label for="prompt" class="ps"><span class="u">snib@agentbox</span><span class="at">:</span><span class="w">%s</span>$</label>
+<span class="field"><input id="prompt" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="out"><span class="caret" aria-hidden="true"></span></span>
 <span class="chip">%s</span>
 <span class="hints" aria-hidden="true">j/k move  enter open  / prompt</span>
 <button type="button" class="js hb" id="helpbtn" hidden>? help</button>
@@ -194,7 +193,7 @@ func render(pages []content.Page, p content.Page, root string) (string, error) {
 <dialog id="help" aria-labelledby="help-h">
 <h2 id="help-h"># keys</h2>
 <dl>
-`, esc(content.Status))
+`, esc(cwd), esc(content.Status))
 	for _, k := range content.Keys {
 		if k.Web {
 			fmt.Fprintf(&b, "<dt>%s</dt><dd>%s</dd>\n", esc(k.Keys), esc(k.Help))
@@ -209,6 +208,13 @@ func render(pages []content.Page, p content.Page, root string) (string, error) {
 </html>
 `)
 	return b.String(), nil
+}
+
+func ogImage() string {
+	if baseURL == "" {
+		return ""
+	}
+	return fmt.Sprintf("<meta property=\"og:image\" content=\"%ssocial-preview.png\">\n", esc(baseURL))
 }
 
 // hero is Snib in this page's pose. The snib page gets the idle loop with a pause button.
@@ -308,6 +314,8 @@ func one(b *strings.Builder, l content.Line) error {
 	case content.Comment:
 		fmt.Fprintf(b, "<p class=\"ln c\" tabindex=\"-1\">%s</p>\n", s)
 	case content.Command:
+		// <wbr> after each / lets a long URL wrap at a path step, not inside a word. It adds no text, so copy is exact
+		s = strings.ReplaceAll(s, "/", "/<wbr>")
 		fmt.Fprintf(b, "<div class=\"ln cmd\" tabindex=\"-1\"><pre><code>%s</code></pre> <button type=\"button\" class=\"js copy\" aria-label=\"copy command\" hidden>copy</button></div>\n", s)
 	case content.Caution:
 		fmt.Fprintf(b, "<p class=\"ln caution\" tabindex=\"-1\"><strong>CAUTION:</strong> %s</p>\n", s)
@@ -315,6 +323,12 @@ func one(b *strings.Builder, l content.Line) error {
 		// box drawings and the roadmap bar: each is followed by the same facts in words
 		fmt.Fprintf(b, "<figure class=\"pre\" aria-hidden=\"true\"><pre>%s</pre></figure>\n", esc(strings.Join(l.Raw, "\n")))
 	default:
+		if tag, phases, text, ok := l.Status(); ok && phases != "" {
+			// a roadmap row: tag, phases and text in grid columns, so wrapped text stays in its column
+			fmt.Fprintf(b, "<p class=\"ln st\" tabindex=\"-1\"><span class=\"tag t-%s\">%s</span><span>%s</span><span>%s</span></p>\n",
+				tagClass[l.Spans[0].Tag], esc(tag), esc(phases), esc(text))
+			return nil
+		}
 		fmt.Fprintf(b, "<p class=\"ln\" tabindex=\"-1\">%s</p>\n", s)
 	}
 	return nil

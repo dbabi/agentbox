@@ -22,7 +22,7 @@ import (
 )
 
 // MainCommand is what c copies from any tab.
-const MainCommand = "go run github.com/dbabi/agentbox/site/tui@latest"
+const MainCommand = content.MainCommand
 
 const (
 	maxInput   = 64
@@ -31,7 +31,9 @@ const (
 	idleCutoff = 10 * time.Second  // after the goodbye
 	minW, minH = 40, 12
 	artW, artH = 32, 16
-	status     = "alpha · weeks 1-3 of 20 · VMs only · no agent runtime yet"
+	artAboveH  = 36       // below this height the art above would push the text off an 80x24 screen
+	maxW, maxH = 500, 300 // the client sets the size; View allocates width x height, so cap it
+	status     = content.Status
 )
 
 // Snib palette, from mascot/README.md.
@@ -88,7 +90,7 @@ var DefaultKeys = Keys{
 	HalfDown: key.NewBinding(key.WithKeys("ctrl+d", "pgdown"), key.WithHelp("ctrl+d/pgdn", "half page down")),
 	HalfUp:   key.NewBinding(key.WithKeys("ctrl+u", "pgup"), key.WithHelp("ctrl+u/pgup", "half page up")),
 	PageDown: key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "page down")),
-	Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
+	Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "copy")),
 	Copy:     key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy go run")),
 	Prompt:   key.NewBinding(key.WithKeys("/", ":"), key.WithHelp("/", "prompt")),
 	Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
@@ -206,7 +208,7 @@ func (m Model) page() content.Page { return m.pages[m.tab] }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
+		m.width, m.height = max(0, min(msg.Width, maxW)), max(0, min(msg.Height, maxH))
 		m.home() // the layout, and so the row list, depends on the size
 	case tea.ColorProfileMsg:
 		m.setProfile(msg.Profile)
@@ -224,17 +226,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case idleMsg:
 		if msg.seq == m.idleSeq {
 			m.bye = true
-			return m, tea.Tick(idleCutoff, func(time.Time) tea.Msg { return quitMsg{msg.seq} })
+			return m, tea.Tick(idleCutoff, func(time.Time) tea.Msg { return quitMsg(msg) })
 		}
 	case quitMsg:
 		if msg.seq == m.idleSeq {
 			return m, tea.Quit
 		}
 	case tea.PasteMsg:
-		if m.prompting && len(msg.Content) <= maxInput {
-			m.typeText(msg.Content)
+		var cmd tea.Cmd
+		if m.prompting {
+			if !m.typeText(msg.Content) {
+				cmd = m.say(fmt.Sprintf("# paste cut to %d characters", maxInput), true)
+			}
 		}
-		return m.touched(nil)
+		return m.touched(cmd)
 	case tea.KeyPressMsg:
 		m.bye = false
 		var cmd tea.Cmd
@@ -300,7 +305,7 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	case key.Matches(k, ks.Up):
 		m.move(-1)
 	case key.Matches(k, ks.Top):
-		m.cursor, m.top = 0, 0
+		m.home()
 	case key.Matches(k, ks.Bottom):
 		m.move(len(rows))
 	case key.Matches(k, ks.HalfDown):
@@ -312,15 +317,16 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	case key.Matches(k, ks.Enter):
 		if m.cursor < len(rows) {
 			r := rows[m.cursor]
+			// OSC 52 fails silently in many terminals, so the message always shows the text to select by hand
 			switch {
 			case r.url != "":
-				return tea.Batch(tea.SetClipboard(r.url), m.say("# copied: "+r.url, false))
+				return tea.Batch(tea.SetClipboard(r.url), m.say("# copy: "+r.url, false))
 			case r.cmd != "":
-				return tea.Batch(tea.SetClipboard(r.cmd), m.say("# copied", false))
+				return tea.Batch(tea.SetClipboard(r.cmd), m.say("# copy: "+r.cmd, false))
 			}
 		}
 	case key.Matches(k, ks.Copy):
-		return tea.Batch(tea.SetClipboard(MainCommand), m.say("# copied", false))
+		return tea.Batch(tea.SetClipboard(MainCommand), m.say("# copy: "+MainCommand, false))
 	case key.Matches(k, ks.Prompt):
 		m.prompting = true
 	case key.Matches(k, ks.Help):
@@ -345,6 +351,8 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 		if n := len(m.input); n > 0 {
 			m.input = m.input[:n-1]
 		}
+	case "ctrl+u":
+		m.input = nil
 	case "tab":
 		m.complete()
 	case "enter":
@@ -357,16 +365,18 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// typeText appends printable runes only, up to maxInput.
-func (m *Model) typeText(s string) {
+// typeText appends printable runes only, up to maxInput. It reports false if it had to cut s.
+func (m *Model) typeText(s string) bool {
 	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			continue
+		}
 		if len(m.input) >= maxInput {
-			return
+			return false
 		}
-		if unicode.IsPrint(r) {
-			m.input = append(m.input, r)
-		}
+		m.input = append(m.input, r)
 	}
+	return true
 }
 
 func (m *Model) complete() {
@@ -440,7 +450,7 @@ func (m Model) wrapWidth() int {
 }
 
 func (m Model) artSide() bool  { return m.width >= 100 && m.height >= 24 }
-func (m Model) artAbove() bool { return !m.artSide() && m.width >= 60 && m.height >= 24 }
+func (m Model) artAbove() bool { return !m.artSide() && m.width >= 60 && m.height >= artAboveH }
 
 func (m Model) pose() (string, int) {
 	p := m.page().Pose
@@ -480,12 +490,20 @@ func (m Model) rows() []row {
 
 func (m Model) helpRows() []row {
 	out := []row{{kind: content.Comment, text: "# keys. esc closes this."}, {kind: content.Blank}}
-	for _, l := range strings.Split(m.helpM.FullHelpView(m.keys.FullHelp()), "\n") {
+	view := m.helpM.FullHelpView(m.keys.FullHelp())
+	if lipgloss.Width(view)+4 > m.width { // too narrow for the columns side by side: stack them
+		var groups []string
+		for _, g := range m.keys.FullHelp() {
+			groups = append(groups, m.helpM.FullHelpView([][]key.Binding{g}))
+		}
+		view = strings.Join(groups, "\n\n")
+	}
+	for _, l := range strings.Split(view, "\n") {
 		out = append(out, row{kind: content.Pre, styled: l})
 	}
-	out = append(out, row{kind: content.Blank},
-		row{kind: content.Comment, text: "# prompt: home, cd roadmap, cat install, ls, help, clear, snib"})
-	return out
+	out = append(out, row{kind: content.Blank})
+	hint := content.Line{Kind: content.Comment, Spans: []content.Span{{Text: "prompt: home, cd roadmap, cat install, ls, help, clear, snib. ctrl+u clears it."}}}
+	return append(out, lineRows(hint, m.wrapWidth())...)
 }
 
 func lineRows(l content.Line, w int) []row {
@@ -517,6 +535,16 @@ func lineRows(l content.Line, w int) []row {
 		return []row{base}
 	}
 	first, rest := "", ""
+	if tag, phases, rest0, ok := l.Status(); ok {
+		// status rows keep their columns: continuation lines hang under the text
+		first = tag + " "
+		if phases != "" {
+			first = fmt.Sprintf("%-10s%-6s", tag, phases)
+		}
+		rest = strings.Repeat(" ", len(first))
+		text.Reset()
+		text.WriteString(rest0)
+	}
 	switch l.Kind {
 	case content.Comment:
 		first, rest = "# ", "# "
@@ -619,14 +647,46 @@ func (m Model) paneHeight() int { return max(1, m.height-2) }
 func (m *Model) home() {
 	m.top, m.cursor = 0, 0
 	rows := m.rows()
-	for m.cursor < len(rows)-1 && (rows[m.cursor].kind == content.Blank || rows[m.cursor].styled != "" && rows[m.cursor].kind == content.Pre) {
+	for m.cursor < len(rows)-1 && !selectable(rows[m.cursor]) {
 		m.cursor++
 	}
 	m.clamp()
 }
 
+// selectable rows are the ones the cursor may sit on: not gaps, and not art, which the cursor bar would flatten.
+func selectable(r row) bool {
+	return r.kind != content.Blank && !(r.kind == content.Pre && r.styled != "")
+}
+
+// move steps the cursor d rows, then past any rows it may not sit on, in the direction of travel.
+// At either end it falls back to the nearest selectable row.
 func (m *Model) move(d int) {
-	m.cursor += d
+	rows := m.rows()
+	if len(rows) == 0 {
+		return
+	}
+	step := 1
+	if d < 0 {
+		step = -1
+	}
+	c := max(0, min(m.cursor+d, len(rows)-1))
+	for i := c; i >= 0 && i < len(rows); i += step {
+		if selectable(rows[i]) {
+			m.cursor = i
+			m.clamp()
+			return
+		}
+	}
+	if step < 0 { // nothing to sit on above: go home, which also scrolls the art above back into view
+		m.home()
+		return
+	}
+	for i := c; i >= 0; i-- {
+		if selectable(rows[i]) {
+			m.cursor = i
+			break
+		}
+	}
 	m.clamp()
 }
 
@@ -722,7 +782,7 @@ func (m Model) pane() string {
 			}
 			s = rows[j].render(tw-2, j == m.cursor)
 		}
-		lines[i] = ansi.Truncate(gutter+s, cut, "")
+		lines[i] = ansi.Truncate(gutter+s, cut, "…") // a cut command shows that it goes on; enter copies all of it
 	}
 	if m.msg != "" {
 		s := okSt
@@ -745,13 +805,17 @@ func (m Model) pane() string {
 }
 
 func (m Model) statusBar() string {
-	prompt := barDim.Render("snib@agentbox:~/"+m.page().Slug+"$ ") + bar.Render(string(m.input)) + barGld.Render("▌")
-	if !m.prompting {
-		prompt = barDim.Render("snib@agentbox:~/"+m.page().Slug+"$ ") + barGld.Render("▌")
+	ps := "snib@agentbox:~/" + m.page().Slug + "$ "
+	if m.prompting {
+		// scroll: show the end of the input, so the caret stays on screen. no hints while typing
+		in := m.input
+		for len(in) > 0 && 1+ansi.StringWidth(ps)+ansi.StringWidth(string(in))+2 > m.width {
+			in = in[1:]
+		}
+		return fill(bar.Render(" ")+barDim.Render(ps)+bar.Render(string(in))+barGld.Render("▌"), m.width)
 	}
-	hm := m.helpM
-	hm.SetWidth(0)
-	hints := hm.ShortHelpView(m.keys.ShortHelp())
+	prompt := barDim.Render(ps) + barGld.Render("▌")
+	hints := m.shortHelp()
 	chip := barDim.Render(status)
 	pw, hw, cw := lipgloss.Width(prompt), lipgloss.Width(hints), lipgloss.Width(chip)
 	switch {
@@ -763,6 +827,15 @@ func (m Model) statusBar() string {
 		return bar.Render(" ") + prompt + bar.Render(strings.Repeat(" ", m.width-2-pw-hw)) + hints + bar.Render(" ")
 	}
 	return fill(bar.Render(" ")+prompt, m.width)
+}
+
+// shortHelp is the status-bar hint list. Every cell, the spaces too, has the Ink background, so the bar has no holes.
+func (m Model) shortHelp() string {
+	var parts []string
+	for _, b := range m.keys.ShortHelp() {
+		parts = append(parts, barGld.Render(b.Help().Key)+barDim.Render(" "+b.Help().Desc))
+	}
+	return strings.Join(parts, barSep.Render(" • "))
 }
 
 // art returns the ringed pose as lines, from a cache filled once per process.

@@ -10,7 +10,6 @@
 <meta name="description" content="the threat: prompt injection from untrusted text.">
 <meta property="og:title" content="security · agentbox">
 <meta property="og:description" content="the threat: prompt injection from untrusted text.">
-<meta property="og:image" content="../social-preview.png">
 <link rel="icon" type="image/png" sizes="32x32" href="../favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="../favicon-16.png">
 <link rel="stylesheet" href="../style.css">
@@ -41,7 +40,7 @@
 <p class="ln c" tabindex="-1">enforced today</p>
 <ul class="b">
 <li class="ln" tabindex="-1">host firewall: each service user reaches only its own destinations. fwcheck restores an altered table. <span class="tag t-ok">[built]</span></li>
-<li class="ln" tabindex="-1">hash-chained audit log. agentbox audit verify checks the chain. with auditd down, nothing runs. <span class="tag t-ok">[built]</span></li>
+<li class="ln" tabindex="-1">hash-chained audit log. agentbox audit verify checks the chain. with auditd down, rootd runs nothing. <span class="tag t-ok">[built]</span></li>
 <li class="ln" tabindex="-1">rootd resolver: refuses private and special-purpose answers for the brokers. <span class="tag t-ok">[built]</span></li>
 <li class="ln" tabindex="-1">disk encryption with LUKS2, and an offline recovery key. <span class="tag t-ok">[built]</span></li>
 </ul>
@@ -64,8 +63,9 @@
 <p class="ln c" tabindex="-1">this site</p>
 <ul class="b">
 <li class="ln" tabindex="-1">no login, no cookies, no analytics, no third-party requests.</li>
+<li class="ln" tabindex="-1">the web page keeps one localStorage flag, for the keys toggle. nothing else.</li>
 <li class="ln" tabindex="-1">the SSH version is read-only and listens on 127.0.0.1 by default.</li>
-<li class="ln" tabindex="-1">it has no shell, no exec, no port or agent forwarding and no file transfer.</li>
+<li class="ln" tabindex="-1">it has no shell, no port or agent forwarding and no file transfer. the only commands are page names.</li>
 </ul>
 <div class="gap"></div>
 <p class="ln c" tabindex="-1">found a vulnerability? report it privately. do not open a public issue.</p>
@@ -76,10 +76,9 @@
 <footer class="bot">
 <p id="out" class="out" aria-live="polite"></p>
 <div class="row">
-<label for="prompt" class="ps"><span class="u">snib@agentbox</span>:<span class="w">~/security</span>$</label>
-<span class="field"><input id="prompt" maxlength="64" list="names" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="out"><span class="caret" aria-hidden="true"></span></span>
-<datalist id="names"><option value="home"><option value="install"><option value="how"><option value="security"><option value="roadmap"><option value="docs"><option value="snib"><option value="help"><option value="ls"></datalist>
-<span class="chip">alpha · weeks 1-3 of 20 · VMs only · no agent runtime yet</span>
+<label for="prompt" class="ps"><span class="u">snib@agentbox</span><span class="at">:</span><span class="w">~/security</span>$</label>
+<span class="field"><input id="prompt" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="out"><span class="caret" aria-hidden="true"></span></span>
+<span class="chip">alpha · phases 1-3 of 16 · VMs only · no agent runtime yet</span>
 <span class="hints" aria-hidden="true">j/k move  enter open  / prompt</span>
 <button type="button" class="js hb" id="helpbtn" hidden>? help</button>
 </div>

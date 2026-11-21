@@ -11,7 +11,7 @@ sources: docs/wiki/Security-Model.md, docs/wiki/Encryption-and-Recovery.md, docs
 
 # enforced today
 - host firewall: each service user reaches only its own destinations. fwcheck restores an altered table. [built]
-- hash-chained audit log. agentbox audit verify checks the chain. with auditd down, nothing runs. [built]
+- hash-chained audit log. agentbox audit verify checks the chain. with auditd down, rootd runs nothing. [built]
 - rootd resolver: refuses private and special-purpose answers for the brokers. [built]
 - disk encryption with LUKS2, and an offline recovery key. [built]
 
@@ -28,8 +28,9 @@ sources: docs/wiki/Security-Model.md, docs/wiki/Encryption-and-Recovery.md, docs
 
 # this site
 - no login, no cookies, no analytics, no third-party requests.
+- the web page keeps one localStorage flag, for the keys toggle. nothing else.
 - the SSH version is read-only and listens on 127.0.0.1 by default.
-- it has no shell, no exec, no port or agent forwarding and no file transfer.
+- it has no shell, no port or agent forwarding and no file transfer. the only commands are page names.
 
 # found a vulnerability? report it privately. do not open a public issue.
 - [SECURITY.md](https://github.com/dbabi/agentbox/blob/main/SECURITY.md)

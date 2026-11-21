@@ -4,7 +4,7 @@ package content
 const MainCommand = "go run github.com/dbabi/agentbox/site/tui@latest"
 
 // Status is the chip in the status line. It states the project state first.
-const Status = "alpha · weeks 1-3 of 20 · VMs only · no agent runtime yet"
+const Status = "alpha · phases 1-3 of 16 · VMs only · no agent runtime yet"
 
 // Key is one row of the keymap. Both the web help dialog and the TUI help read this list.
 type Key struct {

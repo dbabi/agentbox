@@ -66,6 +66,21 @@ func (l Line) Plain() string {
 	return b.String()
 }
 
+var statusRe = regexp.MustCompile(`^ (\d+(?:-\d+)?) (.*)$`)
+
+// Status splits a status row such as "[built] 1-2 seed, ..." into its tag, its phase numbers and its text.
+// Phases is "" for a row with no numbers, such as "[ok] firewall". ok is false for any other line.
+func (l Line) Status() (tag, phases, text string, ok bool) {
+	if l.Kind != Text || len(l.Spans) != 2 || l.Spans[0].Tag == "" || l.Spans[1].URL != "" || l.Spans[1].Tag != "" {
+		return "", "", "", false
+	}
+	tag, text = l.Spans[0].Text, l.Spans[1].Text
+	if m := statusRe.FindStringSubmatch(text); m != nil {
+		return tag, m[1], m[2], true
+	}
+	return tag, "", strings.TrimPrefix(text, " "), true
+}
+
 // Page is one tab.
 type Page struct {
 	Key     int      // 1-7, the number key that opens it

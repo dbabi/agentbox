@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +19,9 @@ import (
 // start runs a server on an ephemeral loopback port and returns its address.
 func start(t *testing.T, c Config) string {
 	t.Helper()
-	c.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	if c.Log == nil {
+		c.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	srv, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -194,5 +198,109 @@ func TestSessionCap(t *testing.T) {
 	if err == nil {
 		_ = c.Close()
 		t.Fatal("connection 3 was accepted with a cap of 2")
+	}
+}
+
+// syncBuf is a log sink the server goroutines and the test can share.
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
+func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// ptySession starts the TUI on a new session and waits for its first frame.
+func ptySession(t *testing.T, c *gossh.Client, rows, cols int) (*gossh.Session, io.Writer) {
+	t.Helper()
+	s, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RequestPty("xterm-256color", rows, cols, gossh.TerminalModes{}); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := s.StdoutPipe()
+	in, _ := s.StdinPipe()
+	if err := s.Start("home"); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan bool, 1)
+	go func() {
+		var b strings.Builder
+		buf := make([]byte, 4096)
+		for !strings.Contains(b.String(), "home") {
+			n, err := out.Read(buf)
+			b.Write(buf[:n])
+			if err != nil {
+				got <- false
+				return
+			}
+		}
+		got <- true
+		_, _ = io.Copy(io.Discard, out)
+	}()
+	select {
+	case ok := <-got:
+		if !ok {
+			t.Fatal("the TUI ended before it drew")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the TUI did not draw within 5 s")
+	}
+	return s, in
+}
+
+func TestOneSessionPerConnection(t *testing.T) {
+	var logs syncBuf
+	addr := start(t, Config{Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	c := dial(t, addr)
+	first, _ := ptySession(t, c, 24, 80)
+	defer first.Close()
+	s, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := s.CombinedOutput("home"); exitStatus(err) != 1 || !strings.Contains(string(out), "one session per connection") {
+		t.Errorf("second session: err %v, out %q", err, out)
+	}
+	// a refused exec on a fresh connection is logged as refused, not as a normal exit
+	s2, _ := dial(t, addr).NewSession()
+	_, _ = s2.CombinedOutput("uname")
+	deadline := time.Now().Add(2 * time.Second)
+	for strings.Count(logs.String(), "reason=refused") < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := strings.Count(logs.String(), "reason=refused"); n != 2 {
+		t.Errorf("%d refused sessions logged, want 2:\n%s", n, logs.String())
+	}
+	if strings.Contains(logs.String(), "uname") || strings.Contains(logs.String(), "127.0.0.1") {
+		t.Errorf("the log holds a command or an address:\n%s", logs.String())
+	}
+}
+
+// A client may claim any PTY size. The server must not allocate for it.
+func TestHugeWindowCapped(t *testing.T) {
+	if w, h := capSize(1<<30, -1); w != maxW || h != 0 {
+		t.Fatalf("capSize: %dx%d", w, h)
+	}
+	c := dial(t, start(t, Config{}))
+	s, in := ptySession(t, c, 1<<30, 1<<30)
+	defer s.Close()
+	_, _ = in.Write([]byte("q"))
+	done := make(chan error, 1)
+	go func() { done <- s.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("the capped session did not quit on q")
+	}
+}
+
+func TestRedact(t *testing.T) {
+	var b bytes.Buffer
+	slog.New(slog.NewTextHandler(&b, &slog.HandlerOptions{ReplaceAttr: Redact})).Error("x", "remote", "203.0.113.9:4000", "panic", "p")
+	if strings.Contains(b.String(), "203.0.113.9") || !strings.Contains(b.String(), "remote=redacted") {
+		t.Errorf("not redacted: %s", b.String())
 	}
 }

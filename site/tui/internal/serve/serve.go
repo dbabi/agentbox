@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,11 +39,22 @@ import (
 // DefaultAddr is loopback. Exposing the server is a deliberate act: pass -listen or AGENTBOX_SITE_LISTEN.
 const DefaultAddr = "127.0.0.1:23234"
 
+// The client sets the PTY size. The model and the renderer allocate per cell, so the server caps it.
+const maxW, maxH = 500, 300
+
+// Redact is a slog ReplaceAttr that drops the raw remote address, which the SSH library logs on a panic.
+func Redact(_ []string, a slog.Attr) slog.Attr {
+	if a.Key == "remote" || a.Key == "remote_addr" {
+		return slog.String(a.Key, "redacted")
+	}
+	return a
+}
+
 // Config holds the server limits. Zero values take the defaults below.
 type Config struct {
 	Addr        string
 	HostKeyPath string // optional; refused inside a git work tree. "" is an in-memory key per start
-	MaxSessions int
+	MaxSessions int    // open connections. Each connection gets one session, so this also caps sessions
 	IdleTimeout time.Duration
 	MaxTimeout  time.Duration
 	Log         *slog.Logger
@@ -62,7 +74,7 @@ func (c *Config) defaults() {
 		c.MaxTimeout = 30 * time.Minute
 	}
 	if c.Log == nil {
-		c.Log = slog.New(slog.NewTextHandler(os.Stderr, nil))
+		c.Log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{ReplaceAttr: Redact}))
 	}
 }
 
@@ -102,16 +114,18 @@ func New(c Config) (*ssh.Server, error) {
 		return nil, err
 	}
 	var open atomic.Int64
+	var started, conns sync.Map // sessions that reached the TUI; connections with a session
 	srv, err := wish.NewServer(
 		wish.WithAddress(c.Addr),
 		keyOpt, // always set: without a key option wish.NewServer writes id_ed25519 into the CWD
 		wish.WithIdleTimeout(c.IdleTimeout),
 		wish.WithMaxTimeout(c.MaxTimeout),
 		wish.WithMiddleware( // the last one listed runs first
-			bubbletea.Middleware(handler),
+			bubbletea.MiddlewareWithProgramHandler(program(&started)),
 			activeterm.Middleware(),
 			accesscontrol.Middleware(routes...),
-			logMiddleware(c.Log, salt),
+			oneSession(&conns),
+			logMiddleware(c.Log, salt, &started),
 			recover.Middleware(),
 			ratelimiter.Middleware(ratelimiter.NewRateLimiter(rate.Every(time.Second), 5, 1000)),
 		),
@@ -140,23 +154,60 @@ func New(c Config) (*ssh.Server, error) {
 	return srv, nil
 }
 
-func handler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
-	page := ""
-	if cmd := s.Command(); len(cmd) > 0 {
-		page = cmd[0] // accesscontrol already allowed only page names
+// program builds the TUI for one session. It caps the window size the client sends, at the start and on
+// every resize, before the model or the renderer sees it.
+func program(started *sync.Map) bubbletea.ProgramHandler {
+	return func(s ssh.Session) *tea.Program {
+		page := ""
+		if cmd := s.Command(); len(cmd) > 0 {
+			page = cmd[0] // accesscontrol already allowed only page names
+		}
+		pty, _, _ := s.Pty()
+		m, err := tui.New(tui.Options{Page: page, SSH: true})
+		if err != nil {
+			wish.Fatalln(s, "agentbox-site: "+err.Error())
+			return nil
+		}
+		started.Store(s, true)
+		w, h := capSize(pty.Window.Width, pty.Window.Height)
+		// these come after MakeOptions on purpose: it sets the raw client size and a filter, and the last option wins.
+		// The filter keeps the suspend-to-resume rule of the one it replaces
+		opts := append(bubbletea.MakeOptions(s), tea.WithWindowSize(w, h))
+		return tea.NewProgram(m, append(opts, tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
+			switch msg := msg.(type) {
+			case tea.SuspendMsg:
+				return tea.ResumeMsg{}
+			case tea.WindowSizeMsg:
+				msg.Width, msg.Height = capSize(msg.Width, msg.Height)
+				return msg
+			}
+			return msg
+		}))...)
 	}
-	pty, _, _ := s.Pty()
-	m, err := tui.New(tui.Options{Page: page, SSH: true})
-	if err != nil {
-		wish.Fatalln(s, "agentbox-site: "+err.Error())
-		return nil, nil
+}
+
+func capSize(w, h int) (int, int) { return max(0, min(w, maxW)), max(0, min(h, maxH)) }
+
+// oneSession refuses a second session channel on a connection, so one client cannot run many TUIs
+// over a single connection.
+func oneSession(conns *sync.Map) wish.Middleware {
+	return func(next ssh.Handler) ssh.Handler {
+		return func(s ssh.Session) {
+			id := s.Context().SessionID()
+			if _, busy := conns.LoadOrStore(id, true); busy {
+				wish.Fatalln(s, "agentbox-site: one session per connection")
+				return
+			}
+			defer conns.Delete(id)
+			next(s)
+		}
 	}
-	return m, []tea.ProgramOption{tea.WithWindowSize(pty.Window.Width, pty.Window.Height)}
 }
 
 // logMiddleware logs session start and end, the duration and a salted hash of the remote IP.
+// A session that ends before the TUI starts (an exec, no PTY, a second session) is logged as refused.
 // It never logs the command, env, keys, terminal type or typed input.
-func logMiddleware(log *slog.Logger, salt []byte) wish.Middleware {
+func logMiddleware(log *slog.Logger, salt []byte, started *sync.Map) wish.Middleware {
 	return func(next ssh.Handler) ssh.Handler {
 		return func(s ssh.Session) {
 			host, _, _ := net.SplitHostPort(s.RemoteAddr().String())
@@ -165,8 +216,12 @@ func logMiddleware(log *slog.Logger, salt []byte) wish.Middleware {
 			start := time.Now()
 			log.Info("session start", "ip", id)
 			next(s)
+			_, ran := started.LoadAndDelete(s)
 			reason := "app exit"
-			if errors.Is(s.Context().Err(), context.Canceled) {
+			switch {
+			case !ran:
+				reason = "refused"
+			case errors.Is(s.Context().Err(), context.Canceled):
 				reason = "closed"
 			}
 			log.Info("session end", "ip", id, "duration", time.Since(start).Round(time.Second).String(), "reason", reason)

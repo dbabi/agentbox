@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -23,6 +24,8 @@ func press(s string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "ctrl+u":
+		return tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}
 	}
 	r := []rune(s)[0]
 	return tea.KeyPressMsg{Code: r, Text: s}
@@ -140,8 +143,11 @@ func TestInputCaps(t *testing.T) {
 		t.Errorf("typed 70, input has %d runes, want %d", len(m.input), maxInput)
 	}
 	m = keys(newModel(t, 80, 24, Options{}), "/")
-	if m = send(m, tea.PasteMsg{Content: strings.Repeat("b", 65)}); len(m.input) != 0 {
-		t.Errorf("a 65-byte paste was not dropped: %d runes", len(m.input))
+	if m = send(m, tea.PasteMsg{Content: strings.Repeat("b", 65)}); len(m.input) != maxInput || !m.msgErr {
+		t.Errorf("a 65-byte paste: %d runes, msg %q; want it cut to %d with a message", len(m.input), m.msg, maxInput)
+	}
+	if m = keys(m, "ctrl+u"); len(m.input) != 0 || !m.prompting {
+		t.Errorf("ctrl+u: input %q prompting %v", string(m.input), m.prompting)
 	}
 	if m = send(m, tea.PasteMsg{Content: "sec\x1b[31m"}); string(m.input) != "sec[31m" {
 		t.Errorf("paste kept control bytes: %q", string(m.input))
@@ -159,10 +165,10 @@ func TestInputCaps(t *testing.T) {
 func TestCursorAndCopy(t *testing.T) {
 	m := newModel(t, 120, 40, Options{})
 	start := m.cursor
-	if m = keys(m, "j"); m.cursor != start+1 {
-		t.Errorf("j: cursor %d, want %d", m.cursor, start+1)
+	if m = keys(m, "j"); m.cursor != start+2 { // row 1 is a gap
+		t.Errorf("j: cursor %d, want %d", m.cursor, start+2)
 	}
-	if m = keys(m, "k", "k"); m.cursor != max(0, start-1) {
+	if m = keys(m, "k", "k"); m.cursor != start {
 		t.Errorf("k: cursor %d", m.cursor)
 	}
 	rows := m.rows()
@@ -178,7 +184,7 @@ func TestCursorAndCopy(t *testing.T) {
 		}
 	}
 	next, cmd := m.Update(press("enter"))
-	if m = next.(Model); m.msg != "# copied" || cmd == nil {
+	if m = next.(Model); m.msg != "# copy: "+MainCommand || cmd == nil {
 		t.Errorf("enter on a $ line: msg %q, cmd %v", m.msg, cmd != nil)
 	}
 	m = send(m, clearMsg{m.msgSeq})
@@ -192,16 +198,16 @@ func TestCursorAndCopy(t *testing.T) {
 			break
 		}
 	}
-	if m = keys(m, "enter"); !strings.HasPrefix(m.msg, "# copied: https://github.com/dbabi/agentbox/blob/main/docs/") {
+	if m = keys(m, "enter"); !strings.HasPrefix(m.msg, "# copy: https://github.com/dbabi/agentbox/blob/main/docs/") {
 		t.Errorf("enter on a link: %q", m.msg)
 	}
-	if m = keys(m, "c"); m.msg != "# copied" {
+	if m = keys(m, "c"); m.msg != "# copy: "+MainCommand {
 		t.Errorf("c: %q", m.msg)
 	}
 }
 
 func TestRenderSizes(t *testing.T) {
-	for _, sz := range [][2]int{{80, 24}, {120, 40}, {40, 20}, {59, 30}} {
+	for _, sz := range [][2]int{{80, 24}, {120, 40}, {40, 20}, {59, 30}, {80, 40}} {
 		w, h := sz[0], sz[1]
 		for _, ascii := range []bool{false, true} {
 			p := colorprofile.TrueColor
@@ -231,7 +237,7 @@ func TestRenderSizes(t *testing.T) {
 					t.Errorf("%dx%d: no prompt: %q", w, h, ansi.Strip(lines[h-1]))
 				}
 				hasBlocks := strings.Contains(v.Content, "▀")
-				wantArt := w >= 60 && h >= 24 || m.page().Pose == "all"
+				wantArt := w >= 100 && h >= 24 || w >= 60 && h >= artAboveH || m.page().Pose == "all"
 				if ascii && hasBlocks {
 					t.Errorf("%dx%d %s: half blocks under the ASCII profile", w, h, m.page().Slug)
 				}
@@ -239,7 +245,7 @@ func TestRenderSizes(t *testing.T) {
 					t.Errorf("%dx%d %s: no Snib", w, h, m.page().Slug)
 				}
 				if !ascii && !wantArt && hasBlocks {
-					t.Errorf("%dx%d %s: Snib shown below 60 cols", w, h, m.page().Slug)
+					t.Errorf("%dx%d %s: Snib shown on a small screen", w, h, m.page().Slug)
 				}
 			}
 		}
@@ -301,4 +307,128 @@ func TestWrapKeepsTags(t *testing.T) {
 	if len(rows) != 1 {
 		t.Errorf("a command wrapped into %d rows", len(rows))
 	}
+}
+
+// At 80x24, the most common size, the art must not push the text off the screen.
+func Test80x24ShowsText(t *testing.T) {
+	m := newModel(t, 80, 24, Options{})
+	for i := range m.pages {
+		m = keys(m, string(rune('1'+i)))
+		if m.page().Pose == "all" {
+			continue // the snib tab is the art
+		}
+		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
+		n := 0
+		for _, l := range lines[1 : len(lines)-1] {
+			if strings.TrimSpace(l) != "" {
+				n++
+			}
+		}
+		if n < 12 {
+			t.Errorf("%s: %d text rows at 80x24, want at least 12", m.page().Slug, n)
+		}
+	}
+}
+
+// The cursor never sits on a gap or on art, where the cursor bar would turn Snib into a solid block.
+func TestCursorSkipsArt(t *testing.T) {
+	for _, page := range []string{"home", "snib"} {
+		m := newModel(t, 80, 40, Options{Page: page}) // art above the text
+		if m.cursor == 0 || !selectable(m.rows()[m.cursor]) {
+			t.Fatalf("%s: start cursor %d", page, m.cursor)
+		}
+		for _, k := range []string{"k", "k", "k", "j", "j", "space", "G", "k", "g", "ctrl+u"} {
+			if k == "ctrl+u" {
+				m = send(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+			} else {
+				m = keys(m, k)
+			}
+			if r := m.rows()[m.cursor]; !selectable(r) {
+				t.Errorf("%s: after %s the cursor is on row %d, kind %d", page, k, m.cursor, r.kind)
+			}
+		}
+		if m = keys(m, "g", "k"); m.top != 0 {
+			t.Errorf("%s: k at the first line did not scroll the art back into view: top %d", page, m.top)
+		}
+	}
+}
+
+func TestWindowSizeCapped(t *testing.T) {
+	m := newModel(t, 1<<30, 1<<30, Options{})
+	if m.width != maxW || m.height != maxH {
+		t.Fatalf("size %dx%d, want %dx%d", m.width, m.height, maxW, maxH)
+	}
+	if n := len(m.View().Content); n > 4<<20 {
+		t.Errorf("View is %d bytes", n)
+	}
+	if m = send(m, tea.WindowSizeMsg{Width: -5, Height: -5}); m.View().Content != "terminal too small: need 40x12" {
+		t.Error("a negative size was not treated as too small")
+	}
+}
+
+func TestPromptScrolls(t *testing.T) {
+	m := typed(keys(newModel(t, 80, 24, Options{}), "/"), strings.Repeat("a", 60)+"wxyz")
+	lines := strings.Split(m.View().Content, "\n")
+	last := ansi.Strip(lines[len(lines)-1])
+	if ansi.StringWidth(lines[len(lines)-1]) > 80 || !strings.Contains(last, "wxyz▌") {
+		t.Errorf("the end of the input or the caret is off screen: %q", last)
+	}
+	if strings.Contains(last, "move") {
+		t.Errorf("hints shown while typing: %q", last)
+	}
+}
+
+// A reset of the background inside the bar leaves a hole of terminal color. Every printed cell needs the Ink background.
+func TestStatusBarHasNoHoles(t *testing.T) {
+	hole := regexp.MustCompile(`\x1b\[(?:0|49)?m[^\x1b]`)
+	for _, w := range []int{80, 140} {
+		lines := strings.Split(newModel(t, w, 24, Options{}).View().Content, "\n")
+		for _, l := range []string{lines[0], lines[len(lines)-1]} {
+			if hole.MatchString(l) {
+				t.Errorf("%d cols: a bar cell without the Ink background: %q", w, l)
+			}
+		}
+	}
+}
+
+func TestHelpFitsNarrow(t *testing.T) {
+	m := keys(newModel(t, 40, 12, Options{}), "?")
+	var all []string
+	for _, r := range m.rows() {
+		s := r.text
+		if r.styled != "" {
+			s = ansi.Strip(r.styled)
+		}
+		if w := ansi.StringWidth(s) + 2; w > 40 {
+			t.Errorf("help row is %d wide at 40 cols: %q", w, s)
+		}
+		all = append(all, s)
+	}
+	for _, want := range []string{"quit", "copy go run", "prompt", "half page up", "ctrl+u clears"} {
+		if !strings.Contains(strings.Join(all, "\n"), want) {
+			t.Errorf("help at 40 cols lacks %q", want)
+		}
+	}
+}
+
+func TestLongLinesShowTheCut(t *testing.T) {
+	m := newModel(t, 80, 60, Options{Page: "install"})
+	v := ansi.Strip(m.View().Content)
+	if !strings.Contains(v, "$ mkdir -p .vm && curl") || !strings.Contains(v, "…") {
+		t.Errorf("a cut command does not end in …:\n%s", v)
+	}
+}
+
+func TestStatusRowsKeepColumns(t *testing.T) {
+	m := newModel(t, 60, 40, Options{Page: "roadmap"})
+	rows := m.rows()
+	for i, r := range rows {
+		if strings.HasPrefix(r.text, "[built]   1-2   seed") {
+			if i+1 >= len(rows) || !strings.HasPrefix(rows[i+1].text, strings.Repeat(" ", 16)+"") || strings.TrimSpace(rows[i+1].text) == "" {
+				t.Fatalf("no hanging indent after %q: %q", r.text, rows[i+1].text)
+			}
+			return
+		}
+	}
+	t.Fatal("no [built] 1-2 row")
 }

@@ -9,6 +9,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -68,7 +69,9 @@ func runServe(args []string) {
 	addr := fs.String("listen", def, "host:port to listen on (env AGENTBOX_SITE_LISTEN). keep it loopback unless you mean to expose it")
 	key := fs.String("host-key", "", "ed25519 host key file, outside any git work tree. default: a new in-memory key per start")
 	_ = fs.Parse(args)
-	srv, err := serve.New(serve.Config{Addr: *addr, HostKeyPath: *key})
+	// the SSH library logs the raw remote address on a panic. Redact it there too, not only in the session log
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{ReplaceAttr: serve.Redact})))
+	srv, err := serve.New(serve.Config{Addr: *addr, HostKeyPath: *key, Log: slog.Default()})
 	if err != nil {
 		fail(err)
 	}
@@ -140,6 +143,14 @@ func Plain(p content.Page, width int) string {
 		case content.Swatch:
 			b.WriteString("  " + l.Plain() + "\n")
 		default:
+			if tag, phases, text, ok := l.Status(); ok {
+				pre := tag + " "
+				if phases != "" {
+					pre = fmt.Sprintf("%-10s%-6s", tag, phases)
+				}
+				wrap(&b, pre, strings.Repeat(" ", len(pre)), text, width)
+				continue
+			}
 			wrap(&b, "", "", l.Plain(), width)
 		}
 	}

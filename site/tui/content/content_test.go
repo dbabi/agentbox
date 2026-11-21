@@ -90,6 +90,26 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestStatus(t *testing.T) {
+	for _, c := range []struct{ src, tag, phases, text string }{
+		{"[built] 1-2 seed, install", "[built]", "1-2", "seed, install"},
+		{"[next] 4 registry", "[next]", "4", "registry"},
+		{"[ok] firewall", "[ok]", "", "firewall"},
+	} {
+		p, err := Parse("---\nkey: 1\nslug: a\ntitle: a\npose: a\n---\n" + c.src + "\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tag, ph, text, ok := p.Lines[0].Status()
+		if !ok || tag != c.tag || ph != c.phases || text != c.text {
+			t.Errorf("%q: %q %q %q %v", c.src, tag, ph, text, ok)
+		}
+	}
+	if _, _, _, ok := (Line{Kind: Comment, Spans: []Span{{Text: "[ok]", Tag: "ok"}, {Text: " x"}}}).Status(); ok {
+		t.Error("a comment is not a status row")
+	}
+}
+
 func TestPaletteSwatches(t *testing.T) {
 	pages, _ := Pages()
 	var n int

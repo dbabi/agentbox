@@ -62,12 +62,12 @@ h1, h2 { font-size: 1em; font-weight: normal; }
 /* (2) the pane: fixed-height lines with a 2-column gutter */
 main { display: block; max-width: 72ch; margin: 0 auto; padding: 1.6em 2ch; }
 main:focus { outline: none; } /* skip-link target only; it is not a control */
-.ln { position: relative; padding-left: 2ch; white-space: pre-wrap; scroll-margin: 48px 0 5em; }
+.ln { position: relative; padding-left: 2ch; white-space: pre-wrap; overflow-wrap: break-word; scroll-margin: 48px 0 5em; }
 .ln::before { position: absolute; left: 0; }
 .c { color: var(--dim); }
 .c::before { content: "#"; content: "#" / ""; }
 .cmd::before { content: "$"; content: "$" / ""; color: var(--link); }
-.cmd pre { display: inline; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cmd pre { display: inline; font: inherit; white-space: pre-wrap; overflow-wrap: break-word; }
 .gap { height: 1.6em; }
 .b, .sw, .steps { padding-left: 2ch; }
 .b { list-style: "- "; }
@@ -82,11 +82,15 @@ main:focus { outline: none; } /* skip-link target only; it is not a control */
 .caution strong { color: #2a1f45; background: #e0902f; font-weight: normal; padding: 0 .5ch; }
 .pre { overflow-x: auto; color: var(--dim); }
 .pre pre { font: inherit; }
+/* the cursor bar sits left of the row, outside the $ and # gutter */
 .ln:focus, .ln:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 0;
-  background: var(--cur-bg); box-shadow: inset 4px 0 var(--accent);
+  background: var(--cur-bg); box-shadow: -6px 0 0 var(--accent);
 }
 .ln:focus, .ln:focus *, .ln:focus::before { color: var(--cur-fg); }
+.ln:focus button { border-color: var(--cur-fg); }
+/* roadmap rows: tag, phases, text. Wrapped text stays in its column */
+.st { display: grid; grid-template-columns: 10ch 6ch 1fr; }
 
 .tag { --t: #cfc3ff; color: var(--t); }
 .t-ok { --t: #7cf5d0; }
@@ -116,6 +120,14 @@ button:hover { color: var(--fg); border-color: var(--fg); }
   .snib { float: none; padding: 8px; margin: 0; }
   .snib svg { width: 64px; height: 64px; }
 }
+@media (prefers-color-scheme: light) {
+  /* the Highlight outline vanishes on a Highlight page: show Snib on an Ink tile with 4 art pixels of clear space */
+  .snib svg, .poses svg { box-sizing: content-box; background: #2a1f45; padding: 16px; }
+  .poses svg { padding: 8px; }
+}
+@media (prefers-color-scheme: light) and (max-width: 899px) {
+  .snib svg { padding: 8px; }
+}
 
 /* (3) the status and prompt line */
 .bot { position: fixed; left: 0; right: 0; bottom: 0; z-index: 2; background: var(--bg); border-top: 1px solid var(--rule); }
@@ -123,15 +135,17 @@ button:hover { color: var(--fg); border-color: var(--fg); }
 .out.ok { color: var(--ok); }
 .out.err { color: var(--err); }
 .row { display: flex; align-items: center; gap: 2ch; padding: .2em 2ch; white-space: nowrap; }
+.ps, .hb { flex: none; }
 .ps .u { color: var(--ok); }
 .ps .w { color: var(--link); }
-.field { position: relative; flex: 1 1 10ch; min-width: 6ch; }
+.field { position: relative; flex: 1 1 10ch; min-width: 0; }
 .field input { width: 100%; font: inherit; color: var(--fg); background: none; border: 0; padding: 0; caret-color: var(--accent); }
 .field input:focus { outline: none; }
 .field:focus-within { box-shadow: 0 2px var(--accent); }
 .chip { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
 .hints { color: var(--dim); white-space: pre; }
 .no-js .field { visibility: hidden; }
+.no-js .ps, .no-js .hints { display: none; } /* the prompt and the keys need keys.js; the tab links do not */
 /* with JS: a block caret drawn at the text cursor (--x columns in); the real caret is hidden */
 .js-caret .field input { caret-color: transparent; }
 .caret { display: none; position: absolute; top: 0; bottom: 0; left: calc(var(--x, 0) * 1ch); width: 1ch; background: var(--accent); pointer-events: none; }
@@ -141,7 +155,10 @@ button:hover { color: var(--fg); border-color: var(--fg); }
 }
 @keyframes blink { 50% { opacity: 0; } }
 @media (max-width: 960px) { .chip { display: none; } }
-@media (max-width: 600px) { .hints { display: none; } }
+@media (max-width: 600px) {
+  .hints, .ps .u, .ps .at { display: none; }
+  .steps { padding-left: 3ch; }
+}
 
 dialog { max-width: min(64ch, 92vw); background: var(--bg); color: var(--fg); border: 1px solid var(--rule); padding: 1.6em 2ch; }
 dialog::backdrop { background: #2a1f45; opacity: .85; }

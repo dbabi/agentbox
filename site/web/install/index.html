@@ -10,7 +10,6 @@
 <meta name="description" content="try agentbox in a QEMU VM on an Apple Silicon Mac.">
 <meta property="og:title" content="install · agentbox">
 <meta property="og:description" content="try agentbox in a QEMU VM on an Apple Silicon Mac.">
-<meta property="og:image" content="../social-preview.png">
 <link rel="icon" type="image/png" sizes="32x32" href="../favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="../favicon-16.png">
 <link rel="stylesheet" href="../style.css">
@@ -40,36 +39,39 @@
 <ol class="steps">
 <li value="1"><p class="ln" tabindex="-1">install the tools. the encrypted gates also need swtpm and podman.</p>
 <div class="ln cmd" tabindex="-1"><pre><code>brew install go qemu xorriso minisign uv</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<p class="ln c" tabindex="-1">also: xcode-select --install for make and ar, and a sha256sum on PATH.</p>
 </li>
 <li value="2"><p class="ln" tabindex="-1">get the code. run every later command from the top of the checkout.</p>
-<div class="ln cmd" tabindex="-1"><pre><code>git clone https://github.com/dbabi/agentbox.git &amp;&amp; cd agentbox</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<div class="ln cmd" tabindex="-1"><pre><code>git clone https:/<wbr>/<wbr>github.com/<wbr>dbabi/<wbr>agentbox.git &amp;&amp; cd agentbox</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
 </li>
 <li value="3"><p class="ln" tabindex="-1">get the pinned Ubuntu ISO, 3.1 GB.</p>
-<div class="ln cmd" tabindex="-1"><pre><code>mkdir -p .vm &amp;&amp; curl -fL -o .vm/ubuntu-26.04.1-live-server-arm64.iso https://cdimage.ubuntu.com/releases/26.04.1/release/ubuntu-26.04.1-live-server-arm64.iso</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<div class="ln cmd" tabindex="-1"><pre><code>mkdir -p .vm &amp;&amp; curl -fL -o .vm/<wbr>ubuntu-26.04.1-live-server-arm64.iso https:/<wbr>/<wbr>cdimage.ubuntu.com/<wbr>releases/<wbr>26.04.1/<wbr>release/<wbr>ubuntu-26.04.1-live-server-arm64.iso</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<p class="ln c" tabindex="-1">on a 404, get the same file from https://old-releases.ubuntu.com/releases/26.04.1/</p>
 </li>
 <li value="4"><p class="ln" tabindex="-1">check it. this prints ubuntu-26.04.1-live-server-arm64.iso: OK</p>
-<div class="ln cmd" tabindex="-1"><pre><code>(cd .vm &amp;&amp; grep live-server-arm64.iso ../hack/SHA256SUMS | shasum -a 256 -c)</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<div class="ln cmd" tabindex="-1"><pre><code>(cd .vm &amp;&amp; grep live-server-arm64.iso ../<wbr>hack/<wbr>SHA256SUMS | shasum -a 256 -c)</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
 </li>
 <li value="5"><p class="ln" tabindex="-1">build the CLI and run the unit tests.</p>
-<div class="ln cmd" tabindex="-1"><pre><code>go build -o bin/agentbox ./cmd/agentbox &amp;&amp; go vet ./... &amp;&amp; go test ./...</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<div class="ln cmd" tabindex="-1"><pre><code>go build -o bin/<wbr>agentbox ./<wbr>cmd/<wbr>agentbox &amp;&amp; go vet ./<wbr>... &amp;&amp; go test ./<wbr>...</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
 </li>
 <li value="6"><p class="ln" tabindex="-1">optional: render a test seed with no VM, in about a minute. see <a href="https://github.com/dbabi/agentbox/blob/main/docs/wiki/Getting-Started.md#step-5-render-a-test-seed-dry-run-no-vm">Getting started, step 5</a>.</p>
 </li>
 <li value="7"><p class="ln" tabindex="-1">run the install gate. keep the Mac on power, with the lid open.</p>
 <p class="ln c" tabindex="-1">gate: 9-17 min</p>
-<div class="ln cmd" tabindex="-1"><pre><code>caffeinate -i hack/gate.sh none</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<div class="ln cmd" tabindex="-1"><pre><code>caffeinate -i hack/<wbr>gate.sh none</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
 </li>
-<li value="8"><p class="ln" tabindex="-1">read the results. a pass ends with: gate none: all checks passed. this prints nothing on a pass.</p>
-<div class="ln cmd" tabindex="-1"><pre><code>grep &#39;^FAIL&#39; .vm/gate-none.txt</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<li value="8"><p class="ln" tabindex="-1">read the results. a pass prints: gate none: all checks passed. these print nothing, then 2.</p>
+<div class="ln cmd" tabindex="-1"><pre><code>grep &#39;^FAIL&#39; .vm/<wbr>gate-none.txt</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<div class="ln cmd" tabindex="-1"><pre><code>grep -c &#39;^fails=0&#39; .vm/<wbr>gate-none.txt</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
 </li>
 <li value="9"><p class="ln" tabindex="-1">clean up. this deletes the VM disk and keeps the ISO.</p>
-<div class="ln cmd" tabindex="-1"><pre><code>hack/vm.sh reset</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<div class="ln cmd" tabindex="-1"><pre><code>hack/<wbr>vm.sh reset</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
 </li>
 </ol>
 <div class="gap"></div>
 <p class="ln c" tabindex="-1">next: build, boot and commit new OS generations in an encrypted VM. needs swtpm.</p>
 <p class="ln c" tabindex="-1">apply-gate: about 30 min</p>
-<div class="ln cmd" tabindex="-1"><pre><code>caffeinate -i hack/apply-gate.sh tpm2 install setup cycles</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
+<div class="ln cmd" tabindex="-1"><pre><code>caffeinate -i hack/<wbr>apply-gate.sh tpm2 install setup cycles</code></pre> <button type="button" class="js copy" aria-label="copy command" hidden>copy</button></div>
 <div class="gap"></div>
 <p class="ln caution" tabindex="-1"><strong>CAUTION:</strong> no real machine has run agentbox. the install erases the disk you name.</p>
 <p class="ln c" tabindex="-1">a real PC install uses two USB sticks and a disk serial. amd64 UEFI and real hardware have not run.</p>
@@ -81,10 +83,9 @@
 <footer class="bot">
 <p id="out" class="out" aria-live="polite"></p>
 <div class="row">
-<label for="prompt" class="ps"><span class="u">snib@agentbox</span>:<span class="w">~/install</span>$</label>
-<span class="field"><input id="prompt" maxlength="64" list="names" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="out"><span class="caret" aria-hidden="true"></span></span>
-<datalist id="names"><option value="home"><option value="install"><option value="how"><option value="security"><option value="roadmap"><option value="docs"><option value="snib"><option value="help"><option value="ls"></datalist>
-<span class="chip">alpha · weeks 1-3 of 20 · VMs only · no agent runtime yet</span>
+<label for="prompt" class="ps"><span class="u">snib@agentbox</span><span class="at">:</span><span class="w">~/install</span>$</label>
+<span class="field"><input id="prompt" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="out"><span class="caret" aria-hidden="true"></span></span>
+<span class="chip">alpha · phases 1-3 of 16 · VMs only · no agent runtime yet</span>
 <span class="hints" aria-hidden="true">j/k move  enter open  / prompt</span>
 <button type="button" class="js hb" id="helpbtn" hidden>? help</button>
 </div>

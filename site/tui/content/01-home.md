@@ -11,8 +11,7 @@ sources: README.md
 # tested only in QEMU virtual machines, never on real hardware.
 # no AI agent can run on it yet.
 
-# what runs today: an unattended, encrypted Ubuntu install with A/B OS generations,
-# plus the first host services of the safety layer.
+# what runs today: an unattended, encrypted Ubuntu install with A/B OS generations, plus the first host services of the safety layer.
 
 # the design rests on four rules. only the last one is fully built.
 - no credentials in tasks. brokers will hold the keys, and the task never will. [designed]

@@ -26,4 +26,6 @@ sources: docs/wiki/README.md
 - [PLAN.md](https://github.com/dbabi/agentbox/blob/main/docs/design/PLAN.md) the build plan, v5.3
 - [LEDGER.md](https://github.com/dbabi/agentbox/blob/main/docs/design/LEDGER.md) the round-5 audit ledger: one row per finding
 - [PROPOSALS-v5.3.md](https://github.com/dbabi/agentbox/blob/main/docs/design/PROPOSALS-v5.3.md) proposals A-D, adopted, and E, rejected
+
+# docs
 - [THREAT-MODEL.md](https://github.com/dbabi/agentbox/blob/main/docs/THREAT-MODEL.md) the one-page threat model

@@ -41,10 +41,12 @@ The server is for anonymous readers, so it has no login. It is locked down in co
 - Sessions get only the read-only TUI, and a PTY is required. The only exec commands are the 7 page names.
   There is no shell, no port forwarding, no subsystem (so no SFTP or SCP) and no agent forwarding. The SSH library
   still answers "yes" to an agent request, but the server never opens an agent channel. A test checks this.
-- Limits: 32 open connections, 5 new sessions per IP then 1 per second, a 10 s handshake, a 120 s idle cutoff
-  and a 30 min cap. The TUI shows a sleeping Snib after 110 s with no key and ends the session 10 s later.
-- Logs hold session start and end, the duration and the first 8 hex of a salted SHA-256 of the remote IP.
-  They never hold the command, env, keys, terminal type or typed input.
+- Limits: 32 open connections, one session per connection, 5 new sessions per IP then 1 per second, a 10 s
+  handshake, a 120 s idle cutoff and a 30 min cap. The window size the client sends is capped at 500x300, and
+  prompt input at 64 characters. The TUI shows a sleeping Snib after 110 s with no key and ends the session 10 s later.
+- Session logs hold the start, the end, the duration, the end reason (`refused` for an exec, a missing PTY or a
+  second session) and the first 8 hex of a salted SHA-256 of the remote IP. They never hold the command, env,
+  keys, terminal type or typed input. The SSH library logs the remote address on a panic; `serve` redacts it.
 
 ## Dependencies
 
@@ -57,7 +59,15 @@ GOPROXY=direct GONOSUMDB=charm.land,github.com/charmbracelet go get <module>@<ve
 go mod tidy && go mod vendor
 ```
 
-This module is separate from the OS module, so the OS module keeps its own dependency list.
+This module is separate from the OS module, so the OS module keeps its own dependency list. CI runs gofmt, vet,
+tests, staticcheck and govulncheck on it in the `site` job.
+
+`vendor/` keeps each module's LICENSE file. All are MIT, BSD-3-Clause or Apache-2.0, except
+`github.com/hashicorp/golang-lru/v2`, which is MPL-2.0 and vendored unmodified. `rivo/uniseg`,
+`charmbracelet/ultraviolet` and `golang.org/x/exp` are pseudo-versions because charm's own `go.mod` pins them so.
+
+`go run github.com/dbabi/agentbox/site/tui@latest` resolves to the default branch, so it works only once this
+module is on `main`.
 
 ## The website
 
@@ -68,5 +78,7 @@ go run ./cmd/sitegen        # after any change to content/, then commit site/web
 go test ./cmd/sitegen       # fails if site/web is stale
 go run ./cmd/preview        # serves site/web on http://127.0.0.1:8080/ only
 ```
+
+`404.html` uses root-absolute paths and there is no `og:image` until `baseURL` in `cmd/sitegen` is set. Both need a base URL before any deploy.
 
 Colors are the Snib palette. Dark is the default; a light scheme follows `prefers-color-scheme`. Motion stops under `prefers-reduced-motion`. Nothing here is deployed.
