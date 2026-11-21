@@ -29,7 +29,7 @@ func FuzzParse(f *testing.F) {
 		if rs, err := ParseRoutes(msgs); err == nil {
 			d, ok := Default(rs)
 			for _, r := range rs {
-				RouteCheck(r, d, ok)
+				_ = RouteCheck(r, d, ok)
 			}
 		}
 		NhGateway(msgs)
