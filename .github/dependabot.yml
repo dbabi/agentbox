@@ -6,6 +6,5 @@ updates:
       interval: weekly
   - package-ecosystem: gomod
     directory: /site/tui
-    vendor: true
     schedule:
       interval: weekly

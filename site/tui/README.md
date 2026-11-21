@@ -50,20 +50,19 @@ The server is for anonymous readers, so it has no login. It is locked down in co
 
 ## Dependencies
 
-Dependencies are pinned in `go.mod` and vendored in `vendor/`. Build and test with `-mod=vendor` (the default when
-`vendor/` exists), so neither CI nor a network without proxy.golang.org needs the module proxy. To change a
-dependency:
+Dependencies are pinned in `go.mod` and `go.sum`. To change one:
 
 ```sh
-GOPROXY=direct GONOSUMDB=charm.land,github.com/charmbracelet go get <module>@<version>
-go mod tidy && go mod vendor
+go get <module>@<version> && go mod tidy
 ```
+
+On a network that cannot reach proxy.golang.org, prefix both with `GOPROXY=direct GONOSUMDB=charm.land,github.com/charmbracelet`.
 
 This module is separate from the OS module, so the OS module keeps its own dependency list. CI runs gofmt, vet,
 tests, staticcheck and govulncheck on it in the `site` job.
 
-`vendor/` keeps each module's LICENSE file. All are MIT, BSD-3-Clause or Apache-2.0, except
-`github.com/hashicorp/golang-lru/v2`, which is MPL-2.0 and vendored unmodified. `rivo/uniseg`,
+Every dependency is MIT, BSD-3-Clause or Apache-2.0, except `github.com/hashicorp/golang-lru/v2`, which is MPL-2.0
+and used unmodified. `rivo/uniseg`,
 `charmbracelet/ultraviolet` and `golang.org/x/exp` are pseudo-versions because charm's own `go.mod` pins them so.
 
 `go run github.com/dbabi/agentbox/site/tui@latest` resolves to the default branch, so it works only once this
