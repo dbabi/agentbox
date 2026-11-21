@@ -10,7 +10,7 @@ No. It is early alpha. Do not use it for production, or for data you cannot affo
 
 At the time of writing:
 
-- Weeks 1-3 of a 20-week plan are built: the installer, the OS layer, and the first host services (a firewall, an audit daemon and a root daemon skeleton).
+- Milestones 1 and 2 of 9 are built: the installer, the OS layer, and the first host services (a firewall, an audit daemon and a root daemon skeleton).
 - No AI agent can run on it yet.
 - It has run only in QEMU virtual machines. No real hardware has run it.
 - The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules, so anything that listens is open to your LAN.
@@ -27,7 +27,7 @@ The design names three agent CLIs: Claude Code, Codex and opencode. The plan for
 - No credential exists inside a task. Broker services outside the container hold the LLM API keys and the GitHub token.
 - Every action that touches the host, secrets, the network, other agents or shared memory is a typed operation. Policy checks it, and the audit log records it. Risky operations wait for your approval.
 
-The current plan builds these pieces in weeks 4 to 14 (see [Roadmap](Roadmap.md)). Week 3 built the host services they rely on: the firewall, the audit daemon and the root daemon's resolver.
+The current plan builds these pieces in milestones 3 to 8 (see [Roadmap](Roadmap.md)). Milestone 2 built the host services they rely on: the firewall, the audit daemon and the root daemon's resolver.
 
 ### How is it different from a dev container?
 
@@ -79,7 +79,7 @@ btrfs makes OS generations cheap. It also keeps the OS and your data apart, in o
 - Each OS generation is a btrfs subvolume. `agentbox os apply` starts a new one with a copy-on-write snapshot of the running generation, so the copy is fast and small.
 - Data that must survive a fallback lives in its own subvolumes. They include `/home`, `/var/log`, `/srv` and `/var/lib/agentbox`. A fallback does not touch them.
 - All subvolumes share one pool with zstd compression. In the encrypted modes, that pool sits inside one LUKS2 volume.
-- btrfs quotas keep a disk reserve: one parent quota group, `2/0`, caps every store agents and apps can fill, so the OS and agentbox's control state always have room (built in week 3). Per-agent limits and read-only snapshots for agent workspaces are designed, not built.
+- btrfs quotas keep a disk reserve: one parent quota group, `2/0`, caps every store agents and apps can fill, so the OS and agentbox's control state always have room (built in milestone 2). Per-agent limits and read-only snapshots for agent workspaces are designed, not built.
 
 The power-cut test harness replays the VM disk at each flush. It runs `btrfs check --readonly` on every replayed state. At the time of writing, every checked state passed. Those checks ran only on an unencrypted (`none`) disk. The harness does not model writes that land out of order between flushes, torn (partly written) sectors, or disks that ignore flushes. [Testing and Gates](Testing-and-Gates.md) has the full list.
 

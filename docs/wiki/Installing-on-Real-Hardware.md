@@ -42,7 +42,7 @@ Know these limits before the box joins your network:
 
 - It runs no AI agents yet. Today agentbox is an installer, an OS layer and the first host services.
 - The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules. Put the box on a network you trust.
-- The week-3 services (firewall, audit daemon, root daemon, quotas, ntfy) have passed their gates in `none` mode on arm64 UEFI only.
+- The milestone 2 services (firewall, audit daemon, root daemon, quotas, ntfy) have passed their gates in `none` mode on arm64 UEFI only.
 - Nothing updates packages by itself. An admin updates them with `os plan` and `os apply`. See [Generations and Updates](Generations-and-Updates.md).
 - The agentbox release on the box cannot be updated. A new release means a reinstall.
 

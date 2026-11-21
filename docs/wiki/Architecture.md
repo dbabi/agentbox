@@ -1,37 +1,34 @@
 # Architecture
 
-> **Early alpha. Not for production use.** No AI agent can run on agentbox yet. Weeks 1-3 of a 20-week plan are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon and a skeleton of the root daemon). The agent runtime on this page is designed, not built.
+> **Early alpha. Not for production use.** No AI agent can run on agentbox yet. Milestones 1 and 2 of 9 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon and a skeleton of the root daemon). The agent runtime on this page is designed, not built.
 
 This page explains the target design of agentbox for newcomers.
-It follows version 5.2 of the design.
-The full spec is [`ARCHITECTURE.md`](../design/ARCHITECTURE.md) v5.3, in `docs/design/`.
-The build plan is [`PLAN.md`](../design/PLAN.md) v5.3.
+The full design is in [`docs/design/`](../design/).
 
 Two words mark the state of each part:
 
 - **Built:** the code is on `main`, and its test gates have passed in QEMU VMs ([Testing and Gates](Testing-and-Gates.md) says where and when). No real hardware has run it yet.
 - **Designed:** the design in `docs/design/` describes it, but there is no code yet.
 
-Week numbers refer to the rows of build plan v5.3. The rows are numbered 1-16 and name phases, not calendar weeks: with two engineers the plan takes about 20 weeks. The plan can change.
-[Roadmap](Roadmap.md) has the order of work.
+Milestone numbers refer to the ordered list on the [Roadmap](Roadmap.md). The plan can change.
 [Testing and Gates](Testing-and-Gates.md) says what each test gate proves.
 
 ## At a glance
 
-| Part | Status | Plan weeks |
+| Part | Status | Milestone |
 |---|---|---|
-| Unattended install, disk encryption, recovery key | Built | 1-2 |
-| btrfs A/B OS generations: `os plan`, `os apply`, health commit, unattended fallback | Built | 1-2 |
-| Signed release pipeline and firstboot install | Built | 1-2 |
-| Zero-touch install ISO, QEMU test harness, power-cut tests | Built | 1-2 |
-| Firewall, disk quotas, audit daemon, rootd skeleton and resolver, ntfy | Built | 3 |
-| Operation registry and the agentboxd gate | Designed | 4 |
-| Agent accounts, task containers, interactive sessions | Designed | 5-6 |
-| Brokers: proxy, keys, git | Designed | 7-8 |
-| Cedar policy, rootd floor, signed approvals | Designed | 9-10 |
-| Apps, file writes, workspace ops, OS ops for agents, nightly updates, decide | Designed | 11-12 |
-| Agent bus and shared memory | Designed | 13-14 |
-| Benchmark, external threat-model review, a signed v1 release | Designed | 15-16 |
+| Unattended install, disk encryption, recovery key | Built | 1 |
+| btrfs A/B OS generations: `os plan`, `os apply`, health commit, unattended fallback | Built | 1 |
+| Signed release pipeline and firstboot install | Built | 1 |
+| Zero-touch install ISO, QEMU test harness, power-cut tests | Built | 1 |
+| Firewall, disk quotas, audit daemon, rootd skeleton and resolver, ntfy | Built | 2 |
+| Operation registry and the agentboxd gate | Designed | 3 |
+| Agent accounts, task containers, interactive sessions | Designed | 4 |
+| Brokers: proxy, keys, git | Designed | 5 |
+| Cedar policy, rootd floor, signed approvals | Designed | 6 |
+| Apps, file writes, workspace ops, OS ops for agents, nightly updates, decide | Designed | 7 |
+| Agent bus and shared memory | Designed | 8 |
+| Benchmark, external threat-model review, the first signed release | Designed | 9 |
 
 ## The big picture
 
@@ -69,7 +66,7 @@ The design has two layers:
 1. **The OS layer (Built).** It installs Ubuntu, encrypts the disk and keeps the OS in btrfs A/B generations.
 2. **The agent runtime (Designed).** It runs each task in its own container. A few small services decide what the task may do outside that container.
 
-In the diagram, everything above the OS layer is designed, with three exceptions built in week 3:
+In the diagram, everything above the OS layer is designed, with three exceptions built in milestone 2:
 `agentbox-auditd`, the host firewall, and a skeleton of `agentbox-rootd` (its name resolver, the brokers' firewall sets and audit-segment sealing).
 None of the other services exists yet.
 
@@ -80,34 +77,34 @@ These eight rules shape the whole design.
 1. **Models propose, code decides.**
    No model output grants a permission.
    A model can only add friction, such as an extra approval.
-   *Designed (weeks 9-12).*
+   *Designed (milestones 6-7).*
 2. **Agents never change the running OS.**
    OS changes are installed offline into a copy of the OS, called a generation.
    The box boots the new generation once, and keeps it only if a health check passes.
-   *Built for the admin today. The path for agents is designed (weeks 11-12).*
+   *Built for the admin today. The path for agents is designed (milestone 7).*
 3. **No network for agents or apps.**
    Task containers have no network at all.
    Traffic leaves only through the task's own Unix sockets, to the brokers.
    Brokers may connect only to addresses that rootd resolved for allowlisted names.
-   *Built in part (week 3): the firewall and rootd's resolver, which hold each broker uid to rootd's answers. The containers and brokers are designed (weeks 5-8).*
+   *Built in part (milestone 2): the firewall and rootd's resolver, which hold each broker uid to rootd's answers. The containers and brokers are designed (milestones 4-5).*
 4. **The executor owns the floor.**
    `agentbox-rootd` stores every pending operation, bound to its exact inputs, such as commit IDs and package hashes.
    When an operation needs approval, rootd runs only the stored copy that a human signed.
    It checks the state again before it runs.
-   *Designed (weeks 9-10).*
+   *Designed (milestone 6).*
 5. **No credentialed writes outside the registry.**
    Tasks hold no credentials.
    Every write that needs one, such as a git push or a pull request, is a registry operation that a broker carries out.
-   *Designed (weeks 4-10).*
+   *Designed (milestones 3-6).*
 6. **Tasks are disposable.**
    Each task gets its own container, home directory and sockets.
    Nothing the task writes outside its workspace survives the task.
-   *Designed (weeks 5-6).*
+   *Designed (milestone 4).*
 7. **Taint is sticky.**
    Content from an untrusted source marks, or taints, the task that reads it.
    The mark spreads to what the task touches.
    Only a human can clear it.
-   *Built in part (week 3): auditd's taint ledger, where only rootd's admin path clears a subject. What sets and spreads taint is designed (weeks 4-14).*
+   *Built in part (milestone 2): auditd's taint ledger, where only rootd's admin path clears a subject. What sets and spreads taint is designed (milestones 3-8).*
 8. **Honest guarantees.**
    The design states what each operation's rollback covers.
    It states the limits of disk encryption and of phone approvals.
@@ -152,7 +149,7 @@ More: [Encryption and Recovery](Encryption-and-Recovery.md) and [Installing on R
 - These subvolumes stay the same across generations: `@home`, `@var_log`, `@var_lib_agentbox`, `@var_lib_agentbox_data`, `@var_lib_tailscale`, `@var_lib_ntfy`, `@srv` and `@snapshots`.
   Persistent data is outside the generations, so it survives a fallback.
 - Each generation keeps its kernels and initrds in `/bootpart/agentbox/gens/gen-N/`, bind-mounted at `/boot`.
-- *Built (week 3):* btrfs quotas. One parent quota group, `2/0`, caps every store that agents and apps can fill, at the file system size minus max(10%, 4 GiB). The OS, agentbox's control state and the generations stay outside it, so they always keep a reserve. The content store (`cas`) has its own cap. Per-agent quota groups come with agent accounts (weeks 5-6).
+- *Built (milestone 2):* btrfs quotas. One parent quota group, `2/0`, caps every store that agents and apps can fill, at the file system size minus max(10%, 4 GiB). The OS, agentbox's control state and the generations stay outside it, so they always keep a reserve. The content store (`cas`) has its own cap. Per-agent quota groups come with agent accounts (milestone 4).
 
 ### Generations
 
@@ -179,7 +176,7 @@ More: [Encryption and Recovery](Encryption-and-Recovery.md) and [Installing on R
   - the booted kernel's modules exist;
   - `/` has at least 2 GiB free;
   - there is an IPv4 default route.
-- Before those checks, `agentbox-health.service` runs `fwcheck --repair` (week 3). Health checks for agentbox services, DNS and Tailscale are designed.
+- Before those checks, `agentbox-health.service` runs `fwcheck --repair` (milestone 2). Health checks for agentbox services, DNS and Tailscale are designed.
 - The box keeps the three newest generations at or below the committed one, plus any generation that is booted, committed or pending.
 - Only one `os apply` runs at a time.
   Until `rootd.db` exists, the `os` commands keep their lock and trial records in `/var/lib/agentbox/os/`.
@@ -231,14 +228,14 @@ More: [Release Pipeline](Release-Pipeline.md).
 
 ### Designed parts of the OS layer
 
-- **OS operations for agents** (weeks 11-12). Agents may request `os.pkg.install`, `os.pkg.remove` and similar operations. Each one needs a signature on the laptop.
-- **A protected-package floor** (weeks 11-12). `os.pkg` operations can't touch protected packages, even when signed. These include the kernel, systemd, GRUB, shim, cryptsetup, clevis, nftables, podman, openssh-server and sudo.
-- **Nightly `os.update`** (weeks 11-12). It runs unsigned only if the whole change stays inside a signed update policy. Today no update runs on its own: the seed masks apt's daily timers.
-- **An `os.rollback` operation** (weeks 11-12). Today fallback is automatic, but no command boots or pins an older generation.
+- **OS operations for agents** (milestone 7). Agents may request `os.pkg.install`, `os.pkg.remove` and similar operations. Each one needs a signature on the laptop.
+- **A protected-package floor** (milestone 7). `os.pkg` operations can't touch protected packages, even when signed. These include the kernel, systemd, GRUB, shim, cryptsetup, clevis, nftables, podman, openssh-server and sudo.
+- **Nightly `os.update`** (milestone 7). It runs unsigned only if the whole change stays inside a signed update policy. Today no update runs on its own: the seed masks apt's daily timers.
+- **An `os.rollback` operation** (milestone 7). Today fallback is automatic, but no command boots or pins an older generation.
 
 ## The services
 
-**Status:** Mostly designed. `agentbox-auditd`, a skeleton of `agentbox-rootd` and the packaged ntfy are built (week 3). The other services don't exist yet. [Units on the box today](#units-on-the-box-today) lists what runs today.
+**Status:** Mostly designed. `agentbox-auditd`, a skeleton of `agentbox-rootd` and the packaged ntfy are built (milestone 2). The other services don't exist yet. [Units on the box today](#units-on-the-box-today) lists what runs today.
 
 In the design, rootd, agentboxd, auditd, approvald and the three brokers are all subcommands of the one `agentbox` binary.
 The local-model units run llama-server, and ntfy and tailscaled come from their own packages.
@@ -246,15 +243,15 @@ Each service runs as its own Linux user, with only the access it needs.
 
 | Service | Runs as | Job | Status |
 |---|---|---|---|
-| `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Skeleton built (week 3): the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing. Its generation code is built. The rest is designed (weeks 5-12). |
-| `agentboxd` | `agentbox` | The front door for agents: the task gate, Cedar policy, the agent bus, memory and decide. Has no network. | Designed (week 4 on) |
-| `agentbox-auditd` | `agentbox-audit` | Writes the hash-chained audit log and the taint ledger. Has no network. | Built (week 3). Per-field audit classes are designed (week 4). |
-| `agentbox-proxy` | `agentbox-proxy` | Tunnels task traffic to allowlisted hosts. Holds no secrets. | Designed (weeks 7-8) |
-| `agentbox-keys` | `agentbox-keys` | Holds the LLM API keys and budgets. Checks every model request, then adds the key. | Designed (weeks 7-8) |
-| `agentbox-git` | `agentbox-git` | Hosts local git repos. Holds the GitHub token and runs the `gh.*` operations. | Designed (weeks 7-8) |
-| `agentbox-approvald` | `agentbox-approve` | Serves the phone approval page. Holds no keys. | Designed (weeks 9-10) |
-| `agentbox-llm@task`, `agentbox-llm@decide` | `agentbox-llm`, `agentbox-llm-decide` | Local models (llama-server) for tasks and for decide. Have no network. | Designed (weeks 7-8, 11-12) |
-| ntfy, tailscaled | `_ntfy`, root | Phone notifications. Tailnet access to the approval page. | ntfy: built (week 3). tailscaled: designed. |
+| `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Skeleton built (milestone 2): the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing. Its generation code is built. The rest is designed (milestones 4-7). |
+| `agentboxd` | `agentbox` | The front door for agents: the task gate, Cedar policy, the agent bus, memory and decide. Has no network. | Designed (milestone 3 on) |
+| `agentbox-auditd` | `agentbox-audit` | Writes the hash-chained audit log and the taint ledger. Has no network. | Built (milestone 2). Per-field audit classes are designed (milestone 3). |
+| `agentbox-proxy` | `agentbox-proxy` | Tunnels task traffic to allowlisted hosts. Holds no secrets. | Designed (milestone 5) |
+| `agentbox-keys` | `agentbox-keys` | Holds the LLM API keys and budgets. Checks every model request, then adds the key. | Designed (milestone 5) |
+| `agentbox-git` | `agentbox-git` | Hosts local git repos. Holds the GitHub token and runs the `gh.*` operations. | Designed (milestone 5) |
+| `agentbox-approvald` | `agentbox-approve` | Serves the phone approval page. Holds no keys. | Designed (milestone 6) |
+| `agentbox-llm@task`, `agentbox-llm@decide` | `agentbox-llm`, `agentbox-llm-decide` | Local models (llama-server) for tasks and for decide. Have no network. | Designed (milestones 5 and 7) |
+| ntfy, tailscaled | `_ntfy`, root | Phone notifications. Tailnet access to the approval page. | ntfy: built (milestone 2). tailscaled: designed. |
 
 - rootd is the only agentbox service that runs as root.
   For OS builds, it starts short-lived helper units: `osbuild-fetch@` downloads packages, `osbuild-apply@` installs them in nspawn, and `osbuild-image@` builds the task image.
@@ -275,7 +272,7 @@ Each service runs as its own Linux user, with only the access it needs.
 
 ## Task containers
 
-**Status:** Designed (weeks 5-6). The seed already installs podman and crun, but agentbox does not use them yet.
+**Status:** Designed (milestone 4). The seed already installs podman and crun, but agentbox does not use them yet.
 
 ### Accounts
 
@@ -334,7 +331,7 @@ Each service runs as its own Linux user, with only the access it needs.
 
 ### Apps
 
-*Designed (weeks 11-12).*
+*Designed (milestone 7).*
 
 - Agents can deploy small apps.
   Each app runs as a rootless pod with no network.
@@ -345,7 +342,7 @@ Each service runs as its own Linux user, with only the access it needs.
 
 ## Control plane and approvals
 
-**Status:** Designed (weeks 4 and 9-12). Today the only approval is for OS changes, by plan hash. See [Today's stand-in](#todays-stand-in).
+**Status:** Designed (milestones 3, 6 and 7). Today the only approval is for OS changes, by plan hash. See [Today's stand-in](#todays-stand-in).
 
 ### The operation registry
 
@@ -433,7 +430,7 @@ Each service runs as its own Linux user, with only the access it needs.
 
 ### decide
 
-*Designed (weeks 11-12).*
+*Designed (milestone 7).*
 
 - decide is a typed helper on a local model.
   It returns a choice, a score or a yes or no.
@@ -453,7 +450,7 @@ Root access is the approval.
 
 ## Network and secrets
 
-**Status:** The firewall and rootd's resolver are built (week 3). The brokers are designed (weeks 7-8). The seed still masks the stock `nftables.service`: `agentbox-firewall.service` loads agentbox's own table instead.
+**Status:** The firewall and rootd's resolver are built (milestone 2). The brokers are designed (milestone 5). The seed still masks the stock `nftables.service`: `agentbox-firewall.service` loads agentbox's own table instead.
 
 ### Firewall
 
@@ -469,7 +466,7 @@ Root access is the approval.
 - If the check fails, no agent or app can start.
 - Drops are silent: the table has no log statement.
 
-Built today (week 3): `agentbox fw load` adds the table as one add-only transaction, so a reload keeps every element rootd added.
+Built today (milestone 2): `agentbox fw load` adds the table as one add-only transaction, so a reload keeps every element rootd added.
 `fwcheck` runs from the health timer every 50 s, and from each agent-side unit's `ExecStartPre=`.
 On a mismatch it prints `agentbox: ALERT: firewall altered` and restarts the firewall unit, which restarts every unit that `Requires=` it.
 The table has an output chain only. It has no inbound rules, so SSH and any other listener stay open to the LAN.
@@ -484,7 +481,7 @@ The table has an output chain only. It has no inbound rules, so SSH and any othe
 - The broker dials only those addresses.
   TLS still checks the original hostname.
 
-Built today (week 3): the resolver, through systemd-resolved's Varlink socket, with every refusal rule above, NAT64 prefixes included.
+Built today (milestone 2): the resolver, through systemd-resolved's Varlink socket, with every refusal rule above, NAT64 prefixes included.
 rootd keeps its answers in `rootd.db`, refills the sets at start (before `READY=1`) and on a timer, and `agentbox egress list|refill|allow|remove` edits the allowlists.
 The brokers that will use it are not built.
 
@@ -546,7 +543,7 @@ In the design, no credential of any kind exists inside a task.
 
 ## Taint
 
-**Status:** Mostly designed (weeks 4-14). auditd's taint ledger is built (week 3): per-subject epochs, the write rules, and `taint.clear` only from rootd's admin path, after which the row stays with its epoch moved on.
+**Status:** Mostly designed (milestones 3-8). auditd's taint ledger is built (milestone 2): per-subject epochs, the write rules, and `taint.clear` only from rootd's admin path, after which the row stays with its epoch moved on.
 
 Taint is how agentbox tracks untrusted content.
 It decides when a task's actions need a human signature.
@@ -575,7 +572,7 @@ It decides when a task's actions need a human signature.
 
 ## The agent bus
 
-**Status:** Designed (weeks 13-14).
+**Status:** Designed (milestone 8).
 
 - Agents hand work to each other over an internal bus.
   Its objects follow the A2A v1 shapes: Task, Message and AgentCard.
@@ -599,7 +596,7 @@ It decides when a task's actions need a human signature.
 
 ## Shared memory
 
-**Status:** Designed (weeks 13-14).
+**Status:** Designed (milestone 8).
 
 | Layer | Store | Writer |
 |---|---|---|
@@ -626,7 +623,7 @@ It decides when a task's actions need a human signature.
 
 ## Audit
 
-**Status:** Built (week 3), except the per-field audit classes (week 4) and shipping the log off the box. No producer other than rootd and the test producer writes to it yet.
+**Status:** Built (milestone 2), except the per-field audit classes (milestone 3) and shipping the log off the box. No producer other than rootd and the test producer writes to it yet.
 
 - `agentbox-auditd` is the only writer of the audit log.
   It runs as its own user, with no network.
@@ -693,11 +690,11 @@ Read [Security Model](Security-Model.md) and the one-page threat model in the re
 | `internal/seed` | Seed validation and the autoinstall template | Built |
 | `internal/recovery` | Recovery key generation and decryption | Built |
 | `internal/rootd/gens` | A/B generations: plan, build, initrd checks, commit, fallback, retention | Built |
-| `internal/rootd`, `internal/rootd/{resolve,quota,nl}` | The rootd skeleton: sockets, the resolver, quota groups, netlink (nftables sets and conntrack) | Built (week 3) |
-| `internal/fw` | The nftables ruleset, `fw load` and `fwcheck` | Built (week 3) |
-| `internal/audit` | auditd: segments, the hash chain, the taint database, sealing, `audit verify` | Built (week 3) |
-| `internal/ntfy` | ntfy's config, ACLs, unit drop-in and fwcheck's ntfy check | Built (week 3) |
-| `sysusers.d/`, `tmpfiles.d/` | The service users and the runtime directories | Built (week 3) |
+| `internal/rootd`, `internal/rootd/{resolve,quota,nl}` | The rootd skeleton: sockets, the resolver, quota groups, netlink (nftables sets and conntrack) | Built (milestone 2) |
+| `internal/fw` | The nftables ruleset, `fw load` and `fwcheck` | Built (milestone 2) |
+| `internal/audit` | auditd: segments, the hash chain, the taint database, sealing, `audit verify` | Built (milestone 2) |
+| `internal/ntfy` | ntfy's config, ACLs, unit drop-in and fwcheck's ntfy check | Built (milestone 2) |
+| `sysusers.d/`, `tmpfiles.d/` | The service users and the runtime directories | Built (milestone 2) |
 | `install/`, `systemd/` | The release's `install.sh` and its systemd units | Built |
 | `hack/` | The release builder, the ISO remaster script, the QEMU harness and the test gates | Built |
 | `internal/{ops,gate,policy,bus,memory,decide,dispatch,approvald,webauthn,proxy,keys,gitsvc,taskrun,reconcile}`, the rest of `internal/rootd` | The agent runtime | Designed |
@@ -711,7 +708,7 @@ The design adds more later, such as cedar-go, the MCP Go SDK and a WebAuthn libr
 - [Security Model](Security-Model.md) covers the threats, the trust boundaries and the accepted risks.
 - [Roadmap](Roadmap.md) lists what each milestone adds.
 
-Where each topic lives in [`ARCHITECTURE.md`](../design/ARCHITECTURE.md) v5.3:
+Where each topic lives in [`ARCHITECTURE.md`](../design/ARCHITECTURE.md):
 
 | Topic | Section |
 |---|---|

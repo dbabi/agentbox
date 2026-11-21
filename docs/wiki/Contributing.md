@@ -1,5 +1,5 @@
 agentbox is early alpha. It is not for production use.
-Weeks 1-3 of a 20-week build plan are built and tested in QEMU VMs: the installer, the OS layer, and the first host services (firewall, audit daemon, root daemon skeleton, quotas, ntfy).
+Milestones 1 and 2 of 9 are built and tested in QEMU VMs: the installer, the OS layer, and the first host services (firewall, audit daemon, root daemon skeleton, quotas, ntfy).
 No real hardware has run it yet.
 The agent runtime is designed but not built.
 
@@ -33,7 +33,7 @@ An item moves Backlog, then Ready, then In progress, then In review, then Done.
 - In review: the pull request is open.
 - Done: the pull request is merged and the issue is closed.
 
-Each issue has one `area/*` label and one `type/*` label, and a milestone for its PLAN row.
+Each issue has one `area/*` label and one `type/*` label, and the GitHub milestone it belongs to.
 `blocked` means it waits on another issue; say which one in a comment.
 
 The repository is private and on the free plan.
@@ -400,7 +400,7 @@ The next run rebuilds the image.
 
 How the docs relate to the design:
 
-- The design lives in [`docs/design/`](../design/): [`ARCHITECTURE.md`](../design/ARCHITECTURE.md), the build plan [`PLAN.md`](../design/PLAN.md) (about 20 weeks with two engineers), the audit [`LEDGER.md`](../design/LEDGER.md) and [`PROPOSALS-v5.3.md`](../design/PROPOSALS-v5.3.md). At the time of writing, both the architecture and the plan are at version 5.3.
+- The full design lives in [`docs/design/`](../design/): the architecture in [`ARCHITECTURE.md`](../design/ARCHITECTURE.md) and the build plan in [`PLAN.md`](../design/PLAN.md).
 - The design says what is planned. The code and the gates say what is built. When they disagree, the docs follow the code.
 - Code comments cite the design by file and section, for example `ARCHITECTURE.md §3.3` or `PLAN.md week 2`. Keep these citations when you move code.
 - The plan builds in order. Each milestone ends with a gate, and that gate must pass before the next milestone starts. Open an issue before you start on a planned component. [Roadmap](Roadmap.md) lists the milestones.

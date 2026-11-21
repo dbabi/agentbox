@@ -28,7 +28,7 @@ agentbox aims to be an OS where AI agents can work safely. The design rests on f
 
 ## Status
 
-Weeks 1-3 of a 20-week plan (v5.3, two engineers) are built. agentbox has run only in QEMU virtual machines, never on real hardware.
+The installer, safe OS updates and the first host services (firewall, audit log, root daemon) are built. The operation registry and request gate are being built now. agentbox has run only in QEMU virtual machines, never on real hardware.
 
 **Works today**, in VMs on an Apple Silicon Mac:
 
@@ -45,9 +45,9 @@ Weeks 1-3 of a 20-week plan (v5.3, two engineers) are built. agentbox has run on
 
 - The agent runtime: task containers, brokers, policy, approvals, bus and memory. All of it is designed. None of it is built.
 - Real hardware. amd64 UEFI has not run anywhere.
-- The week-3 gates in the encrypted modes and on amd64. They ran in `none` mode on arm64 UEFI only.
+- The firewall, audit and root daemon tests in the encrypted modes and on amd64. They ran in `none` mode on arm64 UEFI only.
 - Inbound filtering and automatic security updates.
-- Updating agentbox itself on an installed box. This is out of scope for v1. A new release means a reinstall.
+- Updating agentbox itself on an installed box. This is out of scope for the first release. A new release means a reinstall.
 
 ## Why
 
@@ -209,7 +209,7 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 | Root daemon skeleton | `agentbox-rootd` resolves names through systemd-resolved and refuses private and special-purpose answers. It fills the brokers' firewall sets, refills them at start and on a timer, and seals audit segments. `agentbox egress list`, `refill`, `allow` and `remove` edit the allowlists. |
 | Disk quotas | btrfs qgroup `2/0` holds agent data under a disk reserve. The content store has its own cap. A writer at its limit gets `EDQUOT`, and system state still writes. |
 | Notifications | The Ubuntu `ntfy` package, run as `_ntfy`, on a Unix socket only, with topic ACLs. The firewall lets it reach only the `ntfy.sh` addresses rootd resolved. |
-| Test harness | QEMU gates for the install, `os apply`, power cuts and disk-write replay, with swtpm and a test Tang container. Week-3 gates for the firewall, auditd, rootd, quotas and ntfy. |
+| Test harness | QEMU gates for the install, `os apply`, power cuts and disk-write replay, with swtpm and a test Tang container. Gates for the firewall, auditd, rootd, quotas and ntfy. |
 
 ### Designed, not built
 
@@ -282,25 +282,23 @@ Known limits of what is built today:
 - The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules. SSH, and anything else that listens, is open to your LAN. Do not give the box a public IP address.
 - The brokers that the firewall confines are not built, so nothing yet hides systemd-resolved's local interfaces from them (a residual in the threat model).
 - There are no automatic security updates.
-- The week-3 gates ran only in `none` mode, on arm64 UEFI.
+- The firewall, audit and root daemon gates ran only in `none` mode, on arm64 UEFI.
 
 Read the one-page [threat model](docs/THREAT-MODEL.md) and the [Security model][sec] page.
 
 ## Roadmap
 
-The plan (v5.3) takes about 20 weeks with two engineers ([details][road]). Its rows are numbered 1-16: they name phases, not calendar weeks. Each milestone ends with a gate, and the gate must pass before the next milestone starts. v5.3 adds four proposals (A-D) across the rows. It rejects a fifth, the delivery lane.
+agentbox is built in milestones, in this order. Each one ends with a set of tests that must pass before the next one starts. The full design is in [`docs/design/`](docs/design/), and the [Roadmap][road] page has more detail.
 
-| Weeks | Build | Status |
-|---|---|---|
-| 1-2 | Seed, encrypted install, recovery key, A/B generations, `os apply`, release pipeline, zero-touch ISO | Built. The gate passed in VMs at `e2e53af` and `61acfc7` ([suites][results]). Real hardware not run yet. |
-| 3 | Firewall, disk quotas, audit daemon, rootd skeleton and resolver, ntfy notifications | Built. Every gate item passed in VMs at `fb89de4`: suites `w3-firewall`, `w3-auditd`, `w3-rootd`, `w3-quota-ntfy`, plus the weeks 1-2 smoke suites ([results][results]). |
-| 4 | Operation registry, agentboxd gate, fuzzers; denial codes | Designed, not built |
-| 5-6 | Agent accounts, one network-less container per task; Go in the task image | Designed, not built |
-| 7-8 | Brokers: proxy (with a read-only Go module cache), keys, git | Designed, not built |
-| 9-10 | Cedar policy, signed approvals, phone passkeys; an ask budget and batched asks | Designed, not built |
-| 11-12 | Apps, file writes, package installs and nightly updates as new generations | Designed, not built |
-| 13-14 | Agent bus, shared memory, bound to workspaces | Designed, not built |
-| 15-16 | Benchmark, external threat-model review, signed release | Designed, not built |
+1. **Installer and safe OS updates: done.** Seed, encrypted install, recovery key, A/B generations, `os apply`, release pipeline, zero-touch ISO. Tested in VMs ([results][results]). Real hardware not run yet.
+2. **Firewall, audit log, root daemon: done.** Host firewall, disk quotas, audit daemon, root daemon with its name resolver, ntfy notifications. Tested in VMs ([results][results]).
+3. **Operation registry and request gate: in progress.** One registry of every operation, the request gate in `agentboxd`, and fuzzers for every parser.
+4. **Agent accounts and one sealed container per task: next.** Each task runs in a disposable container with no network.
+5. **Brokers.** A proxy, a keys broker for LLM API keys, and a git service. No credential ever enters a task.
+6. **Signed approvals.** Cedar policy, risky operations signed with your SSH key, phone approvals with a passkey for low-risk ones.
+7. **Apps and OS updates by agents.** Apps in offline pods, file writes, package installs and nightly updates as new generations.
+8. **Agent bus and shared memory.** Tasks hand work to each other, and untrusted facts stay marked.
+9. **Benchmark and first signed release.** A benchmark, an external review of the threat model, and the first official signed release.
 
 ## Contributing
 

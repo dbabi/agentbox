@@ -73,7 +73,7 @@ Its top level holds only subvolumes whose names start with `@`:
 ```
 
 Everything outside `@gen-N` persists across generations.
-ntfy is installed from its Ubuntu package (week 3) and keeps its state in `@var_lib_ntfy`. Tailscale is not installed yet; its subvolume is reserved for later.
+ntfy is installed from its Ubuntu package (milestone 2) and keeps its state in `@var_lib_ntfy`. Tailscale is not installed yet; its subvolume is reserved for later.
 
 Kernels and GRUB's files live on a separate 4 GiB ext4 partition, mounted at `/bootpart`.
 It is not encrypted. GRUB reads it directly.

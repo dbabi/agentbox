@@ -360,7 +360,7 @@ At the time of writing, this takes about 9-17 minutes. The results go to `.vm/ga
 - There is no way to update the agentbox release on an installed box. `install.sh` supports only `--from-firstboot`. A new release means a reinstall with a new seed.
 - The design notes leave a release-update operation out of scope for v1. If one is built later, it must work like `os apply`: a health window, and on failure it switches `current` back to `previous` and restores the pre-migration database copy.
 - `agentbox reconcile` sets up only quotas and ntfy so far.
-- There is no official release, no release host and no project signing key. A signed project release is planned for the last milestone of the plan (weeks 15-16). See [Roadmap](Roadmap.md).
+- There is no official release, no release host and no project signing key. A signed project release is planned for milestone 9, the last one. See [Roadmap](Roadmap.md).
 
 OS package updates use a different path, `agentbox os plan` and `agentbox os apply`. See [Generations and Updates](Generations-and-Updates.md).
 
