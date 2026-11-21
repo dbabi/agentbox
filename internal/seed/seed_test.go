@@ -36,7 +36,7 @@ var testPub = sync.OnceValues(func() ([]byte, error) {
 	return os.ReadFile(pub)
 })
 
-func testSSHKey(t *testing.T) string {
+func testSSHKey(t testing.TB) string {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -50,7 +50,7 @@ func testSSHKey(t *testing.T) string {
 	return "ssh-ed25519 " + base64.StdEncoding.EncodeToString(b) + " you@laptop"
 }
 
-func validConfig(t *testing.T, enc, boot string) *Config {
+func validConfig(t testing.TB, enc, boot string) *Config {
 	t.Helper()
 	c := &Config{
 		Hostname:          "agentbox",

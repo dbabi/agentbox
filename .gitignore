@@ -6,3 +6,4 @@
 recovery.key
 luks.key
 /dist/
+/.fuzz/

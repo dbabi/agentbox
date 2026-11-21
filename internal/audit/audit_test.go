@@ -13,7 +13,7 @@ import (
 )
 
 type box struct {
-	t      *testing.T
+	t      testing.TB
 	dir    string
 	s      *Server
 	wall   int64
@@ -25,7 +25,7 @@ type box struct {
 
 type crashed struct{ point string }
 
-func newBox(t *testing.T) *box {
+func newBox(t testing.TB) *box {
 	b := &box{t: t, dir: tempDir(t), wall: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC).UnixMilli(), boot: 5000, bootID: "boot-1", avail: 100 << 30}
 	b.start()
 	return b

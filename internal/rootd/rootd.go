@@ -391,4 +391,16 @@ func (s *server) refill(r request) reply {
 	return reply{"ok": true, "refill": res}
 }
 
+// line answers one request line from socket name with one reply line.
+func (s *server) line(name string, b []byte) []byte {
+	var r request
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	rep := fail("bad_request")
+	if dec.Decode(&r) == nil {
+		rep = s.handle(name, r)
+	}
+	return encode(rep)
+}
+
 func encode(r reply) []byte { b, _ := json.Marshal(r); return append(b, '\n') }

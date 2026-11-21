@@ -45,6 +45,14 @@ func TestDenyThrottle(t *testing.T) {
 	}
 }
 
+// A failed ntfy_dst refresh is not a broker refusal: a DENY by "ntfy" names no enforcer, and auditd NACKs it.
+func TestDenyNtfyRefreshNotRecorded(t *testing.T) {
+	d := newDenyAudit(func(map[string]any) {})
+	if !d.deny("ntfy", "ntfy.sh:443", "unavailable", "x") || len(d.q) != 0 {
+		t.Fatalf("queued %d records for the ntfy refresh", len(d.q))
+	}
+}
+
 func TestDenyQueueBounded(t *testing.T) {
 	d := newDenyAudit(func(map[string]any) {})
 	n := 0

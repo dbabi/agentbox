@@ -5,5 +5,5 @@ package audit
 import "testing"
 
 // chattr flags exist only on Linux; see unlock_linux_test.go.
-func tempDir(t *testing.T) string { return t.TempDir() }
-func unlock(*testing.T, string)   {}
+func tempDir(t testing.TB) string { return t.TempDir() }
+func unlock(testing.TB, string)   {}
