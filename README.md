@@ -1,5 +1,13 @@
 <p align="center"><img src="mascot/banner.png" alt="agentbox banner with the pixel-art mascot" width="640"></p>
 
+<p align="center">
+  <a href="https://github.com/dbabi/agentbox/actions/workflows/ci.yml"><img src="https://github.com/dbabi/agentbox/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/dbabi/agentbox/security/code-scanning"><img src="https://github.com/dbabi/agentbox/actions/workflows/github-code-scanning/codeql/badge.svg" alt="CodeQL"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/dbabi/agentbox" alt="License: Apache-2.0"></a>
+  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/dbabi/agentbox" alt="Go version"></a>
+  <a href="docs/wiki/Roadmap.md"><img src="https://img.shields.io/badge/status-early%20alpha-orange" alt="Status: early alpha"></a>
+</p>
+
 # agentbox
 
 > [!WARNING]
