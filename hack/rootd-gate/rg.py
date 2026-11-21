@@ -7,6 +7,8 @@
 #   rg.py udpdns IP                          a DNS query for example.com to IP:53; exit 0 if any reply comes back
 #   rg.py flow IP PORT HOST LOG SECS         one TCP connection, an HTTP/1.1 keep-alive HEAD every 2 s for SECS; each
 #                                            line in LOG is "<unix time> ok|cut <detail>"; exit 0 if never cut
+#   rg.py vresolve HOST                      io.systemd.Resolve.ResolveHostname on resolved's Varlink socket, as the caller
+#                                            (the AF_UNIX DNS path nft never sees); exit 0 if it returns addresses
 #   rg.py sendfd SOCK                        sends a request with an SCM_RIGHTS fd; exit 0 if rootd closed without a reply
 #                                            (not if it went silent)
 #   rg.py chain SEG PREV N [close|torn|broken] appends N records in auditd's record format to SEG (O_APPEND): an open
@@ -133,6 +135,24 @@ def main(a):
         except OSError as e:
             print(e)
             return 1
+    elif a[0] == "vresolve":
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(10)
+            s.connect("/run/systemd/resolve/io.systemd.Resolve")
+            s.sendall(json.dumps({"method": "io.systemd.Resolve.ResolveHostname", "parameters": {"name": a[1]}}).encode() + b"\0")
+            buf = b""
+            while not buf.endswith(b"\0"):
+                b = s.recv(65536)
+                if not b:
+                    break
+                buf += b
+            r = json.loads(buf.rstrip(b"\0"))
+        except (OSError, ValueError) as e:
+            print(e)
+            return 1
+        print(json.dumps(r))
+        return 0 if r.get("parameters", {}).get("addresses") else 1
     elif a[0] == "flow":
         return flow(a[1], int(a[2]), a[3], a[4], int(a[5]))
     elif a[0] == "sendfd":

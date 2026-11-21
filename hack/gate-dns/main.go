@@ -47,6 +47,9 @@ func main() {
 		log.Fatal(err)
 	}
 	h := func(q []byte) []byte {
+		if name, _, _, err := question(q); err == nil {
+			log.Printf("query %s", name) // the gate checks which names resolved forwarded, and which it never did
+		}
 		if r, ok := answer(q, strings.ToLower(*zone), recs); ok {
 			return r
 		}

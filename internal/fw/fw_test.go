@@ -343,3 +343,28 @@ func TestRecordFixed(t *testing.T) {
 		t.Fatal(bad)
 	}
 }
+
+// nft sees only IP: resolved's Varlink socket (mode 0666) and its D-Bus API would give a broker DNS, and a DNS-name
+// exfiltration channel, over AF_UNIX (§6.1). Each broker unit must hide both; this holds from the day the units land.
+func TestBrokerUnitsHideResolved(t *testing.T) {
+	for _, b := range []string{"proxy", "keys", "git"} {
+		u, err := os.ReadFile(filepath.Join("..", "..", "systemd", "agentbox-"+b+".service"))
+		if errors.Is(err, os.ErrNotExist) {
+			t.Logf("agentbox-%s.service not written yet", b)
+			continue
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		var hidden []string
+		for _, l := range strings.Split(string(u), "\n") {
+			if v, ok := strings.CutPrefix(strings.TrimSpace(l), "InaccessiblePaths="); ok {
+				hidden = append(hidden, strings.Fields(v)...)
+			}
+		}
+		for _, p := range []string{"/run/systemd/resolve", "/run/dbus/system_bus_socket"} {
+			if !slices.Contains(hidden, p) {
+				t.Errorf("agentbox-%s.service: InaccessiblePaths= lacks %s", b, p)
+			}
+		}
+	}
+}

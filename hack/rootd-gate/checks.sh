@@ -89,7 +89,7 @@ main)
   check "sockets bound by PID 1 with the §2.1 owner and mode" '[ "$(stat -c %U:%G:%a $R/rootd-admin.sock)" = root:agentbox-admin:660 ] && [ "$(stat -c %U:%G:%a $R/audit-seal.sock)" = root:agentbox-audit:660 ] && for s in proxy keys git; do [ "$(stat -c %U:%G:%a $R/resolve-$s.sock)" = root:agentbox-$s:660 ] || exit 1; done'
   check "rootd holds no IP socket and listens on nothing but its unix sockets" 'p=$(systemctl show -P MainPID agentbox-rootd.service); [ "$p" -gt 0 ] && [ -z "$(ss -tuwanpH | grep "pid=$p,")" ]'
   check "rootd.db: root 0600, WAL" '[ "$(stat -c %U:%a /var/lib/agentbox/rootd.db)" = root:600 ] && [ "$(python3 -c "import sqlite3; print(sqlite3.connect(\"file:/var/lib/agentbox/rootd.db?mode=ro\", uri=True).execute(\"PRAGMA journal_mode\").fetchone()[0])")" = wal ]'
-  check "rootd.db tables are STRICT" '[ "$(python3 -c "import sqlite3; c=sqlite3.connect(\"file:/var/lib/agentbox/rootd.db?mode=ro\", uri=True); print(sum(1 for r in c.execute(\"select sql from sqlite_master where type=\x27table\x27\") if \"STRICT\" in r[0]))")" = 2 ]'
+  check "rootd.db tables are STRICT" '[ "$(python3 -c "import sqlite3; c=sqlite3.connect(\"file:/var/lib/agentbox/rootd.db?mode=ro\", uri=True); print(sum(1 for r in c.execute(\"select sql from sqlite_master where type=\x27table\x27\") if \"STRICT\" in r[0]))")" = 3 ]'
 
   echo "== peer checks (§2.1)"
   useradd -r -M -s /usr/sbin/nologin -G agentbox-admin rg-admin 2>/dev/null; useradd -r -M -s /usr/sbin/nologin -G agentbox-keys rg-keysgrp 2>/dev/null
@@ -136,10 +136,34 @@ main)
   check "a NAT64 address wrapping a public IPv4 passes" '[ "$(reason keys nat64ok.gate.test 443)" = ok ] && set_has keys_dst6 "64:ff9b::808:808 . 443"'
   check "/etc/hosts answers nothing (NO_SYNTHESIZE, NO_ZONE): no_such_name" '[ "$(reason keys hosts.gate.test 443)" = no_such_name ] && ! sets_have 192.88.96.9'
   check "NXDOMAIN: no_such_name"                  '[ "$(reason keys nx.gate.test 443)" = no_such_name ]'
-  check "a name on no list: not_allowlisted, and no lookup" '[ "$(reason keys pub.gate.test 8443)" = not_allowlisted ] && [ "$(reason keys unlisted.gate.test 443)" = not_allowlisted ]'
+  check "a name on no list: not_allowlisted" '[ "$(reason keys pub.gate.test 8443)" = not_allowlisted ] && [ "$(reason keys unlisted.gate.test 443)" = not_allowlisted ]'
+  # gate-dns logs every name it is asked; nx.gate.test (looked up just above) shows the log works
+  check "and no lookup: gate-dns was asked for nx.gate.test but never for unlisted.gate.test" 'sleep 1; q=$(journalctl -u rg-dns.service -o cat); echo "$q" | grep -q "query nx.gate.test$" && ! echo "$q" | grep -q "query unlisted.gate.test$"'
   check "keys' list is not git's: git gets not_allowlisted" '[ "$(reason git pub.gate.test 443)" = not_allowlisted ]'
   check "the proxy resolves nothing without a live task (no task registry yet)" '[ "$(reason proxy pub.gate.test 443)" = not_allowlisted ]'
   check "a bad host (IP literal, one label) is refused"  '[ "$(reason keys 1.2.3.4 443)" = not_allowlisted ] && [ "$(reason keys localhost 443)" = not_allowlisted ]'
+  # §9: an allowlist edit is INTENT, ACK, effect, RESULT; with auditd and its sockets stopped nothing executes
+  E=/var/lib/agentbox/control/egress; sum0=$(cat $E/*.list 2>/dev/null | sha256sum)
+  systemctl stop agentbox-auditd.service agentbox-auditd-agentboxd.socket agentbox-auditd-git.socket agentbox-auditd-keys.socket agentbox-auditd-proxy.socket agentbox-auditd-rootd.socket
+  check "auditd down: egress allow and remove fail, and no list file changes" '! allow keys down.gate.test:443 && ! remove keys pub.gate.test:443 >/dev/null && [ "$(cat $E/*.list 2>/dev/null | sha256sum)" = "$sum0" ]'
+  systemctl start agentbox-auditd-agentboxd.socket agentbox-auditd-git.socket agentbox-auditd-keys.socket agentbox-auditd-proxy.socket agentbox-auditd-rootd.socket agentbox-auditd.service
+  seqa=$(chain 0 "")
+  check "auditd back: egress allow works, its INTENT and RESULT (origin admin) are in the chain" 'allow keys down.gate.test:443 && remove keys down.gate.test:443 >/dev/null && [ "$(cat $E/*.list | sha256sum)" = "$sum0" ] && python3 - $seqa /var/lib/agentbox/audit/seg-*.jsonl <<EOF
+import json, sys
+seq, ops = int(sys.argv[1]), {}
+for f in sys.argv[2:]:
+    for l in open(f, errors="replace"):
+        try:
+            r = json.loads(l)
+        except ValueError:
+            continue
+        b = r.get("body") or {}
+        if r.get("seq", 0) > seq and r.get("type") in ("INTENT", "RESULT"):
+            ops.setdefault(b.get("opId"), []).append((r["type"], b.get("name"), b.get("origin"), b.get("status")))
+want = [[("INTENT", "egress.allow", "admin", None), ("RESULT", None, None, "executed")],
+        [("INTENT", "egress.remove", "admin", None), ("RESULT", None, None, "executed")]]
+sys.exit(0 if sorted(ops.values()) == sorted(want) else 1)
+EOF'
   check "rootd refuses a deputy host in common.list" '! $A egress allow --svc proxy --entry proxy.golang.org:443'
 
   echo "== a broker reaches only what rootd resolved"
@@ -150,6 +174,18 @@ main)
   check "before resolution keys can't connect to $FLOW_HOST ($FIP:$FLOW_PORT)" '! set_has keys_dst4 "$FIP . $FLOW_PORT" && ! as agentbox-keys $RG connect $FIP $FLOW_PORT 3'
   check "brokers do no DNS: 127.0.0.53 is unreachable for agentbox-keys" '! as agentbox-keys $RG udpdns 127.0.0.53'
   check "and the system resolver gives the broker nothing" '! as agentbox-keys getent ahosts $FLOW_HOST'
+  # resolved's Varlink socket (0666) and its D-Bus API are AF_UNIX, which nft never sees: the broker units hide both
+  # (§6.1). The probes work for an unconfined uid, and fail under exactly the units' InaccessiblePaths=.
+  BUS="busctl call org.freedesktop.resolve1 /org/freedesktop/resolve1 org.freedesktop.resolve1.Manager ResolveHostname isit 0 pub.gate.test 0 0"
+  check "the AF_UNIX probes resolve for an unconfined agentbox-keys (Varlink and D-Bus)" 'as agentbox-keys $RG vresolve pub.gate.test && as agentbox-keys $BUS'
+  check "with InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket both fail" "systemd-run -q --wait --pipe -p User=agentbox-keys -p InaccessiblePaths='/run/systemd/resolve /run/dbus/system_bus_socket' sh -c '! $RG vresolve pub.gate.test && ! $BUS'"
+  for b in proxy keys git; do
+    if systemctl cat agentbox-$b.service >/dev/null 2>&1; then
+      check "agentbox-$b.service hides resolved's Varlink and D-Bus sockets" "systemctl show -P InaccessiblePaths agentbox-$b.service | grep -q /run/systemd/resolve && systemctl show -P InaccessiblePaths agentbox-$b.service | grep -q /run/dbus/system_bus_socket"
+    else
+      note "agentbox-$b.service is not in this release yet (docs/THREAT-MODEL.md residual); its unit check runs once it lands"
+    fi
+  done
   IPS=$(addrs keys "$FLOW_HOST" "$FLOW_PORT"); IP=$(v4 "$IPS")
   note "rootd resolved $FLOW for keys: $IPS"
   check "after rootd resolved it keys connects to $IP:$FLOW_PORT" '[ -n "$IP" ] && as agentbox-keys $RG connect $IP $FLOW_PORT 5'

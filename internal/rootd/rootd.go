@@ -162,7 +162,8 @@ func Run(cfg Config) error {
 	if !aok || !gok {
 		return errors.New("no agentbox-audit user or group (sysusers.d/agentbox.conf)")
 	}
-	s := &server{cfg: cfg, db: db, svc: svc, seal: &audit.Files{Dir: cfg.AuditDir, UID: int(auid), GID: int(agid), Crash: cfg.SealCrash}}
+	s := &server{cfg: cfg, db: db, svc: svc, seal: &audit.Files{Dir: cfg.AuditDir, UID: int(auid), GID: int(agid), Crash: cfg.SealCrash},
+		audit: func(r map[string]any) error { return auditSend(cfg.AuditSocket, r) }}
 	for name, ln := range lns {
 		go s.accept(name, ln)
 	}
@@ -203,6 +204,8 @@ type server struct {
 	db   *sql.DB
 	svc  *resolve.Service
 	seal audit.Sealer
+	// audit sends one record to auditd's rootd producer socket and returns nil only on its ACK (auditSend)
+	audit func(map[string]any) error
 }
 
 // refresh re-resolves ntfy.sh:443 into ntfy_dst (§6.1). A failure only logs: ntfy is down until the next try.
@@ -212,25 +215,31 @@ func (s *server) refresh(ctx context.Context) {
 	}
 }
 
-// sendDeny is a best-effort DENY record on auditd's rootd producer socket (§9): a refusal is not an effect, so
-// nothing waits on its ACK, and the journal line above stays the fallback when auditd is down.
-func sendDeny(sock string, rec map[string]any) {
+// auditSend writes one record on auditd's rootd producer socket and waits for the reply: nil only on an ACK.
+func auditSend(sock string, rec map[string]any) error {
 	c, err := net.DialTimeout("unix", sock, 2*time.Second)
 	if err != nil {
-		log.Printf("DENY not audited: %v", err)
-		return
+		return err
 	}
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(5 * time.Second))
 	b, _ := json.Marshal(rec)
 	if _, err := c.Write(append(b, '\n')); err != nil {
-		log.Printf("DENY not audited: %v", err)
-		return
+		return err
 	}
 	line, err := bufio.NewReader(c).ReadBytes('\n')
 	var rep audit.Reply
 	if err != nil || json.Unmarshal(line, &rep) != nil || !rep.OK {
-		log.Printf("DENY not audited: %v %s", err, bytes.TrimSpace(line))
+		return fmt.Errorf("no ACK: %v %s", err, bytes.TrimSpace(line))
+	}
+	return nil
+}
+
+// sendDeny is a best-effort DENY record (§9): a refusal is not an effect, so nothing waits on its ACK, and the journal
+// line stays the fallback when auditd is down.
+func sendDeny(sock string, rec map[string]any) {
+	if err := auditSend(sock, rec); err != nil {
+		log.Printf("DENY not audited: %v", err)
 	}
 }
 
@@ -315,12 +324,28 @@ func (s *server) admin(r request) reply {
 		if err != nil {
 			return reply{"ok": false, "error": err.Error()}
 		}
+		// §9: INTENT, its ACK, the effect, RESULT. auditd down means the list stays as it is.
+		// shortcut: rootd logs the edit as an admin op itself; weeks 9-10's net.allow_domain flow replaces this.
+		id := newDenyID()
+		if err := s.audit(map[string]any{"type": "INTENT", "opId": id, "name": r.Op, "origin": "admin",
+			"args": map[string]string{"svc": r.Svc, "entry": e.String()}}); err != nil {
+			return reply{"ok": false, "error": "audit: the INTENT was not ACKed, nothing changed: " + err.Error()}
+		}
 		changed, err := resolve.EditList(s.cfg.EgressDir, r.Svc, e, r.Op == "egress.allow")
+		status, detail := "executed", ""
+		if err != nil {
+			status, detail = "failed", err.Error()
+		}
+		aerr := s.audit(map[string]any{"type": "RESULT", "opId": id, "status": status, "detail": detail, "changed": changed})
 		if err != nil {
 			return reply{"ok": false, "error": err.Error()}
 		}
-		rep := s.refill(r)
+		rep := s.refill(r) // even with no RESULT ACK: a removal must still revoke
 		rep["changed"] = changed
+		if aerr != nil {
+			log.Printf("%s %s %s: RESULT not audited: %v", r.Op, r.Svc, r.Entry, aerr)
+			rep["ok"], rep["error"] = false, "the list changed, but its audit RESULT was not ACKed: "+aerr.Error()
+		}
 		return rep
 	case "sets.refill":
 		return s.refill(r)
