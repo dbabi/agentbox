@@ -24,6 +24,9 @@ const (
 	DocsFile = "docs/ops.md"
 )
 
+// Shipped is every file a release ships in gen/, and all that CheckFiles allows there.
+var Shipped = []string{CedarFile, SchemaFile, MCPFile}
+
 const header = "Code generated from internal/ops/registry.go by go generate; DO NOT EDIT."
 
 // The ask-cost lines that start every MCP tool description (§5.1).
@@ -31,7 +34,10 @@ const (
 	askNever  = "Never asks a human."
 	askPhone  = "Asks (1 of your task's ask budget) when this task is tainted or policy requires; CLI or phone."
 	askAlways = "Always asks (1 of your task's ask budget); laptop CLI only."
-	askPush   = "Asks unless a standing push policy covers this private remote and the task is clean; CLI only. Send it with its PR as one ask.batch."
+	// Not in §5.1's list: the two signature rules its three lines misstate (app.deploy, workspace.restore).
+	askChanged     = "Asks (1 of your task's ask budget) when the manifest or exposure changes or this task is tainted; laptop CLI only."
+	askAlwaysPhone = "Always asks (1 of your task's ask budget); CLI or phone."
+	askPush        = "Asks unless a standing push policy covers this private remote and the task is clean; CLI only. Send it with its PR as one ask.batch."
 )
 
 // The rollback coverage a reversible op needs (§5.1 Reversible check).
@@ -78,6 +84,9 @@ func Validate(reg []Op) error {
 				bad(o, "the taint rule needs a signature on every tainted %s op (§5.3)", o.Class)
 			}
 		}
+		if o.Sig != SigNone && len(o.Bound) == 0 {
+			bad(o, "a signed op needs bound inputs for H (§5.1)")
+		}
 		if o.Reversible && !slices.Contains(reversibleCov, o.Rollback) {
 			bad(o, "reversible with rollback coverage %q (needs logical, workspace or CAS-revert)", o.Rollback)
 		}
@@ -102,8 +111,11 @@ func Validate(reg []Op) error {
 				if !slices.Contains([]string{"string", "integer", "boolean", "array", "object"}, f.Type) {
 					bad(o, "field %s: unknown type %q", f.Name, f.Type)
 				}
-				if !slices.Contains([]Audit{Keep, Hash, Drop}, f.Audit) {
+				if !slices.Contains([]Audit{Keep, Hash, Drop, Members}, f.Audit) {
 					bad(o, "field %s: unknown audit class %q", f.Name, f.Audit)
+				}
+				if (f.Audit == Members) != (f.Name == "ops") || f.Audit == Members && f.Type != "array" {
+					bad(o, "field %s: an array of other ops (ops) is members class, and nothing else is (§9)", f.Name)
 				}
 			}
 		}
@@ -149,9 +161,23 @@ func cedar(reg []Op) []byte {
 }
 
 type prop struct {
-	Type  string `json:"type"`
-	Audit Audit  `json:"x-agentbox-audit"`
+	Type  string  `json:"type"`
+	Audit Audit   `json:"x-agentbox-audit"`
+	Items *member `json:"items,omitempty"`
 }
+
+// member is the item schema of a members-class array: args are classed by op name's own args schema.
+type member struct {
+	Type     string         `json:"type"`
+	Props    map[string]typ `json:"properties"`
+	Required []string       `json:"required"`
+}
+
+type typ struct {
+	Type string `json:"type"`
+}
+
+var memberItem = &member{"object", map[string]typ{"name": {"string"}, "args": {"object"}}, []string{"name", "args"}}
 
 type schema struct {
 	Schema     string          `json:"$schema,omitempty"`
@@ -167,7 +193,11 @@ func objSchema(fs []Field, top bool) schema {
 		s.Schema = "https://json-schema.org/draft/2020-12/schema"
 	}
 	for _, f := range fs {
-		s.Props[f.Name] = prop{f.Type, f.Audit}
+		p := prop{Type: f.Type, Audit: f.Audit}
+		if f.Audit == Members {
+			p.Items = memberItem
+		}
+		s.Props[f.Name] = p
 		if !f.Opt {
 			s.Required = append(s.Required, f.Name)
 		}
@@ -205,6 +235,10 @@ func askLine(o Op) string {
 		return askNever
 	case o.Sig == SigPolicy:
 		return askPush
+	case o.Sig == SigChanged:
+		return askChanged
+	case o.Reversible && o.Sig == SigAlways:
+		return askAlwaysPhone
 	case o.Reversible:
 		return askPhone
 	}
@@ -348,7 +382,7 @@ func CheckFiles(reg []Op, dir string) error {
 			return fmt.Errorf("%s: not a generated file", filepath.Join(dir, e.Name()))
 		}
 	}
-	for _, f := range []string{CedarFile, SchemaFile, MCPFile} {
+	for _, f := range Shipped {
 		p := filepath.Join(dir, f)
 		b, err := os.ReadFile(p)
 		if err != nil {

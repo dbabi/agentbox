@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"agentbox/internal/ops"
 )
 
 // TestBuild builds one release twice: the same bytes both times, root-owned entries with fixed modes, one ELF per
@@ -78,8 +80,10 @@ func TestBuild(t *testing.T) {
 	units, _ := filepath.Glob("systemd/*") // sorted, and every unit in the repo ships
 	sysusers, _ := filepath.Glob("sysusers.d/*")
 	tmpfiles, _ := filepath.Glob("tmpfiles.d/*")
-	gen, _ := filepath.Glob("gen/*")
-	units = append(append(append(units, sysusers...), tmpfiles...), gen...)
+	units = append(append(units, sysusers...), tmpfiles...)
+	for _, g := range ops.Shipped { // exactly these, whatever else sits in gen/
+		units = append(units, "gen/"+g)
+	}
 	all := strings.Fields(want)
 	for _, u := range units {
 		mode[u] = 0o644

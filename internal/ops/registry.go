@@ -35,6 +35,7 @@ const (
 	SigChanged Sig = "if the manifest or exposure changes, or tainted"
 	SigAlways  Sig = "always"
 	SigPolicy  Sig = "unless a standing push policy covers a private remote and the task is clean"
+	SigDelta   Sig = "unless the closure is inside the signed update.policy delta"
 )
 
 // Coverage is the rollback coverage, the §5.3 "Rollback coverage" column.
@@ -60,6 +61,9 @@ const (
 	Keep Audit = "keep"
 	Hash Audit = "hash"
 	Drop Audit = "drop"
+	// Members marks an array of other ops, each item {name, args}: each member's args take the classes of op name's own
+	// schema (§9 "args (classes applied)"), so no member's hash or drop field is logged verbatim.
+	Members Audit = "members"
 )
 
 // Field is one arg or output. Type is a JSON schema type.
@@ -74,6 +78,7 @@ func str(n string) Field        { return Field{Name: n, Type: "string", Audit: K
 func num(n string) Field        { return Field{Name: n, Type: "integer", Audit: Keep} }
 func list(n string) Field       { return Field{Name: n, Type: "array", Audit: Keep} }
 func obj(n string) Field        { return Field{Name: n, Type: "object", Audit: Keep} }
+func members(n string) Field    { return Field{Name: n, Type: "array", Audit: Members} }
 func (f Field) opt() Field      { f.Opt = true; return f }
 func (f Field) hash() Field     { f.Audit = Hash; return f }
 func (f Field) drop() Field     { f.Audit = Drop; return f }
@@ -124,6 +129,9 @@ func admin(name string, sig Sig, args ...Field) Op {
 	return Op{Name: name, Class: Admin, Args: args, Sig: sig, Rollback: CovNA, Rootd: true}
 }
 
+// signed gives a signed admin op its bound inputs and rollback coverage (§5.3).
+func (o Op) signed(cov Coverage, bound ...string) Op { o.Bound, o.Rollback = bound, cov; return o }
+
 func agentboxd(o Op) Op { o.Rootd = false; return o }
 
 func taints(o Op, out ...Field) Op { o.TaintsOutput, o.Out = true, out; return o }
@@ -153,9 +161,9 @@ var Registry = []Op{
 	admin("approver.add", SigNone, str("name"), str("sshPub")),
 	admin("approver.remove", SigNone, str("name")),
 	{Name: "ask.batch", Desc: "Submit a push and its PR, or a push and its replies to one PR, as one ask.", Class: Live, Group: GSideEffect,
-		Resource: host, Args: fields(str("shape"), list("ops")), Bound: []string{"each member's bound inputs", "the member H list"},
+		Resource: host, Args: fields(str("shape"), members("ops")), Bound: []string{"each member's bound inputs", "the member H list"},
 		Sig: SigAlways, Rollback: CovMember, Rootd: true},
-	rd("ask.quote", "Quote what 1 to 8 ops would cost this task before acting. Quote your whole plan once.", host, "", list("ops")),
+	rd("ask.quote", "Quote what 1 to 8 ops would cost this task before acting. Quote your whole plan once.", host, "", members("ops")),
 	agentboxd(rd("ask.status", "Show this task's asks and taint; with id, that ask's state. waitMs (at most 25000) waits for a change.", host, "",
 		str("id").opt(), num("waitMs").opt())),
 	agentboxd(rd("bus.agents.list", "List the agents on this box and their skills.", host, "")),
@@ -205,9 +213,9 @@ var Registry = []Op{
 	admin("go.private.set", SigNone, str("agent"), str("patterns")),
 	agentboxd(Op{Name: "memory.forget", Desc: "Forget a fact you could read now.", Class: Agentboxd, Group: GSideEffect, Resource: mscope, ResourceFrom: "factId",
 		Args: fields(str("factId")), Bound: []string{"fact ID"}, Sig: SigTainted, Rollback: CovLogical, Reversible: true, WorkspaceBindable: true}),
-	admin("memory.purge", SigAlways, str("factId")),
+	admin("memory.purge", SigAlways, str("factId")).signed(CovNone, "fact ID", "body hash"),
 	agentboxd(rd("memory.read", "Read facts from a memory scope. Tainted facts taint this task first.", mscope, "scope", str("scope"), str("query").opt())),
-	admin("memory.review", SigAlways, str("factId"), str("decision"), str("bodyHash")),
+	admin("memory.review", SigAlways, str("factId"), str("decision"), str("bodyHash")).signed(CovNone, "fact ID", "body hash"),
 	agentboxd(Op{Name: "memory.write", Desc: "Write a fact to a memory scope.", Class: Agentboxd, Group: GSideEffect, Resource: mscope, ResourceFrom: "scope",
 		Args: fields(str("scope"), str("title").hash(), str("body").hash(), num("ttlDays").opt()), Bound: []string{"body hash"},
 		Sig: SigTainted, Rollback: CovLogical, Reversible: true, WorkspaceBindable: true}),
@@ -229,8 +237,8 @@ var Registry = []Op{
 	{Name: "os.unit.enable", Desc: "Enable a systemd unit in a new OS generation.", Class: OS, Group: GSideEffect, Resource: []string{"Unit"},
 		ResourceFrom: "unit", Args: fields(str("unit")), Bound: []string{"unit name"}, Sig: SigAlways, Rollback: CovOS, Rootd: true},
 	{Name: "os.update", Class: OS, Group: GSideEffect, Human: true, Resource: host,
-		Bound: []string{"closure + .deb hashes", "base", "updatePolicyDigest"}, Sig: SigAlways, Rollback: CovOS, Rootd: true},
-	admin("passkey.confirm", SigAlways, str("id")),
+		Bound: []string{"closure + .deb hashes", "base", "updatePolicyDigest"}, Sig: SigDelta, Rollback: CovOS, Rootd: true},
+	admin("passkey.confirm", SigAlways, str("id")).signed(CovNA, "regId", "credIdHash", "coseKeyHash", "createdAt"), // §5.4
 	admin("passkey.register", SigNone, str("name")),
 	admin("passkey.revoke", SigNone, str("id")),
 	admin("pending.deny", SigNone, str("id"), list("strike").opt()),
@@ -247,11 +255,12 @@ var Registry = []Op{
 		Args: fields(str("remote"), str("ref"), str("oid")), Bound: []string{"OID", "remote_url", "gh_node_id"}, Sig: SigPolicy, Rollback: CovNone, Rootd: true},
 	admin("secret.set", SigNone, str("name"), str("value").drop()),
 	rd("system.info", "Show box and release information.", host, ""),
-	admin("taint.clear", SigAlways, str("subject"), str("contentId")),
+	admin("taint.clear", SigAlways, str("subject"), str("contentId")).signed(CovNone, "contentId", "the subject's taint epoch",
+		"for workspace: the dependency report's SHA-256 and its high-risk count"),
 	admin("update.policy.set", SigNone, str("policy")),
 	{Name: "workbench.add_package", Desc: "Add an Ubuntu package to your workbench image.", Class: OS, Group: GSideEffect, Resource: []string{"Package"},
 		ResourceFrom: "package", Args: fields(str("package")), Bound: []string{"closure + .deb hashes", "base gen"}, Sig: SigAlways, Rollback: CovOS, Rootd: true},
-	{Name: "workspace.restore", Desc: "Restore your workspace from one of its snapshots.", Class: Live, Group: GSideEffect, Resource: []string{"WorkspaceSnap"},
+	{Name: "workspace.restore", Desc: "Restore your workspace from one of its snapshots. A tainted snapshot needs the laptop CLI.", Class: Live, Group: GSideEffect, Resource: []string{"WorkspaceSnap"},
 		ResourceFrom: "id", Args: fields(str("id")), Bound: []string{"snapshot ID", "snapshot taint", "tree digest", "diff digest vs current"},
 		Sig: SigAlways, Rollback: CovWS, Reversible: true, Rootd: true},
 	{Name: "workspace.snapshot", Desc: "Take a read-only snapshot of your workspace.", Class: Safe, Group: GSafe, Resource: []string{"Host", "Repo"},

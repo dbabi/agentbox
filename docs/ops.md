@@ -19,8 +19,8 @@ Every op, from `internal/ops/registry.go` (ARCHITECTURE.md §5.1, §5.3). Args a
 | `app.stop` | Safe | Safe | App from `app` | app |  | none | app ID | none |  |  |  | yes |
 | `approver.add` | admin | n/a |  | name, sshPub |  | none | n/a | n/a |  |  |  | yes |
 | `approver.remove` | admin | n/a |  | name |  | none | n/a | n/a |  |  |  | yes |
-| `ask.batch` | live | SideEffect | Host | shape, ops |  | always | each member's bound inputs; the member H list | per member |  |  |  | yes |
-| `ask.quote` | read | Read | Host | ops |  | none | n/a | n/a |  |  |  | yes |
+| `ask.batch` | live | SideEffect | Host | shape, ops (members) |  | always | each member's bound inputs; the member H list | per member |  |  |  | yes |
+| `ask.quote` | read | Read | Host | ops (members) |  | none | n/a | n/a |  |  |  | yes |
 | `ask.status` | read | Read | Host | id?, waitMs? |  | none | n/a | n/a |  |  |  |  |
 | `budget.set` | admin | n/a |  | budgets |  | none | n/a | n/a |  |  |  | yes |
 | `bus.agents.list` | read | Read | Host |  |  | none | n/a | n/a |  |  |  |  |
@@ -45,9 +45,9 @@ Every op, from `internal/ops/registry.go` (ARCHITECTURE.md §5.1, §5.3). Args a
 | `gh.pr.read` | read | Read | Host | remote, number | pr (hash) | none | n/a | n/a |  | yes |  | yes |
 | `go.private.set` | admin | n/a |  | agent, patterns |  | none | n/a | n/a |  |  |  | yes |
 | `memory.forget` | agentboxd | SideEffect | MemoryScope from `factId` | factId |  | if tainted | fact ID | logical | yes |  | yes |  |
-| `memory.purge` | admin | n/a |  | factId |  | always | n/a | n/a |  |  |  | yes |
+| `memory.purge` | admin | n/a |  | factId |  | always | fact ID; body hash | none |  |  |  | yes |
 | `memory.read` | read | Read | MemoryScope from `scope` | scope, query? |  | none | n/a | n/a |  |  |  |  |
-| `memory.review` | admin | n/a |  | factId, decision, bodyHash |  | always | n/a | n/a |  |  |  | yes |
+| `memory.review` | admin | n/a |  | factId, decision, bodyHash |  | always | fact ID; body hash | none |  |  |  | yes |
 | `memory.write` | agentboxd | SideEffect | MemoryScope from `scope` | scope, title (hash), body (hash), ttlDays? |  | if tainted | body hash | logical | yes |  | yes |  |
 | `net.allow_domain` | live | SideEffect | Domain from `host` | host, port, reason, agent? |  | always | host:port; agent | none |  |  |  | yes |
 | `op.resolve` | admin | n/a |  | id, outcome |  | none | n/a | n/a |  |  |  | yes |
@@ -57,8 +57,8 @@ Every op, from `internal/ops/registry.go` (ARCHITECTURE.md §5.1, §5.3). Args a
 | `os.rollback` | os | SideEffect | Generation from `gen` | gen |  | always | gen ID | full OS |  |  |  | yes |
 | `os.unit.disable` | os | SideEffect | Unit from `unit` | unit |  | always | unit name | full OS |  |  |  | yes |
 | `os.unit.enable` | os | SideEffect | Unit from `unit` | unit |  | always | unit name | full OS |  |  |  | yes |
-| `os.update` | os | SideEffect | Host (human only) |  |  | always | closure + .deb hashes; base; updatePolicyDigest | full OS |  |  |  | yes |
-| `passkey.confirm` | admin | n/a |  | id |  | always | n/a | n/a |  |  |  | yes |
+| `os.update` | os | SideEffect | Host (human only) |  |  | unless the closure is inside the signed update.policy delta | closure + .deb hashes; base; updatePolicyDigest | full OS |  |  |  | yes |
+| `passkey.confirm` | admin | n/a |  | id |  | always | regId; credIdHash; coseKeyHash; createdAt | n/a |  |  |  | yes |
 | `passkey.register` | admin | n/a |  | name |  | none | n/a | n/a |  |  |  | yes |
 | `passkey.revoke` | admin | n/a |  | id |  | none | n/a | n/a |  |  |  | yes |
 | `pending.deny` | admin | n/a |  | id, strike? |  | none | n/a | n/a |  |  |  | yes |
@@ -72,7 +72,7 @@ Every op, from `internal/ops/registry.go` (ARCHITECTURE.md §5.1, §5.3). Args a
 | `repo.push` | live | SideEffect | Repo from `remote` | remote, ref, oid |  | unless a standing push policy covers a private remote and the task is clean | OID; remote_url; gh_node_id | none |  |  |  | yes |
 | `secret.set` | admin | n/a |  | name, value (drop) |  | none | n/a | n/a |  |  |  | yes |
 | `system.info` | read | Read | Host |  |  | none | n/a | n/a |  |  |  | yes |
-| `taint.clear` | admin | n/a |  | subject, contentId |  | always | n/a | n/a |  |  |  | yes |
+| `taint.clear` | admin | n/a |  | subject, contentId |  | always | contentId; the subject's taint epoch; for workspace: the dependency report's SHA-256 and its high-risk count | none |  |  |  | yes |
 | `update.policy.set` | admin | n/a |  | policy |  | none | n/a | n/a |  |  |  | yes |
 | `workbench.add_package` | os | SideEffect | Package from `package` | package |  | always | closure + .deb hashes; base gen | full OS |  |  |  | yes |
 | `workspace.restore` | live | SideEffect | WorkspaceSnap from `id` | id |  | always | snapshot ID; snapshot taint; tree digest; diff digest vs current | workspace | yes |  |  | yes |

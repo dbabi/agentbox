@@ -54,6 +54,9 @@ func TestGoldenSets(t *testing.T) {
 			"agent.add agent.attach agent.remove agent.skills.set approver.add approver.remove budget.set cache.purge go.private.set memory.purge " +
 				"memory.review op.resolve passkey.confirm passkey.register passkey.revoke pending.deny policy.set procedural.set push.policy.set " +
 				"remote.set secret.set taint.clear update.policy.set"},
+		{"signed admin ops (§5.3 admin trust)", func(o Op) bool { return o.Class == Admin && o.Sig != SigNone && len(o.Bound) > 0 },
+			"memory.purge memory.review passkey.confirm taint.clear"},
+		{"signed unless inside the update delta", func(o Op) bool { return o.Sig == SigDelta }, "os.update"},
 		{"Cedar but no MCP tool", func(o Op) bool { return o.Group != "" && !slices.Contains(names(mcpOps(Registry)), o.Name) }, "os.update"},
 		{"remote writes", func(o Op) bool { return o.Rollback == CovExternal || o.Name == "repo.push" }, "gh.issue.comment gh.pr.comment gh.pr.create repo.push"},
 	} {
@@ -83,16 +86,30 @@ func TestAuditClasses(t *testing.T) {
 			}
 		}
 	}
-	want := "app.logs.out.log=hash file.write.content=hash gh.issue.comment.body=hash gh.issue.read.out.issue=hash gh.pr.comment.body=hash gh.pr.create.title=hash " +
+	want := "app.logs.out.log=hash ask.batch.ops=members ask.quote.ops=members file.write.content=hash gh.issue.comment.body=hash gh.issue.read.out.issue=hash gh.pr.comment.body=hash gh.pr.create.title=hash " +
 		"gh.pr.create.body=hash gh.pr.read.out.pr=hash memory.write.title=hash memory.write.body=hash secret.set.value=drop"
 	if g := strings.Join(got, " "); g != want {
 		t.Errorf("non-keep fields:\n got %s\nwant %s", g, want)
+	}
+	// A keep-class array or object is logged whole, so none may carry another op's args (those are members class).
+	got = nil
+	for _, o := range sorted(Registry) {
+		for _, f := range slices.Concat(o.Args, o.Out) {
+			if f.Audit == Keep && (f.Type == "array" || f.Type == "object") {
+				got = append(got, o.Name+"."+f.Name)
+			}
+		}
+	}
+	want = "agent.skills.set.skills bus.message.send.parts bus.task.send.skills bus.task.send.message bus.task.update.message " +
+		"bus.task.update.artifacts os.pkg.install.packages os.pkg.remove.packages pending.deny.strike"
+	if g := strings.Join(got, " "); g != want {
+		t.Errorf("keep-class arrays and objects:\n got %s\nwant %s", g, want)
 	}
 }
 
 func TestAskLines(t *testing.T) {
 	for name, want := range map[string]string{"app.status": askNever, "bus.task.send": askNever, "file.write": askPhone, "memory.write": askPhone,
-		"workspace.restore": askPhone, "gh.pr.create": askAlways, "ask.batch": askAlways, "repo.push": askPush} {
+		"workspace.restore": askAlwaysPhone, "app.deploy": askChanged, "gh.pr.create": askAlways, "ask.batch": askAlways, "repo.push": askPush} {
 		i := slices.IndexFunc(Registry, func(o Op) bool { return o.Name == name })
 		if got := askLine(Registry[i]); got != want {
 			t.Errorf("%s: %q, want %q", name, got, want)
@@ -128,6 +145,9 @@ func TestValidateRefuses(t *testing.T) {
 		"tool with no description":    edit("app.start", func(o *Op) { o.Desc = "" }),
 		"duplicate field":             edit("file.write", func(o *Op) { o.Args = append(o.Args, str("path")) }),
 		"bad audit class":             edit("file.write", func(o *Op) { o.Args = fields(str("path"), Field{Name: "content", Type: "string"}) }),
+		"signed op binds nothing":     edit("taint.clear", func(o *Op) { o.Bound = nil }),
+		"members off an ops array":    edit("ask.batch", func(o *Op) { o.Args = fields(str("shape"), list("ops")) }),
+		"members on a non-ops field":  edit("file.write", func(o *Op) { o.Args = fields(str("path"), members("content")) }),
 		"duplicate op":                append(slices.Clone(Registry), Registry[0]),
 		"bad name":                    append(slices.Clone(Registry), admin("Bad", SigNone)),
 	} {
@@ -139,7 +159,7 @@ func TestValidateRefuses(t *testing.T) {
 
 func copyGen(t *testing.T) string {
 	d := t.TempDir()
-	for _, f := range []string{CedarFile, SchemaFile, MCPFile} {
+	for _, f := range Shipped {
 		b, err := os.ReadFile(filepath.Join(genDir, f))
 		if err != nil {
 			t.Fatal(err)

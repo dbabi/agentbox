@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"sort"
 	"time"
+
+	"agentbox/internal/ops"
 )
 
 // The version names /var/lib/agentbox/releases/<ver> on the box (install.sh checks the same charset) and the tarball,
@@ -95,13 +97,28 @@ func build(version, key, out string, sign bool) (string, []byte, error) {
 	}
 	sysusers, _ := filepath.Glob("sysusers.d/*")
 	tmpfiles, _ := filepath.Glob("tmpfiles.d/*")
-	gen, _ := filepath.Glob("gen/*") // the op registry's generated files; rootd checks them at start (internal/ops)
-	if len(gen) == 0 {
-		return "", nil, errors.New("no gen/* files: run go generate ./internal/ops")
-	}
-	units = append(append(append(units, sysusers...), tmpfiles...), gen...)
+	units = append(append(units, sysusers...), tmpfiles...)
 	for _, u := range units {
 		files = append(files, file{u, u, 0o644})
+	}
+	// Ship exactly the op registry's generated files, checked as rootd checks them at start against the registry these
+	// binaries were built from, so a stray or stale file in gen/ fails here and not as a rootd restart loop on the box.
+	gen := filepath.Join(tmp, "gen")
+	if err := os.Mkdir(gen, 0o755); err != nil {
+		return "", nil, err
+	}
+	for _, g := range ops.Shipped {
+		b, err := os.ReadFile(filepath.Join("gen", g))
+		if err != nil {
+			return "", nil, err
+		}
+		if err := os.WriteFile(filepath.Join(gen, g), b, 0o644); err != nil {
+			return "", nil, err
+		}
+		files = append(files, file{"gen/" + g, filepath.Join(gen, g), 0o644})
+	}
+	if err := ops.CheckFiles(ops.Registry, gen); err != nil {
+		return "", nil, fmt.Errorf("gen/: %w", err)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
 

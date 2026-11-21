@@ -3,7 +3,7 @@
   "tools": [
     {
       "name": "app.deploy",
-      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Build and deploy one of your registered apps from its context, offline, from CAS.",
+      "description": "Asks (1 of your task's ask budget) when the manifest or exposure changes or this task is tainted; laptop CLI only. Build and deploy one of your registered apps from its context, offline, from CAS.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -159,7 +159,22 @@
         "properties": {
           "ops": {
             "type": "array",
-            "x-agentbox-audit": "keep"
+            "x-agentbox-audit": "members",
+            "items": {
+              "type": "object",
+              "properties": {
+                "args": {
+                  "type": "object"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "args"
+              ]
+            }
           },
           "shape": {
             "type": "string",
@@ -181,7 +196,22 @@
         "properties": {
           "ops": {
             "type": "array",
-            "x-agentbox-audit": "keep"
+            "x-agentbox-audit": "members",
+            "items": {
+              "type": "object",
+              "properties": {
+                "args": {
+                  "type": "object"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "args"
+              ]
+            }
           }
         },
         "required": [
@@ -930,7 +960,7 @@
     },
     {
       "name": "workspace.restore",
-      "description": "Asks (1 of your task's ask budget) when this task is tainted or policy requires; CLI or phone. Restore your workspace from one of its snapshots.",
+      "description": "Always asks (1 of your task's ask budget); CLI or phone. Restore your workspace from one of its snapshots. A tainted snapshot needs the laptop CLI.",
       "inputSchema": {
         "type": "object",
         "properties": {
