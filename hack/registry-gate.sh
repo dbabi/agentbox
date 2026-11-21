@@ -52,7 +52,7 @@ rm -rf $B && cp -a "$G" $B
 refused() { t=$(date +%s); sleep 1; ! systemctl restart $U && sleep 3 && ! systemctl is-active -q $U &&
   journalctl -u $U -o cat --since "@$t" | grep -F "op registry mismatch, refusing to start" | grep -qF "$1"; }
 restore() { systemctl stop $U; rm -rf "$G" && cp -a $B "$G"; systemctl reset-failed $U; }
-check "the release ships gen/ with the three generated files" '[ "$(ls "$G" | tr "\n" " ")" = "cedar.schema mcp-tools.json ops.schema.json " ]'
+check "the release ships gen/ with the six generated files" '[ "$(ls "$G" | tr "\n" " ")" = "ask.v1.json audit-deny.v1.json cedar.schema denial.v1.json mcp-tools.json ops.schema.json " ]'
 check "rootd is active on the shipped gen/" 'systemctl is-active -q $U'
 check "  ... and logged the match" 'journalctl -b -u $U -o cat | grep -q " op registry matches $G: [0-9]* ops$"'
 printf " " >> "$G/cedar.schema"
