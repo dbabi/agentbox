@@ -21,6 +21,12 @@ jobs:
       # GitHub sets CI=true, so the tests that need these tools fail instead of skipping
       - run: sudo apt-get update && sudo apt-get install -y minisign xorriso python3-yaml
       - run: go vet ./... && go test ./...
+      # the unprivileged run skips the chattr tests; root has CAP_LINUX_IMMUTABLE, so here a skip is a failure
+      - name: go test internal/audit as root
+        run: |
+          sudo env "PATH=$PATH" "GOTOOLCHAIN=$GOTOOLCHAIN" go test -count=1 -v ./internal/audit/... > audit-root.log 2>&1 || { cat audit-root.log; exit 1; }
+          cat audit-root.log
+          if grep -- '--- SKIP' audit-root.log; then echo 'privileged audit run skipped tests' >&2; exit 1; fi
   lint:
     runs-on: ubuntu-26.04
     steps:

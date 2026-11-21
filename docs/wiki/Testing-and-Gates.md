@@ -466,6 +466,7 @@ Share only the `.txt` and `.log` files. `.vm/keys`, `.vm/id_vm` and `.vm/gate-se
 `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. Both jobs use `ubuntu-26.04` runners.
 
 - **`test`** installs `minisign`, `xorriso` and `python3-yaml`, then runs `go vet ./... && go test ./...`. GitHub sets `CI=true`. So if `minisign`, `dash` or PyYAML were missing, `TestBuild` and `TestRenderedSeedsVerify` would fail instead of skipping.
+- **`test`** then runs `go test -v ./internal/audit/...` again as root (`sudo env PATH=... GOTOOLCHAIN=...`). The unprivileged run skips the `chattr` tests, because `chattr +a` needs `CAP_LINUX_IMMUTABLE`. The root run covers them, and fails if any test still skips.
 - **`bios`** runs after `test` passes, on pushes to `main` only. It runs `hack/gate.sh none bios` and `hack/gate.sh tpm2 bios` under KVM, with a 120-minute limit. If `/dev/kvm` is missing, the job fails instead of falling back to slow software emulation.
 - `bios` uploads `.vm/gate-*.txt`, `.vm/gate-*.log`, `.vm/install.log` and `.vm/boot-*.log` as artifacts named `gate-<mode>-bios`, kept for 14 days. It never uploads `.vm/keys` or `.vm/id_vm`.
 
@@ -473,7 +474,7 @@ The `lint` job (gofmt, `go vet`, staticcheck, shellcheck, govulncheck) also runs
 
 CI cannot run the arm64 UEFI gates as written, because they need HVF on macOS. That includes the milestone 2 gates. `hack/powercut.sh` also assumes a podman machine.
 
-The `test` job runs as an unprivileged user, so the `internal/audit` tests that need `chattr +a` skip there. They run on macOS, where `chattr` is a no-op, and on the box through `hack/audit-gate.sh`.
+The `test` job runs as an unprivileged user, so the `internal/audit` tests that need `chattr +a` skip in its first `go test` run. The root step after it runs them. They also run on macOS, where `chattr` is a no-op, and on the box through `hack/audit-gate.sh`.
 
 ## Results at the time of writing
 
@@ -499,7 +500,7 @@ The raw logs stay in the maintainer's local evidence store, not in the repo.
 | Several gates at once | Passed: four VMs at once, one per worktree | `e2e53af` |
 | amd64 UEFI | Not run anywhere | |
 | Real hardware | Not run | |
-| CI: `test` and `lint` | Passed on every push to `main` from `12b9e54`, which added `lint`, to `ad5338c`. Failed at `d375331`, the milestone 2 merge: staticcheck SA4016, and the `chattr` tests on an unprivileged runner. Fixed in the pull request for issue #45. | `ad5338c`, `d375331` |
+| CI: `test` and `lint` | Passed on every push to `main` from `12b9e54`, which added `lint`, to `ad5338c`. Failed at `d375331`, the milestone 2 merge, for three causes: staticcheck SA4016; the `chattr` tests on an unprivileged runner; and govulncheck, which flagged 25 standard-library vulnerabilities in go1.26.0 (fixed by pinning `toolchain go1.26.11`); the staticcheck failure stopped `lint` before govulncheck, so it first showed on the next run. Fixed in the pull request for issue #45. The `chattr` tests run as root in `test` since issue #47. | `ad5338c`, `d375331` |
 
 ### Milestone 2
 

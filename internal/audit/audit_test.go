@@ -50,7 +50,8 @@ func (b *box) start() {
 		Avail: func() (uint64, error) { return b.avail, nil }, Logf: b.t.Logf}
 	if err := b.s.Start(); err != nil {
 		if errors.Is(err, syscall.EPERM) && strings.Contains(err.Error(), "chattr") {
-			b.t.Skipf("needs CAP_LINUX_IMMUTABLE, as rootd has (§9): %v", err) // Linux CI runs go test unprivileged
+			// the unprivileged CI go test lands here; CI's sudo step reruns this package and fails on any skip
+			b.t.Skipf("skipped: chattr needs CAP_LINUX_IMMUTABLE, as rootd has (§9); run as root to cover it: %v", err)
 		}
 		b.t.Fatalf("Start: %v", err)
 	}
@@ -516,7 +517,7 @@ func TestSegmentLinkRefused(t *testing.T) {
 	untouched("Seal, symlink")
 	os.Remove(next)
 	if err := os.Link(victim, next); err != nil {
-		t.Skip(err)
+		t.Skipf("skipped: this filesystem refuses hard links: %v", err)
 	}
 	if err := fs.Seal(n, sc.LastHash); err == nil {
 		t.Fatal("Seal took a hard-linked next segment")
