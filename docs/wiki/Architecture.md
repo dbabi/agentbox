@@ -1,6 +1,6 @@
 # Architecture
 
-> **Early alpha. Not for production use.** No AI agent can run on agentbox yet. Milestones 1 and 2 of 9 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon and a skeleton of the root daemon). The agent runtime on this page is designed, not built.
+> **Early alpha. Not for production use.** No AI agent can run on agentbox yet. Milestones 1 and 2 of 9 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon and a skeleton of the root daemon). Milestone 3, the operation registry and the request checks, is built; its 24-hour fuzz run is pending. The rest of the agent runtime on this page is designed, not built.
 
 This page explains the target design of agentbox for newcomers.
 The full design is in [`docs/design/`](../design/).
@@ -22,7 +22,7 @@ Milestone numbers refer to the ordered list on the [Roadmap](Roadmap.md). The pl
 | Signed release pipeline and firstboot install | Built | 1 |
 | Zero-touch install ISO, QEMU test harness, power-cut tests | Built | 1 |
 | Firewall, disk quotas, audit daemon, rootd skeleton and resolver, ntfy | Built | 2 |
-| Operation registry and the agentboxd gate | Designed | 3 |
+| Operation registry, the agentboxd request gate, denial codes, the socket layout as code | Built (24-hour fuzz run pending) | 3 |
 | Agent accounts, task containers, interactive sessions | Designed | 4 |
 | Brokers: proxy, keys, git | Designed | 5 |
 | Cedar policy, rootd floor, signed approvals | Designed | 6 |
@@ -66,8 +66,9 @@ The design has two layers:
 1. **The OS layer (Built).** It installs Ubuntu, encrypts the disk and keeps the OS in btrfs A/B generations.
 2. **The agent runtime (Designed).** It runs each task in its own container. A few small services decide what the task may do outside that container.
 
-In the diagram, everything above the OS layer is designed, with three exceptions built in milestone 2:
-`agentbox-auditd`, the host firewall, and a skeleton of `agentbox-rootd` (its name resolver, the brokers' firewall sets and audit-segment sealing).
+In the diagram, everything above the OS layer is designed, with these exceptions:
+`agentbox-auditd`, the host firewall, and a skeleton of `agentbox-rootd` (its name resolver, the brokers' firewall sets and audit-segment sealing), built in milestone 2;
+and the task gate in `agentboxd`, built in milestone 3.
 None of the other services exists yet.
 
 ## Principles
@@ -244,8 +245,8 @@ Each service runs as its own Linux user, with only the access it needs.
 | Service | Runs as | Job | Status |
 |---|---|---|---|
 | `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Skeleton built (milestone 2): the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing. Its generation code is built. The rest is designed (milestones 4-7). |
-| `agentboxd` | `agentbox` | The front door for agents: the task gate, Cedar policy, the agent bus, memory and decide. Has no network. | Designed (milestone 3 on) |
-| `agentbox-auditd` | `agentbox-audit` | Writes the hash-chained audit log and the taint ledger. Has no network. | Built (milestone 2). Per-field audit classes are designed (milestone 3). |
+| `agentboxd` | `agentbox` | The front door for agents: the task gate, Cedar policy, the agent bus, memory and decide. Has no network. | Task gate built (milestone 3): one socket per task, argument and caller checks, typed denials. Policy, the agent bus, memory and decide are designed (milestones 6-8). |
+| `agentbox-auditd` | `agentbox-audit` | Writes the hash-chained audit log and the taint ledger. Has no network. | Built (milestones 2 and 3), including the per-field audit classes. |
 | `agentbox-proxy` | `agentbox-proxy` | Tunnels task traffic to allowlisted hosts. Holds no secrets. | Designed (milestone 5) |
 | `agentbox-keys` | `agentbox-keys` | Holds the LLM API keys and budgets. Checks every model request, then adds the key. | Designed (milestone 5) |
 | `agentbox-git` | `agentbox-git` | Hosts local git repos. Holds the GitHub token and runs the `gh.*` operations. | Designed (milestone 5) |
@@ -342,7 +343,7 @@ Each service runs as its own Linux user, with only the access it needs.
 
 ## Control plane and approvals
 
-**Status:** Designed (milestones 3, 6 and 7). Today the only approval is for OS changes, by plan hash. See [Today's stand-in](#todays-stand-in).
+**Status:** The operation registry, the argument and caller checks and the denial codes are built (milestone 3). Policy, pending operations and approvals are designed (milestones 6 and 7). Today the only approval is for OS changes, by plan hash. See [Today's stand-in](#todays-stand-in).
 
 ### The operation registry
 
@@ -351,6 +352,8 @@ Each service runs as its own Linux user, with only the access it needs.
 - The registry declares each operation's schema, policy action, floor rule, bound inputs, rollback coverage and audit rules.
 - The policy schema, the JSON schemas, the MCP tools and the docs are generated from it.
   agentboxd and rootd refuse to start if the Cedar schema, JSON schemas or MCP tools don't match the registry.
+- Built today: the registry in `internal/ops`, the generated files in `gen/`, and rootd's startup check.
+  A refusal is a typed denial with a stable code from one table. It never echoes the refused value.
 - There is no generic shell, no host file read, no `/etc` write and no LAN exposure.
 
 ### Operation classes
@@ -368,6 +371,8 @@ Each service runs as its own Linux user, with only the access it needs.
 
 1. A task calls an operation on its gate socket.
    agentboxd checks the arguments against the operation's schema.
+   It takes the task and agent from the socket, never from the request.
+   This step is built (milestone 3). The steps after it are designed, except auditd's part in step 6.
 2. agentboxd evaluates policy for every agent in the task's delegation chain.
    The answer is Run, Ask or Deny.
 3. rootd binds the operation to its exact inputs: commit IDs, content hashes, or package lists with `.deb` hashes.
@@ -623,7 +628,7 @@ It decides when a task's actions need a human signature.
 
 ## Audit
 
-**Status:** Built (milestone 2), except the per-field audit classes (milestone 3) and shipping the log off the box. No producer other than rootd and the test producer writes to it yet.
+**Status:** Built (milestones 2 and 3), except shipping the log off the box. No producer other than rootd and the test producer writes to it yet.
 
 - `agentbox-auditd` is the only writer of the audit log.
   It runs as its own user, with no network.
@@ -686,7 +691,7 @@ Read [Security Model](Security-Model.md) and the one-page threat model in the re
 
 | Path | What it holds | Status |
 |---|---|---|
-| `cmd/agentbox` | The CLI: `seed`, `recovery`, `os`, `reconcile`, `fw`, `fwcheck`, `auditd`, `audit`, `rootd`, `egress` and `version` | Built |
+| `cmd/agentbox` | The CLI: `seed`, `recovery`, `os`, `reconcile`, `fw`, `fwcheck`, `auditd`, `audit`, `rootd`, `egress`, `sockets`, `agentboxd`, `gate` and `version` | Built |
 | `internal/seed` | Seed validation and the autoinstall template | Built |
 | `internal/recovery` | Recovery key generation and decryption | Built |
 | `internal/rootd/gens` | A/B generations: plan, build, initrd checks, commit, fallback, retention | Built |
@@ -694,10 +699,13 @@ Read [Security Model](Security-Model.md) and the one-page threat model in the re
 | `internal/fw` | The nftables ruleset, `fw load` and `fwcheck` | Built (milestone 2) |
 | `internal/audit` | auditd: segments, the hash chain, the taint database, sealing, `audit verify` | Built (milestone 2) |
 | `internal/ntfy` | ntfy's config, ACLs, unit drop-in and fwcheck's ntfy check | Built (milestone 2) |
-| `sysusers.d/`, `tmpfiles.d/` | The service users and the runtime directories | Built (milestone 2) |
+| `internal/ops`, `gen/` | The operation registry, the denial codes table, and the files generated from them: the Cedar schema, the JSON schemas and the MCP tool list | Built (milestone 3) |
+| `internal/gate`, `internal/denial`, `internal/ids` | agentboxd's task gate, the denial encoder, and the `<kind>_<ULID>` ids | Built (milestone 3) |
+| `internal/sockets` | The socket inventory, the generated tmpfiles.d and `.socket` units, and `agentbox sockets check` | Built (milestone 3) |
+| `sysusers.d/`, `tmpfiles.d/` | The service users and the runtime directories | Built (milestones 2 and 3) |
 | `install/`, `systemd/` | The release's `install.sh` and its systemd units | Built |
 | `hack/` | The release builder, the ISO remaster script, the QEMU harness and the test gates | Built |
-| `internal/{ops,gate,policy,bus,memory,decide,dispatch,approvald,webauthn,proxy,keys,gitsvc,taskrun,reconcile}`, the rest of `internal/rootd` | The agent runtime | Designed |
+| `internal/{policy,bus,memory,decide,dispatch,approvald,webauthn,proxy,keys,gitsvc,taskrun,reconcile}`, the rest of `internal/rootd` | The rest of the agent runtime | Designed |
 
 Today the code uses the Go standard library plus two modules: `golang.org/x/sys` and the pure-Go SQLite driver `modernc.org/sqlite` (for auditd's taint database and `rootd.db`).
 The design adds more later, such as cedar-go, the MCP Go SDK and a WebAuthn library.

@@ -1,14 +1,15 @@
 How agentbox is tested, what each test proves, and what it does not. For an overview, start at [Home](README.md).
 
 agentbox is early alpha. Every gate on this page runs in a QEMU virtual machine. No real hardware has run agentbox yet.
-The tests cover the installer, the OS layer and the milestone 2 host services: the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy. The agent runtime is not built, so no test covers it yet.
+The tests cover the installer, the OS layer, the milestone 2 host services (the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy) and the milestone 3 request checks. The rest of the agent runtime is not built, so no test covers it yet.
 
 ## Two kinds of tests
 
 - **Unit tests** are Go tests. They run on macOS or Linux in about a minute. They need no VM.
+- **Fuzz tests** are Go fuzz tests. Each one feeds random inputs to one parser for as long as you let it run. They need no VM.
 - **Gates** are shell scripts in `hack/`. A gate installs Ubuntu into a QEMU VM, boots it, and checks the result. Each check prints one `PASS` or `FAIL` line. A gate passes only if every check passes.
 
-The build plan also uses the word "gate" for the set of tests that ends a milestone (see [Roadmap](Roadmap.md)). The scripts on this page run the tests for milestones 1-2.
+The build plan also uses the word "gate" for the set of tests that ends a milestone (see [Roadmap](Roadmap.md)). The scripts on this page run the tests for milestones 1-3.
 
 ## At a glance
 
@@ -23,8 +24,12 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | auditd gate (milestone 2) | `hack/audit-gate.sh [install] [audit]` | Apple Silicon Mac | about 13 min, with the `none` install |
 | rootd gate (milestone 2) | `hack/rootd-gate.sh [install] [release] [checks]` | Apple Silicon Mac, with internet for the flow check | not timed separately |
 | Quota and ntfy gate (milestone 2) | `hack/quota-ntfy-gate.sh [install\|quota\|ntfy ...]` | Apple Silicon Mac | about 2 min after the `none` install |
+| Registry gate (milestone 3) | `hack/registry-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
+| agentboxd gate (milestone 3) | `hack/agentboxd-gate.sh [install\|checks ...]` | Apple Silicon Mac | about 10 min, with the `none` install |
+| Sockets gate (milestone 3) | `hack/sockets-gate.sh [install] [check]` | Apple Silicon Mac | not timed separately |
+| Fuzz tests | `hack/fuzz-all.sh [DURATION]` | macOS or Linux | 24 h by default |
 
-The times come from one Apple Silicon Mac. The milestone 2 times come from runs with four VMs at once.
+The times come from one Apple Silicon Mac. The milestone 2 and 3 times come from runs with four VMs at once.
 
 ## Unit tests
 
@@ -42,8 +47,11 @@ What they check:
 | `internal/recovery` | Recovery key generation. Weak or malformed public keys are refused. Encryption and decryption round-trip, including through `openssl`. |
 | `internal/rootd/gens` | Generation logic: numbering, GRUB entries and grubenv, kernel order, retention, the fstab rewrite, initrd checks, plan parsing and the plan hash. |
 | `internal/fw` | The rendered ruleset, the table hash and the per-set comparisons that `fwcheck` makes, the refill script, the reserved-ports check, and a wall-clock step between writes. |
-| `internal/audit` | auditd: the hash chain, segment rotation and sealing, torn tails, clock steps, crashes at each seal step, disk-full mode, taint epochs and write rules, and `audit verify`. On Linux, the tests that need `chattr` skip unless they run with `CAP_LINUX_IMMUTABLE`. |
+| `internal/audit` | auditd: the hash chain, segment rotation and sealing, torn tails, clock steps, crashes at each seal step, disk-full mode, taint epochs and write rules, the checks on denial records and audit classes, and `audit verify`. On Linux, the tests that need `chattr` skip unless they run with `CAP_LINUX_IMMUTABLE`. |
 | `internal/rootd`, `internal/rootd/resolve`, `internal/rootd/quota`, `internal/rootd/nl` | rootd: audited egress edits, the fixed port pairs, throttled denial records, and the broker units that will hide systemd-resolved; the resolver's refusal rules (private, special-purpose and NAT64-wrapped answers, the route check); the quota limits and `btrfs qgroup show` parsing; the netlink messages for sets and conntrack. |
+| `internal/ops` | The operation registry: every operation's fields, the generated files in `gen/` and the startup check against them, the denial codes table and its append-only golden list, the denial constructor, the argument and audit-class checks, and the reply checks a task will run on denials. |
+| `internal/gate`, `internal/denial`, `internal/ids` | agentboxd's task gate: per-task sockets, caller identity from the socket, schema checks and typed denials. The denial encoder and its check. The `<kind>_<ULID>` ids. |
+| `internal/sockets` | The socket inventory, the tmpfiles.d and `.socket` units generated from it, and `agentbox sockets check` against a live tree. |
 | `internal/ntfy` | ntfy's `server.yml`, and the check that the running unit's uid is `_ntfy`. |
 | `cmd/agentbox` | Flag parsing, help text, `os` arguments. `recovery decrypt` refuses an existing output file. |
 | `hack/gate-dns` | The DNS test server that the rootd gate runs in the guest. |
@@ -51,7 +59,7 @@ What they check:
 | `hack/release` | Two builds of one release give the same bytes, and minisign verifies the signature. |
 | `hack` | The test harness itself. The QEMU command line is right even from a path with spaces, commas and glob characters. The ISO pin check and `remaster-iso.sh` work. The `dup-serial` disk check works on real qcow2 images. No `apply-gate.sh` check runs a value from the VM as code on the host. `powercut.sh boot` puts the VM disk back whether its checks pass or fail. |
 
-At the time of writing there are 107 top-level tests. There are no fuzz tests yet. Fuzzers are planned for milestone 3.
+At the time of writing there are 155 top-level tests and 45 fuzz tests.
 
 Some tests need outside tools: `dash`, `sha256sum`, `xorriso`, `openssl`, `minisign`, `qemu-img` and `qemu-io`, `uv` (or `python3` with PyYAML), and the `agentbox-powercut` image in the podman machine.
 
@@ -76,6 +84,31 @@ uv run --with pyyaml python3 -I hack/verify-seed.py <seed-dir>/user-data
 It parses the YAML, checks the autoinstall structure, and runs `dash -n` on every embedded script.
 
 What unit tests do not prove: they never boot anything. They do not run the Ubuntu installer, apt, dracut, GRUB, LUKS or a TPM. Most of the shell code runs against fake tools. The gates test the real thing.
+
+## Fuzz tests
+
+Each parser has a Go fuzz test, for example for seed files, keys, apt and GRUB output, nftables JSON, audit records, rootd and gate requests, denials, socket names and more. In normal `go test` runs, each fuzz test runs only its seed inputs.
+
+To fuzz one test, from the repository root:
+
+```sh
+go test -run='^$' -fuzz='^FuzzDeny$' -fuzztime=10m ./internal/ops
+```
+
+To fuzz every test at once:
+
+```sh
+hack/fuzz-all.sh -l          # list the fuzz tests
+caffeinate -i hack/fuzz-all.sh 24h
+```
+
+- The script runs all fuzz tests in parallel at low priority, then writes `summary.txt` under `.fuzz/<start time>/`. It exits 1 if any test fails.
+- It records the commit the run started on.
+- It fails, rather than listing nothing, if a package's tests don't build.
+- A crash input lands in its package's `testdata/fuzz/<test>/`. Commit it with the fix, so it stays a regression test.
+- On a Mac, `caffeinate -i` keeps the machine from idle sleep. Keep it on power with the lid open.
+
+The `fuzz` workflow in CI runs each fuzz test for 5 hours, every night, in its own job. A crash fails that job and uploads the crash input.
 
 ## Before you run a gate
 
@@ -387,6 +420,31 @@ The firewall, rootd and quota gates enable `agentbox-agent-stub.service`, a stan
 - The resolver's `unavailable` reason, for a systemd-resolved that is down, has no gate check.
 - The QEMU VM reaches the internet through slirp. The rootd flow check needs a public HTTP server (`FLOW=host:port`, default `example.com:80`).
 
+## Milestone 3 gates
+
+Each milestone 3 gate script also starts with `install`: `hack/gate.sh none`, so the release's units and generated files reach the box by the real path. The later steps run as root on that box. Each script writes `PASS` and `FAIL` lines to `.vm/<name>.txt`, command output to `.vm/<name>.log`, and exits 1 on any `FAIL`.
+
+```sh
+caffeinate -i hack/registry-gate.sh
+caffeinate -i hack/agentboxd-gate.sh
+caffeinate -i hack/sockets-gate.sh
+```
+
+### What the milestone 3 gates prove
+
+| Suite | Script | What it proves |
+|---|---|---|
+| `w4-registry` | `hack/registry-gate.sh` | rootd starts on the release's `gen/` files and logs the match. One byte added to `gen/cedar.schema`, a renamed MCP tool, an extra operation in the JSON schemas, a deleted `gen/ops.schema.json` and an extra file in `gen/` each stop rootd from starting, and the journal names the mismatch. With the files restored, rootd starts again. |
+| `w4-agentboxd` | `hack/agentboxd-gate.sh` | agentboxd runs with no network and Unix sockets only. A task's gate socket works for its agent's uid only. A valid request runs as INTENT (body hashed), acknowledgement, effect and RESULT, with the task and agent taken from the socket. A request that fails its schema, forges its caller or names an operation no agent may call gets a typed denial, and no INTENT and no effect. An unhashed body, a secret and an unhashed `gh.*` body are each refused by auditd, and nothing runs. No refused value is in the audit directory. Revoking a task removes its socket. The chain verifies. |
+| `w4-sockets` | `hack/sockets-gate.sh` | The installed box matches the socket inventory in `internal/sockets`, before and after a reboot. The installed tmpfiles.d is the generated one. A socket with the wrong mode or owner, a directory with the wrong mode, a per-task directory without setgid and a stray file are each reported, and the box matches again once they are undone. |
+
+### What they do not prove
+
+- They ran in `none` mode on arm64 UEFI only. The milestone 3 code does not touch unlock or boot.
+- No real operation runs behind the gate yet. The agentboxd gate uses a test effect in rootd for `file.write`.
+- No task container exists yet. The gate registers a task the way rootd's task start will.
+- The fuzz tests have not had their 24-hour run yet.
+
 ## Several VMs at once
 
 `AGENTBOX_VM_ID` (0-9, default 0) picks each VM's ports and names:
@@ -468,17 +526,18 @@ Share only the `.txt` and `.log` files. `.vm/keys`, `.vm/id_vm` and `.vm/gate-se
 - **`test`** installs `minisign`, `xorriso` and `python3-yaml`, then runs `go vet ./... && go test ./...`. GitHub sets `CI=true`. So if `minisign`, `dash` or PyYAML were missing, `TestBuild` and `TestRenderedSeedsVerify` would fail instead of skipping.
 - **`test`** then runs `go test -v ./internal/audit/...` again as root (`sudo env PATH=... GOTOOLCHAIN=...`). The unprivileged run skips the `chattr` tests, because `chattr +a` needs `CAP_LINUX_IMMUTABLE`. The root run covers them, and fails if any test still skips.
 - **`bios`** runs after `test` passes, on pushes to `main` only. It runs `hack/gate.sh none bios` and `hack/gate.sh tpm2 bios` under KVM, with a 120-minute limit. If `/dev/kvm` is missing, the job fails instead of falling back to slow software emulation.
+- **`fuzz`** (`.github/workflows/fuzz.yml`) runs every night and on manual dispatch. Each fuzz test runs for 5 hours in its own job. A crash fails that job and uploads the crash input as an artifact.
 - `bios` uploads `.vm/gate-*.txt`, `.vm/gate-*.log`, `.vm/install.log` and `.vm/boot-*.log` as artifacts named `gate-<mode>-bios`, kept for 14 days. It never uploads `.vm/keys` or `.vm/id_vm`.
 
 The `lint` job (gofmt, `go vet`, staticcheck, shellcheck, govulncheck) also runs on every push and pull request. `bios` runs on every push to `main`, weekly and on manual dispatch.
 
-CI cannot run the arm64 UEFI gates as written, because they need HVF on macOS. That includes the milestone 2 gates. `hack/powercut.sh` also assumes a podman machine.
+CI cannot run the arm64 UEFI gates as written, because they need HVF on macOS. That includes the milestone 2 and 3 gates. `hack/powercut.sh` also assumes a podman machine.
 
 The `test` job runs as an unprivileged user, so the `internal/audit` tests that need `chattr +a` skip in its first `go test` run. The root step after it runs them. They also run on macOS, where `chattr` is a no-op, and on the box through `hack/audit-gate.sh`.
 
 ## Results at the time of writing
 
-2026-11-21. The "Tested at" column names the commit on `main` each result comes from. Most milestone 1 results come from `e2e53af`, after the review fixes. A later rerun of six suites at `61acfc7`, which changes only `hack/vm.sh`'s install timeout, also passed. The milestone 2 results come from `fb89de4`, the last milestone 2 code commit. A later commit can change a result, so rerun a gate before you rely on it.
+2026-11-21. The "Tested at" column names the commit on `main` each result comes from. Most milestone 1 results come from `e2e53af`, after the review fixes. A later rerun of six suites at `61acfc7`, which changes only `hack/vm.sh`'s install timeout, also passed. The milestone 2 results come from `fb89de4`, the last milestone 2 code commit. The milestone 3 results come from `ac68bc8`, the last milestone 3 code commit, and from the registry gate fix that merged as `8c9a5fc`. A later commit can change a result, so rerun a gate before you rely on it.
 
 The raw logs stay in the maintainer's local evidence store, not in the repo.
 
@@ -515,6 +574,23 @@ All on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. Before the revie
 | Milestone 1 smoke: `gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso` | Passed | `fb89de4` |
 | Milestone 2 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
 | `go vet ./...` and `go test ./...` | Passed on the Mac | `fb89de4` |
+
+### Milestone 3
+
+All VM gates on a fresh `none`-mode install, arm64 UEFI, Secure Boot on, with four VMs at once.
+
+| Suite | Result | Tested at |
+|---|---|---|
+| `w4-registry` | Failed 1 check at `ac68bc8`: the gate itself expected 3 files in the release's `gen/`, and the release ships 6 (issue #66). rootd refused every planted mismatch. After the fix: 12 PASS, 0 FAIL. | `ac68bc8`; the rerun on a fix branch before it merged as `8c9a5fc` |
+| `w4-agentboxd` | Passed: 30 PASS, 0 FAIL | `ac68bc8` |
+| `w4-sockets` | Passed: 38 PASS, 0 FAIL, before and after a reboot | `ac68bc8` |
+| Milestone 2 suites | Passed again: `w3-firewall` 54, `w3-auditd` 112, `w3-rootd` 104 and `w3-quota-ntfy` 54 PASS, 0 FAIL each | `ac68bc8` |
+| Milestone 1 smoke: `gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso` | Passed | `ac68bc8`; `zero-touch-iso` at `008e121`, which adds only docs and the docs lint |
+| Fuzz tests, short run | All 45 for 12 minutes at once on macOS: 43 passed and 2 crashed. Both bugs are fixed, each crash input is a committed test, and the 4 affected fuzz tests then ran 12 minutes each with no crash. | the pull request branch before it merged as `ac68bc8` |
+| Fuzz tests, 24 hours | Not run yet. The first nightly `fuzz` run has not happened. | |
+| CI: `internal/audit` as root | Passed: 28 PASS, 0 SKIP | `3b4c438` |
+| `go vet ./...` and `go test ./...` | Passed on the Mac | `ac68bc8` |
+| Milestone 3 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
 
 ## Troubleshooting
 

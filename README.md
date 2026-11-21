@@ -30,7 +30,7 @@ agentbox aims to be an OS where AI agents can work safely. The design rests on f
 
 ## Status
 
-The installer, safe OS updates and the first host services (firewall, audit log, root daemon) are built. Checks for agent requests are being built now. agentbox has run only in QEMU virtual machines, never on real hardware. The host services have been tested only in unencrypted arm64 UEFI VMs.
+The installer, safe OS updates, the first host services (firewall, audit log, root daemon) and the checks for agent requests are built. The request checks still need one 24-hour fuzz run. agentbox has run only in QEMU virtual machines, never on real hardware. The host services and request checks have been tested only in unencrypted arm64 UEFI VMs.
 
 **Works today**, in VMs on an Apple Silicon Mac:
 
@@ -207,6 +207,9 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 | Broker network setup | Resolves the allowed destinations for the planned brokers. Refuses private and special-purpose addresses. The brokers are not built. |
 | Disk limits | Caps the disk space agent data can use, and keeps a reserve for system services. |
 | Notifications | The Ubuntu `ntfy` package. It takes only local requests, and can reach only `ntfy.sh`. |
+| Operation registry | One list of every operation an agent may request. The policy schema, the JSON schemas and the MCP tool list are generated from it. The root daemon refuses to start if any of them differ. |
+| Request checks | `agentboxd` gives each task its own socket. It checks each request's caller and arguments before anything privileged runs. A refused request gets a stable denial code, never the raw input. |
+| Socket layout | Every service socket and directory, with its owner and mode, is defined in code. `agentbox sockets check` compares the box with it. |
 | Test harness | Checks installs, OS changes, power cuts and the host services in throwaway QEMU VMs. See [Testing and gates][tests]. |
 
 ### Designed, not built
@@ -215,7 +218,6 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 |---|---|
 | Task containers | Each task will get a disposable podman container with no network and a fresh home directory. |
 | Brokers | `proxy` holds no secrets. `keys` holds LLM API keys and budgets. `git` holds the GitHub token. |
-| Request checks | In progress. Each agent request will be checked against one list of allowed operations before it runs. |
 | Policy and approvals | Cedar policy. You will sign approvals on your laptop with an SSH key. A phone passkey will cover only low-risk requests. The box will run only the operation you signed. |
 | Agent bus and memory | Messages between agents. Shared memory with quarantine and taint. |
 | OS updates | Nightly package updates will build into a new generation. Protected packages can't be removed. |
@@ -231,8 +233,7 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 | agentbox host: stock Ubuntu Server 26.04                         |
 |                                                                  |
 |  DESIGNED, NOT BUILT                                             |
-|  agentboxd        request checks (in progress), policy, agent    |
-|                   bus, shared memory                             |
+|  agentboxd        policy, agent bus, shared memory               |
 |  agentbox-rootd   signed operations, bound to their exact inputs |
 |                                                                  |
 |  +----------------------+  unix sockets  +---------------------+ |
@@ -243,6 +244,7 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 |                                          +---------------------+ |
 |                                                                  |
 |  BUILT TODAY                                                     |
+|  agentboxd        request checks: caller, arguments, denials     |
 |  agentbox-rootd   prepares allowed broker destinations           |
 |  agentbox-auditd  hash-chained audit log and taint ledger        |
 |  Firewall         outbound rules per service,                    |
@@ -255,7 +257,7 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 +------------------------------------------------------------------+
 ```
 
-All agentbox services are subcommands of one Go binary, `agentbox`. Today it prepares installs, manages OS generations and checks audit logs. The [Architecture][arch] page walks through the design part by part.
+All agentbox services are subcommands of one Go binary, `agentbox`. Today it prepares installs, manages OS generations, checks audit logs and checks agent requests. The [Architecture][arch] page walks through the design part by part.
 
 ## Security model
 
@@ -288,7 +290,7 @@ agentbox is built in milestones, in this order. Each one ends with tests that mu
 
 1. **Installer and safe OS updates: done.** Encrypted installs, recovery keys, signed releases and package changes with automatic fallback. Tested in VMs only.
 2. **Firewall and audit log: done.** Outbound limits for agentbox services, an audit log you can verify, disk limits and local notifications. Tested in VMs only.
-3. **Checks for agent requests: in progress.** Each agent request will be checked before anything privileged runs.
+3. **Checks for agent requests: in progress.** Built and tested in VMs. Each agent request is checked against one list of allowed operations before anything privileged runs. A 24-hour fuzz run is the last step.
 4. **Isolated tasks: next.** Each task will run in a disposable container with no network.
 5. **Brokers: planned.** Credentials will stay outside tasks. Brokers will make network requests for each task.
 6. **Signed approvals: planned.** Risky actions will need your SSH signature. A phone passkey will cover low-risk requests.

@@ -1,6 +1,6 @@
 agentbox is early alpha. It is not for production use.
 
-Milestones 1 and 2 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon, the root daemon's skeleton and resolver, disk quotas and packaged ntfy). Milestone 3 is in progress. The agent runtime is designed but not built. No AI agent can run on agentbox yet.
+Milestones 1 and 2 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon, the root daemon's skeleton and resolver, disk quotas and packaged ntfy). Milestone 3, the operation registry and the request gate, is built and its VM gates passed. Its 24-hour fuzz run is pending, so it stays in progress. The agent runtime is designed but not built. No AI agent can run on agentbox yet.
 
 The full design is in [`docs/design/`](../design/). Status is as of the time of writing (2026-11-21).
 
@@ -17,7 +17,7 @@ agentbox is built in nine milestones, in this order. Each one ends with a gate: 
 |---|---|---|---|
 | 1. Installer and safe OS updates | Seed generator; unattended install with optional disk encryption; recovery key; btrfs A/B OS generations with unattended fallback; release pipeline and signed firstboot install; zero-touch install ISO; power-cut tests | Unattended first boot in both TPM modes. Broken updates and power cuts fall back with no console input. The install and `os apply` checks on a real x86 PC. | **Done.** The gate passed in QEMU VMs ([Testing and Gates](Testing-and-Gates.md#milestone-1)), except the install and `os apply` checks on a real x86 PC, which have not run. |
 | 2. Firewall, audit log, root daemon | Host firewall (nftables) with `fwcheck`; btrfs quotas with a disk reserve and a content-store cap; the audit daemon, with a hash-chained log, taint epochs that never lose a row, and a disk-full mode; the root daemon's skeleton, name resolver and audit-log sealing; packaged ntfy on a Unix socket | An altered firewall stops agents from starting. With the audit daemon down, nothing runs. A broker reaches only addresses rootd resolved. `nft flush ruleset` is repaired within 60 s, with an alert. | **Done.** Every gate item passed in QEMU VMs ([Testing and Gates](Testing-and-Gates.md#milestone-2-gates)). Ran in `none` mode on arm64 UEFI only. |
-| 3. Operation registry and request gate | One registry of every operation, with generated code and schemas; the request gate in `agentboxd`; stable denial codes; the socket layout as code; fuzzers for every parser | A registry mismatch stops startup. 24 hours of fuzzing find no crash. | **In progress** |
+| 3. Operation registry and request gate | One registry of every operation, with generated code and schemas; the request gate in `agentboxd`; stable denial codes; the socket layout as code; fuzzers for every parser | A registry mismatch stops startup. An audit record with a secret or an unhashed body is refused, and nothing runs. 24 hours of fuzzing find no crash. | **In progress.** Built, and the VM gates passed ([Testing and Gates](Testing-and-Gates.md#milestone-3)). The 24-hour fuzz run is pending. |
 | 4. Agent accounts and one sealed container per task | Agent accounts with disk quotas; one disposable container per task, with no network, a fresh HOME and Go in the image; a seccomp profile that blocks btrfs ioctls; task stop; interactive sessions in a separate home; `agentbox why` to explain a denial | Claude Code or Codex hooks and MCP config that one task plants don't run in the next task. A task's leftover processes are gone within 20 s of its timeout. | Next |
 | 5. Brokers | A proxy that holds no secrets, with a read-only Go module cache; a keys broker for LLM API keys and budgets; a git service that holds the GitHub token | No credential of any kind exists inside a task. Rebinding, raw IP, LAN and metadata-address attempts fail. | Designed, not built |
 | 6. Signed approvals | Cedar policies (Cedar is an open-source policy language); the floor (the minimum rules the root daemon enforces; policy can only make them stricter); pending operations bound to exact inputs, such as commit IDs and package hashes; approvals signed with an SSH key on the laptop; phone approvals with a passkey, for low-risk operations only; a visible ask budget, with `ask.quote`, `ask.status` and `ask.batch`; `agentbox egress allow` | Race, replay and argument swap fail. A phone approval of a laptop-only operation is refused. | Designed, not built |
@@ -67,6 +67,27 @@ Every milestone 2 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 | The milestone 2 gates in `tpm2`, `tpm2+tang` and on amd64 BIOS | Not run. The milestone 2 code doesn't touch unlock or boot, and the milestone 1 smoke suites still pass in `tpm2` and `tpm2+tang`. |
 | Hiding systemd-resolved's Unix interfaces from the broker users | Not built: the broker units don't exist yet. A residual in the threat model until they land (milestone 5). |
 | The resolver's `unavailable` reason when systemd-resolved is down | No gate check. |
+
+## Milestone 3: what passed
+
+Every milestone 3 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. The tests for milestones 1 and 2 also passed again on the same code. [Testing and Gates](Testing-and-Gates.md#milestone-3) lists each result and the commit it ran at.
+
+- The root daemon starts only when the policy schema, the JSON schemas and the MCP tool list match the registry. Each of five planted mismatches stops it, and the journal names the mismatch.
+- `agentboxd` gives each task a socket that only that task's agent user can use. A valid request runs in order: the audit log records it with its body hashed, then it runs, then its result is recorded.
+- A request with bad arguments, a forged caller or an operation no agent may call gets a typed denial, and nothing is recorded or run.
+- The audit log refuses a record with an unhashed body or a secret, and the operation does not run. No refused value is left in the audit directory.
+- The sockets and their directories on the box match the inventory in code, before and after a reboot. A wrong mode, a wrong owner and a stray file are each reported.
+- Every parser has a fuzz test: 45 in all. Short runs found bugs, which are fixed, and each crash input is kept as a test.
+
+## Milestone 3: what has not run
+
+| Item | State |
+|---|---|
+| 24 hours of fuzzing with no crash | Pending. Each fuzz test has run for at least 12 minutes so far. The nightly fuzz job, or one `hack/fuzz-all.sh` run, will cover it. |
+| Fuzzing on Linux | Not run yet. The short runs were on macOS, so Linux-only code waits for the nightly job. |
+| The milestone 3 gates in `tpm2`, `tpm2+tang` and on amd64 BIOS | Not run. The milestone 3 code doesn't touch unlock or boot. |
+| Refusing a malformed task id when a task starts | Waits for task start, in milestone 4. The id check itself is built and tested. |
+| The `agentbox mcp` command for agent CLIs | Waits for task containers. The error mapping it will use is built and tested. |
 
 ## Known gaps
 
