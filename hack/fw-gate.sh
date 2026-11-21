@@ -117,7 +117,7 @@ P
 check "boot: agentbox-firewall.service active, /etc/nftables.d/agentbox.nft and 60-agentbox.conf written" 'systemctl is-active agentbox-firewall.service && test -s /etc/nftables.d/agentbox.nft && grep -qx "net.ipv4.ip_local_reserved_ports = 43000-45999" /etc/sysctl.d/60-agentbox.conf'
 check "boot: no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 check "nftables.service masked; ntfy.service User=_ntfy; ip_local_reserved_ports covers 43000-45999" '[ "$(systemctl is-enabled nftables.service)" = masked ] && [ "$(systemctl show -p User --value ntfy.service)" = _ntfy ] && grep -q 43000-45999 /proc/sys/net/ipv4/ip_local_reserved_ports'
-check "static sets as Appendix B: confined, private4, private6" 'nft list set inet agentbox confined | grep -qF "elements = { 70001-70999, 71001-71999, 1879048192-2013265919 }" && [ "$(elems private4 | wc -l)" = 13 ] && [ "$(elems private6 | wc -l)" = 9 ]'
+check "static sets as Appendix B: confined, private4, private6" 'nft list set inet agentbox confined | grep -qF "elements = { 70001-70999, 71001-71999, 1879048192-2013265919 }" && [ "$(elems private4 | wc -l)" = 13 ] && [ "$(elems private6 | wc -l)" = 12 ]'
 check "the live table logs nothing: no log, queue, dup or fwd statement, so drops stay silent (§6.1)" '! nft -j list table inet agentbox | grep -qE "\"(log|queue|dup|fwd)\":"'
 check "rootd is up at boot, after the firewall, and fwcheck passes" 'systemctl is-active agentbox-rootd.service && [ -e $DB ] && $A fwcheck'
 check "the agent stand-in starts while the firewall is intact" 'systemctl start agentbox-agent-stub.service && systemctl is-active agentbox-agent-stub.service && systemctl stop agentbox-agent-stub.service'
