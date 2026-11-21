@@ -810,6 +810,14 @@ func TestSinkCheck(t *testing.T) {
 		{`{"type":"INTENT","opId":"s5","name":"file.write","args":{"path":"` + big + `","content":` + h + `}}`, "/args/path: keep-class string over"},
 		{`{"type":"INTENT","opId":"s6","name":"egress.allow","origin":"admin","args":{"svc":"keys","entry":"` + big + `"}}`, "/args/entry: keep-class"},
 		{`{"type":"INTENT","opId":"s7","name":"ask.batch","args":{"shape":"push+pr","ops":[{"name":"gh.pr.create","args":{"remote":"r","head":"h","base":"main","title":"t","body":` + h + `}}]}}`, "/args/ops/0/args/title: hash-class"},
+		// the stored bytes are the checked ones: no duplicate key, no case variant, no key outside the record's fields
+		{`{"type":"INTENT","opId":"s8","name":"file.write","args":{"path":"/srv/a/x","content":"sk-live-dup","content":` + h + `}}`, "unique keys"},
+		{`{"type":"INTENT","opId":"s9","name":"secret.set","origin":"admin","Args":{"name":"k","value":"sk-live-case"}}`, "/Args: not an INTENT field"},
+		{`{"type":"INTENT","opId":"s10","name":"file.write","args":{"path":"/srv/a/x","content":` + h + `},"value":"sk-live-top"}`, "/value: not an INTENT field"},
+		{`{"type":"INTENT","opId":"s11","name":"secret.sett","args":{"value":"sk-live-unreg"}}`, "/name: not a registry op"},
+		{`{"type":"INTENT","opId":"s12","args":{"value":"sk-live-noname"}}`, "/name: not a registry op"},
+		{`{"type":"TAINT","subject":"workspace:alice","source":"` + big + `"}`, "/source: keep-class string over"},
+		{`{"type":"ALERT","Subject":"sk-live-alert"}`, `/Subject: a case variant of "subject"`},
 	} {
 		if r := b.nack(rootdProducer, c.rec, CodeBadRecord); !strings.Contains(r.Detail, c.why) || strings.Contains(r.Detail, "sk-live") {
 			t.Errorf("%s: detail %q, want %q and no value", c.rec, r.Detail, c.why)
@@ -819,6 +827,10 @@ func TestSinkCheck(t *testing.T) {
 	b.ok(rootdProducer, `{"type":"INTENT","opId":"g1","name":"file.write","args":{"path":"/srv/a/x","content":`+h+`}}`)
 	b.ok(rootdProducer, `{"type":"INTENT","opId":"g2","name":"app.logs","args":{"app":"a"}}`)
 	b.nack(rootdProducer, `{"type":"RESULT","opId":"g2","status":"executed","outputs":{"log":["line"]}}`, CodeBadRecord)
+	b.nack(rootdProducer, `{"type":"RESULT","opId":"g2","status":"executed","outputs":{"log":["sk-live-out"]},"Outputs":{"log":`+h+`}}`, CodeBadRecord)
+	b.nack(rootdProducer, `{"type":"RESULT","opId":"g2","status":"executed","outputs":{"log":["sk-live-out"]},"outputs":{"log":`+h+`}}`, CodeBadRecord)
+	b.ok(rootdProducer, `{"type":"INTENT","opId":"g3","name":"egress.allow","origin":"admin","args":{"svc":"keys","entry":"example.com"}}`)
+	b.nack(rootdProducer, `{"type":"INTENT","opId":"g4","name":"egress.allow","origin":"admin","args":{"svc":"keys","entry":"e","value":"sk-live-edit"}}`, CodeBadRecord)
 	b.ok(rootdProducer, `{"type":"RESULT","opId":"g2","status":"executed","outputs":{"log":`+h+`}}`)
 	for _, r := range b.verify() {
 		data, _ := os.ReadFile(filepath.Join(b.dir, SegName(r.Seg)))

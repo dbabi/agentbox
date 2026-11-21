@@ -1,13 +1,15 @@
-# Task registration and revocation, rootd to agentboxd (ARCHITECTURE.md §2.1): agentbox:root 0600; agentboxd also
-# takes only uid 0 by SO_PEERCRED. The dir comes from tmpfiles (0711).
+# uid 0 only: task registration and revocation (ARCHITECTURE.md §2.1).
+# PID 1 binds it with this owner and mode; the service checks SO_PEERCRED on every connection.
+# Generated from internal/sockets: go test ./internal/sockets -update
 [Unit]
-Description=agentboxd task registration socket (svc-gate)
+Description=agentbox socket /run/agentbox-rootd/svc-gate.sock
 
 [Socket]
 ListenStream=/run/agentbox-rootd/svc-gate.sock
 SocketUser=agentbox
 SocketGroup=root
 SocketMode=0600
+DirectoryMode=0711
 FileDescriptorName=svc-gate
 Service=agentboxd.service
 RemoveOnStop=yes

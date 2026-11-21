@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -499,12 +500,19 @@ func (s *Server) Handle(p string, uid uint32, pid int32, line []byte) Reply {
 	defer s.mu.Unlock()
 	var raw map[string]json.RawMessage
 	var r request
-	if err := json.Unmarshal(line, &raw); err != nil || json.Unmarshal(raw["type"], &r.Type) != nil {
-		return Reply{Code: CodeBadRecord, Detail: "not a JSON object"}
+	v, derr := ops.Decode(line) // no duplicate key at any depth: the checked copy is the stored one
+	if derr != nil || json.Unmarshal(line, &raw) != nil || json.Unmarshal(raw["type"], &r.Type) != nil {
+		return Reply{Code: CodeBadRecord, Detail: "not a JSON object with unique keys"}
 	}
 	// A DENY's subject is an object (§9), not a taint subject; CheckDenyRecord checks its schema below.
 	if r.Type != "DENY" && json.Unmarshal(line, &r) != nil {
 		return Reply{Code: CodeBadRecord, Detail: "not a JSON object"}
+	}
+	if err := checkKeys(r.Type, raw); err != nil {
+		return Reply{Code: CodeBadRecord, Detail: err.Error()}
+	}
+	if err := ops.CheckKeep(v, ""); err != nil { // §9: every record, whatever its type
+		return Reply{Code: CodeBadRecord, Detail: err.Error()}
 	}
 	delete(raw, "type")
 	isRootd := p == rootdProducer
@@ -781,20 +789,72 @@ func (s *Server) apply(tx *sql.Tx, p string, r *request, now int64) (Reply, func
 	return Reply{}, nil, nil // best-effort records: logged only
 }
 
+// adminEdits are the INTENT names outside the registry that rootd logs itself, with their fixed schemas.
+// shortcut: rootd's egress list edits; weeks 9-10's net.allow_domain flow replaces them and this table goes.
+var adminEdits = map[string]ops.Op{
+	"egress.allow":  {Args: []ops.Field{{Name: "svc", Audit: ops.Keep}, {Name: "entry", Audit: ops.Keep}}},
+	"egress.remove": {Args: []ops.Field{{Name: "svc", Audit: ops.Keep}, {Name: "entry", Audit: ops.Keep}}},
+}
+
+// recordKeys are the only top-level keys an INTENT or RESULT may carry: anything else would reach the chain with no
+// class check.
+var recordKeys = map[string]map[string]bool{
+	"INTENT": keySet("type", "opId", "name", "origin", "signer", "agent", "task", "chain", "args", "taintEpochs", "ts"),
+	"RESULT": keySet("type", "opId", "name", "status", "errorCode", "outputs", "detail", "changed"),
+}
+
+// readKeys are the record keys auditd acts on: request's JSON names plus the taint fields producers may not send.
+var readKeys = func() map[string]bool {
+	m := keySet("epoch", "tainted")
+	t := reflect.TypeOf(request{})
+	for i := range t.NumField() {
+		m[strings.Split(t.Field(i).Tag.Get("json"), ",")[0]] = true
+	}
+	return m
+}()
+
+func keySet(ks ...string) map[string]bool {
+	m := map[string]bool{}
+	for _, k := range ks {
+		m[k] = true
+	}
+	return m
+}
+
+// checkKeys refuses a key that differs from one auditd reads only by case: Go's struct decoding would act on it while
+// the exact-key checks skip it. INTENT and RESULT take only recordKeys.
+func checkKeys(typ string, raw map[string]json.RawMessage) error {
+	for k := range raw {
+		if allow := recordKeys[typ]; allow != nil && !allow[k] {
+			return fmt.Errorf("/%s: not an %s field", ops.Escape(k), typ)
+		}
+		if !readKeys[k] {
+			for rk := range readKeys {
+				if strings.EqualFold(k, rk) {
+					return fmt.Errorf("/%s: a case variant of %q", ops.Escape(k), rk)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // sinkCheck is §9's enforcement at the sink: a registry op's args (or outputs) must carry its audit classes applied,
 // so no drop-class field, every hash-class field as {sha256, len}, nothing undeclared, and no keep string over 1 KiB.
-// An op outside the registry (rootd's own admin edits) gets the 1 KiB rule only.
+// A name outside the registry and adminEdits has no schema, so it is refused.
 func sinkCheck(name string, raw json.RawMessage, at string, out bool) error {
+	o, ok := ops.Lookup(name)
+	if !ok {
+		if o, ok = adminEdits[name]; !ok {
+			return fmt.Errorf("/name: not a registry op")
+		}
+	}
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
 	v, err := ops.Decode(raw)
 	if err != nil {
 		return fmt.Errorf("%s: not JSON", at)
-	}
-	o, ok := ops.Lookup(name)
-	if !ok {
-		return ops.CheckKeep(v, at)
 	}
 	fs := o.Args
 	if out {

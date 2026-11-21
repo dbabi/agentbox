@@ -76,7 +76,11 @@ func (s *server) taskOp(r request) reply {
 		res["outputs"] = ops.Classify(o.Out, out)
 	}
 	if aerr := s.audit(res); aerr != nil {
-		log.Printf("%s %s task %s: RESULT not ACKed: %v", id, o.Name, r.Task, aerr) // recovery reconciles it by op id
+		// §5.2: an op is executed only once its RESULT is ACKed, so the agent is not told ok.
+		// shortcut: no rootd.db executing row yet, so nothing retries the RESULT; a human reconciles the op id from this
+		// line until weeks 9-10's executing rows do it at restart.
+		log.Printf("%s %s task %s: effect ran (err %v) but RESULT not ACKed: %v", id, o.Name, r.Task, err, aerr)
+		return deny(denial.EffectFailed, "audit.result_unacked", o.Name, "", "")
 	}
 	if err != nil {
 		return deny(denial.EffectFailed, "floor.effect", o.Name, "", "")

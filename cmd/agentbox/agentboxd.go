@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -59,6 +60,16 @@ func cmdAgentboxd(args []string) error {
 }
 
 // lineCall sends one JSON line on a Unix socket and returns the reply line.
+// encodeLine is req as one line with no HTML escaping: json.Marshal would turn each <, > and & in forwarded args into
+// 6 bytes, so a request the gate accepted could pass rootd.sock's line limit.
+func encodeLine(req any) []byte {
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false)
+	e.Encode(req) // Encode ends the line with '\n'
+	return b.Bytes()
+}
+
 func lineCall(sock string, req any, timeout time.Duration) ([]byte, error) {
 	c, err := net.DialTimeout("unix", sock, timeout)
 	if err != nil {
@@ -66,8 +77,7 @@ func lineCall(sock string, req any, timeout time.Duration) ([]byte, error) {
 	}
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(timeout))
-	b, _ := json.Marshal(req)
-	if _, err := c.Write(append(b, '\n')); err != nil {
+	if _, err := c.Write(encodeLine(req)); err != nil {
 		return nil, err
 	}
 	return bufio.NewReader(c).ReadBytes('\n')

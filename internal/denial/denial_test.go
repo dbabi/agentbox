@@ -7,7 +7,7 @@ import (
 )
 
 func TestNewIsValidAndLeaksNothing(t *testing.T) {
-	hostile := []string{"\x1b[31m", "\u009b", "‮", "⁦", "\x00", strings.Repeat("A", 65536), "https://evil.example/x",
+	hostile := []string{"\x1b[31m", "\u009b", "\u202e", "\u2066", "\x00", strings.Repeat("A", 65536), "https://evil.example/x",
 		"c2stbGl2ZS0xMjM=", "sk-live-123", "/content\n"}
 	for code := range codes {
 		for _, h := range hostile {

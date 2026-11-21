@@ -41,11 +41,16 @@ func decode(raw []byte) (any, error) {
 	if d.More() {
 		return nil, fmt.Errorf("trailing data")
 	}
+	// Go keeps the last copy of a repeated key, so a check of v would pass bytes whose first copy is still forwarded
+	// or stored; noDupKeys runs after Decode, which bounds the depth.
+	if err := noDupKeys(raw); err != nil {
+		return nil, err
+	}
 	return v, nil
 }
 
 // ValidateArgs checks raw against o's args schema: an object with every required field, no other field, each of its
-// declared type; a members field holds 1 to 8 {name, args} items of agent-callable ops, each checked against its own
+// declared type, no keep-class string over MaxKeep (the sink would NACK it); a members field holds 1 to 8 {name, args} items of agent-callable ops, each checked against its own
 // schema. It is the gate's and the floor's check (§5.2); the decoded args come back with numbers as json.Number.
 func (o Op) ValidateArgs(raw []byte) (map[string]any, *ArgError) {
 	v, err := decode(raw)
@@ -63,7 +68,7 @@ func checkFields(fs []Field, v any, at string, nested bool) (map[string]any, *Ar
 	}
 	for k := range m {
 		if fieldOf(fs, k) == nil {
-			return nil, &ArgError{at + "/" + escape(k), "no such field"}
+			return nil, &ArgError{at + "/" + Escape(k), "no such field"}
 		}
 	}
 	for _, f := range fs {
@@ -83,6 +88,9 @@ func checkFields(fs []Field, v any, at string, nested bool) (map[string]any, *Ar
 }
 
 func checkType(f Field, x any, p string, nested bool) *ArgError {
+	if f.Audit == Keep && CheckKeep(x, p) != nil {
+		return &ArgError{p, fmt.Sprintf("no string over %d bytes", MaxKeep)}
+	}
 	switch f.Type {
 	case "string":
 		s, ok := x.(string)
@@ -152,11 +160,11 @@ func fieldOf(fs []Field, name string) *Field {
 	return nil
 }
 
-// escape is RFC 6901 for one reference token; tokens outside [A-Za-z0-9_] become "~x" so a pointer never carries an
+// Escape is RFC 6901 for one reference token; tokens outside [A-Za-z0-9_] become "~x" so a pointer never carries an
 // agent's free text.
 var token = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
 
-func escape(k string) string {
+func Escape(k string) string {
 	if token.MatchString(k) {
 		return k
 	}
@@ -218,7 +226,7 @@ func CheckAudit(fs []Field, v any, at string) error {
 		return fmt.Errorf("%s: not an object", orRoot(at))
 	}
 	for k, x := range m {
-		p := at + "/" + escape(k)
+		p := at + "/" + Escape(k)
 		f := fieldOf(fs, k)
 		switch {
 		case f == nil:
@@ -276,7 +284,7 @@ func CheckKeep(v any, at string) error {
 		}
 	case map[string]any:
 		for k, e := range x {
-			if err := CheckKeep(e, at+"/"+escape(k)); err != nil {
+			if err := CheckKeep(e, at+"/"+Escape(k)); err != nil {
 				return err
 			}
 		}

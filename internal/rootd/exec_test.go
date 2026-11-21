@@ -56,8 +56,21 @@ func TestTaskOpIntentBeforeEffect(t *testing.T) {
 		t.Fatalf("chain: %s", seg())
 	}
 
+	// a RESULT auditd does not ACK: the effect ran, but the op is not executed, so the agent is not told ok
+	ack := s.audit
+	s.audit = func(r map[string]any) error {
+		if r["type"] == "RESULT" {
+			return &auditNACK{audit.CodeUnavailable, ""}
+		}
+		return ack(r)
+	}
+	if rep := s.taskOp(req); rep["ok"] != false || code(rep) != denial.EffectFailed || ran != 2 {
+		t.Fatalf("RESULT not ACKed: %v, ran %d", rep, ran)
+	}
+	s.audit = ack
+
 	s.cfg.RawAudit = true
-	if rep := s.taskOp(req); rep["ok"] != false || code(rep) != denial.EffectFailed || ran != 1 {
+	if rep := s.taskOp(req); rep["ok"] != false || code(rep) != denial.EffectFailed || ran != 2 {
 		t.Fatalf("unhashed body: %v, ran %d", rep, ran)
 	}
 	if strings.Contains(seg(), "top secret") {
@@ -80,7 +93,7 @@ func TestTaskOpIntentBeforeEffect(t *testing.T) {
 			t.Fatalf("%+v: %v, want %s", c.r, rep, c.want)
 		}
 	}
-	if seg() != before || ran != 1 {
+	if seg() != before || ran != 2 {
 		t.Fatalf("a refused request wrote to the chain or ran (ran %d)", ran)
 	}
 }

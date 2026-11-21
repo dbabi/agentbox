@@ -58,6 +58,9 @@ func lines(c *net.UnixConn, idle time.Duration, f func([]byte) []byte) {
 			if i < 0 {
 				break
 			}
+			if i > MaxRequest {
+				return
+			}
 			if _, err := c.Write(append(f(buf[:i]), '\n')); err != nil {
 				return
 			}
