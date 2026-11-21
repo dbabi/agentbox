@@ -28,10 +28,10 @@ func NAT64Prefixes(ctx context.Context, resolve func(context.Context, string) ([
 		}
 		out = append(out, p...)
 	}
+	// ipv4only.arpa always has A records, so any failure (NXDOMAIN and no records included) is a failed lookup that
+	// would hide the network's prefix; only A records with no wrapping AAAA mean no DNS64 (Appendix B check 2)
 	addrs, err := resolve(ctx, "ipv4only.arpa")
-	if r, ok := err.(*Refused); ok && r.Reason == NoSuchName {
-		return out, nil // no AAAA: no DNS64
-	} else if err != nil {
+	if err != nil {
 		return nil, fmt.Errorf("ipv4only.arpa: %w", err)
 	}
 	for _, a := range addrs {

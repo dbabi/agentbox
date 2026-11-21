@@ -63,8 +63,12 @@ func TestNAT64Prefixes(t *testing.T) {
 	if err != nil || !slices.Equal(got, want) {
 		t.Fatalf("got %v %v, want %v", got, err, want)
 	}
-	if got, err := NAT64Prefixes(context.Background(), fakeDNS{}.ResolveHostname, nil); err != nil || len(got) != 0 {
+	v4only := fakeDNS{"ipv4only.arpa": wka}
+	if got, err := NAT64Prefixes(context.Background(), v4only.ResolveHostname, nil); err != nil || len(got) != 0 {
 		t.Fatalf("no DNS64, no RA: %v %v", got, err)
+	}
+	if _, err := NAT64Prefixes(context.Background(), fakeDNS{}.ResolveHostname, nil); err == nil {
+		t.Fatal("NXDOMAIN for ipv4only.arpa must not read as no DNS64")
 	}
 	down := func(context.Context, string) ([]netip.Addr, error) { return nil, &Refused{Unavailable, "down"} }
 	if _, err := NAT64Prefixes(context.Background(), down, nil); err == nil {
@@ -358,7 +362,7 @@ func TestRevocationRetriedAndSlack(t *testing.T) {
 	flowsFail := 0
 	var cut []string
 	s := &Service{DB: db, Dir: dir, Now: func() time.Time { return now }, Timeout: 10 * time.Minute, Nft: nft,
-		Resolver: fakeDNS{"a.example.com": {a1}, "b.example.com": {a2}}, Route: func(netip.Addr) string { return "" },
+		Resolver: fakeDNS{"a.example.com": {a1}, "b.example.com": {a2}, "ipv4only.arpa": wka}, Route: func(netip.Addr) string { return "" },
 		Flows: func(a netip.Addr, p uint16) (int, error) {
 			if flowsFail > 0 {
 				flowsFail--
