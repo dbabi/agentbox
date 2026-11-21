@@ -11,9 +11,9 @@ In the design, each task runs in a disposable container with no network and no c
 Anything that touches the host, secrets, the network, other agents or shared memory goes through typed operations.
 Policy checks each operation, and an audit log records it.
 Risky operations wait for a human to sign them.
-The agent layer is not built yet. Its first host services are: the firewall, the audit log and the root daemon's resolver.
+The agent layer is not built yet. Its first host services are built: the firewall, the audit log, the root daemon's resolver and the checks for agent requests.
 
-Today agentbox is an installer, an OS layer and those host services.
+Today agentbox is an installer, an OS layer and those host services. No agent can send a request yet, because task containers are not built.
 It installs Ubuntu unattended. Disk encryption is on by default, and `--encryption none` turns it off.
 It keeps the OS in btrfs A/B generations.
 A package change that fails to boot, or fails its health check, falls back on its own.
@@ -34,7 +34,7 @@ Two words mark the state of each part:
 
 ## Status
 
-At the time of writing (2026-11-21), milestones 1 and 2 of 9 are built, and milestone 3 is in progress.
+At the time of writing (2026-11-21), milestones 1 and 2 of 9 are built. Milestone 3, the checks for agent requests, is built and its VM tests passed. Its 24-hour fuzz run is still pending.
 The real-hardware test has not run yet.
 
 Built:
@@ -49,6 +49,9 @@ Built:
 - An audit daemon (milestone 2). It records each operation durably before the operation runs, in a hash-chained log, and keeps a taint ledger. `agentbox audit verify` checks the chain.
 - A root daemon skeleton (milestone 2). It resolves names for the brokers, fills their firewall sets, and seals finished audit segments.
 - Disk quotas with a reserve for the system, and packaged ntfy on a Unix socket only (milestone 2).
+- An operation registry (milestone 3). One list declares every operation an agent may request. The policy schema, the JSON schemas and the MCP tool list are generated from it, and the root daemon refuses to start if they differ.
+- Request checks in `agentboxd` (milestone 3). Each task gets its own socket. A request with bad arguments, a forged caller or an operation no agent may call is refused with a stable denial code. The audit log refuses a record that holds a secret or an unhashed body, and then nothing runs.
+- The socket layout as code (milestone 3). `agentbox sockets check` compares every socket and directory on the box with it.
 
 Not built yet:
 
@@ -60,7 +63,7 @@ Not built yet:
 Where it has run: QEMU VMs on an Apple Silicon Mac.
 Most gates ran on an arm64 UEFI VM with Secure Boot on.
 Some gates also ran on an amd64 legacy BIOS VM.
-The milestone 2 gates ran in `none` mode on arm64 UEFI only.
+The milestone 2 and 3 gates ran in `none` mode on arm64 UEFI only.
 No amd64 UEFI install has run yet.
 No real machine has run agentbox yet.
 
@@ -74,10 +77,10 @@ No real machine has run agentbox yet.
 | [Encryption and Recovery](Encryption-and-Recovery.md) | The three encryption modes, what each protects against, the recovery key, and what happens when Tang is down. | Built |
 | [Generations and Updates](Generations-and-Updates.md) | btrfs A/B generations, `os plan` and `os apply`, trial boots, health commits, fallback and retention. | Built |
 | [Release Pipeline](Release-Pipeline.md) | `make release`, the signed tarball, the SHA-256 pin in the seed, and firstboot. | Built |
-| [Architecture](Architecture.md) | The target design: the services, task containers, approvals, network and secrets, the agent bus, memory and audit. | Mostly designed; the OS layer, firewall, audit and rootd skeleton are built |
+| [Architecture](Architecture.md) | The target design: the services, task containers, approvals, network and secrets, the agent bus, memory and audit. | Mostly designed; the OS layer, firewall, audit, rootd skeleton and request checks are built |
 | [Security Model](Security-Model.md) | The threat model: what agentbox defends against, trust boundaries, accepted risks, and how to report a vulnerability. | Mostly designed |
-| [Roadmap](Roadmap.md) | The milestones in order, with the state of each. | Milestones 1 and 2 built |
-| [Testing and Gates](Testing-and-Gates.md) | Unit tests, the VM gates (milestones 1-2), power-cut tests, what each gate proves, and the results. | Built |
+| [Roadmap](Roadmap.md) | The milestones in order, with the state of each. | Milestones 1 and 2 built; milestone 3 in progress |
+| [Testing and Gates](Testing-and-Gates.md) | Unit tests, fuzz tests, the VM gates (milestones 1-3), power-cut tests, what each gate proves, and the results. | Built |
 | [Contributing](Contributing.md) | Dev setup, repo layout, code style, tests and commit style. | n/a |
 
 ## Where to start

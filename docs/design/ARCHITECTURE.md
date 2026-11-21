@@ -580,7 +580,7 @@ The table below is generated from the registry. Defaults equal the floor; Cedar 
 - **Remote re-check:** at execution, `agentbox-git` reads the repo through GitHub REST (`GET /repos/{owner}/{repo}`). If `node_id` or `visibility` differs from the bound row, the op is refused.
 - **`gh.*` writes are at-most-once.** GitHub has no idempotency key for these endpoints. So rootd makes each effect findable:
   1. At bind time, rootd rejects any body that already contains `agentbox-op:`. Then it appends `\n<!-- agentbox-op:<op-id> -->` to the body, before JCS canonicalization.
-  2. On INTENT without RESULT, the git service lists candidates: comments via `GET /repos/{o}/{r}/issues/{n}/comments?since=<INTENT time − 60 s>&per_page=100`, all pages; PRs via `GET /repos/{o}/{r}/pulls?head={o}:<ref>&base=<base>&state=all`.
+  2. On INTENT without RESULT, the git service lists candidates: comments via `GET /repos/{o}/{r}/issues/{n}/comments?since=<INTENT time − 60 s>&per_page=100`, all pages; PRs via `GET /repos/{o}/{r}/pulls?head=<owner>:<ref>&base=<base>&state=all`.
   3. A candidate matches only if `user.login` is the git service token's login and the body ends with the marker.
   4. Match → RESULT with the URL. No match → list again after 30 s, because listings can lag.
   5. Still no match → `indeterminate`, plus a new pending P with a fresh nonce and the same marker. It is never re-run automatically.
