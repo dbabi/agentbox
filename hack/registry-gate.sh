@@ -54,7 +54,7 @@ refused() { t=$(date +%s); sleep 1; ! systemctl restart $U && sleep 3 && ! syste
 restore() { systemctl stop $U; rm -rf "$G" && cp -a $B "$G"; systemctl reset-failed $U; }
 check "the release ships gen/ with the three generated files" '[ "$(ls "$G" | tr "\n" " ")" = "cedar.schema mcp-tools.json ops.schema.json " ]'
 check "rootd is active on the shipped gen/" 'systemctl is-active -q $U'
-check "  ... and logged the match" 'journalctl -b -u $U -o cat | grep -q "^op registry matches $G: [0-9]* ops"'
+check "  ... and logged the match" 'journalctl -b -u $U -o cat | grep -q " op registry matches $G: [0-9]* ops$"'
 printf " " >> "$G/cedar.schema"
 check "one byte appended to cedar.schema: rootd refuses to start" 'refused "cedar.schema differs from what the registry generates"'
 restore
