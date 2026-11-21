@@ -45,22 +45,6 @@ jobs:
           if git show FETCH_HEAD:gen/codes.golden > /tmp/base.golden 2>/dev/null; then
             head -n "$(wc -l < /tmp/base.golden)" gen/codes.golden | cmp - /tmp/base.golden
           fi
-  # site/tui is its own module (Charm dependencies), so the root jobs, which stay stdlib-only, skip it
-  site:
-    runs-on: ubuntu-26.04
-    defaults:
-      run: {working-directory: site/tui}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
-      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
-        with: {go-version-file: site/tui/go.mod, cache: false}
-      - name: gofmt
-        run: test -z "$(gofmt -l $(go list -f '{{.Dir}}' ./...) | tee /dev/stderr)"
-      - run: go vet ./...
-      - run: go test ./...
-      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
   bios:
     needs: test
     if: github.event_name != 'pull_request' # PRs get lint and test; main gets the BIOS gates too

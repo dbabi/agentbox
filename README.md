@@ -17,6 +17,8 @@ A headless OS for AI coding agents, built on stock Ubuntu Server 26.04. Early al
 
 [Getting started][gs] · [Architecture][arch] · [Security model][sec] · [Roadmap][road] · [Wiki][wiki]
 
+Website: https://dbabi.github.io/agentbox-web/. It is also a terminal app, and its source is in [dbabi/agentbox-web](https://github.com/dbabi/agentbox-web).
+
 ## What is agentbox
 
 agentbox aims to be an OS where AI agents can work safely. The design rests on four rules. Only the fourth is fully built today:

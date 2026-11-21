@@ -88,6 +88,7 @@ No real machine has run agentbox yet.
 2. [Architecture](Architecture.md): the target design, with each part marked built or designed.
 3. [Roadmap](Roadmap.md): what each milestone adds.
 4. [FAQ](FAQ.md): short answers to common questions.
+5. The [website](https://dbabi.github.io/agentbox-web/): the same summary as a terminal-style page. Its source is in [dbabi/agentbox-web](https://github.com/dbabi/agentbox-web).
 
 To look at the CLI without a VM, you need Go 1.26 or later:
 
