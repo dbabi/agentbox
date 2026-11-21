@@ -75,7 +75,14 @@ check "audit dir agentbox-audit 0750; open segment 0640, +a not +i; taint.db in 
 check "SO_PEERCRED: root on agentboxd.sock is refused" 'nack NOT_ALLOWED root agentboxd "{\"type\":\"TAINT\",\"subject\":\"task:x\",\"source\":\"s\"}"'
 check "socket mode: agentbox-proxy cannot connect to rootd.sock" '! psend agentbox-proxy rootd "{\"type\":\"TAINT\",\"subject\":\"task:x\",\"source\":\"s\"}"'
 check "every producer gets an ACK on its own socket" 'for up in root:rootd agentbox:agentboxd agentbox-proxy:proxy agentbox-keys:keys agentbox-git:git; do
-  psend ${up%%:*} ${up#*:} "{\"type\":\"DENY\",\"id\":\"d-${up#*:}\",\"code\":\"X\"}" || exit 1; done'
+  psend ${up%%:*} ${up#*:} "{\"type\":\"DENY\",\"id\":\"dn_01JF0000000000000000000000\",\"code\":\"BUSY\",\"by\":\"floor\",\"count\":1,\"first\":1,\"last\":1}" || exit 1; done'
+# C-G1: auditd checks DENY records against the schema generated from the codes table
+check "a DENY with an unknown code, a free-text field or an unhashed hash field is NACKed BAD_RECORD" '
+  d="\"type\":\"DENY\",\"id\":\"dn_01JF0000000000000000000000\",\"by\":\"gate\",\"count\":1,\"first\":1,\"last\":1"
+  nack BAD_RECORD agentbox agentboxd "{$d,\"code\":\"X\"}" &&
+  nack BAD_RECORD agentbox agentboxd "{$d,\"code\":\"DENIED_POLICY\",\"reason\":\"free text\"}" &&
+  nack BAD_RECORD agentbox agentboxd "{$d,\"code\":\"INVALID_ARGS\",\"op\":\"file.write\",\"args\":{\"content\":\"sk-secret\"}}" &&
+  ! grep -qF sk-secret $D/$(newest)'
 
 # auditd down: nothing executes. The effect is `touch`, run only after the test producer's ACK.
 systemctl stop agentbox-auditd.service $SOCKS
