@@ -212,18 +212,23 @@ func roundUp15(p *int64) *int64 {
 }
 
 // Deny is the only constructor of a denial (§5.6). It never fails: a slot that fails its grammar, or that the code
-// doesn't declare, is dropped and the code is kept.
+// doesn't declare, is dropped and the code is kept. The one exception is a NEEDS_SIGNATURE with no pnd_ id or no
+// Cedar op: its id is the pending ask the agent waits on, so without one it is BROKER_UNAVAILABLE.
 func Deny(c Code, what string, s Slots) Denial {
 	def := codeDefs[c.name]
 	if def == nil {
 		panic("ops: Deny with a code not in CodeTable: " + c.name) // impossible: Code values come only from codes_gen.go
+	}
+	op, opOK := opDef(s.Op)
+	opOK = opOK && op.Group != "" // denial.v1.json's op enum is the Cedar actions
+	if def.Name == "NEEDS_SIGNATURE" && (!opOK || !ids.Is(ids.Pending, s.Pending)) {
+		return Deny(BrokerUnavailable, "", Slots{Op: s.Op, By: "forwarder"})
 	}
 	has := func(slot string) bool { return slices.Contains(def.Slots, slot) }
 	d := Denial{V: 1, Code: def.Name, By: def.By[0], Next: def.Next}
 	if slices.Contains(def.By, s.By) {
 		d.By = s.By
 	}
-	op, opOK := opDef(s.Op)
 	if opOK {
 		d.Op = op.Name
 	}
@@ -279,12 +284,7 @@ func Deny(c Code, what string, s Slots) Denial {
 	}
 	d.ID = ids.New(ids.Denial)
 	if def.Name == "NEEDS_SIGNATURE" {
-		if ids.Is(ids.Pending, s.Pending) {
-			d.ID = s.Pending
-		}
-		if opOK {
-			d.Channel = channelOf(op)
-		}
+		d.ID, d.Channel = s.Pending, channelOf(op)
 	}
 	expect := ""
 	if has(slotExpect) && slices.Contains(expects, s.Expect) {

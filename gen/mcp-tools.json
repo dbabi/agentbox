@@ -173,7 +173,8 @@
               "required": [
                 "name",
                 "args"
-              ]
+              ],
+              "additionalProperties": false
             }
           },
           "shape": {
@@ -210,7 +211,8 @@
               "required": [
                 "name",
                 "args"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },

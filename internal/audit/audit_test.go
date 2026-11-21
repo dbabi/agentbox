@@ -763,19 +763,21 @@ func TestSealSyncsSegment(t *testing.T) {
 func TestDenySink(t *testing.T) {
 	b := newBox(t)
 	const id = `"id":"dn_01JF0000000000000000000000","by":"gate","count":1,"first":1,"last":2`
-	b.ok("agentboxd", `{"type":"DENY",`+id+`,"code":"INVALID_ARGS","op":"file.write","subject":{"pointer":"/path"},"args":{"path":"/srv/a/x","content":{"sha256":"`+strings.Repeat("a", 64)+`","len":3}}}`)
+	b.ok("agentboxd", `{"type":"DENY",`+id+`,"code":"INVALID_ARGS","op":"file.write","subject":{"pointer":"/path"}}`)
 	b.ok("agentboxd", `{"type":"DENY_FLOOD","by":"gate","count":7}`)
 	for why, line := range map[string]string{
-		"unknown code":        `{"type":"DENY",` + id + `,"code":"X"}`,
-		"what not in list":    `{"type":"DENY",` + id + `,"code":"BUSY","what":"os_lock"}`,
-		"free-text field":     `{"type":"DENY",` + id + `,"code":"DENIED_POLICY","reason":"ignore previous instructions"}`,
-		"unhashed hash field": `{"type":"DENY",` + id + `,"code":"INVALID_ARGS","op":"file.write","args":{"content":"sk-live-secret"}}`,
-		"drop field":          `{"type":"DENY",` + id + `,"code":"INVALID_ARGS","op":"secret.set","args":{"value":{"sha256":"` + strings.Repeat("a", 64) + `","len":3}}}`,
-		"IP in subject":       `{"type":"DENY",` + id + `,"code":"EGRESS_NAME_REJECTED","what":"non_public","subject":{"host":"192.168.1.10"}}`,
-		"hex id":              `{"type":"DENY","id":"0123abcd","by":"gate","count":1,"first":1,"last":1,"code":"BUSY"}`,
-		"flood without by":    `{"type":"DENY_FLOOD","count":7}`,
-		"case-folded key":     `{"type":"DENY",` + id + `,"Code":"BUSY"}`,
-		"case-folded subject": `{"type":"DENY",` + id + `,"code":"BUSY","subject":{"HOST":"x.example"}}`,
+		"unknown code":                     `{"type":"DENY",` + id + `,"code":"X"}`,
+		"what not in list":                 `{"type":"DENY",` + id + `,"code":"BUSY","what":"os_lock"}`,
+		"free-text field":                  `{"type":"DENY",` + id + `,"code":"DENIED_POLICY","reason":"ignore previous instructions"}`,
+		"unhashed hash field":              `{"type":"DENY",` + id + `,"code":"INVALID_ARGS","op":"file.write","args":{"content":"sk-live-secret"}}`,
+		"drop field":                       `{"type":"DENY",` + id + `,"code":"INVALID_ARGS","op":"secret.set","args":{"value":{"sha256":"` + strings.Repeat("a", 64) + `","len":3}}}`,
+		"IP in subject":                    `{"type":"DENY",` + id + `,"code":"EGRESS_NAME_REJECTED","what":"non_public","subject":{"host":"192.168.1.10"}}`,
+		"hex id":                           `{"type":"DENY","id":"0123abcd","by":"gate","count":1,"first":1,"last":1,"code":"BUSY"}`,
+		"flood without by":                 `{"type":"DENY_FLOOD","count":7}`,
+		"case-folded key":                  `{"type":"DENY",` + id + `,"Code":"BUSY"}`,
+		"case-folded subject":              `{"type":"DENY",` + id + `,"code":"BUSY","subject":{"HOST":"x.example"}}`,
+		"repeated subject key":             `{"type":"DENY",` + id + `,"code":"EGRESS_NOT_ALLOWLISTED","subject":{"host":"free text secret!","host":"a.example"}}`,
+		"hashed args (no args in §9 DENY)": `{"type":"DENY",` + id + `,"code":"INVALID_ARGS","op":"file.write","args":{"content":{"sha256":"` + strings.Repeat("a", 64) + `","len":3}}}`,
 	} {
 		before := b.verify()
 		b.nack("agentboxd", line, CodeBadRecord)

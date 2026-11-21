@@ -116,7 +116,7 @@ func TestQuoteReply(t *testing.T) {
 
 func TestStatusReply(t *testing.T) {
 	p := ids.New(ids.Pending)
-	r := StatusReply{Asks: asks1, Open: []string{p}, Ask: &AskRow{ID: p, Op: "ask.batch", State: "executed", Channel: "cli", ExpiresAt: 1,
+	r := StatusReply{Asks: asks1, Open: []string{p}, Ask: &AskRow{ID: p, Op: "ask.batch", State: "executed", Channel: "cli", ExpiresAt: 1_800_000_000_000,
 		Result:  &AskResult{OID: strings.Repeat("a", 40), Remote: "origin"},
 		Members: []AskMember{{0, ids.New(ids.Pending), "repo.push", "executed", ""}, {1, ids.New(ids.Pending), "gh.pr.create", "refused", "BATCH_ABORTED"}}}}
 	b, _ := json.Marshal(r)
@@ -132,6 +132,13 @@ func TestStatusReply(t *testing.T) {
 		"URL as remote":            func(r *StatusReply) { r.Ask.Result.Remote = "https://github.com/x/y/pull/7" },
 		"non-hex OID":              func(r *StatusReply) { r.Ask.Result.OID = strings.Repeat("g", 40) },
 		"nil open list":            func(r *StatusReply) { r.Open = nil },
+		// a GitHub-assigned number in a field the op doesn't make (C-G1)
+		"gen on a batch":         func(r *StatusReply) { r.Ask.Result.Gen = 42 },
+		"PR number as expiresAt": func(r *StatusReply) { r.Ask.ExpiresAt = 42 },
+		"gen on gh.pr.create":    func(r *StatusReply) { r.Ask.Op, r.Ask.Members, r.Ask.Result = "gh.pr.create", nil, &AskResult{Gen: 42} },
+		"digest on gh.pr.create": func(r *StatusReply) {
+			r.Ask.Op, r.Ask.Members, r.Ask.Result = "gh.pr.create", nil, &AskResult{Digest: strings.Repeat("0", 60) + "2a"}
+		},
 	} {
 		x := r
 		a := *r.Ask
@@ -142,6 +149,20 @@ func TestStatusReply(t *testing.T) {
 		b, _ := json.Marshal(x)
 		if _, err := CheckStatusReply(b); err == nil {
 			t.Errorf("%s passes", name)
+		}
+	}
+	// the in-task path: a failed reply is BROKER_UNAVAILABLE{gate} plus a malformed witness line (C-G1)
+	if out, _, _, ok := CheckAskReply("ask.status", []byte(`{}`), b); !ok || out == nil {
+		t.Fatal("an honest ask.status reply fails CheckAskReply")
+	}
+	bad := bytes.Replace(b, []byte(`"result":{`), []byte(`"result":{"number":42,`), 1)
+	for _, c := range []struct{ op, args, reply string }{{"ask.status", `{}`, string(bad)}, {"ask.quote", `{"ops":[{},{}]}`, string(b)}, {"file.write", `{}`, string(b)}} {
+		out, d, w, ok := CheckAskReply(c.op, []byte(c.args), []byte(c.reply))
+		if ok || out != nil || d.Code != "BROKER_UNAVAILABLE" || d.What != "gate" {
+			t.Fatalf("%s: %v %s", c.op, ok, d.JSON())
+		}
+		if pw, err := ParseWitness(w); err != nil || !strings.Contains(w, "malformed") {
+			t.Fatalf("%s: witness %q %+v %v", c.op, w, pw, err)
 		}
 	}
 	// a GitHub-assigned number or URL in the result (C-G1, R12)
@@ -200,21 +221,21 @@ func TestAskSchemas(t *testing.T) {
 	}
 }
 
-// D-G2: ESC/CSI, U+009B, U+202E, U+2066-U+2069 and U+E0001 in a quoted arg leave the in-task view of the reply
-// byte-identical: the reply carries no arg byte, and CheckArgs passes or refuses on the pointer alone.
+// D-G2, the gate half: ESC/CSI, U+009B, U+202E, U+2066-U+2069 and U+E0001 in a quoted arg never reach the denial
+// CheckArgs returns, which passes or refuses on the pointer alone. The other half (the quote reply is byte-identical
+// with and without them) needs the ask.quote producer, which lands with the gate in weeks 9-10.
 func TestQuoteArgsInert(t *testing.T) {
-	honest, _ := json.Marshal(QuoteReply{Items: []QuoteItem{{Cost: "ask_cli", Reason: "signed"}}, Asks: asks1})
-	want, err := CheckQuoteReply(honest, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, s := range []string{"\x1b[31m", "\u009b2J", "\u202e", "\u2066", "\u2067", "\u2068", "\u2069", "\U000E0001"} {
-		args, _ := json.Marshal(map[string]any{"ops": []any{map[string]any{"name": "gh.pr.comment", "args": map[string]any{"remote": "o" + s, "number": 1, "body": s}}}})
-		if d := CheckArgs("ask.quote", args); d != nil && bytes.Contains(d.JSON(), []byte(s)) {
-			t.Fatalf("%q echoed: %s", s, d.JSON())
-		}
-		if got, _ := CheckQuoteReply(honest, 1); !bytes.Equal(got, want) {
-			t.Fatalf("%q changed the reply", s)
+		for _, args := range []map[string]any{
+			{"ops": []any{map[string]any{"name": "gh.pr.comment", "args": map[string]any{"remote": "o" + s, "number": 1, "body": s}}}},
+			{"ops": []any{map[string]any{"name": "gh.pr.comment", "args": map[string]any{"remote": "o", "number": s, "body": s}}}},
+			{"ops": []any{map[string]any{"name": "gh.pr.comment" + s, "args": map[string]any{}}}},
+		} {
+			b, _ := json.Marshal(args)
+			esc, _ := json.Marshal(s)
+			if d := CheckArgs("ask.quote", b); d != nil && (bytes.Contains(d.JSON(), []byte(s)) || bytes.Contains(d.JSON(), esc[1:len(esc)-1])) {
+				t.Fatalf("%q echoed: %s", s, d.JSON())
+			}
 		}
 	}
 }

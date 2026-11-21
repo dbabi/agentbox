@@ -3,6 +3,7 @@ package ops
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -48,6 +49,9 @@ func FuzzDeny(f *testing.F) {
 		}
 		if _, err := ParseDenial(b); err != nil {
 			t.Fatalf("does not parse: %v %s", err, b)
+		}
+		if err := denialSchemaErr(b); err != "" {
+			t.Fatalf("fails denial.v1.json at %s: %s", err, b)
 		}
 		// no byte of a free-text, hash- or drop-class input reaches the denial: changing it changes nothing but the id
 		d2 := build(free + "Z")
@@ -111,7 +115,7 @@ func FuzzQuoteReply(f *testing.F) {
 func FuzzStatusReply(f *testing.F) {
 	p := ids.New(ids.Pending)
 	f.Add([]byte(`{"asks":{"max":3,"used":0,"granted":0,"open":1,"openBatch":0,"left":2},"taint":{"tainted":true,"workspaceBound":true},"open":["` + p +
-		`"],"ask":{"id":"` + p + `","op":"repo.push","state":"executed","channel":"cli","expiresAt":5,"result":{"oid":"` + strings.Repeat("a", 40) + `"}}}`))
+		`"],"ask":{"id":"` + p + `","op":"repo.push","state":"executed","channel":"cli","expiresAt":1800000000000,"result":{"oid":"` + strings.Repeat("a", 40) + `"}}}`))
 	for _, s := range hostile {
 		f.Add([]byte(s))
 	}
@@ -163,8 +167,13 @@ func FuzzWitness(f *testing.F) {
 }
 
 func FuzzDenyRecord(f *testing.F) {
+	h := `{"sha256":"` + strings.Repeat("a", 64) + `","len":3}`
 	f.Add([]byte(`{"id":"dn_01JF0000000000000000000000","code":"BUSY","by":"floor","count":1,"first":1,"last":1}`))
-	f.Add([]byte(`{"id":"dn_01JF0000000000000000000000","code":"INVALID_ARGS","by":"gate","op":"file.write","args":{"content":{"sha256":"` + strings.Repeat("a", 64) + `","len":1}},"count":1,"first":1,"last":1}`))
+	f.Add([]byte(`{"id":"dn_01JF0000000000000000000000","code":"INVALID_ARGS","by":"gate","op":"file.write","args":{"content":` + h + `},"count":1,"first":1,"last":1}`))
+	// repeated keys: Go keeps the last, auditd would store the first
+	f.Add([]byte(`{"id":"dn_01JF0000000000000000000000","code":"INVALID_ARGS","by":"gate","op":"memory.write","args":{"title":"MY SECRET TITLE","title":` + h + `},"count":1,"first":1,"last":1}`))
+	f.Add([]byte(`{"id":"dn_01JF0000000000000000000000","code":"EGRESS_NOT_ALLOWLISTED","by":"proxy","subject":{"host":"free text secret!","host":"a.example"},"count":1,"first":1,"last":1}`))
+	f.Add([]byte(`{"id":"dn_01JF0000000000000000000000","code":"BUSY","code":"BUSY","by":"floor","count":1,"first":1,"last":1}`))
 	for _, s := range hostile {
 		f.Add([]byte(s))
 	}
@@ -176,16 +185,16 @@ func FuzzDenyRecord(f *testing.F) {
 		if err := exactDecode(b, &r); err != nil {
 			t.Fatalf("accepted %s: %v", b, err)
 		}
-		if _, ok := codeDefs[r.Code]; !ok || len(r.Detail) > maxKeep {
+		if _, ok := codeDefs[r.Code]; !ok || len(r.Detail) > maxKeep || noDupKeys(b) != nil {
 			t.Fatalf("accepted %s", b)
 		}
-		for k, v := range r.Args {
-			o, _ := opDef(r.Op)
-			for _, fd := range o.Args {
-				if fd.Name == k && fd.Audit == Hash && !bytes.HasPrefix(bytes.TrimSpace(v), []byte("{")) {
-					t.Fatalf("unhashed %s accepted", k)
-				}
-			}
+		// what auditd stores reads back as the record that was checked
+		var raw map[string]json.RawMessage
+		json.Unmarshal(b, &raw)
+		stored, _ := json.Marshal(raw)
+		var r2 DenyRecord
+		if err := json.Unmarshal(stored, &r2); err != nil || !reflect.DeepEqual(r, r2) || noDupKeys(stored) != nil {
+			t.Fatalf("stored bytes differ from the checked record: %s", stored)
 		}
 	})
 }

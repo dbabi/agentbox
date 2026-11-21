@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"agentbox/internal/ids"
 )
@@ -184,6 +185,39 @@ var (
 	reDigest  = reOID // sha256 hex digests share the 64-hex form; a 40-hex SHA-1 OID is not a digest
 )
 
+// An ask's expiresAt is a Unix ms time from 2001 to 2100: a small number there could only be a smuggled one.
+const minMs, maxMs = 1_000_000_000_000, 4_102_444_800_000
+
+// resultFields are the agentbox-generated outputs an op's ask.status result may carry (§5.3 Op outputs). Any other
+// field for that op is a channel a gate could put a GitHub-assigned number in.
+func resultFields(op string) []string {
+	switch {
+	case op == "repo.push":
+		return []string{"oid", "remote"}
+	case op == "repo.merge":
+		return []string{"oid"}
+	case op == "gh.pr.create":
+		return []string{"headOid"}
+	case op == "ask.batch":
+		return []string{"oid", "remote", "headOid"} // its repo.push and gh.pr.create members
+	case strings.HasPrefix(op, "os."):
+		return []string{"gen"}
+	case op == "app.deploy", strings.HasPrefix(op, "workspace."):
+		return []string{"digest"}
+	}
+	return nil
+}
+
+func resultFieldsDoc(reg []Op) map[string][]string {
+	m := map[string][]string{}
+	for _, o := range cedarOps(reg) {
+		if f := resultFields(o.Name); f != nil {
+			m[o.Name] = f
+		}
+	}
+	return m
+}
+
 func strictDecode(b []byte, v any) error {
 	if len(b) > 64<<10 || !printable(bytes.TrimRight(b, "\n")) {
 		return errors.New("not printable ASCII of at most 64 KiB")
@@ -261,7 +295,7 @@ func CheckStatusReply(b []byte) ([]byte, error) {
 	}
 	if a := r.Ask; a != nil {
 		o, ok := opDef(a.Op)
-		if !ids.Is(ids.Pending, a.ID) || !ok || !slices.Contains(askStates, a.State) || a.Channel != channelOf(o) || a.ExpiresAt < 0 {
+		if !ids.Is(ids.Pending, a.ID) || !ok || !slices.Contains(askStates, a.State) || a.Channel != channelOf(o) || a.ExpiresAt < minMs || a.ExpiresAt > maxMs {
 			return nil, errors.New("bad ask row")
 		}
 		if _, ok := LookupCode(a.Code); a.Code != "" && !ok {
@@ -271,6 +305,11 @@ func CheckStatusReply(b []byte) ([]byte, error) {
 			if x.OID != "" && !reOID.MatchString(x.OID) || x.HeadOID != "" && !reOID.MatchString(x.HeadOID) ||
 				x.Digest != "" && !(reDigest.MatchString(x.Digest) && len(x.Digest) == 64) || x.Gen < 0 || x.Remote != "" && !reRemote.MatchString(x.Remote) {
 				return nil, errors.New("bad result")
+			}
+			for k, set := range map[string]bool{"oid": x.OID != "", "headOid": x.HeadOID != "", "digest": x.Digest != "", "gen": x.Gen != 0, "remote": x.Remote != ""} {
+				if set && !slices.Contains(resultFields(a.Op), k) {
+					return nil, fmt.Errorf("result.%s is not an output of %s", k, a.Op)
+				}
 			}
 		}
 		if len(a.Members) > 1+BatchMaxReplies || len(a.Members) > 0 && a.Op != "ask.batch" {

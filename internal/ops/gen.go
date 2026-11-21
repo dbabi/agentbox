@@ -170,16 +170,17 @@ type prop struct {
 
 // member is the item schema of a members-class array: args are classed by op name's own args schema.
 type member struct {
-	Type     string         `json:"type"`
-	Props    map[string]typ `json:"properties"`
-	Required []string       `json:"required"`
+	Type       string         `json:"type"`
+	Props      map[string]typ `json:"properties"`
+	Required   []string       `json:"required"`
+	Additional bool           `json:"additionalProperties"`
 }
 
 type typ struct {
 	Type string `json:"type"`
 }
 
-var memberItem = &member{"object", map[string]typ{"name": {"string"}, "args": {"object"}}, []string{"name", "args"}}
+var memberItem = &member{"object", map[string]typ{"name": {"string"}, "args": {"object"}}, []string{"name", "args"}, false}
 
 type schema struct {
 	Schema     string          `json:"$schema,omitempty"`

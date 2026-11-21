@@ -276,7 +276,8 @@
             "type": "string"
           },
           "expiresAt": {
-            "minimum": 0,
+            "maximum": 4102444800000,
+            "minimum": 1000000000000,
             "type": "integer"
           },
           "id": {
@@ -426,7 +427,7 @@
           },
           "result": {
             "additionalProperties": false,
-            "description": "agentbox-generated outputs only (§5.3)",
+            "description": "agentbox-generated outputs only (§5.3), and only those its op makes",
             "properties": {
               "digest": {
                 "pattern": "^[0-9a-f]{64}$",
@@ -449,7 +450,54 @@
                 "type": "string"
               }
             },
-            "type": "object"
+            "type": "object",
+            "x-agentbox-result-fields": {
+              "app.deploy": [
+                "digest"
+              ],
+              "ask.batch": [
+                "oid",
+                "remote",
+                "headOid"
+              ],
+              "gh.pr.create": [
+                "headOid"
+              ],
+              "os.generations": [
+                "gen"
+              ],
+              "os.pkg.install": [
+                "gen"
+              ],
+              "os.pkg.remove": [
+                "gen"
+              ],
+              "os.rollback": [
+                "gen"
+              ],
+              "os.unit.disable": [
+                "gen"
+              ],
+              "os.unit.enable": [
+                "gen"
+              ],
+              "os.update": [
+                "gen"
+              ],
+              "repo.merge": [
+                "oid"
+              ],
+              "repo.push": [
+                "oid",
+                "remote"
+              ],
+              "workspace.restore": [
+                "digest"
+              ],
+              "workspace.snapshot": [
+                "digest"
+              ]
+            }
           },
           "state": {
             "enum": [

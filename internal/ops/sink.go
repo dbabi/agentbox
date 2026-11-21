@@ -14,19 +14,18 @@ import (
 
 // DenyRecord is a DENY audit record without its type (§9, gen/audit-deny.v1.json).
 type DenyRecord struct {
-	ID      string                     `json:"id"`
-	Code    string                     `json:"code"`
-	What    string                     `json:"what,omitempty"`
-	By      string                     `json:"by"`
-	Task    string                     `json:"task,omitempty"`
-	Agent   string                     `json:"agent,omitempty"`
-	Op      string                     `json:"op,omitempty"`
-	Subject *Subject                   `json:"subject,omitempty"`
-	Args    map[string]json.RawMessage `json:"args,omitempty"`
-	Detail  string                     `json:"detail,omitempty"` // for humans only; never returned by the query call
-	Count   int64                      `json:"count"`
-	First   int64                      `json:"first"`
-	Last    int64                      `json:"last"`
+	ID      string   `json:"id"`
+	Code    string   `json:"code"`
+	What    string   `json:"what,omitempty"`
+	By      string   `json:"by"`
+	Task    string   `json:"task,omitempty"`
+	Agent   string   `json:"agent,omitempty"`
+	Op      string   `json:"op,omitempty"`
+	Subject *Subject `json:"subject,omitempty"` // the request's structural fields, classes applied; no args (§9)
+	Detail  string   `json:"detail,omitempty"`  // for humans only; never returned by the query call
+	Count   int64    `json:"count"`
+	First   int64    `json:"first"`
+	Last    int64    `json:"last"`
 }
 
 type denyFlood struct {
@@ -38,7 +37,7 @@ type denyFlood struct {
 const maxKeep = 1024 // §9: a keep string over 1 KiB is NACKed
 
 // CheckDenyRecord is auditd's sink check of a DENY or DENY_FLOOD body (the record minus its type): the closed schema,
-// a known code and what, and the op's audit classes on any args. Other types pass.
+// a known code and what, and a known op. Other types pass.
 func CheckDenyRecord(typ string, body []byte) error {
 	switch typ {
 	case "DENY_FLOOD":
@@ -86,14 +85,8 @@ func CheckDenyRecord(typ string, body []byte) error {
 	case r.Count < 1 || r.First < 0 || r.Last < r.First:
 		return errors.New("bad count or times")
 	}
-	if r.Args != nil || r.Op != "" {
-		if _, ok := opDef(r.Op); !ok {
-			return fmt.Errorf("unknown op %q", r.Op)
-		}
-	}
-	if r.Args != nil {
-		b, _ := json.Marshal(r.Args)
-		return CheckAuditArgs(r.Op, b)
+	if _, ok := opDef(r.Op); r.Op != "" && !ok {
+		return fmt.Errorf("unknown op %q", r.Op)
 	}
 	return nil
 }
@@ -109,6 +102,9 @@ func CheckAuditArgs(op string, args []byte) error {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(args, &m); err != nil {
 		return errors.New("args: not an object")
+	}
+	if err := noDupKeys(args); err != nil {
+		return err
 	}
 	for k, raw := range m {
 		i := slices.IndexFunc(o.Args, func(f Field) bool { return f.Name == k })
@@ -132,14 +128,15 @@ func CheckAuditArgs(op string, args []byte) error {
 				return fmt.Errorf("%s.%s: keep value over 1 KiB", op, k)
 			}
 		case Members:
-			var items []struct {
-				Name string          `json:"name"`
-				Args json.RawMessage `json:"args"`
-			}
+			var items []json.RawMessage
 			if json.Unmarshal(raw, &items) != nil {
 				return fmt.Errorf("%s.%s: not a member list", op, k)
 			}
-			for _, it := range items {
+			for _, b := range items {
+				var it memberArg
+				if exactDecode(b, &it) != nil || !memberOK(o, it.Name) {
+					return fmt.Errorf("%s.%s: a member is exactly {name, args} of a quotable op", op, k)
+				}
 				if err := CheckAuditArgs(it.Name, it.Args); err != nil {
 					return err
 				}
@@ -149,11 +146,26 @@ func CheckAuditArgs(op string, args []byte) error {
 	return nil
 }
 
+// memberArg is one item of a members-class array.
+type memberArg struct {
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args"`
+}
+
+// memberOK: a member of container op c is a quotable op, and an ask.batch member also joins a batch shape (§5.1).
+func memberOK(c Op, name string) bool {
+	mo, ok := opDef(name)
+	return ok && mo.Quotable && (c.Name != "ask.batch" || len(mo.Batch) > 0)
+}
+
 // exactDecode decodes one JSON object into v with no unknown field, no key that only case-folds to a field (auditd
-// logs the raw bytes, so a reader must find "code", not "Code"), and nothing after it.
+// logs the raw bytes, so a reader must find "code", not "Code"), no repeated key at any depth, and nothing after it.
 func exactDecode(b []byte, v any) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	if err := noDupKeys(b); err != nil {
 		return err
 	}
 	t := reflect.TypeOf(v).Elem()
@@ -167,4 +179,46 @@ func exactDecode(b []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	return dec.Decode(v) // json.Unmarshal above already refused trailing data
+}
+
+// noDupKeys refuses a key repeated in any object at any depth. Go keeps the last duplicate, but auditd stores the raw
+// bytes, so a check that read one value would log the other. Call it only on bytes json.Unmarshal accepted (which
+// bounds the depth).
+func noDupKeys(b []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	var walk func() error
+	walk = func() error {
+		t, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch t {
+		case json.Delim('{'):
+			seen := map[string]bool{}
+			for dec.More() {
+				k, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				if seen[k.(string)] {
+					return fmt.Errorf("duplicate key %q", k)
+				}
+				seen[k.(string)] = true
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		case json.Delim('['):
+			for dec.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		default:
+			return nil
+		}
+		_, err = dec.Token()
+		return err
+	}
+	return walk()
 }

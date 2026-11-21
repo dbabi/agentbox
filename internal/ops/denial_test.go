@@ -3,9 +3,12 @@ package ops
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -89,11 +92,119 @@ func TestDenyShape(t *testing.T) {
 			if _, err := ParseDenial(b); err != nil {
 				t.Fatalf("%s{%s} does not parse: %v\n%s", c.Name, what, err, b)
 			}
+			if err := denialSchemaErr(b); err != "" {
+				t.Fatalf("%s{%s} fails denial.v1.json at %s: %s", c.Name, what, err, b)
+			}
 			if what != "" && d.What != what {
 				t.Errorf("%s: what %s dropped", c.Name, what)
 			}
 		}
 	}
+	// a NEEDS_SIGNATURE without its pending ask can't send the agent to wait on it; an admin op is not in the op enum
+	for _, c := range []struct {
+		d        Denial
+		code, op string
+	}{
+		{Deny(NeedsSignature, "", Slots{Op: "repo.push"}), "BROKER_UNAVAILABLE", "repo.push"},
+		{Deny(NeedsSignature, "", Slots{Pending: ids.New(ids.Pending)}), "BROKER_UNAVAILABLE", ""},
+		{Deny(DeniedPolicy, "", Slots{Op: "secret.set"}), "DENIED_POLICY", ""},
+		{Deny(AskExpired, "", Slots{Op: "memory.purge"}), "ASK_EXPIRED", ""},
+	} {
+		if err := denialSchemaErr(c.d.JSON()); err != "" || c.d.Code != c.code || c.d.Op != c.op {
+			t.Errorf("%s: %s", err, c.d.JSON())
+		}
+	}
+	// the check itself catches what the old Deny emitted
+	ns := string(Deny(NeedsSignature, "", Slots{Op: "repo.push", Pending: ids.New(ids.Pending)}).JSON())
+	for _, bad := range []string{strings.Replace(ns, `"op":"repo.push"`, `"op":"secret.set"`, 1), strings.Replace(ns, "agentbox approve pnd_", "agentbox approve dn_", 1),
+		strings.Replace(ns, `"v":1`, `"v":2`, 1), strings.Replace(ns, `"code"`, `"Code"`, 1)} {
+		if denialSchemaErr([]byte(bad)) == "" {
+			t.Errorf("the schema check passes %s", bad)
+		}
+	}
+}
+
+var denialDoc = func() (m map[string]any) {
+	json.Unmarshal(denialSchema(Registry, CodeTable), &m)
+	return
+}()
+
+// denialSchemaErr is a structural check of a denial against gen/denial.v1.json: type, const, enum, pattern, lengths,
+// bounds, required and closed objects (the keywords the generator emits). It returns the failing pointer, or "".
+func denialSchemaErr(b []byte) string {
+	var v any
+	if json.Unmarshal(b, &v) != nil {
+		return "(not JSON)"
+	}
+	return schemaErr(denialDoc, v, "")
+}
+
+func schemaErr(s map[string]any, v any, at string) string {
+	num := func(k string) (float64, bool) { n, ok := s[k].(float64); return n, ok }
+	if c, ok := s["const"]; ok && !reflect.DeepEqual(c, v) {
+		return at + " const"
+	}
+	if e, ok := s["enum"].([]any); ok && !slices.ContainsFunc(e, func(x any) bool { return reflect.DeepEqual(x, v) }) {
+		return at + " enum"
+	}
+	switch s["type"] {
+	case "string":
+		str, ok := v.(string)
+		if n, has := num("maxLength"); !ok || has && float64(len(str)) > n {
+			return at + " string"
+		}
+		if p, has := s["pattern"].(string); has && !regexp.MustCompile(p).MatchString(str) {
+			return at + " pattern"
+		}
+	case "integer":
+		n, ok := v.(float64)
+		lo, hasLo := num("minimum")
+		hi, hasHi := num("maximum")
+		if !ok || n != float64(int64(n)) || hasLo && n < lo || hasHi && n > hi {
+			return at + " integer"
+		}
+	case "boolean":
+		if _, ok := v.(bool); !ok {
+			return at + " boolean"
+		}
+	case "array":
+		a, ok := v.([]any)
+		lo, hasLo := num("minItems")
+		hi, hasHi := num("maxItems")
+		if !ok || hasLo && float64(len(a)) < lo || hasHi && float64(len(a)) > hi {
+			return at + " array"
+		}
+		for i, x := range a {
+			if e := schemaErr(s["items"].(map[string]any), x, fmt.Sprintf("%s/%d", at, i)); e != "" {
+				return e
+			}
+		}
+	case "object":
+		m, ok := v.(map[string]any)
+		if !ok {
+			return at + " object"
+		}
+		props, _ := s["properties"].(map[string]any)
+		req, _ := s["required"].([]any)
+		for _, r := range req {
+			if _, ok := m[r.(string)]; !ok {
+				return at + "/" + r.(string) + " required"
+			}
+		}
+		for k, x := range m {
+			p, ok := props[k].(map[string]any)
+			if !ok {
+				if s["additionalProperties"] == false {
+					return at + "/" + k + " additional"
+				}
+				continue
+			}
+			if e := schemaErr(p, x, at+"/"+k); e != "" {
+				return e
+			}
+		}
+	}
+	return ""
 }
 
 func whatNames(c CodeDef) []string {
@@ -152,6 +263,10 @@ func TestCheckArgs(t *testing.T) {
 		{"ask.batch", `{"shape":"push+pr","ops":[{"name":"file.write","args":{}}]}`, "/ops/0/name", "valid"},
 		{"ask.quote", `{"ops":[{"name":"repo.push","args":{"remote":"o","ref":7,"oid":"x"}}]}`, "/ops/0/args/ref", "string"},
 		{"ask.status", `[]`, "", "object"},
+		{"ask.quote", `{"ops":[{"name":"file.write","args":{"path":"/srv/a/x","content":"x"},"note":"SECRETVALUE"}]}`, "/ops/0/note", "absent"},
+		{"ask.quote", `{"ops":[{"NAME":"file.write","Args":{"path":"/srv/a/x","content":"x"}}]}`, "/ops/0/Args", "absent"},
+		{"ask.quote", `{"ops":[7]}`, "/ops", "array"},
+		{"file.write", `{"path":"/srv/a/x","content":"x","content":7}`, "", "object"},
 	} {
 		d := CheckArgs(c.op, []byte(c.args))
 		if d == nil || d.Code != "INVALID_ARGS" || d.Remedy[0].Expect != c.expect || c.ptr != "" && d.Subject.Pointer != c.ptr {
@@ -177,6 +292,35 @@ func TestCheckArgs(t *testing.T) {
 	}
 	if json.Unmarshal(RPCError(Deny(Busy, "", Slots{})), &rpc); rpc.Code != -32010 || rpc.Message != "BUSY" || rpc.Data.Code != "BUSY" {
 		t.Fatalf("gate JSON-RPC error: %+v", rpc)
+	}
+}
+
+// §9 sink: the args check that auditd's INTENT check reuses (#8).
+func TestAuditArgs(t *testing.T) {
+	h := `{"sha256":"` + strings.Repeat("a", 64) + `","len":3}`
+	for _, c := range []struct{ op, args string }{
+		{"file.write", `{"path":"/srv/a/x","content":` + h + `}`},
+		{"ask.batch", `{"shape":"push+pr","ops":[{"name":"gh.pr.create","args":{"title":` + h + `}}]}`},
+	} {
+		if err := CheckAuditArgs(c.op, []byte(c.args)); err != nil {
+			t.Errorf("%s %s: %v", c.op, c.args, err)
+		}
+	}
+	for why, c := range map[string]struct{ op, args string }{
+		"unhashed hash field":      {"file.write", `{"content":"sk-live-secret"}`},
+		"drop field":               {"secret.set", `{"value":` + h + `}`},
+		"undeclared arg":           {"file.write", `{"reason":"free text"}`},
+		"repeated arg":             {"memory.write", `{"title":"MY SECRET TITLE","title":` + h + `}`},
+		"repeated sha256":          {"memory.write", `{"title":{"sha256":"SECRET SECRET","sha256":"` + strings.Repeat("a", 64) + `","len":3}}`},
+		"free text on a member":    {"ask.quote", `{"ops":[{"name":"memory.write","args":{},"note":"FREE TEXT"}]}`},
+		"case-folded member keys":  {"ask.quote", `{"ops":[{"NAME":"file.write","Args":{}}]}`},
+		"non-agent member":         {"ask.batch", `{"ops":[{"name":"secret.set","args":{}}]}`},
+		"non-batch member":         {"ask.batch", `{"ops":[{"name":"file.write","args":{}}]}`},
+		"unhashed member hash arg": {"ask.quote", `{"ops":[{"name":"gh.pr.create","args":{"body":"secret"}}]}`},
+	} {
+		if err := CheckAuditArgs(c.op, []byte(c.args)); err == nil {
+			t.Errorf("%s passes: %s %s", why, c.op, c.args)
+		}
 	}
 }
 

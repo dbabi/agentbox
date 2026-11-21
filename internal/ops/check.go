@@ -3,7 +3,9 @@ package ops
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -33,7 +35,7 @@ const opMarker = "agentbox-op:"
 // checkObj returns the pointer and expect of the first problem, or "" "" when args fit.
 func checkObj(o Op, args []byte, at string) (string, string) {
 	var m map[string]json.RawMessage
-	if json.Unmarshal(args, &m) != nil || m == nil {
+	if json.Unmarshal(args, &m) != nil || m == nil || noDupKeys(args) != nil {
 		return at, "object"
 	}
 	keys := make([]string, 0, len(m))
@@ -62,20 +64,26 @@ func checkObj(o Op, args []byte, at string) (string, string) {
 			return p, "valid"
 		}
 		if f.Audit == Members {
-			var items []struct {
-				Name string          `json:"name"`
-				Args json.RawMessage `json:"args"`
-			}
+			var items []map[string]json.RawMessage
 			if json.Unmarshal(raw, &items) != nil || len(items) < 1 || len(items) > 8 {
 				return p, "array"
 			}
 			for i, it := range items {
 				ip := p + "/" + strconv.Itoa(i)
-				mo, ok := opDef(it.Name)
-				if !ok || !mo.Quotable || o.Name == "ask.batch" && len(mo.Batch) == 0 {
+				if it == nil {
+					return ip, "object"
+				}
+				for _, k := range slices.Sorted(maps.Keys(it)) {
+					if k != "name" && k != "args" {
+						return ip + "/" + k, "absent"
+					}
+				}
+				var name string
+				if json.Unmarshal(it["name"], &name) != nil || !memberOK(o, name) {
 					return ip + "/name", "valid"
 				}
-				if ptr, exp := checkObj(mo, it.Args, ip+"/args"); exp != "" {
+				mo, _ := opDef(name)
+				if ptr, exp := checkObj(mo, it["args"], ip+"/args"); exp != "" {
 					return ptr, exp
 				}
 			}
@@ -118,6 +126,28 @@ func CheckDenial(op string, args []byte, reply []byte) (d Denial, witness string
 		return bad, WitnessMalformed(bad), false
 	}
 	return d, WitnessLine(d), true
+}
+
+// CheckAskReply is the in-task check of a successful ask.quote or ask.status reply to the request args it sent. It
+// returns the reply re-encoded. ok=false means the reply failed: as for CheckDenial, the caller shows the returned
+// BROKER_UNAVAILABLE{gate} instead and writes the returned witness line.
+func CheckAskReply(op string, args, reply []byte) (out []byte, d Denial, witness string, ok bool) {
+	err := errors.New("not an ask read")
+	switch op {
+	case "ask.quote":
+		var req struct {
+			Ops []json.RawMessage `json:"ops"`
+		}
+		json.Unmarshal(args, &req)
+		out, err = CheckQuoteReply(reply, len(req.Ops))
+	case "ask.status":
+		out, err = CheckStatusReply(reply)
+	}
+	if err != nil {
+		d = Deny(BrokerUnavailable, "gate", Slots{Op: op, By: "forwarder"})
+		return nil, d, WitnessMalformed(d), false
+	}
+	return out, Denial{}, "", true
 }
 
 // matchRequest: the denial names the op it was for, and its subject only fields of that request.
