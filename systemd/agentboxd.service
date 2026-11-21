@@ -1,0 +1,34 @@
+# agentboxd (ARCHITECTURE.md §2, §5.2): the task gate. rootd registers each task on svc-gate.sock; agentboxd binds that
+# task's /run/agentbox-gate/t/<task>/gate.sock in the dir rootd made, checks every request against the op registry,
+# adds the task, agent and chain itself, and forwards it to rootd.sock. No network at all: PrivateNetwork and AF_UNIX.
+[Unit]
+Description=agentbox daemon (task gate)
+Requires=agentbox-reconcile.service agentbox-firewall.service agentboxd-svc-gate.socket
+After=agentbox-reconcile.service agentbox-firewall.service agentboxd-svc-gate.socket agentbox-rootd.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=agentbox
+Group=agentbox
+ExecStart=/var/lib/agentbox/current/bin/agentbox agentboxd
+Sockets=agentboxd-svc-gate.socket
+Restart=always
+RestartSec=1
+# gate.sock is bound 0660 inside the setgid dir, so it is agentbox:ag-<agent> (§2.1)
+UMask=0117
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/agentbox-gate
+PrivateTmp=yes
+NoNewPrivileges=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

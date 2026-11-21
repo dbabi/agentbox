@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"flag"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"agentbox/internal/gate"
 	"agentbox/internal/recovery"
 )
 
@@ -124,5 +126,14 @@ func TestOSArgs(t *testing.T) {
 	}
 	if err := run([]string{"os", "--help"}); !errors.Is(err, flag.ErrHelp) {
 		t.Errorf("os --help: %v", err)
+	}
+}
+
+// A gate request near MaxRequest full of '<' stays within rootd.sock's line: forwarded args are copied, not escaped.
+func TestEncodeLineCopiesArgs(t *testing.T) {
+	args := json.RawMessage(`{"path":"/srv/a/x","content":"` + strings.Repeat("<", gate.MaxRequest-100) + `"}`)
+	b := encodeLine(map[string]any{"op": "task.op", "name": "file.write", "args": args, "task": "T1", "agent": "a", "chain": []string{}})
+	if len(b) > len(args)+200 || !strings.Contains(string(b), string(args)) || b[len(b)-1] != '\n' {
+		t.Fatalf("line of %d bytes for %d bytes of args", len(b), len(args))
 	}
 }

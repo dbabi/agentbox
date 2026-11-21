@@ -21,7 +21,7 @@ const (
 	denyQueue  = 256 // refusals waiting for the one sender; more are dropped (the journal line stays)
 )
 
-type denial struct {
+type refusal struct {
 	svc, entry, code, detail string
 	at                       time.Time
 }
@@ -39,7 +39,7 @@ type denyWin struct {
 // costs neither a goroutine nor an auditd fsync per request.
 type denyAudit struct {
 	send    func(map[string]any) // one record to auditd's rootd socket
-	q       chan denial
+	q       chan refusal
 	wins    map[denyKey]*denyWin
 	sent    map[string]int // per broker in this period
 	skipped map[string]int
@@ -47,14 +47,14 @@ type denyAudit struct {
 }
 
 func newDenyAudit(send func(map[string]any)) *denyAudit {
-	return &denyAudit{send: send, q: make(chan denial, denyQueue), wins: map[denyKey]*denyWin{}, sent: map[string]int{},
+	return &denyAudit{send: send, q: make(chan refusal, denyQueue), wins: map[denyKey]*denyWin{}, sent: map[string]int{},
 		skipped: map[string]int{}}
 }
 
 // deny queues one refusal; it never blocks the resolver.
 func (d *denyAudit) deny(svc, entry, code, detail string) bool {
 	select {
-	case d.q <- denial{svc, entry, code, detail, time.Now()}:
+	case d.q <- refusal{svc, entry, code, detail, time.Now()}:
 		return true
 	default:
 		return false
@@ -76,7 +76,7 @@ func (d *denyAudit) run(ctx context.Context) {
 	}
 }
 
-func (d *denyAudit) add(x denial) {
+func (d *denyAudit) add(x refusal) {
 	if d.period.IsZero() {
 		d.period = x.at
 	}

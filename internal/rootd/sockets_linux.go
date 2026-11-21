@@ -42,7 +42,7 @@ func listeners() (map[string]*net.UnixListener, error) {
 		fd := 3 + i
 		unix.CloseOnExec(fd)
 		name := names[i]
-		if name != sockAdmin && name != sockSeal && !(strings.HasPrefix(name, "resolve-") && slices.Contains(resolve.Brokers, name[8:])) {
+		if name != sockAdmin && name != sockSeal && name != sockGate && !(strings.HasPrefix(name, "resolve-") && slices.Contains(resolve.Brokers, name[8:])) {
 			return nil, fmt.Errorf("unexpected socket %q", name)
 		}
 		ln, err := net.FileListener(os.NewFile(uintptr(fd), name))
@@ -94,7 +94,7 @@ func peerCred(c *net.UnixConn) (peer, error) {
 
 // allowed is the SO_PEERCRED check for each socket (§2.1): admin takes uid 0 and agentbox-admin members (by the
 // peer's own supplementary groups at connect, SO_PEERGROUPS); resolve-<svc> takes only agentbox-<svc>; seal takes only
-// agentbox-audit. A missing user or group admits nobody.
+// agentbox-audit; rootd (rootd.sock) takes only agentbox. A missing user or group admits nobody.
 func allowed(sock string, p peer) bool {
 	switch {
 	case sock == sockAdmin:
@@ -102,6 +102,9 @@ func allowed(sock string, p peer) bool {
 		return p.uid == 0 || ok && slices.Contains(p.groups, g)
 	case sock == sockSeal:
 		u, ok := lookupUID("agentbox-audit")
+		return ok && p.uid == u
+	case sock == sockGate:
+		u, ok := lookupUID("agentbox")
 		return ok && p.uid == u
 	case strings.HasPrefix(sock, "resolve-"):
 		u, ok := lookupUID("agentbox-" + sock[8:])
@@ -125,7 +128,7 @@ func (s *server) accept(name string, ln *net.UnixListener) {
 	}
 }
 
-const maxLine = 64 << 10
+const maxLine = 128 << 10 // a gate request (gate.MaxRequest, 64 KiB) plus the provenance agentboxd adds
 
 // serve reads newline-delimited JSON requests and writes one JSON reply line each. Ancillary data of any kind
 // (SCM_RIGHTS included) closes the connection: rootd takes no descriptors (§2.1).

@@ -51,7 +51,7 @@ for stage; do
     vssh 'rm -rf /tmp/rel && mkdir /tmp/rel && tar -xz -C /tmp/rel' < "$R/agentbox-$V.tgz"
     # install.sh only enables: start the sockets here (a boot would). systemd refuses to start a new socket while its
     # service runs, so rootd stops first.
-    echo 'sh /tmp/rel/install.sh --from-firstboot && systemctl stop agentbox-rootd.service && systemctl start agentbox-rootd-admin.socket agentbox-audit-seal.socket agentbox-rootd-resolve-proxy.socket agentbox-rootd-resolve-keys.socket agentbox-rootd-resolve-git.socket agentbox-rootd.service' | vmroot >>"$LOG" 2>&1 || die "install.sh $V failed; see $LOG"
+    echo 'sh /tmp/rel/install.sh --from-firstboot && systemctl stop agentbox-rootd.service && systemctl start agentbox-rootd-admin.socket agentbox-rootd-gate.socket agentbox-audit-seal.socket agentbox-rootd-resolve-proxy.socket agentbox-rootd-resolve-keys.socket agentbox-rootd-resolve-git.socket agentbox-rootd.service' | vmroot >>"$LOG" 2>&1 || die "install.sh $V failed; see $LOG"
     rm -rf "$R"
     echo "installed release $V"
     ;;

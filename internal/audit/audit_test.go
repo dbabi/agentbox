@@ -282,7 +282,7 @@ func TestTaintWriteRules(t *testing.T) {
 	}
 	// a clear whose epoch moved between INTENT and RESULT doesn't apply
 	b.ok(rootdProducer, strings.Replace(strings.Replace(clr, "op-1", "op-2", 1), "%d", "3", 1))
-	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-3","name":"workspace.restore","origin":"admin","signer":"boxadmin:ssh","args":{"workspace":"workspace:alice","snapshot":"S9"}}`)
+	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-3","name":"workspace.restore","origin":"admin","signer":"boxadmin:ssh","agent":"alice","args":{"id":"S9"}}`)
 	if rep := b.ok(rootdProducer, `{"type":"RESULT","opId":"op-2","status":"executed"}`); rep.Applied == nil || *rep.Applied {
 		t.Fatalf("a clear applied after its epoch moved: %+v", rep)
 	}
@@ -358,7 +358,7 @@ func TestDiskFull(t *testing.T) {
 	}
 	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-c","name":"taint.clear","origin":"admin","signer":"boxadmin:ssh","args":{"subject":"workspace:alice","contentId":"S1"},"taintEpochs":{"workspace:alice":1}}`)
 	b.ok(rootdProducer, `{"type":"RESULT","opId":"op-c","status":"executed"}`)
-	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-r","name":"agent.remove","origin":"admin","signer":"boxadmin:ssh","args":{"agent":"bob"}}`)
+	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-r","name":"agent.remove","origin":"admin","signer":"boxadmin:ssh","args":{"name":"bob"}}`)
 	b.ok(rootdProducer, `{"type":"RESULT","opId":"op-r","status":"executed"}`)
 	if r := b.taint("workspace:alice"); r.Tainted {
 		t.Fatal("taint.clear did not run in disk-full mode")
@@ -792,6 +792,50 @@ func TestDenySink(t *testing.T) {
 		b.nack("agentboxd", line, CodeBadRecord)
 		if after := b.verify(); after[len(after)-1].Records != before[len(before)-1].Records {
 			t.Errorf("%s: a NACKed DENY was appended", why)
+		}
+	}
+}
+
+// §9 enforcement at the sink: an INTENT (or RESULT) whose args don't carry the registry's audit classes is NACKed and
+// never enters the chain or the ops table, so no RESULT for it is ever accepted and the effect never runs.
+func TestSinkCheck(t *testing.T) {
+	b := newBox(t)
+	h := `{"sha256":"` + strings.Repeat("a", 64) + `","len":5}`
+	big := strings.Repeat("x", 1025)
+	for _, c := range []struct{ rec, why string }{
+		{`{"type":"INTENT","opId":"s1","name":"secret.set","origin":"admin","args":{"name":"k","value":"sk-live-123"}}`, "/args/value: drop-class"},
+		{`{"type":"INTENT","opId":"s2","name":"gh.pr.comment","args":{"remote":"r","number":1,"body":"hello"}}`, "/args/body: hash-class"},
+		{`{"type":"INTENT","opId":"s3","name":"file.write","args":{"path":"/srv/a/x","content":{"sha256":"zz","len":5}}}`, "/args/content: hash-class"},
+		{`{"type":"INTENT","opId":"s4","name":"file.write","args":{"path":"/srv/a/x","content":` + h + `,"token":"t"}}`, "/args/token: undeclared"},
+		{`{"type":"INTENT","opId":"s5","name":"file.write","args":{"path":"` + big + `","content":` + h + `}}`, "/args/path: keep-class string over"},
+		{`{"type":"INTENT","opId":"s6","name":"egress.allow","origin":"admin","args":{"svc":"keys","entry":"` + big + `"}}`, "/args/entry: keep-class"},
+		{`{"type":"INTENT","opId":"s7","name":"ask.batch","args":{"shape":"push+pr","ops":[{"name":"gh.pr.create","args":{"remote":"r","head":"h","base":"main","title":"t","body":` + h + `}}]}}`, "/args/ops/0/args/title: hash-class"},
+		// the stored bytes are the checked ones: no duplicate key, no case variant, no key outside the record's fields
+		{`{"type":"INTENT","opId":"s8","name":"file.write","args":{"path":"/srv/a/x","content":"sk-live-dup","content":` + h + `}}`, "unique keys"},
+		{`{"type":"INTENT","opId":"s9","name":"secret.set","origin":"admin","Args":{"name":"k","value":"sk-live-case"}}`, "/Args: not an INTENT field"},
+		{`{"type":"INTENT","opId":"s10","name":"file.write","args":{"path":"/srv/a/x","content":` + h + `},"value":"sk-live-top"}`, "/value: not an INTENT field"},
+		{`{"type":"INTENT","opId":"s11","name":"secret.sett","args":{"value":"sk-live-unreg"}}`, "/name: not a registry op"},
+		{`{"type":"INTENT","opId":"s12","args":{"value":"sk-live-noname"}}`, "/name: not a registry op"},
+		{`{"type":"TAINT","subject":"workspace:alice","source":"` + big + `"}`, "/source: keep-class string over"},
+		{`{"type":"ALERT","Subject":"sk-live-alert"}`, `/Subject: a case variant of "subject"`},
+	} {
+		if r := b.nack(rootdProducer, c.rec, CodeBadRecord); !strings.Contains(r.Detail, c.why) || strings.Contains(r.Detail, "sk-live") {
+			t.Errorf("%s: detail %q, want %q and no value", c.rec, r.Detail, c.why)
+		}
+	}
+	b.nack(rootdProducer, `{"type":"RESULT","opId":"s1","status":"executed"}`, CodeUnknownOp)
+	b.ok(rootdProducer, `{"type":"INTENT","opId":"g1","name":"file.write","args":{"path":"/srv/a/x","content":`+h+`}}`)
+	b.ok(rootdProducer, `{"type":"INTENT","opId":"g2","name":"app.logs","args":{"app":"a"}}`)
+	b.nack(rootdProducer, `{"type":"RESULT","opId":"g2","status":"executed","outputs":{"log":["line"]}}`, CodeBadRecord)
+	b.nack(rootdProducer, `{"type":"RESULT","opId":"g2","status":"executed","outputs":{"log":["sk-live-out"]},"Outputs":{"log":`+h+`}}`, CodeBadRecord)
+	b.nack(rootdProducer, `{"type":"RESULT","opId":"g2","status":"executed","outputs":{"log":["sk-live-out"]},"outputs":{"log":`+h+`}}`, CodeBadRecord)
+	b.ok(rootdProducer, `{"type":"INTENT","opId":"g3","name":"egress.allow","origin":"admin","args":{"svc":"keys","entry":"example.com"}}`)
+	b.nack(rootdProducer, `{"type":"INTENT","opId":"g4","name":"egress.allow","origin":"admin","args":{"svc":"keys","entry":"e","value":"sk-live-edit"}}`, CodeBadRecord)
+	b.ok(rootdProducer, `{"type":"RESULT","opId":"g2","status":"executed","outputs":{"log":`+h+`}}`)
+	for _, r := range b.verify() {
+		data, _ := os.ReadFile(filepath.Join(b.dir, SegName(r.Seg)))
+		if strings.Contains(string(data), "sk-live") || strings.Contains(string(data), `"hello"`) {
+			t.Fatalf("%s holds a NACKed value", SegName(r.Seg))
 		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -463,15 +464,16 @@ type request struct {
 	Args        struct {
 		Subject   string `json:"subject"`
 		ContentID string `json:"contentId"`
-		Workspace string `json:"workspace"`
-		Snapshot  string `json:"snapshot"`
+		ID        string `json:"id"` // workspace.restore: the snapshot id
 	} `json:"args"`
-	Subject   string `json:"subject"`
-	Source    string `json:"source"`
-	Reader    string `json:"reader"`
-	Holder    string `json:"holder"`
-	Workspace string `json:"workspace"`
-	Task      string `json:"task"`
+	Agent     string          `json:"agent"`
+	Outputs   json.RawMessage `json:"outputs"`
+	Subject   string          `json:"subject"`
+	Source    string          `json:"source"`
+	Reader    string          `json:"reader"`
+	Holder    string          `json:"holder"`
+	Workspace string          `json:"workspace"`
+	Task      string          `json:"task"`
 }
 
 type opView struct {
@@ -498,12 +500,19 @@ func (s *Server) Handle(p string, uid uint32, pid int32, line []byte) Reply {
 	defer s.mu.Unlock()
 	var raw map[string]json.RawMessage
 	var r request
-	if err := json.Unmarshal(line, &raw); err != nil || json.Unmarshal(raw["type"], &r.Type) != nil {
-		return Reply{Code: CodeBadRecord, Detail: "not a JSON object"}
+	v, derr := ops.Decode(line) // no duplicate key at any depth: the checked copy is the stored one
+	if derr != nil || json.Unmarshal(line, &raw) != nil || json.Unmarshal(raw["type"], &r.Type) != nil {
+		return Reply{Code: CodeBadRecord, Detail: "not a JSON object with unique keys"}
 	}
 	// A DENY's subject is an object (§9), not a taint subject; CheckDenyRecord checks its schema below.
 	if r.Type != "DENY" && json.Unmarshal(line, &r) != nil {
 		return Reply{Code: CodeBadRecord, Detail: "not a JSON object"}
+	}
+	if err := checkKeys(r.Type, raw); err != nil {
+		return Reply{Code: CodeBadRecord, Detail: err.Error()}
+	}
+	if err := ops.CheckKeep(v, ""); err != nil { // §9: every record, whatever its type
+		return Reply{Code: CodeBadRecord, Detail: err.Error()}
 	}
 	delete(raw, "type")
 	isRootd := p == rootdProducer
@@ -560,6 +569,12 @@ func (s *Server) Handle(p string, uid uint32, pid int32, line []byte) Reply {
 	// The DENY schema from the codes table (§9): an unknown code, a free-text field or an unhashed hash field is NACKed.
 	if err := ops.CheckDenyRecord(r.Type, body); err != nil {
 		return Reply{Code: CodeBadRecord, Detail: err.Error()}
+	}
+	if r.Type == "INTENT" {
+		if err := sinkCheck(r.Name, raw["args"], "/args", false); err != nil {
+			s.logf("audit: %s from %s NACKed: %v", r.Type, p, err) // the pointer only, never the value
+			return Reply{Code: CodeBadRecord, Detail: err.Error()}
+		}
 	}
 	s.checkSpace()
 	if s.diskFull && !s.admitDiskFull(isRootd, &r) {
@@ -667,9 +682,9 @@ func (s *Server) apply(tx *sql.Tx, p string, r *request, now int64) (Reply, func
 				return bad("taint.clear: taintEpochs must bind the subject's epoch")
 			}
 		case "workspace.restore":
-			target, content = r.Args.Workspace, r.Args.Snapshot
+			target, content = "workspace:"+r.Agent, r.Args.ID // the executor's own workspace (§5.3)
 			if !strings.HasPrefix(target, "workspace:") || !validSubject(target) || !validSubject("snap:"+content) || r.Signer == "" {
-				return bad("workspace.restore: a signed restore of workspace:<agent> from a snapshot id")
+				return bad("workspace.restore: a signed restore of the agent's workspace from a snapshot id")
 			}
 			if err := restore(tx, target, "snap:"+content, "restore:"+content, now); err != nil {
 				return Reply{}, nil, err
@@ -697,6 +712,10 @@ func (s *Server) apply(tx *sql.Tx, p string, r *request, now int64) (Reply, func
 		}
 		if r.Status == "" {
 			return bad("RESULT needs status")
+		}
+		if err := sinkCheck(name, r.Outputs, "/outputs", true); err != nil {
+			s.logf("audit: RESULT from %s NACKed: %v", p, err)
+			return bad(err.Error())
 		}
 		var rep Reply
 		if name == "taint.clear" && r.Status == "executed" {
@@ -768,6 +787,80 @@ func (s *Server) apply(tx *sql.Tx, p string, r *request, now int64) (Reply, func
 		return Reply{}, nil, err
 	}
 	return Reply{}, nil, nil // best-effort records: logged only
+}
+
+// adminEdits are the INTENT names outside the registry that rootd logs itself, with their fixed schemas.
+// shortcut: rootd's egress list edits; weeks 9-10's net.allow_domain flow replaces them and this table goes.
+var adminEdits = map[string]ops.Op{
+	"egress.allow":  {Args: []ops.Field{{Name: "svc", Audit: ops.Keep}, {Name: "entry", Audit: ops.Keep}}},
+	"egress.remove": {Args: []ops.Field{{Name: "svc", Audit: ops.Keep}, {Name: "entry", Audit: ops.Keep}}},
+}
+
+// recordKeys are the only top-level keys an INTENT or RESULT may carry: anything else would reach the chain with no
+// class check.
+var recordKeys = map[string]map[string]bool{
+	"INTENT": keySet("type", "opId", "name", "origin", "signer", "agent", "task", "chain", "args", "taintEpochs", "ts"),
+	"RESULT": keySet("type", "opId", "name", "status", "errorCode", "outputs", "detail", "changed"),
+}
+
+// readKeys are the record keys auditd acts on: request's JSON names plus the taint fields producers may not send.
+var readKeys = func() map[string]bool {
+	m := keySet("epoch", "tainted")
+	t := reflect.TypeOf(request{})
+	for i := range t.NumField() {
+		m[strings.Split(t.Field(i).Tag.Get("json"), ",")[0]] = true
+	}
+	return m
+}()
+
+func keySet(ks ...string) map[string]bool {
+	m := map[string]bool{}
+	for _, k := range ks {
+		m[k] = true
+	}
+	return m
+}
+
+// checkKeys refuses a key that differs from one auditd reads only by case: Go's struct decoding would act on it while
+// the exact-key checks skip it. INTENT and RESULT take only recordKeys.
+func checkKeys(typ string, raw map[string]json.RawMessage) error {
+	for k := range raw {
+		if allow := recordKeys[typ]; allow != nil && !allow[k] {
+			return fmt.Errorf("/%s: not an %s field", ops.Escape(k), typ)
+		}
+		if !readKeys[k] {
+			for rk := range readKeys {
+				if strings.EqualFold(k, rk) {
+					return fmt.Errorf("/%s: a case variant of %q", ops.Escape(k), rk)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// sinkCheck is §9's enforcement at the sink: a registry op's args (or outputs) must carry its audit classes applied,
+// so no drop-class field, every hash-class field as {sha256, len}, nothing undeclared, and no keep string over 1 KiB.
+// A name outside the registry and adminEdits has no schema, so it is refused.
+func sinkCheck(name string, raw json.RawMessage, at string, out bool) error {
+	o, ok := ops.Lookup(name)
+	if !ok {
+		if o, ok = adminEdits[name]; !ok {
+			return fmt.Errorf("/name: not a registry op")
+		}
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	v, err := ops.Decode(raw)
+	if err != nil {
+		return fmt.Errorf("%s: not JSON", at)
+	}
+	fs := o.Args
+	if out {
+		fs = o.Out
+	}
+	return ops.CheckAudit(fs, v, at)
 }
 
 func isFalsy(v json.RawMessage) bool {

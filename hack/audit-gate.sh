@@ -138,7 +138,7 @@ check "disk full: taint.clear (rootd-admin) is ACKed and executes" '
   send "{\"type\":\"INTENT\",\"opId\":\"cl-2\",\"name\":\"taint.clear\",\"origin\":\"admin\",\"signer\":\"gate\",\"args\":{\"subject\":\"workspace:b\",\"contentId\":\"snap2\"},\"taintEpochs\":{\"workspace:b\":1}}" &&
   send "{\"type\":\"RESULT\",\"opId\":\"cl-2\",\"status\":\"executed\"}" | grep -q "\"applied\":true" && row task:g3 workspace:b false 2'
 check "disk full: agent.remove (rootd-admin) and its writer removal are ACKed, and its effect runs after the ACK" '
-  send "{\"type\":\"INTENT\",\"opId\":\"rm-1\",\"name\":\"agent.remove\",\"origin\":\"admin\",\"signer\":\"gate\",\"args\":{\"agent\":\"b\"}}" && touch /run/gate-eff5 &&
+  send "{\"type\":\"INTENT\",\"opId\":\"rm-1\",\"name\":\"agent.remove\",\"origin\":\"admin\",\"signer\":\"gate\",\"args\":{\"name\":\"b\"}}" && touch /run/gate-eff5 &&
   send "{\"type\":\"WRITER_DEL\",\"holder\":\"task:g3\"}" "{\"type\":\"RESULT\",\"opId\":\"rm-1\",\"status\":\"executed\"}" && [ -e /run/gate-eff5 ] &&
   psend agentbox agentboxd "{\"type\":\"taint.get\",\"holder\":\"task:g3\"}" > /run/gate-g3.view && ! grep -qF "\"workspace\":\"workspace:b\"" /run/gate-g3.view'
 rm -f /var/tmp/gate-fill; sync; btrfs filesystem sync $D >/dev/null 2>&1 || :

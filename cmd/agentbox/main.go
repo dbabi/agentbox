@@ -1,6 +1,7 @@
 // Command agentbox is the single binary for every agentbox service and CLI (ARCHITECTURE.md §2, §14).
 // Week 1 ships the operator-side commands (seed, recovery) and, on the box, the os.apply pipeline (os); week 3 adds
-// the firewall (fw, fwcheck), agentbox-auditd and `audit verify`, and agentbox-rootd with its egress CLI.
+// the firewall (fw, fwcheck), agentbox-auditd and `audit verify`, and agentbox-rootd with its egress CLI; week 4 adds
+// agentboxd's task gate.
 package main
 
 import (
@@ -38,6 +39,9 @@ const usage = `usage:
   agentbox rootd [--element-timeout 10m] [--refill-interval 5m]   (agentbox-rootd.service, on the box)
   agentbox sockets check [--root /]   (the live box against the §2.1 socket inventory)
   agentbox egress list | refill | allow|remove --svc keys|git|proxy --entry HOST:PORT   (admin, on the box)
+  agentbox agentboxd [--gen-dir DIR]   (agentboxd.service: the task gate, on the box)
+  agentbox gate register --task T --agent A [--chain T1,T2] | revoke --task T | list   (as root: rootd's task registration)
+  agentbox gate call --socket /run/agentbox-gate/t/<task>/gate.sock JSON-RPC...   (a task-side test client)
 `
 
 type multi []string
@@ -104,6 +108,10 @@ func run(args []string) error {
 		return cmdEgress(args[1:])
 	case "sockets":
 		return cmdSockets(args[1:])
+	case "agentboxd":
+		return cmdAgentboxd(args[1:])
+	case "gate":
+		return cmdGate(args[1:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil

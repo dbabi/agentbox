@@ -63,7 +63,7 @@ func Inventory() []Entry {
 		{Path: "/run/agentbox", Type: d, User: "root", Group: "agentbox-admin", Mode: 0o750, By: Tmpfiles},
 		{Path: "/run/agentbox/admin.sock", Type: s, User: "root", Group: "agentbox-admin", Mode: 0o660, By: "agentboxd's .socket unit (not built yet)", Peers: "humans in agentbox-admin"},
 		{Path: "/run/agentbox-rootd", Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
-		{Path: "/run/agentbox-rootd/rootd.sock", Type: s, User: "agentbox", Group: "agentbox", Mode: 0o600, By: "agentboxd's rootd .socket unit (not built yet)", Peers: "uid agentbox"},
+		{Path: "/run/agentbox-rootd/rootd.sock", Type: s, User: "agentbox", Group: "agentbox", Mode: 0o600, By: "agentbox-rootd-gate.socket", Peers: "agentboxd's forwarded task ops, uid agentbox only", Service: "agentbox-rootd.service", FDName: "rootd"},
 		{Path: "/run/agentbox-rootd/rootd-admin.sock", Type: s, User: "root", Group: "agentbox-admin", Mode: 0o660, By: "agentbox-rootd-admin.socket", Peers: "Admin ops for root and agentbox-admin members", Service: "agentbox-rootd.service", FDName: "admin"},
 		// §9: only rootd can set +a and +i, so rootd serves audit.Files to auditd here
 		{Path: "/run/agentbox-rootd/audit-seal.sock", Type: s, User: "root", Group: "agentbox-audit", Mode: 0o660, By: "agentbox-audit-seal.socket", Peers: "audit.create and audit.seal from agentbox-auditd only (§9)", Service: "agentbox-rootd.service", FDName: "audit-seal"},
@@ -103,9 +103,12 @@ func Inventory() []Entry {
 	}
 	for _, v := range []string{"gate", "proxy", "keys", "git"} {
 		r := "/run/agentbox-" + v
-		inv = append(inv,
-			Entry{Path: "/run/agentbox-rootd/svc-" + v + ".sock", Type: s, User: svcUser[v], Group: "root", Mode: 0o600,
-				By: "agentbox-" + v + "'s .socket unit (not built yet)", Peers: "uid 0 only: task registration and revocation"},
+		svc := Entry{Path: "/run/agentbox-rootd/svc-" + v + ".sock", Type: s, User: svcUser[v], Group: "root", Mode: 0o600,
+			By: "agentbox-" + v + "'s .socket unit (not built yet)", Peers: "uid 0 only: task registration and revocation"}
+		if v == "gate" {
+			svc.By, svc.Service, svc.FDName, svc.RemoveOnStop = "agentboxd-svc-gate.socket", "agentboxd.service", "svc-gate", true
+		}
+		inv = append(inv, svc,
 			Entry{Path: r, Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
 			Entry{Path: r + "/t", Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
 			Entry{Path: r + "/t/<task>", Type: d, User: svcUser[v], Group: "ag-<agent>", Mode: 0o2750, By: "rootd (task.start)"},
