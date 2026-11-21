@@ -46,6 +46,12 @@ func TestRender(t *testing.T) {
 			"flush set inet agentbox confined", "flush set inet agentbox private4", "flush set inet agentbox private6"}, l) {
 			t.Errorf("unexpected flush: %q", l)
 		}
+		// §6.1 (v5.3): no ruleset change for denials; a drop stays silent and nft logs nothing anyone could read
+		for _, w := range strings.Fields(l) {
+			if slices.Contains([]string{"log", "queue", "notrack", "dup", "fwd"}, w) {
+				t.Errorf("ruleset statement %q in %q: drops must stay silent", w, l)
+			}
+		}
 	}
 }
 
