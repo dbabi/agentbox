@@ -41,6 +41,8 @@ jobs:
       - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./... # 2026.2.2
       # warning and up: the info-level SC2016 hits are check strings that gate.sh and apply-gate.sh eval on purpose
       - run: shellcheck -S warning hack/*.sh install/*.sh
+      # docs/STYLE.md: planning jargon, evidence outside Testing-and-Gates.md, private paths, broken relative links
+      - run: hack/docs-lint.sh
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
       # §5.1: denial codes are append-only. opsgen refuses a rename locally; this catches a hand edit of the golden list
       - name: codes.golden only appends to the base branch's
