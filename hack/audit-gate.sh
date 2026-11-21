@@ -7,10 +7,10 @@
 #          waiting) means the test producer's effect never runs; the taint write rules from every producer socket; a
 #          clear only as a rootd admin taint.clear INTENT then RESULT, after which the row stays with its epoch moved;
 #          taint.get names task or session per writer; disk full (fallocate) refuses everything but rootd admin ops, and
-#          taint.clear still runs; a torn tail, a backward clock step across UTC midnight, and SIGKILL at each of the
-#          four seal steps (auditd after close and after the seal, rootd's seal after +i and after creating the next
-#          segment), and rootd's after +i and mid-create with auditd restarted at once, don't stop ACKs; then a reboot
-#          rotates; `agentbox audit verify` passes after each.
+#          taint.clear and agent.remove still run; a torn tail, a backward clock step across UTC midnight, and SIGKILL
+#          at each of the four seal steps (auditd after close and after the seal, rootd's seal after +i and after
+#          creating the next segment), and rootd's after +i and mid-create with auditd restarted at once, don't stop
+#          ACKs; then a reboot rotates; `agentbox audit verify` passes after each.
 # Checks print PASS/FAIL to .vm/audit-gate.txt, command output goes to .vm/audit-gate.log; exit 1 on any FAIL. The VM is
 # powered off at the end. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -129,6 +129,10 @@ check "disk full: a non-admin rootd INTENT is refused and its effect never runs"
 check "disk full: taint.clear (rootd-admin) is ACKed and executes" '
   send "{\"type\":\"INTENT\",\"opId\":\"cl-2\",\"name\":\"taint.clear\",\"origin\":\"admin\",\"signer\":\"gate\",\"args\":{\"subject\":\"workspace:b\",\"contentId\":\"snap2\"},\"taintEpochs\":{\"workspace:b\":1}}" &&
   send "{\"type\":\"RESULT\",\"opId\":\"cl-2\",\"status\":\"executed\"}" | grep -q "\"applied\":true" && row task:g3 workspace:b false 2'
+check "disk full: agent.remove (rootd-admin) and its writer removal are ACKed, and its effect runs after the ACK" '
+  send "{\"type\":\"INTENT\",\"opId\":\"rm-1\",\"name\":\"agent.remove\",\"origin\":\"admin\",\"signer\":\"gate\",\"args\":{\"agent\":\"b\"}}" && touch /run/gate-eff5 &&
+  send "{\"type\":\"WRITER_DEL\",\"holder\":\"task:g3\"}" "{\"type\":\"RESULT\",\"opId\":\"rm-1\",\"status\":\"executed\"}" && [ -e /run/gate-eff5 ] &&
+  psend agentbox agentboxd "{\"type\":\"taint.get\",\"holder\":\"task:g3\"}" > /run/gate-g3.view && ! grep -qF "\"workspace\":\"workspace:b\"" /run/gate-g3.view'
 rm -f /var/tmp/gate-fill; sync; btrfs filesystem sync $D >/dev/null 2>&1 || :
 check "space back: ACKs resume and the 512 MiB reserve is recreated" 'i=0; until psend agentbox-proxy proxy "{\"type\":\"TAINT\",\"subject\":\"workspace:c\",\"source\":\"p\"}"; do
   i=$((i+1)); [ $i -lt 30 ] || exit 1; sleep 2; done; [ "$(stat -c %s $D/.reserve)" = 536870912 ]'
