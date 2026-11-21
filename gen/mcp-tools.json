@@ -1,0 +1,958 @@
+{
+  "$comment": "Code generated from internal/ops/registry.go by go generate; DO NOT EDIT. ARCHITECTURE.md §5.1: the MCP tools/list entries.",
+  "tools": [
+    {
+      "name": "app.deploy",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Build and deploy one of your registered apps from its context, offline, from CAS.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "context": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "app",
+          "context"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "app.logs",
+      "description": "Never asks a human. Read the redacted logs of one of your apps. The output taints this task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "lines": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "app.remove",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Remove one of your registered apps.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "app.restart",
+      "description": "Never asks a human. Restart one of your registered apps.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "app.rollback",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Roll one of your apps back to a kept image digest.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "imageDigest": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "app",
+          "imageDigest"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "app.start",
+      "description": "Never asks a human. Start one of your registered apps.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "app.status",
+      "description": "Never asks a human. Show the status of an app.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "app.stop",
+      "description": "Never asks a human. Stop one of your registered apps.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ask.batch",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Submit a push and its PR, or a push and its replies to one PR, as one ask.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ops": {
+            "type": "array",
+            "x-agentbox-audit": "keep"
+          },
+          "shape": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "shape",
+          "ops"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ask.quote",
+      "description": "Never asks a human. Quote what 1 to 8 ops would cost this task before acting. Quote your whole plan once.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ops": {
+            "type": "array",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "ops"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ask.status",
+      "description": "Never asks a human. Show this task's asks and taint; with id, that ask's state. waitMs (at most 25000) waits for a change.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "waitMs": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.agents.list",
+      "description": "Never asks a human. List the agents on this box and their skills.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.inbox.ack",
+      "description": "Never asks a human. Acknowledge a message in your inbox.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "messageId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.inbox.read",
+      "description": "Never asks a human. Read your inbox. Tainted messages taint this task first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.lease.acquire",
+      "description": "Never asks a human. Acquire an advisory lease (repo:\u003cp\u003e:main).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "resource": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "ttlMs": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "resource",
+          "ttlMs"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.lease.heartbeat",
+      "description": "Never asks a human. Extend a lease you hold.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          },
+          "resource": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "ttlMs": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "resource",
+          "epoch",
+          "ttlMs"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.lease.release",
+      "description": "Never asks a human. Release a lease you hold.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          },
+          "resource": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "resource",
+          "epoch"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.message.send",
+      "description": "Never asks a human. Send a message to an agent linked to you by a live task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "parts": {
+            "type": "array",
+            "x-agentbox-audit": "keep"
+          },
+          "taskId": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "to": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "to",
+          "parts"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.task.cancel",
+      "description": "Never asks a human. Cancel a task you originated.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.task.claim",
+      "description": "Never asks a human. Claim a task from the skills board, or one sent to you.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.task.get",
+      "description": "Never asks a human. Get a task you execute or originated. A tainted child result taints this task first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.task.send",
+      "description": "Never asks a human. Delegate a task to an agent (to) or to the skills board (skills).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "asks": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          },
+          "deadline": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          },
+          "message": {
+            "type": "object",
+            "x-agentbox-audit": "keep"
+          },
+          "skills": {
+            "type": "array",
+            "x-agentbox-audit": "keep"
+          },
+          "to": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "bus.task.update",
+      "description": "Never asks a human. Update the state, messages or artifacts of a task you execute.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "artifacts": {
+            "type": "array",
+            "x-agentbox-audit": "keep"
+          },
+          "message": {
+            "type": "object",
+            "x-agentbox-audit": "keep"
+          },
+          "state": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "taskId": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "taskId",
+          "state"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "disk.usage",
+      "description": "Never asks a human. Show disk usage and quotas.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "file.write",
+      "description": "Asks (1 of your task's ask budget) when this task is tainted or policy requires; CLI or phone. Write a file under /srv/\u003cyour app\u003e/.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "x-agentbox-audit": "hash"
+          },
+          "path": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "gh.issue.comment",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Comment on a GitHub issue on one of your remotes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "x-agentbox-audit": "hash"
+          },
+          "number": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          },
+          "remote": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "remote",
+          "number",
+          "body"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "gh.issue.read",
+      "description": "Never asks a human. Read a GitHub issue on one of your remotes. The output taints this task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          },
+          "remote": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "remote",
+          "number"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "gh.pr.comment",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Comment on a pull request on one of your remotes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "x-agentbox-audit": "hash"
+          },
+          "number": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          },
+          "remote": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "remote",
+          "number",
+          "body"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "gh.pr.create",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Open a pull request from a pushed agent/\u003cyou\u003e/* ref.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "base": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "body": {
+            "type": "string",
+            "x-agentbox-audit": "hash"
+          },
+          "head": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "remote": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "title": {
+            "type": "string",
+            "x-agentbox-audit": "hash"
+          }
+        },
+        "required": [
+          "remote",
+          "head",
+          "base",
+          "title",
+          "body"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "gh.pr.read",
+      "description": "Never asks a human. Read a pull request on one of your remotes. The output taints this task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          },
+          "remote": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "remote",
+          "number"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "memory.forget",
+      "description": "Asks (1 of your task's ask budget) when this task is tainted or policy requires; CLI or phone. Forget a fact you could read now.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "factId": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "factId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "memory.read",
+      "description": "Never asks a human. Read facts from a memory scope. Tainted facts taint this task first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "scope": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "memory.write",
+      "description": "Asks (1 of your task's ask budget) when this task is tainted or policy requires; CLI or phone. Write a fact to a memory scope.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "x-agentbox-audit": "hash"
+          },
+          "scope": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "title": {
+            "type": "string",
+            "x-agentbox-audit": "hash"
+          },
+          "ttlDays": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "scope",
+          "title",
+          "body"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "net.allow_domain",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Ask a human to add host:port to your egress list.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "host": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "port": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          },
+          "reason": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "host",
+          "port",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "os.generations",
+      "description": "Never asks a human. List the OS generations.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "os.pkg.install",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Install Ubuntu packages into a new OS generation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "packages": {
+            "type": "array",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "packages"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "os.pkg.remove",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Remove Ubuntu packages in a new OS generation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "packages": {
+            "type": "array",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "packages"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "os.rollback",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Roll the OS back to a kept generation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "gen": {
+            "type": "integer",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "gen"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "os.unit.disable",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Disable a systemd unit in a new OS generation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "unit": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "unit"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "os.unit.enable",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Enable a systemd unit in a new OS generation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "unit": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "unit"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "pkg.search",
+      "description": "Never asks a human. Search the Ubuntu archive for packages.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "repo.create",
+      "description": "Never asks a human. Create a local git repo.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "repo.merge",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Merge a branch into a local repo's main.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dstOid": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "p": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "srcOid": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "p",
+          "srcOid",
+          "dstOid"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "repo.push",
+      "description": "Asks unless a standing push policy covers this private remote and the task is clean; CLI only. Send it with its PR as one ask.batch. Push an agent/\u003cyou\u003e/* ref to one of your registered remotes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "oid": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "ref": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          },
+          "remote": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "remote",
+          "ref",
+          "oid"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "system.info",
+      "description": "Never asks a human. Show box and release information.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workbench.add_package",
+      "description": "Always asks (1 of your task's ask budget); laptop CLI only. Add an Ubuntu package to your workbench image.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "package": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "package"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workspace.restore",
+      "description": "Asks (1 of your task's ask budget) when this task is tainted or policy requires; CLI or phone. Restore your workspace from one of its snapshots.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "x-agentbox-audit": "keep"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workspace.snapshot",
+      "description": "Never asks a human. Take a read-only snapshot of your workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ]
+}

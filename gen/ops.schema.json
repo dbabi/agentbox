@@ -1,0 +1,1245 @@
+{
+  "$comment": "Code generated from internal/ops/registry.go by go generate; DO NOT EDIT. ARCHITECTURE.md §5.1, §9: x-agentbox-audit is the field's audit class.",
+  "args": {
+    "agent.add": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "agent.attach": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "workspace": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "name",
+        "workspace"
+      ],
+      "additionalProperties": false
+    },
+    "agent.remove": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "agent.skills.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "skills": {
+          "type": "array",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "agent",
+        "skills"
+      ],
+      "additionalProperties": false
+    },
+    "app.deploy": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "context": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "app",
+        "context"
+      ],
+      "additionalProperties": false
+    },
+    "app.logs": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "lines": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "app"
+      ],
+      "additionalProperties": false
+    },
+    "app.remove": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "app"
+      ],
+      "additionalProperties": false
+    },
+    "app.restart": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "app"
+      ],
+      "additionalProperties": false
+    },
+    "app.rollback": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "imageDigest": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "app",
+        "imageDigest"
+      ],
+      "additionalProperties": false
+    },
+    "app.start": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "app"
+      ],
+      "additionalProperties": false
+    },
+    "app.status": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "app"
+      ],
+      "additionalProperties": false
+    },
+    "app.stop": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "app"
+      ],
+      "additionalProperties": false
+    },
+    "approver.add": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "sshPub": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "name",
+        "sshPub"
+      ],
+      "additionalProperties": false
+    },
+    "approver.remove": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "ask.batch": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "ops": {
+          "type": "array",
+          "x-agentbox-audit": "keep"
+        },
+        "shape": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "shape",
+        "ops"
+      ],
+      "additionalProperties": false
+    },
+    "ask.quote": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "ops": {
+          "type": "array",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "ops"
+      ],
+      "additionalProperties": false
+    },
+    "ask.status": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "waitMs": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "additionalProperties": false
+    },
+    "budget.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "budgets": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "budgets"
+      ],
+      "additionalProperties": false
+    },
+    "bus.agents.list": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "bus.inbox.ack": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "messageId": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "messageId"
+      ],
+      "additionalProperties": false
+    },
+    "bus.inbox.read": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "bus.lease.acquire": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "ttlMs": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "resource",
+        "ttlMs"
+      ],
+      "additionalProperties": false
+    },
+    "bus.lease.heartbeat": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "epoch": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "resource": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "ttlMs": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "resource",
+        "epoch",
+        "ttlMs"
+      ],
+      "additionalProperties": false
+    },
+    "bus.lease.release": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "epoch": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "resource": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "resource",
+        "epoch"
+      ],
+      "additionalProperties": false
+    },
+    "bus.message.send": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "parts": {
+          "type": "array",
+          "x-agentbox-audit": "keep"
+        },
+        "taskId": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "to": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "to",
+        "parts"
+      ],
+      "additionalProperties": false
+    },
+    "bus.task.cancel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "taskId"
+      ],
+      "additionalProperties": false
+    },
+    "bus.task.claim": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "taskId"
+      ],
+      "additionalProperties": false
+    },
+    "bus.task.get": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "taskId"
+      ],
+      "additionalProperties": false
+    },
+    "bus.task.send": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "asks": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "deadline": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "message": {
+          "type": "object",
+          "x-agentbox-audit": "keep"
+        },
+        "skills": {
+          "type": "array",
+          "x-agentbox-audit": "keep"
+        },
+        "to": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "bus.task.update": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "artifacts": {
+          "type": "array",
+          "x-agentbox-audit": "keep"
+        },
+        "message": {
+          "type": "object",
+          "x-agentbox-audit": "keep"
+        },
+        "state": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "taskId": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "taskId",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "cache.purge": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "additionalProperties": false
+    },
+    "disk.usage": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "file.write": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "x-agentbox-audit": "hash"
+        },
+        "path": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "gh.issue.comment": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string",
+          "x-agentbox-audit": "hash"
+        },
+        "number": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "remote": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "remote",
+        "number",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "gh.issue.read": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "remote": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "remote",
+        "number"
+      ],
+      "additionalProperties": false
+    },
+    "gh.pr.comment": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string",
+          "x-agentbox-audit": "hash"
+        },
+        "number": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "remote": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "remote",
+        "number",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "gh.pr.create": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "body": {
+          "type": "string",
+          "x-agentbox-audit": "hash"
+        },
+        "head": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "remote": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "title": {
+          "type": "string",
+          "x-agentbox-audit": "hash"
+        }
+      },
+      "required": [
+        "remote",
+        "head",
+        "base",
+        "title",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "gh.pr.read": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "remote": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "remote",
+        "number"
+      ],
+      "additionalProperties": false
+    },
+    "go.private.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "patterns": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "agent",
+        "patterns"
+      ],
+      "additionalProperties": false
+    },
+    "memory.forget": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "factId": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "factId"
+      ],
+      "additionalProperties": false
+    },
+    "memory.purge": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "factId": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "factId"
+      ],
+      "additionalProperties": false
+    },
+    "memory.read": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "scope": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "scope"
+      ],
+      "additionalProperties": false
+    },
+    "memory.review": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "bodyHash": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "decision": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "factId": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "factId",
+        "decision",
+        "bodyHash"
+      ],
+      "additionalProperties": false
+    },
+    "memory.write": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string",
+          "x-agentbox-audit": "hash"
+        },
+        "scope": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "title": {
+          "type": "string",
+          "x-agentbox-audit": "hash"
+        },
+        "ttlDays": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "scope",
+        "title",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "net.allow_domain": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "host": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "port": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "reason": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "host",
+        "port",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "op.resolve": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "outcome": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "id",
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "os.generations": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "os.pkg.install": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "packages": {
+          "type": "array",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "packages"
+      ],
+      "additionalProperties": false
+    },
+    "os.pkg.remove": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "packages": {
+          "type": "array",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "packages"
+      ],
+      "additionalProperties": false
+    },
+    "os.rollback": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "gen": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "gen"
+      ],
+      "additionalProperties": false
+    },
+    "os.unit.disable": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "unit": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "unit"
+      ],
+      "additionalProperties": false
+    },
+    "os.unit.enable": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "unit": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "unit"
+      ],
+      "additionalProperties": false
+    },
+    "os.update": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "passkey.confirm": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "passkey.register": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "passkey.revoke": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "pending.deny": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "strike": {
+          "type": "array",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "pkg.search": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "policy.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "policy": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "policy"
+      ],
+      "additionalProperties": false
+    },
+    "procedural.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "push.policy.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "policy": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "remote": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "remote",
+        "policy"
+      ],
+      "additionalProperties": false
+    },
+    "remote.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "url": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "id",
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "repo.create": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "repo.merge": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "dstOid": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "p": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "srcOid": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "p",
+        "srcOid",
+        "dstOid"
+      ],
+      "additionalProperties": false
+    },
+    "repo.push": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "ref": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "remote": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "remote",
+        "ref",
+        "oid"
+      ],
+      "additionalProperties": false
+    },
+    "secret.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "value": {
+          "type": "string",
+          "x-agentbox-audit": "drop"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "system.info": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "taint.clear": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "contentId": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "subject": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "subject",
+        "contentId"
+      ],
+      "additionalProperties": false
+    },
+    "update.policy.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "policy": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "policy"
+      ],
+      "additionalProperties": false
+    },
+    "workbench.add_package": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "package"
+      ],
+      "additionalProperties": false
+    },
+    "workspace.restore": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "workspace.snapshot": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  "outputs": {
+    "app.logs": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "log": {
+          "type": "array",
+          "x-agentbox-audit": "hash"
+        }
+      },
+      "required": [
+        "log"
+      ],
+      "additionalProperties": false
+    },
+    "gh.issue.read": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "issue": {
+          "type": "object",
+          "x-agentbox-audit": "hash"
+        }
+      },
+      "required": [
+        "issue"
+      ],
+      "additionalProperties": false
+    },
+    "gh.pr.read": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "pr": {
+          "type": "object",
+          "x-agentbox-audit": "hash"
+        }
+      },
+      "required": [
+        "pr"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
