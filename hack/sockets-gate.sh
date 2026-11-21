@@ -78,7 +78,7 @@ rm /run/agentbox-rootd/stray
 groupadd -r ag-gatetest
 T=/run/agentbox-proxy/t/T1; mkdir $T && chown agentbox-proxy:ag-gatetest $T && chmod 2750 $T
 check "a per-task dir agentbox-proxy:ag-<agent> 2750 matches the template" '$A sockets check'
-chmod 0750 $T
+chmod g-s $T # GNU chmod keeps a dir's setgid bit for a numeric mode
 check "  ... without setgid it is reported" 'reports "$T: mode 0750, want 2750"'
 chmod 2750 $T; chown root $T
 check "  ... owned by root it is reported" 'reports "$T: owner root:ag-gatetest, want agentbox-proxy:ag-<agent>"'
