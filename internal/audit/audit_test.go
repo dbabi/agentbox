@@ -26,7 +26,7 @@ type box struct {
 type crashed struct{ point string }
 
 func newBox(t *testing.T) *box {
-	b := &box{t: t, dir: t.TempDir(), wall: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC).UnixMilli(), boot: 5000, bootID: "boot-1", avail: 100 << 30}
+	b := &box{t: t, dir: tempDir(t), wall: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC).UnixMilli(), boot: 5000, bootID: "boot-1", avail: 100 << 30}
 	b.start()
 	return b
 }
@@ -50,7 +50,8 @@ func (b *box) start() {
 		Avail: func() (uint64, error) { return b.avail, nil }, Logf: b.t.Logf}
 	if err := b.s.Start(); err != nil {
 		if errors.Is(err, syscall.EPERM) && strings.Contains(err.Error(), "chattr") {
-			b.t.Skipf("needs CAP_LINUX_IMMUTABLE, as rootd has (§9): %v", err) // Linux CI runs go test unprivileged
+			// the unprivileged CI go test lands here; CI's sudo step reruns this package and fails on any skip
+			b.t.Skipf("skipped: chattr needs CAP_LINUX_IMMUTABLE, as rootd has (§9); run as root to cover it: %v", err)
 		}
 		b.t.Fatalf("Start: %v", err)
 	}
@@ -134,12 +135,20 @@ func TestChainVerifyAndTamper(t *testing.T) {
 	// a changed byte in a sealed segment breaks the chain
 	p := filepath.Join(b.dir, SegName(1))
 	data, _ := os.ReadFile(p)
-	os.WriteFile(p, []byte(strings.Replace(string(data), "connect:example.com", "connect:exbmple.com", 1)), 0o640)
+	unlock(t, p) // as root the sealed segment is immutable; an attacker with CAP_LINUX_IMMUTABLE clears that first
+	if err := os.WriteFile(p, []byte(strings.Replace(string(data), "connect:example.com", "connect:exbmple.com", 1)), 0o640); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := VerifyDir(b.dir); err == nil {
 		t.Fatal("verify passed a tampered segment")
 	}
-	os.WriteFile(p, data, 0o640)
-	os.Remove(filepath.Join(b.dir, SegName(2)))
+	if err := os.WriteFile(p, data, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	unlock(t, filepath.Join(b.dir, SegName(2)))
+	if err := os.Remove(filepath.Join(b.dir, SegName(2))); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := VerifyDir(b.dir); err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("verify passed a missing segment: %v", err)
 	}
@@ -483,7 +492,7 @@ func (b *box) recovers() {
 // The audit dir is agentbox-audit's: a symlink or hard link planted at a segment name must not make rootd chown,
 // chmod or chattr the file it points at.
 func TestSegmentLinkRefused(t *testing.T) {
-	victim := filepath.Join(t.TempDir(), "victim")
+	victim := filepath.Join(tempDir(t), "victim")
 	os.WriteFile(victim, []byte("x\n"), 0o604)
 	untouched := func(what string) {
 		t.Helper()
@@ -491,7 +500,7 @@ func TestSegmentLinkRefused(t *testing.T) {
 			t.Fatalf("%s: the link's target changed: %v %v", what, fi.Mode(), err)
 		}
 	}
-	dir := t.TempDir()
+	dir := tempDir(t)
 	fs := &Files{Dir: dir, UID: os.Getuid(), GID: os.Getgid()}
 	os.Symlink(victim, filepath.Join(dir, SegName(1)))
 	if err := fs.Create(1); err == nil {
@@ -516,7 +525,7 @@ func TestSegmentLinkRefused(t *testing.T) {
 	untouched("Seal, symlink")
 	os.Remove(next)
 	if err := os.Link(victim, next); err != nil {
-		t.Skip(err)
+		t.Skipf("skipped: this filesystem refuses hard links: %v", err)
 	}
 	if err := fs.Seal(n, sc.LastHash); err == nil {
 		t.Fatal("Seal took a hard-linked next segment")
