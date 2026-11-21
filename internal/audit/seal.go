@@ -77,6 +77,10 @@ func (fs *Files) Seal(seg uint64, lastHash string) error {
 	if !s.Closed || s.Undeclared() != 0 || s.LastHash != lastHash {
 		return fmt.Errorf("audit.seal %s: the chain does not end in a close record with hash %s", SegName(seg), lastHash)
 	}
+	// auditd may have died between writing close and its fdatasync: the close must be on disk before seg+1 exists
+	if err := syncFile(f); err != nil {
+		return fmt.Errorf("fsync %s: %w", p, err)
+	}
 	if err := addFlags(f, flagImmutable); err != nil {
 		return fmt.Errorf("chattr +i %s: %w", p, err)
 	}

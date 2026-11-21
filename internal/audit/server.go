@@ -159,6 +159,9 @@ func (s *Server) openChain() error {
 			return err
 		}
 	}
+	if sc.OpenRec == nil && !sc.Closed {
+		s.needOpen = true // set before markTorn: no clock_step may come ahead of the segment's open
+	}
 	if sc.Undeclared() > 0 && !sc.Closed {
 		if err := s.markTorn(data[sc.End:]); err != nil {
 			return err
@@ -187,15 +190,17 @@ func (s *Server) openChain() error {
 	return err
 }
 
-// markTorn declares the bytes past the last complete record: "\n" first if they lack one, then torn{offset, len,
-// sha256}, chained to the last complete record. Nothing is truncated, so +a never has to come off (§9).
+// markTorn declares the bytes past the last complete record: "\x00\n" first if they lack a "\n", then torn{offset, len,
+// sha256}, chained to the last complete record. Nothing is truncated, so +a never has to come off (§9). The NUL keeps
+// a record cut just before its "\n" from becoming valid JSON, and so a live record.
 func (s *Server) markTorn(tail []byte) error {
 	off := s.end
 	if len(tail) > 0 && tail[len(tail)-1] != '\n' {
-		if _, err := writeFile(s.f, []byte{'\n'}); err != nil {
+		end := []byte{0, '\n'}
+		if _, err := writeFile(s.f, end); err != nil {
 			return err
 		}
-		tail = append(tail[:len(tail):len(tail)], '\n')
+		tail = append(tail[:len(tail):len(tail)], end...)
 	}
 	s.end = off + int64(len(tail)) // append counts the torn record from here
 	s.logf("audit: %s: torn tail of %d bytes at offset %d", SegName(s.seg), len(tail), off)
@@ -321,7 +326,10 @@ func (s *Server) append(typ, producer string, uid uint32, pid int32, body json.R
 		}
 		return 0, err
 	}
-	s.seq, s.last, s.end, s.lastWall, s.lastBoot = r.Seq, lineHash(line), s.end+int64(n), wall, boot
+	s.seq, s.last, s.end = r.Seq, lineHash(line), s.end+int64(n)
+	if typ != TypeTorn || !s.needOpen { // a torn record before open leaves the step since the last close for writeOpen to log
+		s.lastWall, s.lastBoot = wall, boot
+	}
 	// the line is in the file even if fdatasync fails, so the chain goes on from it; the record is just not ACKed
 	return r.Seq, syncFile(s.f)
 }

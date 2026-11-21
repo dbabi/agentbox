@@ -648,3 +648,109 @@ func TestClockStepAcrossRestartOntoEmptySegment(t *testing.T) {
 		t.Fatalf("want the step logged in the new segment, got %+v", rep)
 	}
 }
+
+// A record loses only its final "\n" (a power cut, or a short write on ENOSPC): the torn mark must not turn it into a
+// live record, or the records ACKed after it are declared torn at the next start and their seqs handed out again.
+func TestTornJustBeforeNewline(t *testing.T) {
+	tornRanges := func(b *box) int {
+		n := 0
+		for _, r := range b.verify() {
+			n += len(r.Torn)
+		}
+		return n
+	}
+	t.Run("short write", func(t *testing.T) {
+		b := newBox(t)
+		b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+		armed := true
+		fault(t, func(f *os.File, p []byte) (int, error, bool) {
+			if !armed || !strings.Contains(string(p), "task:F") {
+				return 0, nil, false
+			}
+			armed = false
+			n, _ := f.Write(p[:len(p)-1])
+			return n, syscall.ENOSPC, true
+		}, nil)
+		b.nack("proxy", `{"type":"TAINT","subject":"task:F","source":"s"}`, CodeUnavailable)
+		seqs := map[uint64]bool{}
+		for i := 0; i < 3; i++ {
+			seqs[b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`).Seq] = true
+		}
+		b.start()
+		if r := b.ok("proxy", `{"type":"TAINT","subject":"task:T3","source":"s"}`); seqs[r.Seq] {
+			t.Fatalf("seq %d handed out again after the restart", r.Seq)
+		}
+		if n := tornRanges(b); n != 1 {
+			t.Fatalf("want 1 torn range, got %d", n)
+		}
+		b.recovers() // and the next rotation still seals
+	})
+	t.Run("power cut", func(t *testing.T) {
+		b := newBox(t)
+		b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+		b.s.Close()
+		p := filepath.Join(b.dir, SegName(b.newest()))
+		data, _ := os.ReadFile(p)
+		sc, _ := ScanSegment(data, "", 0, false)
+		line, _ := json.Marshal(Record{Seq: sc.Last.Seq + 1, Prev: sc.LastHash, TsWall: b.wall, TsBoot: b.boot, BootID: b.bootID,
+			Type: "TAINT", Producer: "proxy", UID: 1000, Body: json.RawMessage(`{}`)})
+		f, _ := os.OpenFile(p, os.O_WRONLY|os.O_APPEND, 0)
+		f.Write(line) // every byte but the "\n"
+		f.Close()
+		b.start()
+		seq := b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`).Seq
+		b.start()
+		if r := b.ok("proxy", `{"type":"TAINT","subject":"task:T3","source":"s"}`); r.Seq != seq+1 {
+			t.Fatalf("want seq %d after the restart, got %d", seq+1, r.Seq)
+		}
+		if n := tornRanges(b); n != 1 {
+			t.Fatalf("want 1 torn range, got %d", n)
+		}
+		b.recovers()
+	})
+}
+
+// auditd dies mid-way through the new segment's open, then the wall clock steps before it restarts in the same boot:
+// the torn record may come before open, the clock_step only after it.
+func TestClockStepAfterPartialOpen(t *testing.T) {
+	b := newBox(t)
+	b.rotate("sealed")
+	f, _ := os.OpenFile(filepath.Join(b.dir, SegName(b.newest())), os.O_WRONLY|os.O_APPEND, 0)
+	f.WriteString(`{"seq":`)
+	f.Close()
+	b.wall -= 5000
+	b.start()
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+	rep := b.verify()
+	if last := rep[len(rep)-1]; last.ClockSteps != 1 || len(last.Torn) != 1 {
+		t.Fatalf("want the torn open and the step logged in the new segment, got %+v", rep)
+	}
+	b.start()
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`)
+	b.verify()
+}
+
+// auditd may die between writing close and its fdatasync; the seal then fsyncs the segment before it sets +i and
+// creates the successor, so a power cut can't leave a sealed segment without its close next to seg+1.
+func TestSealSyncsSegment(t *testing.T) {
+	b := newBox(t)
+	b.rotate("close-written")
+	n := b.newest()
+	data, _ := os.ReadFile(filepath.Join(b.dir, SegName(n)))
+	sc, err := ScanSegment(data, "", 0, false)
+	if err != nil || !sc.Closed {
+		t.Fatalf("%v %+v", err, sc)
+	}
+	var order []string
+	fault(t, nil, func(f *os.File) (error, bool) {
+		order = append(order, "sync "+filepath.Base(f.Name()))
+		return nil, false
+	})
+	fs := &Files{Dir: b.dir, UID: os.Getuid(), GID: os.Getgid(), Crash: func(p string) { order = append(order, p) }}
+	if err := fs.Seal(n, sc.LastHash); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) < 2 || order[0] != "sync "+SegName(n) || order[1] != "immutable-set" {
+		t.Fatalf("want %s synced before +i, got %v", SegName(n), order)
+	}
+}
