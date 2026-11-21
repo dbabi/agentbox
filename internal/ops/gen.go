@@ -289,8 +289,8 @@ func fieldList(fs []Field) string {
 func docs(reg []Op) []byte {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "<!-- %s -->\n# Op registry\n\nEvery op, from `internal/ops/registry.go` (ARCHITECTURE.md §5.1, §5.3). Args and outputs show their audit class when it is not `keep` (§9).\n\n", header)
-	b.WriteString("| Op | Class | Cedar group | Resource | Args | Outputs | Signature | Bound inputs | Rollback coverage | Reversible | Taints output | Workspace-bindable | Reaches rootd |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| Op | Class | Cedar group | Resource | Args | Outputs | Signature | Bound inputs | Rollback coverage | Reversible | Taints output | Workspace-bindable | Reaches rootd | Batch and quote |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, o := range sorted(reg) {
 		g, res, bound := string(o.Group), strings.Join(o.Resource, ", "), strings.Join(o.Bound, "; ")
 		if g == "" {
@@ -305,8 +305,20 @@ func docs(reg []Op) []byte {
 		if bound == "" {
 			bound = "n/a"
 		}
-		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", o.Name, o.Class, g, res, fieldList(o.Args),
-			fieldList(o.Out), o.Sig, bound, o.Rollback, yes(o.Reversible), yes(o.TaintsOutput), yes(o.WorkspaceBindable), yes(o.Rootd))
+		var ask []string
+		if len(o.Batch) > 0 {
+			ask = append(ask, "batch "+strings.Join(o.Batch, ", "))
+		}
+		for _, f := range []struct {
+			on   bool
+			name string
+		}{{o.Quotable, "quotable"}, {o.Exact, "always exact"}, {o.CASBinder, "CAS binder"}} {
+			if f.on {
+				ask = append(ask, f.name)
+			}
+		}
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", o.Name, o.Class, g, res, fieldList(o.Args),
+			fieldList(o.Out), o.Sig, bound, o.Rollback, yes(o.Reversible), yes(o.TaintsOutput), yes(o.WorkspaceBindable), yes(o.Rootd), strings.Join(ask, "; "))
 	}
 	return b.Bytes()
 }
