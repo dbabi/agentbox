@@ -34,9 +34,8 @@ Two words mark the state of each part:
 
 ## Status
 
-At the time of writing (2026-11-21), weeks 1-3 of the build plan are built.
-The plan, v5.3, takes about 20 weeks with two engineers.
-The weeks 1-2 real-hardware test has not run yet.
+At the time of writing (2026-11-21), milestones 1 and 2 of 9 are built, and milestone 3 is in progress.
+The real-hardware test has not run yet.
 
 Built:
 
@@ -46,22 +45,22 @@ Built:
 - Power-cut tests. In `tpm2` mode, QMP power cuts at five points during `os apply`, plus one right after it returns, each left a generation that boots. The cut right after it returns has run only on a fix branch so far. A write-by-write replay of one logged apply also passed. After every write to the boot partition, GRUB still found the entry it boots, with its kernel and initrd. [Testing and Gates](Testing-and-Gates.md) lists what these tests do not model.
 - Releases you build and sign yourself with `make release`. At first boot, the box checks a pinned SHA-256 and then your minisign signature. It installs nothing unless both checks pass. There is no official release yet.
 - A zero-touch install from two USB sticks: a remastered Ubuntu ISO and a seed ISO.
-- A host firewall (week 3). An nftables table holds each agentbox service user to its own destinations. `fwcheck` checks it about every 50 seconds, restores an altered table, and keeps agent units from starting while it fails.
-- An audit daemon (week 3). It records each operation durably before the operation runs, in a hash-chained log, and keeps a taint ledger. `agentbox audit verify` checks the chain.
-- A root daemon skeleton (week 3). It resolves names for the brokers, fills their firewall sets, and seals finished audit segments.
-- Disk quotas with a reserve for the system, and packaged ntfy on a Unix socket only (week 3).
+- A host firewall (milestone 2). An nftables table holds each agentbox service user to its own destinations. `fwcheck` checks it about every 50 seconds, restores an altered table, and keeps agent units from starting while it fails.
+- An audit daemon (milestone 2). It records each operation durably before the operation runs, in a hash-chained log, and keeps a taint ledger. `agentbox audit verify` checks the chain.
+- A root daemon skeleton (milestone 2). It resolves names for the brokers, fills their firewall sets, and seals finished audit segments.
+- Disk quotas with a reserve for the system, and packaged ntfy on a Unix socket only (milestone 2).
 
 Not built yet:
 
 - The agent runtime: task containers, brokers, policy, approvals, the agent bus and shared memory. No AI agent can run on agentbox yet.
 - Inbound filtering. The host firewall has an output chain only, so SSH and any other listener are open to the LAN.
 - Automatic security updates. Today an admin runs `os plan` and `os apply` by hand.
-- Updating agentbox itself on an installed box. This is out of scope for v1. A new release means a reinstall.
+- Updating agentbox itself on an installed box. This is out of scope for the first release. A new release means a reinstall.
 
 Where it has run: QEMU VMs on an Apple Silicon Mac.
 Most gates ran on an arm64 UEFI VM with Secure Boot on.
 Some gates also ran on an amd64 legacy BIOS VM.
-The week-3 gates ran in `none` mode on arm64 UEFI only.
+The milestone 2 gates ran in `none` mode on arm64 UEFI only.
 No amd64 UEFI install has run yet.
 No real machine has run agentbox yet.
 
@@ -77,8 +76,8 @@ No real machine has run agentbox yet.
 | [Release Pipeline](Release-Pipeline.md) | `make release`, the signed tarball, the SHA-256 pin in the seed, and firstboot. | Built |
 | [Architecture](Architecture.md) | The target design: the services, task containers, approvals, network and secrets, the agent bus, memory and audit. | Mostly designed; the OS layer, firewall, audit and rootd skeleton are built |
 | [Security Model](Security-Model.md) | The threat model: what agentbox defends against, trust boundaries, accepted risks, and how to report a vulnerability. | Mostly designed |
-| [Roadmap](Roadmap.md) | The v5.3 plan with the state of each milestone, and what v5.3 changed. | Weeks 1-3 built |
-| [Testing and Gates](Testing-and-Gates.md) | Unit tests, the VM gates (weeks 1-3), power-cut tests, what each gate proves, and the results. | Built |
+| [Roadmap](Roadmap.md) | The milestones in order, with the state of each. | Milestones 1 and 2 built |
+| [Testing and Gates](Testing-and-Gates.md) | Unit tests, the VM gates (milestones 1-2), power-cut tests, what each gate proves, and the results. | Built |
 | [Contributing](Contributing.md) | Dev setup, repo layout, code style, tests and commit style. | n/a |
 
 ## Where to start

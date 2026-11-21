@@ -11,7 +11,7 @@ This page uses the two status words from [Home](README.md):
 - **Built:** the code exists and has passed its tests in QEMU VMs.
 - **Designed:** the design in [`docs/design/`](../design/ARCHITECTURE.md) describes it, but there is no code yet.
 
-Week numbers refer to the rows of build plan v5.3 ([`PLAN.md`](../design/PLAN.md)), about 20 weeks with two engineers. Weeks 1-3 are built. v1 is the version that plan builds, and v2 is the version after it. Facts on this page describe the `main` branch at the time of writing.
+Milestone numbers refer to the ordered list on the [Roadmap](Roadmap.md). Milestones 1 and 2 are built. v1 is the first release, and v2 is the version after it. Facts on this page describe the `main` branch at the time of writing.
 
 Contents:
 
@@ -47,11 +47,11 @@ Everything else depends on parts that are designed, not built.
 
 | Attacker | Way in | Defense today | Planned |
 |---|---|---|---|
-| Prompt injection, the most likely attacker | Web pages, package READMEs, issues and pull requests, logs, other agents' messages, shared memory | None. No agent runs on agentbox yet. An agent you install by hand is not confined. | The agent runtime (weeks 4-14) |
-| A compromised agent CLI or dependency | Code that runs inside a task | None. Task containers are not built. | One disposable container per task, with no network (weeks 5-6) |
+| Prompt injection, the most likely attacker | Web pages, package READMEs, issues and pull requests, logs, other agents' messages, shared memory | None. No agent runs on agentbox yet. An agent you install by hand is not confined. | The agent runtime (milestones 3-8) |
+| A compromised agent CLI or dependency | Code that runs inside a task | None. Task containers are not built. | One disposable container per task, with no network (milestone 4) |
 | A thief | The disk alone, or the whole powered-off machine | Disk encryption. **Built.** | A signed PCR 11 policy for `tpm2` mode (v2) |
-| Someone on your LAN or Tailscale network | Open ports, the approval page | SSH accepts keys only. The host firewall filters outbound traffic only, so it does not narrow what the LAN can reach. Tailscale and the approval page are not installed or built. | The approval page comes in weeks 9-10. Each approval needs a passkey, and the page handles low-risk operations only. |
-| A bug in agentbox's own code | Today: the seed generator, the installer, firstboot and `agentbox os`. Designed: the parsers in every agentbox service and in the local model server. | Strict input checks in `agentbox seed`. OS changes build offline. agentbox itself listens on no network port. | Fuzzers for agentbox's own parsers: JSON-RPC, WebAuthn, git pkt-line, HTTP and nft JSON (week 4). The local model server runs with no network and no secrets. |
+| Someone on your LAN or Tailscale network | Open ports, the approval page | SSH accepts keys only. The host firewall filters outbound traffic only, so it does not narrow what the LAN can reach. Tailscale and the approval page are not installed or built. | The approval page comes in milestone 6. Each approval needs a passkey, and the page handles low-risk operations only. |
+| A bug in agentbox's own code | Today: the seed generator, the installer, firstboot and `agentbox os`. Designed: the parsers in every agentbox service and in the local model server. | Strict input checks in `agentbox seed`. OS changes build offline. agentbox itself listens on no network port. | Fuzzers for agentbox's own parsers: JSON-RPC, WebAuthn, git pkt-line, HTTP and nft JSON (milestone 3). The local model server runs with no network and no secrets. |
 
 ## Trust boundaries
 
@@ -182,11 +182,11 @@ The design sets seven rules, and tests must prove each one. Most of them depend 
 
 | # | Rule | Status |
 |---|---|---|
-| 1 | Tasks have no network. | Designed. The firewall that confines the brokers is built (week 3). |
+| 1 | Tasks have no network. | Designed. The firewall that confines the brokers is built (milestone 2). |
 | 2 | No credential exists inside a task. | Designed |
 | 3 | Agents never change the running OS. OS changes are built offline into a new generation, and committed only after a health check. | The generation mechanism is **built** and gate-proven. Agents and their path to it are designed. |
 | 4 | rootd runs only the stored operation a human signed. | Designed. Today, root approves a plan by passing its SHA-256 to `os apply`. |
-| 5 | Taint is sticky. Only a human clears it. | The ledger is **built** (week 3): a clear from any socket but rootd's admin path is rejected, and the row stays with its epoch moved on. What sets taint is designed. |
+| 5 | Taint is sticky. Only a human clears it. | The ledger is **built** (milestone 2): a clear from any socket but rootd's admin path is rejected, and the row stays with its epoch moved on. What sets taint is designed. |
 | 6 | Nothing persists between tasks except the tainted workspace. | Designed |
 | 7 | The seed and logs contain no plaintext secrets. | **Built** and gate-proven. The seed holds the password hash, so keep it private. |
 
@@ -199,15 +199,15 @@ These are the known risks. They are listed so you can decide where agentbox fits
 **No sandbox, and an outbound-only firewall**
 
 - agentbox confines no program you run. Any program you run on the box is a normal Linux process.
-- The host firewall (week 3) filters only outbound traffic, and only from agentbox's own service users. It has no inbound rules, and it does not filter your admin account or root.
+- The host firewall (milestone 2) filters only outbound traffic, and only from agentbox's own service users. It has no inbound rules, and it does not filter your admin account or root.
 - Any port that a service opens is reachable from every network the box is on. Do not give the box a public IP address.
 - The brokers don't exist yet, so nothing yet hides systemd-resolved's local Varlink and D-Bus interfaces from the broker uids. The broker units will do that (`docs/THREAT-MODEL.md` lists it).
 - While the disk is full, auditd refuses best-effort records such as denials, so those leave no audit record.
-- The week-3 gates ran in `none` mode on arm64 UEFI only, not in the encrypted modes or on amd64.
+- The milestone 2 gates ran in `none` mode on arm64 UEFI only, not in the encrypted modes or on amd64.
 
 **Updates**
 
-- There are no automatic security updates. The seed masks apt's daily timers. Packages do not change on their own. Change them only with `os plan` and `os apply`. A direct `apt` run changes the running generation in place, outside A/B, and makes an existing plan fail with `stale_base`. The nightly `os.update` is planned for weeks 11-12.
+- There are no automatic security updates. The seed masks apt's daily timers. Packages do not change on their own. Change them only with `os plan` and `os apply`. A direct `apt` run changes the running generation in place, outside A/B, and makes an existing plan fail with `stale_base`. The nightly `os.update` is planned for milestone 7.
 - agentbox itself has no update path on an installed box. A fix to agentbox needs a reinstall. Do not run `install.sh` by hand: that skips the SHA-256 pin and the signature check. A release-update path is out of scope for v1.
 - `os apply` regenerates `grub.cfg`, but it never runs `grub-install` and never writes the EFI system partition. So shim and GRUB package updates do not reach the boot loader. The design adds a boot-chain step after a commit that changes boot packages, outside A/B. It is not built.
 - Firmware and Secure Boot revocation (dbx) updates do not run on their own. `secureboot-db.service` is masked, and `fwupd` only refreshes its metadata.
@@ -215,8 +215,8 @@ These are the known risks. They are listed so you can decide where agentbox fits
 **Packages and approvals**
 
 - A signed but malicious package in an approved plan runs as root at the trial boot. It can read the LUKS key and rewrite `/bootpart` and the EFI system partition. A/B fallback covers crashes, not hostile code. The v2 plan is a measured trial boot.
-- There is no protected-package floor yet. agentbox does not stop a plan from removing a package the box needs, such as `openssh-server`. Read every line of a plan before you approve it. The floor is planned for weeks 11-12.
-- Approval is one step by root today: pass the plan's SHA-256 to `os apply`. Signed approvals are planned for weeks 9-10.
+- There is no protected-package floor yet. agentbox does not stop a plan from removing a package the box needs, such as `openssh-server`. Read every line of a plan before you approve it. The floor is planned for milestone 7.
+- Approval is one step by root today: pass the plan's SHA-256 to `os apply`. Signed approvals are planned for milestone 6.
 
 **Accounts and the seed**
 
@@ -242,7 +242,7 @@ These are the known risks. They are listed so you can decide where agentbox fits
 
 - agentbox has run only in QEMU VMs. The encrypted modes used a software TPM (swtpm). No real hardware has run agentbox.
 - amd64 UEFI has not run anywhere. Secure Boot has run only in an arm64 VM.
-- No external review has happened. An external review of the threat model is planned for weeks 15-16.
+- No external review has happened. An external review of the threat model is planned for milestone 9.
 - The QEMU test VM can reach every service on the host's `127.0.0.1`, through `10.0.2.2`. Do not run untrusted code in it.
 - `--dev` seeds are for the QEMU VM only. They also accept a plain `http://10.0.2.2:PORT` release URL. Firstboot still checks the pin and the signature.
 - The gates use a throwaway admin password (`x`) and throwaway keys in `.vm/keys` and `.vm/id_vm`. Never use them for a real box.

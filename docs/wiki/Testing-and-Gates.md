@@ -1,14 +1,14 @@
 How agentbox is tested, what each test proves, and what it does not. For an overview, start at [Home](README.md).
 
 agentbox is early alpha. Every gate on this page runs in a QEMU virtual machine. No real hardware has run agentbox yet.
-The tests cover the installer, the OS layer and the week-3 host services: the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy. The agent runtime is not built, so no test covers it yet.
+The tests cover the installer, the OS layer and the milestone 2 host services: the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy. The agent runtime is not built, so no test covers it yet.
 
 ## Two kinds of tests
 
 - **Unit tests** are Go tests. They run on macOS or Linux in about a minute. They need no VM.
 - **Gates** are shell scripts in `hack/`. A gate installs Ubuntu into a QEMU VM, boots it, and checks the result. Each check prints one `PASS` or `FAIL` line. A gate passes only if every check passes.
 
-The build plan also uses the word "gate" for the set of tests that ends a milestone (see [Roadmap](Roadmap.md)). The scripts on this page run the tests for weeks 1-3.
+The build plan also uses the word "gate" for the set of tests that ends a milestone (see [Roadmap](Roadmap.md)). The scripts on this page run the tests for milestones 1-2.
 
 ## At a glance
 
@@ -19,12 +19,12 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | Disk guard gate | `hack/gate.sh dup-serial` | Apple Silicon Mac | about 1.5 min |
 | `os.apply` gates | `hack/apply-gate.sh none\|tpm2\|tpm2+tang [uefi\|bios] [scenario ...]` | Apple Silicon Mac | about 90 min for all five scenarios on arm64 |
 | Power-cut replay | `hack/powercut.sh <command>` | Apple Silicon Mac with a podman machine | depends on the log |
-| Firewall gate (week 3) | `hack/fw-gate.sh [install] [checks]` | Apple Silicon Mac | about 16 min, with the `none` install |
-| auditd gate (week 3) | `hack/audit-gate.sh [install] [audit]` | Apple Silicon Mac | about 13 min, with the `none` install |
-| rootd gate (week 3) | `hack/rootd-gate.sh [install] [release] [checks]` | Apple Silicon Mac, with internet for the flow check | not timed separately |
-| Quota and ntfy gate (week 3) | `hack/quota-ntfy-gate.sh [install\|quota\|ntfy ...]` | Apple Silicon Mac | about 2 min after the `none` install |
+| Firewall gate (milestone 2) | `hack/fw-gate.sh [install] [checks]` | Apple Silicon Mac | about 16 min, with the `none` install |
+| auditd gate (milestone 2) | `hack/audit-gate.sh [install] [audit]` | Apple Silicon Mac | about 13 min, with the `none` install |
+| rootd gate (milestone 2) | `hack/rootd-gate.sh [install] [release] [checks]` | Apple Silicon Mac, with internet for the flow check | not timed separately |
+| Quota and ntfy gate (milestone 2) | `hack/quota-ntfy-gate.sh [install\|quota\|ntfy ...]` | Apple Silicon Mac | about 2 min after the `none` install |
 
-The times come from one Apple Silicon Mac. The week-3 times come from runs with four VMs at once.
+The times come from one Apple Silicon Mac. The milestone 2 times come from runs with four VMs at once.
 
 ## Unit tests
 
@@ -51,7 +51,7 @@ What they check:
 | `hack/release` | Two builds of one release give the same bytes, and minisign verifies the signature. |
 | `hack` | The test harness itself. The QEMU command line is right even from a path with spaces, commas and glob characters. The ISO pin check and `remaster-iso.sh` work. The `dup-serial` disk check works on real qcow2 images. No `apply-gate.sh` check runs a value from the VM as code on the host. `powercut.sh boot` puts the VM disk back whether its checks pass or fail. |
 
-At the time of writing there are 107 top-level tests. There are no fuzz tests yet. Fuzzers are planned for week 4.
+At the time of writing there are 107 top-level tests. There are no fuzz tests yet. Fuzzers are planned for milestone 3.
 
 Some tests need outside tools: `dash`, `sha256sum`, `xorriso`, `openssl`, `minisign`, `qemu-img` and `qemu-io`, `uv` (or `python3` with PyYAML), and the `agentbox-powercut` image in the podman machine.
 
@@ -358,9 +358,9 @@ What `hack/powercut.sh` does not model:
 
 QEMU 11.1's NVMe controller drops the FUA bit. So a FUA write counts as durable only at the next flush.
 
-## Week-3 gates
+## Milestone 2 gates
 
-Each week-3 gate script starts with `install`: `hack/gate.sh none`, which installs a fresh `none`-mode box on arm64 UEFI, Secure Boot on, and lets firstboot install this checkout's release by the real path (`make release`, `install.sh`, `systemd/`). The later steps run as root on that box. Each script writes `PASS` and `FAIL` lines to `.vm/<name>.txt`, command output to `.vm/<name>.log`, and exits 1 on any `FAIL`.
+Each milestone 2 gate script starts with `install`: `hack/gate.sh none`, which installs a fresh `none`-mode box on arm64 UEFI, Secure Boot on, and lets firstboot install this checkout's release by the real path (`make release`, `install.sh`, `systemd/`). The later steps run as root on that box. Each script writes `PASS` and `FAIL` lines to `.vm/<name>.txt`, command output to `.vm/<name>.log`, and exits 1 on any `FAIL`.
 
 ```sh
 caffeinate -i hack/fw-gate.sh
@@ -371,7 +371,7 @@ caffeinate -i hack/quota-ntfy-gate.sh
 
 The firewall, rootd and quota gates enable `agentbox-agent-stub.service`, a stand-in for an agent unit. It `Requires=` the firewall and runs `fwcheck` before it starts, as every agent unit will.
 
-### What the week-3 gates prove
+### What the milestone 2 gates prove
 
 | Suite | Script | What it proves |
 |---|---|---|
@@ -382,7 +382,7 @@ The firewall, rootd and quota gates enable `agentbox-agent-stub.service`, a stan
 
 ### What they do not prove
 
-- They ran in `none` mode on arm64 UEFI only. `tpm2`, `tpm2+tang` and amd64 BIOS were not run for them. The week-3 code does not touch unlock or boot.
+- They ran in `none` mode on arm64 UEFI only. `tpm2`, `tpm2+tang` and amd64 BIOS were not run for them. The milestone 2 code does not touch unlock or boot.
 - No broker exists yet. The gates write the answers a broker would get, or use a stand-in uid. Hiding systemd-resolved's Unix interfaces from the broker users waits for the broker units.
 - The resolver's `unavailable` reason, for a systemd-resolved that is down, has no gate check.
 - The QEMU VM reaches the internet through slirp. The rootd flow check needs a public HTTP server (`FLOW=host:port`, default `example.com:80`).
@@ -471,17 +471,17 @@ Share only the `.txt` and `.log` files. `.vm/keys`, `.vm/id_vm` and `.vm/gate-se
 
 The `lint` job (gofmt, `go vet`, staticcheck, shellcheck, govulncheck) also runs on every push and pull request. `bios` runs on every push to `main`, weekly and on manual dispatch.
 
-CI cannot run the arm64 UEFI gates as written, because they need HVF on macOS. That includes the week-3 gates. `hack/powercut.sh` also assumes a podman machine.
+CI cannot run the arm64 UEFI gates as written, because they need HVF on macOS. That includes the milestone 2 gates. `hack/powercut.sh` also assumes a podman machine.
 
 The `test` job runs as an unprivileged user, so the `internal/audit` tests that need `chattr +a` skip there. They run on macOS, where `chattr` is a no-op, and on the box through `hack/audit-gate.sh`.
 
 ## Results at the time of writing
 
-2026-11-21. The "Tested at" column names the commit on `main` each result comes from. Most weeks 1-2 results come from `e2e53af`, after the review fixes. A later rerun of six suites at `61acfc7`, which changes only `hack/vm.sh`'s install timeout, also passed. The week-3 results come from `fb89de4`, the last week-3 code commit. A later commit can change a result, so rerun a gate before you rely on it.
+2026-11-21. The "Tested at" column names the commit on `main` each result comes from. Most milestone 1 results come from `e2e53af`, after the review fixes. A later rerun of six suites at `61acfc7`, which changes only `hack/vm.sh`'s install timeout, also passed. The milestone 2 results come from `fb89de4`, the last milestone 2 code commit. A later commit can change a result, so rerun a gate before you rely on it.
 
 The raw logs stay in the maintainer's local evidence store, not in the repo.
 
-### Weeks 1-2
+### Milestone 1
 
 | Leg | Result | Tested at |
 |---|---|---|
@@ -499,9 +499,9 @@ The raw logs stay in the maintainer's local evidence store, not in the repo.
 | Several gates at once | Passed: four VMs at once, one per worktree | `e2e53af` |
 | amd64 UEFI | Not run anywhere | |
 | Real hardware | Not run | |
-| CI: `test` and `lint` | Passed on every push to `main` from `12b9e54`, which added `lint`, to `ad5338c`. Failed at `d375331`, the week-3 merge: staticcheck SA4016, and the `chattr` tests on an unprivileged runner. Fixed in the pull request for issue #45. | `ad5338c`, `d375331` |
+| CI: `test` and `lint` | Passed on every push to `main` from `12b9e54`, which added `lint`, to `ad5338c`. Failed at `d375331`, the milestone 2 merge: staticcheck SA4016, and the `chattr` tests on an unprivileged runner. Fixed in the pull request for issue #45. | `ad5338c`, `d375331` |
 
-### Week 3
+### Milestone 2
 
 All on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. Before the review fixes, all eight suites also passed once at `883f445`.
 
@@ -511,8 +511,8 @@ All on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. Before the revie
 | `w3-auditd` | Passed: 111 PASS, 0 FAIL | `fb89de4` |
 | `w3-rootd` | Passed: 104 PASS, 0 FAIL | `fb89de4` |
 | `w3-quota-ntfy` | Passed: 54 PASS, 0 FAIL, in a second run. The first run at `fb89de4` was cut off mid-install by the harness clock, with no verdict. | `fb89de4` |
-| Weeks 1-2 smoke: `gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso` | Passed | `fb89de4` |
-| Week-3 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
+| Milestone 1 smoke: `gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso` | Passed | `fb89de4` |
+| Milestone 2 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
 | `go vet ./...` and `go test ./...` | Passed on the Mac | `fb89de4` |
 
 ## Troubleshooting
