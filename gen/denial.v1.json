@@ -1,0 +1,1180 @@
+{
+  "$comment": "Code generated from internal/ops/registry.go by go generate; DO NOT EDIT. ARCHITECTURE.md §5.6.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "maxLength": 1024,
+  "properties": {
+    "afterMs": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "asksLeft": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "by": {
+      "enum": [
+        "gate",
+        "cedar",
+        "floor",
+        "proxy",
+        "keys",
+        "git",
+        "forwarder"
+      ],
+      "type": "string"
+    },
+    "channel": {
+      "enum": [
+        "cli",
+        "cli_or_phone"
+      ],
+      "type": "string"
+    },
+    "code": {
+      "enum": [
+        "INVALID_ARGS",
+        "UNKNOWN_OP",
+        "TASK_ENDED",
+        "NOT_FOUND_OR_NOT_OWNED",
+        "DENIED_POLICY",
+        "POLICY_ERROR",
+        "MEMORY_QUARANTINED",
+        "CAP_REACHED",
+        "BUS_REFUSED",
+        "LEASE_HELD",
+        "NEEDS_SIGNATURE",
+        "ASK_DENIED",
+        "ASK_EXPIRED",
+        "ASK_CAP",
+        "STALE",
+        "BUSY",
+        "ADMISSION_REJECTED",
+        "FLOOR_NEVER",
+        "HUMAN_ONLY",
+        "REF_OUTSIDE_NAMESPACE",
+        "OID_NOT_IN_REMOTE_REPO",
+        "REMOTE_REJECTED",
+        "EFFECT_FAILED",
+        "INDETERMINATE",
+        "BATCH_ABORTED",
+        "NESTED_SUBVOLUME",
+        "AUDIT_UNAVAILABLE",
+        "EGRESS_NOT_ALLOWLISTED",
+        "EGRESS_WRONG_ROUTE",
+        "EGRESS_NAME_REJECTED",
+        "EGRESS_RESOLVE_FAILED",
+        "EGRESS_DIAL_FAILED",
+        "KEYS_REQUEST_REJECTED",
+        "KEYS_BUDGET",
+        "KEYS_UPSTREAM",
+        "BROKER_UNAVAILABLE"
+      ],
+      "type": "string"
+    },
+    "expiresAt": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "id": {
+      "pattern": "^(dn|pnd)_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "limit": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "msg": {
+      "maxLength": 200,
+      "pattern": "^[ -~]*$",
+      "type": "string"
+    },
+    "next": {
+      "enum": [
+        "fix",
+        "wait",
+        "ask",
+        "retry",
+        "human",
+        "stop"
+      ],
+      "type": "string"
+    },
+    "notified": {
+      "type": "boolean"
+    },
+    "op": {
+      "enum": [
+        "app.deploy",
+        "app.logs",
+        "app.remove",
+        "app.restart",
+        "app.rollback",
+        "app.start",
+        "app.status",
+        "app.stop",
+        "ask.batch",
+        "ask.quote",
+        "ask.status",
+        "bus.agents.list",
+        "bus.inbox.ack",
+        "bus.inbox.read",
+        "bus.lease.acquire",
+        "bus.lease.heartbeat",
+        "bus.lease.release",
+        "bus.message.send",
+        "bus.task.cancel",
+        "bus.task.claim",
+        "bus.task.get",
+        "bus.task.send",
+        "bus.task.update",
+        "disk.usage",
+        "file.write",
+        "gh.issue.comment",
+        "gh.issue.read",
+        "gh.pr.comment",
+        "gh.pr.create",
+        "gh.pr.read",
+        "memory.forget",
+        "memory.read",
+        "memory.write",
+        "net.allow_domain",
+        "os.generations",
+        "os.pkg.install",
+        "os.pkg.remove",
+        "os.rollback",
+        "os.unit.disable",
+        "os.unit.enable",
+        "os.update",
+        "pkg.search",
+        "repo.create",
+        "repo.merge",
+        "repo.push",
+        "system.info",
+        "workbench.add_package",
+        "workspace.restore",
+        "workspace.snapshot"
+      ],
+      "type": "string"
+    },
+    "open": {
+      "items": {
+        "pattern": "^pnd_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+        "type": "string"
+      },
+      "maxItems": 3,
+      "type": "array"
+    },
+    "pending": {
+      "pattern": "^pnd_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "reason": {
+      "enum": [
+        "tainted",
+        "signed"
+      ],
+      "type": "string"
+    },
+    "remedy": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "admin": {
+            "pattern": "^agentbox [a-z ]{1,40}$",
+            "type": "string"
+          },
+          "afterMs": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "approval": {
+            "enum": [
+              "cli",
+              "cli_or_phone"
+            ],
+            "type": "string"
+          },
+          "args": {
+            "additionalProperties": false,
+            "properties": {
+              "host": {
+                "maxLength": 253,
+                "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z]([a-z0-9-]{0,61}[a-z0-9])?$",
+                "type": "string"
+              },
+              "port": {
+                "maximum": 65535,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "host",
+              "port"
+            ],
+            "type": "object"
+          },
+          "expect": {
+            "enum": [
+              "string",
+              "integer",
+              "boolean",
+              "array",
+              "object",
+              "present",
+              "absent",
+              "valid",
+              "refs/heads/agent/\u003cname\u003e/*",
+              "an OID pushed through :8082",
+              "use :8081",
+              "use CONNECT"
+            ],
+            "type": "string"
+          },
+          "expiresAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "field": {
+            "pattern": "^(/([A-Za-z][A-Za-z0-9_]{0,63}|[0-9]{1,3})){1,6}$",
+            "type": "string"
+          },
+          "human": {
+            "pattern": "^agentbox approve pnd_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "op",
+              "fix",
+              "wait",
+              "poll",
+              "retry",
+              "human",
+              "none"
+            ],
+            "type": "string"
+          },
+          "notified": {
+            "type": "boolean"
+          },
+          "op": {
+            "enum": [
+              "app.deploy",
+              "app.logs",
+              "app.remove",
+              "app.restart",
+              "app.rollback",
+              "app.start",
+              "app.status",
+              "app.stop",
+              "ask.batch",
+              "ask.quote",
+              "ask.status",
+              "bus.agents.list",
+              "bus.inbox.ack",
+              "bus.inbox.read",
+              "bus.lease.acquire",
+              "bus.lease.heartbeat",
+              "bus.lease.release",
+              "bus.message.send",
+              "bus.task.cancel",
+              "bus.task.claim",
+              "bus.task.get",
+              "bus.task.send",
+              "bus.task.update",
+              "disk.usage",
+              "file.write",
+              "gh.issue.comment",
+              "gh.issue.read",
+              "gh.pr.comment",
+              "gh.pr.create",
+              "gh.pr.read",
+              "memory.forget",
+              "memory.read",
+              "memory.write",
+              "net.allow_domain",
+              "os.generations",
+              "os.pkg.install",
+              "os.pkg.remove",
+              "os.rollback",
+              "os.unit.disable",
+              "os.unit.enable",
+              "os.update",
+              "pkg.search",
+              "repo.create",
+              "repo.merge",
+              "repo.push",
+              "system.info",
+              "workbench.add_package",
+              "workspace.restore",
+              "workspace.snapshot"
+            ],
+            "type": "string"
+          },
+          "pending": {
+            "pattern": "^(dn|pnd)_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "maxItems": 3,
+      "minItems": 1,
+      "type": "array"
+    },
+    "resetsAt": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "rule": {
+      "enum": [
+        "cedar.hop-limit",
+        "cedar.memory-procedural-never",
+        "cedar.chain",
+        "cedar.custom"
+      ],
+      "type": "string"
+    },
+    "subject": {
+      "additionalProperties": false,
+      "properties": {
+        "app": {
+          "pattern": "^[a-z][a-z0-9-]{0,31}$",
+          "type": "string"
+        },
+        "host": {
+          "maxLength": 253,
+          "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "type": "string"
+        },
+        "model": {
+          "pattern": "^[a-z0-9][a-z0-9.:-]{0,63}$",
+          "type": "string"
+        },
+        "oid": {
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+          "type": "string"
+        },
+        "package": {
+          "pattern": "^[a-z0-9][a-z0-9+.-]{1,62}$",
+          "type": "string"
+        },
+        "pointer": {
+          "pattern": "^(/([A-Za-z][A-Za-z0-9_]{0,63}|[0-9]{1,3})){1,6}$",
+          "type": "string"
+        },
+        "port": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "ref": {
+          "pattern": "^refs/heads/[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$",
+          "type": "string"
+        },
+        "remote": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "type": "string"
+        },
+        "snapshot": {
+          "pattern": "^snap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "unit": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9@._-]{0,127}\\.(service|socket|timer|target|path|mount)$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "taint": {
+      "additionalProperties": false,
+      "properties": {
+        "tainted": {
+          "type": "boolean"
+        },
+        "workspaceBound": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "tainted",
+        "workspaceBound"
+      ],
+      "type": "object"
+    },
+    "v": {
+      "const": 1
+    },
+    "what": {
+      "enum": [
+        "agent",
+        "agent_24h",
+        "agent_ops_24h",
+        "approval_expired",
+        "artifacts",
+        "auth",
+        "batch_member_open",
+        "batch_open",
+        "batch_remote_not_private",
+        "batch_shape",
+        "batch_text_cap",
+        "beta_header",
+        "block_type",
+        "blocked",
+        "bus_messages",
+        "cas_changed",
+        "children",
+        "closure_too_large",
+        "context_too_large",
+        "cycle",
+        "deadline",
+        "deputy_host",
+        "dropped_field",
+        "egress",
+        "endpoint",
+        "exposure_443",
+        "field",
+        "gate",
+        "git",
+        "hop",
+        "llm",
+        "llm_vendor",
+        "max_tokens",
+        "memory_bytes",
+        "memory_rows",
+        "memory_writes_task",
+        "model",
+        "never_available",
+        "no_commits",
+        "no_such_name",
+        "non_public",
+        "not_cancelable",
+        "not_found",
+        "other",
+        "own_cas_pending",
+        "parent_ended",
+        "plain_http",
+        "policy_changed",
+        "pr_exists",
+        "protected_package",
+        "protected_unit",
+        "push_bytes_day",
+        "quote_items_task",
+        "quote_items_trace",
+        "rate_limited",
+        "ref_moved",
+        "refused",
+        "remote_changed",
+        "ruleset",
+        "server_tool",
+        "signer_revoked",
+        "source_type",
+        "stale_base",
+        "taint_moved",
+        "task_budget",
+        "task_open",
+        "timeout",
+        "tool_type",
+        "trace",
+        "unavailable",
+        "unreachable",
+        "url_field",
+        "vendor_host"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "v",
+    "id",
+    "code",
+    "by",
+    "next",
+    "msg",
+    "remedy"
+  ],
+  "title": "agentbox denial v1",
+  "type": "object",
+  "x-agentbox-channels": {
+    "app.deploy": "cli",
+    "app.remove": "cli",
+    "app.rollback": "cli",
+    "ask.batch": "cli",
+    "file.write": "cli_or_phone",
+    "gh.issue.comment": "cli",
+    "gh.pr.comment": "cli",
+    "gh.pr.create": "cli",
+    "memory.forget": "cli_or_phone",
+    "memory.write": "cli_or_phone",
+    "net.allow_domain": "cli",
+    "os.pkg.install": "cli",
+    "os.pkg.remove": "cli",
+    "os.rollback": "cli",
+    "os.unit.disable": "cli",
+    "os.unit.enable": "cli",
+    "os.update": "cli",
+    "repo.merge": "cli",
+    "repo.push": "cli",
+    "workbench.add_package": "cli",
+    "workspace.restore": "cli_or_phone"
+  },
+  "x-agentbox-codes": {
+    "ADMISSION_REJECTED": {
+      "by": [
+        "floor"
+      ],
+      "http": 400,
+      "msg": "{op} is refused at admission.",
+      "next": "fix",
+      "remedy": [
+        "fix"
+      ],
+      "slots": [
+        "what",
+        "limit",
+        "pending"
+      ],
+      "whats": {
+        "batch_member_open": "fix",
+        "batch_open": "wait",
+        "batch_remote_not_private": "fix",
+        "batch_shape": "fix",
+        "batch_text_cap": "fix",
+        "closure_too_large": "fix",
+        "context_too_large": "fix",
+        "own_cas_pending": "wait"
+      }
+    },
+    "ASK_CAP": {
+      "by": [
+        "floor"
+      ],
+      "http": 429,
+      "msg": "{op} is over an ask cap.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": [
+        "what",
+        "open",
+        "resetsAt",
+        "asksLeft"
+      ],
+      "whats": {
+        "agent_24h": "human",
+        "agent_ops_24h": "human",
+        "task_budget": "human",
+        "task_open": "wait"
+      }
+    },
+    "ASK_DENIED": {
+      "by": [
+        "floor"
+      ],
+      "http": 403,
+      "msg": "A human denied this ask in this task; do not ask again.",
+      "next": "stop",
+      "remedy": [
+        "none"
+      ],
+      "slots": [
+        "pending"
+      ],
+      "whats": {}
+    },
+    "ASK_EXPIRED": {
+      "by": [
+        "floor"
+      ],
+      "http": 410,
+      "msg": "The ask for {op} expired; a new ask counts against your budget.",
+      "next": "ask",
+      "remedy": [
+        "op"
+      ],
+      "slots": [
+        "asksLeft"
+      ],
+      "whats": {}
+    },
+    "AUDIT_UNAVAILABLE": {
+      "by": [
+        "floor",
+        "proxy",
+        "keys",
+        "git"
+      ],
+      "http": 503,
+      "msg": "The audit log is unavailable; retry after {afterMs} ms.",
+      "next": "retry",
+      "remedy": [
+        "retry"
+      ],
+      "slots": [
+        "afterMs"
+      ],
+      "whats": {}
+    },
+    "BATCH_ABORTED": {
+      "by": [
+        "floor"
+      ],
+      "http": 409,
+      "msg": "An earlier member of the batch failed or was refused; {op} never ran.",
+      "next": "ask",
+      "remedy": [
+        "op"
+      ],
+      "slots": null,
+      "whats": {}
+    },
+    "BROKER_UNAVAILABLE": {
+      "by": [
+        "forwarder"
+      ],
+      "http": 503,
+      "msg": "A box service is unavailable; retry after {afterMs} ms.",
+      "next": "retry",
+      "remedy": [
+        "retry"
+      ],
+      "slots": [
+        "what",
+        "afterMs"
+      ],
+      "whats": {
+        "egress": "retry",
+        "gate": "retry",
+        "git": "retry",
+        "llm": "retry"
+      }
+    },
+    "BUSY": {
+      "by": [
+        "floor"
+      ],
+      "http": 503,
+      "msg": "The box is busy; retry after {afterMs} ms.",
+      "next": "retry",
+      "remedy": [
+        "retry"
+      ],
+      "slots": [
+        "afterMs"
+      ],
+      "whats": {}
+    },
+    "BUS_REFUSED": {
+      "by": [
+        "gate"
+      ],
+      "http": 409,
+      "msg": "{op} is refused by a bus limit.",
+      "next": "stop",
+      "remedy": [
+        "none"
+      ],
+      "slots": [
+        "what"
+      ],
+      "whats": {
+        "children": "stop",
+        "cycle": "stop",
+        "deadline": "stop",
+        "hop": "stop",
+        "not_cancelable": "stop",
+        "parent_ended": "stop"
+      }
+    },
+    "CAP_REACHED": {
+      "by": [
+        "gate",
+        "floor",
+        "git"
+      ],
+      "http": 429,
+      "msg": "{op} is over a cap of {limit}.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": [
+        "what",
+        "limit",
+        "resetsAt"
+      ],
+      "whats": {
+        "artifacts": "human",
+        "bus_messages": "human",
+        "memory_bytes": "human",
+        "memory_rows": "human",
+        "memory_writes_task": "human",
+        "push_bytes_day": "human",
+        "quote_items_task": "stop",
+        "quote_items_trace": "stop"
+      }
+    },
+    "DENIED_POLICY": {
+      "by": [
+        "cedar"
+      ],
+      "http": 403,
+      "msg": "{op} is denied by policy.",
+      "next": "stop",
+      "remedy": [
+        "none"
+      ],
+      "slots": null,
+      "whats": {}
+    },
+    "EFFECT_FAILED": {
+      "by": [
+        "floor"
+      ],
+      "http": 500,
+      "msg": "{op} failed while running.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": null,
+      "whats": {}
+    },
+    "EGRESS_DIAL_FAILED": {
+      "by": [
+        "proxy"
+      ],
+      "http": 504,
+      "msg": "The connection to the host failed; retry after {afterMs} ms.",
+      "next": "retry",
+      "remedy": [
+        "retry"
+      ],
+      "slots": [
+        "what",
+        "afterMs"
+      ],
+      "whats": {
+        "blocked": "retry",
+        "refused": "retry",
+        "timeout": "retry"
+      }
+    },
+    "EGRESS_NAME_REJECTED": {
+      "by": [
+        "proxy"
+      ],
+      "http": 403,
+      "msg": "This name does not resolve to a public address.",
+      "next": "stop",
+      "remedy": [
+        "none"
+      ],
+      "slots": [
+        "what"
+      ],
+      "whats": {
+        "non_public": "stop"
+      }
+    },
+    "EGRESS_NOT_ALLOWLISTED": {
+      "by": [
+        "proxy"
+      ],
+      "http": 403,
+      "msg": "This host:port is not on your egress list.",
+      "next": "ask",
+      "remedy": [
+        "op"
+      ],
+      "slots": [
+        "what"
+      ],
+      "whats": {
+        "deputy_host": "human"
+      }
+    },
+    "EGRESS_RESOLVE_FAILED": {
+      "by": [
+        "proxy"
+      ],
+      "http": 502,
+      "msg": "The name could not be resolved.",
+      "next": "retry",
+      "remedy": [
+        "retry"
+      ],
+      "slots": [
+        "what",
+        "afterMs"
+      ],
+      "whats": {
+        "no_such_name": "fix",
+        "unavailable": "retry"
+      }
+    },
+    "EGRESS_WRONG_ROUTE": {
+      "by": [
+        "proxy"
+      ],
+      "http": 400,
+      "msg": "Wrong route for this request.",
+      "next": "fix",
+      "remedy": [
+        "fix"
+      ],
+      "slots": [
+        "what",
+        "expect"
+      ],
+      "whats": {
+        "llm_vendor": "fix",
+        "plain_http": "fix"
+      }
+    },
+    "FLOOR_NEVER": {
+      "by": [
+        "floor"
+      ],
+      "http": 403,
+      "msg": "{op} is never allowed on this box.",
+      "next": "stop",
+      "remedy": [
+        "none"
+      ],
+      "slots": [
+        "what"
+      ],
+      "whats": {
+        "exposure_443": "stop",
+        "never_available": "stop",
+        "protected_package": "stop",
+        "protected_unit": "stop",
+        "vendor_host": "stop"
+      }
+    },
+    "HUMAN_ONLY": {
+      "by": [
+        "floor"
+      ],
+      "http": 403,
+      "msg": "Only a human can do this.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": [
+        "what"
+      ],
+      "whats": {
+        "deputy_host": "human"
+      }
+    },
+    "INDETERMINATE": {
+      "by": [
+        "floor"
+      ],
+      "http": 500,
+      "msg": "It is unknown whether {op} took effect; a human resolves it.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": null,
+      "whats": {}
+    },
+    "INVALID_ARGS": {
+      "by": [
+        "gate",
+        "floor"
+      ],
+      "http": 400,
+      "msg": "{op} has an invalid argument: fix the field named in remedy.",
+      "next": "fix",
+      "remedy": [
+        "fix"
+      ],
+      "slots": [
+        "expect"
+      ],
+      "whats": {}
+    },
+    "KEYS_BUDGET": {
+      "by": [
+        "keys"
+      ],
+      "http": 429,
+      "msg": "Your LLM budget is spent.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": [
+        "what",
+        "resetsAt"
+      ],
+      "whats": {
+        "agent": "human",
+        "trace": "human"
+      }
+    },
+    "KEYS_REQUEST_REJECTED": {
+      "by": [
+        "keys"
+      ],
+      "http": 403,
+      "msg": "The LLM request has a field this box does not allow.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": [
+        "what",
+        "limit"
+      ],
+      "whats": {
+        "beta_header": "human",
+        "block_type": "human",
+        "dropped_field": "fix",
+        "endpoint": "human",
+        "field": "human",
+        "max_tokens": "fix",
+        "model": "human",
+        "server_tool": "fix",
+        "source_type": "human",
+        "tool_type": "human",
+        "url_field": "human"
+      }
+    },
+    "KEYS_UPSTREAM": {
+      "by": [
+        "keys"
+      ],
+      "http": 502,
+      "msg": "The LLM vendor could not be reached.",
+      "next": "retry",
+      "remedy": [
+        "retry"
+      ],
+      "slots": [
+        "what",
+        "afterMs"
+      ],
+      "whats": {
+        "auth": "human",
+        "timeout": "retry",
+        "unreachable": "retry"
+      }
+    },
+    "LEASE_HELD": {
+      "by": [
+        "gate"
+      ],
+      "http": 409,
+      "msg": "The lease is held; retry after {afterMs} ms.",
+      "next": "retry",
+      "remedy": [
+        "retry"
+      ],
+      "slots": [
+        "afterMs"
+      ],
+      "whats": {}
+    },
+    "MEMORY_QUARANTINED": {
+      "by": [
+        "gate"
+      ],
+      "http": 202,
+      "msg": "The fact was stored in quarantine; a human may release it.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": null,
+      "whats": {}
+    },
+    "NEEDS_SIGNATURE": {
+      "by": [
+        "floor"
+      ],
+      "http": 202,
+      "msg": "{op} waits for a human ({channel}) until {time}. It stays open if your task ends normally. Run: agentbox ask wait {id}.",
+      "next": "wait",
+      "remedy": [
+        "wait",
+        "poll"
+      ],
+      "slots": [
+        "reason",
+        "taint",
+        "channel",
+        "expiresAt",
+        "notified",
+        "asksLeft"
+      ],
+      "whats": {}
+    },
+    "NESTED_SUBVOLUME": {
+      "by": [
+        "floor"
+      ],
+      "http": 409,
+      "msg": "The workspace holds a nested subvolume, so {op} is refused.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": null,
+      "whats": {}
+    },
+    "NOT_FOUND_OR_NOT_OWNED": {
+      "by": [
+        "gate",
+        "cedar",
+        "floor",
+        "git"
+      ],
+      "http": 404,
+      "msg": "{op}: no such item among yours.",
+      "next": "stop",
+      "remedy": [
+        "none"
+      ],
+      "slots": null,
+      "whats": {}
+    },
+    "OID_NOT_IN_REMOTE_REPO": {
+      "by": [
+        "floor"
+      ],
+      "http": 400,
+      "msg": "The commit is not in the remote repo: push it through :8082 first.",
+      "next": "fix",
+      "remedy": [
+        "fix"
+      ],
+      "slots": [
+        "expect"
+      ],
+      "whats": {}
+    },
+    "POLICY_ERROR": {
+      "by": [
+        "cedar"
+      ],
+      "http": 500,
+      "msg": "Policy evaluation failed, so {op} is denied.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": null,
+      "whats": {}
+    },
+    "REF_OUTSIDE_NAMESPACE": {
+      "by": [
+        "floor",
+        "git"
+      ],
+      "http": 403,
+      "msg": "Push only refs under refs/heads/agent/\u003cyour name\u003e/.",
+      "next": "fix",
+      "remedy": [
+        "fix"
+      ],
+      "slots": [
+        "expect"
+      ],
+      "whats": {}
+    },
+    "REMOTE_REJECTED": {
+      "by": [
+        "floor"
+      ],
+      "http": 502,
+      "msg": "The remote refused {op}.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": [
+        "what",
+        "afterMs"
+      ],
+      "whats": {
+        "no_commits": "fix",
+        "not_found": "human",
+        "other": "human",
+        "pr_exists": "fix",
+        "rate_limited": "retry",
+        "ruleset": "stop",
+        "unreachable": "retry"
+      }
+    },
+    "STALE": {
+      "by": [
+        "floor"
+      ],
+      "http": 409,
+      "msg": "{op} is stale: what it was bound to has changed.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": [
+        "what",
+        "pending"
+      ],
+      "whats": {
+        "approval_expired": "ask",
+        "cas_changed": "fix",
+        "policy_changed": "ask",
+        "ref_moved": "fix",
+        "remote_changed": "human",
+        "signer_revoked": "ask",
+        "stale_base": "fix",
+        "taint_moved": "wait"
+      }
+    },
+    "TASK_ENDED": {
+      "by": [
+        "gate",
+        "cedar",
+        "floor",
+        "proxy",
+        "keys",
+        "git",
+        "forwarder"
+      ],
+      "http": 409,
+      "msg": "This task has ended.",
+      "next": "stop",
+      "remedy": [
+        "none"
+      ],
+      "slots": null,
+      "whats": {}
+    },
+    "UNKNOWN_OP": {
+      "by": [
+        "gate"
+      ],
+      "http": 400,
+      "msg": "This op does not exist or no agent may call it.",
+      "next": "stop",
+      "remedy": [
+        "none"
+      ],
+      "slots": null,
+      "whats": {}
+    }
+  }
+}

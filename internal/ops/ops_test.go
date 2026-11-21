@@ -15,7 +15,7 @@ const genDir = "../../gen"
 func TestGenerated(t *testing.T) {
 	for name, want := range Generate(Registry) {
 		p := filepath.Join(genDir, name)
-		if name == DocsFile {
+		if strings.Contains(name, "/") {
 			p = filepath.Join("../..", name)
 		}
 		got, err := os.ReadFile(p)

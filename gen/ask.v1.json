@@ -1,0 +1,574 @@
+{
+  "$comment": "Code generated from internal/ops/registry.go by go generate; DO NOT EDIT. ARCHITECTURE.md §5.1, §5.2, §5.4.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "alwaysExact": [
+    "app.remove",
+    "app.restart",
+    "app.rollback",
+    "app.start",
+    "app.stop",
+    "gh.issue.comment",
+    "gh.pr.comment",
+    "memory.forget",
+    "memory.write",
+    "net.allow_domain",
+    "os.rollback",
+    "os.unit.disable",
+    "os.unit.enable",
+    "repo.create",
+    "workspace.snapshot"
+  ],
+  "ask.batch": {
+    "batchTextBytes": 65536,
+    "maxReplies": 3,
+    "memberTextBytes": 16384,
+    "shapes": {
+      "push+pr": {
+        "members": [
+          "repo.push",
+          "gh.pr.create"
+        ],
+        "privateRemote": false
+      },
+      "push+reply": {
+        "members": [
+          "repo.push",
+          "gh.pr.comment"
+        ],
+        "privateRemote": true
+      }
+    }
+  },
+  "ask.quote": {
+    "additionalProperties": false,
+    "properties": {
+      "asks": {
+        "additionalProperties": false,
+        "properties": {
+          "granted": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "left": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "openBatch": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "used": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max",
+          "used",
+          "granted",
+          "open",
+          "openBatch",
+          "left"
+        ],
+        "type": "object"
+      },
+      "batch": {
+        "additionalProperties": false,
+        "properties": {
+          "asks": {
+            "const": 1
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "shape": {
+            "enum": [
+              "push+pr",
+              "push+reply"
+            ],
+            "type": "string"
+          },
+          "what": {
+            "enum": [
+              "closure_too_large",
+              "context_too_large",
+              "own_cas_pending",
+              "batch_shape",
+              "batch_remote_not_private",
+              "batch_text_cap",
+              "batch_member_open",
+              "batch_open"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      },
+      "items": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "cost": {
+              "enum": [
+                "run",
+                "ask_phone",
+                "ask_cli",
+                "quarantine",
+                "deny",
+                "none"
+              ],
+              "type": "string"
+            },
+            "exact": {
+              "type": "boolean"
+            },
+            "reason": {
+              "enum": [
+                "tainted",
+                "signed",
+                "unchecked",
+                "shared_scope",
+                "already_allowed",
+                "INVALID_ARGS",
+                "UNKNOWN_OP",
+                "TASK_ENDED",
+                "NOT_FOUND_OR_NOT_OWNED",
+                "DENIED_POLICY",
+                "POLICY_ERROR",
+                "MEMORY_QUARANTINED",
+                "CAP_REACHED",
+                "BUS_REFUSED",
+                "LEASE_HELD",
+                "NEEDS_SIGNATURE",
+                "ASK_DENIED",
+                "ASK_EXPIRED",
+                "ASK_CAP",
+                "STALE",
+                "BUSY",
+                "ADMISSION_REJECTED",
+                "FLOOR_NEVER",
+                "HUMAN_ONLY",
+                "REF_OUTSIDE_NAMESPACE",
+                "OID_NOT_IN_REMOTE_REPO",
+                "REMOTE_REJECTED",
+                "EFFECT_FAILED",
+                "INDETERMINATE",
+                "BATCH_ABORTED",
+                "NESTED_SUBVOLUME",
+                "AUDIT_UNAVAILABLE",
+                "EGRESS_NOT_ALLOWLISTED",
+                "EGRESS_WRONG_ROUTE",
+                "EGRESS_NAME_REJECTED",
+                "EGRESS_RESOLVE_FAILED",
+                "EGRESS_DIAL_FAILED",
+                "KEYS_REQUEST_REJECTED",
+                "KEYS_BUDGET",
+                "KEYS_UPSTREAM",
+                "BROKER_UNAVAILABLE"
+              ],
+              "type": "string"
+            },
+            "shape": {
+              "enum": [
+                "push+pr",
+                "push+reply"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "cost",
+            "exact"
+          ],
+          "type": "object"
+        },
+        "maxItems": 8,
+        "minItems": 1,
+        "type": "array"
+      },
+      "taint": {
+        "additionalProperties": false,
+        "properties": {
+          "tainted": {
+            "type": "boolean"
+          },
+          "workspaceBound": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "tainted",
+          "workspaceBound"
+        ],
+        "type": "object"
+      }
+    },
+    "required": [
+      "items",
+      "asks",
+      "taint"
+    ],
+    "type": "object"
+  },
+  "ask.status": {
+    "additionalProperties": false,
+    "properties": {
+      "ask": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "enum": [
+              "cli",
+              "cli_or_phone"
+            ],
+            "type": "string"
+          },
+          "code": {
+            "enum": [
+              "INVALID_ARGS",
+              "UNKNOWN_OP",
+              "TASK_ENDED",
+              "NOT_FOUND_OR_NOT_OWNED",
+              "DENIED_POLICY",
+              "POLICY_ERROR",
+              "MEMORY_QUARANTINED",
+              "CAP_REACHED",
+              "BUS_REFUSED",
+              "LEASE_HELD",
+              "NEEDS_SIGNATURE",
+              "ASK_DENIED",
+              "ASK_EXPIRED",
+              "ASK_CAP",
+              "STALE",
+              "BUSY",
+              "ADMISSION_REJECTED",
+              "FLOOR_NEVER",
+              "HUMAN_ONLY",
+              "REF_OUTSIDE_NAMESPACE",
+              "OID_NOT_IN_REMOTE_REPO",
+              "REMOTE_REJECTED",
+              "EFFECT_FAILED",
+              "INDETERMINATE",
+              "BATCH_ABORTED",
+              "NESTED_SUBVOLUME",
+              "AUDIT_UNAVAILABLE",
+              "EGRESS_NOT_ALLOWLISTED",
+              "EGRESS_WRONG_ROUTE",
+              "EGRESS_NAME_REJECTED",
+              "EGRESS_RESOLVE_FAILED",
+              "EGRESS_DIAL_FAILED",
+              "KEYS_REQUEST_REJECTED",
+              "KEYS_BUDGET",
+              "KEYS_UPSTREAM",
+              "BROKER_UNAVAILABLE"
+            ],
+            "type": "string"
+          },
+          "expiresAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "pattern": "^pnd_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "type": "string"
+          },
+          "members": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "enum": [
+                    "INVALID_ARGS",
+                    "UNKNOWN_OP",
+                    "TASK_ENDED",
+                    "NOT_FOUND_OR_NOT_OWNED",
+                    "DENIED_POLICY",
+                    "POLICY_ERROR",
+                    "MEMORY_QUARANTINED",
+                    "CAP_REACHED",
+                    "BUS_REFUSED",
+                    "LEASE_HELD",
+                    "NEEDS_SIGNATURE",
+                    "ASK_DENIED",
+                    "ASK_EXPIRED",
+                    "ASK_CAP",
+                    "STALE",
+                    "BUSY",
+                    "ADMISSION_REJECTED",
+                    "FLOOR_NEVER",
+                    "HUMAN_ONLY",
+                    "REF_OUTSIDE_NAMESPACE",
+                    "OID_NOT_IN_REMOTE_REPO",
+                    "REMOTE_REJECTED",
+                    "EFFECT_FAILED",
+                    "INDETERMINATE",
+                    "BATCH_ABORTED",
+                    "NESTED_SUBVOLUME",
+                    "AUDIT_UNAVAILABLE",
+                    "EGRESS_NOT_ALLOWLISTED",
+                    "EGRESS_WRONG_ROUTE",
+                    "EGRESS_NAME_REJECTED",
+                    "EGRESS_RESOLVE_FAILED",
+                    "EGRESS_DIAL_FAILED",
+                    "KEYS_REQUEST_REJECTED",
+                    "KEYS_BUDGET",
+                    "KEYS_UPSTREAM",
+                    "BROKER_UNAVAILABLE"
+                  ],
+                  "type": "string"
+                },
+                "id": {
+                  "pattern": "^pnd_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+                  "type": "string"
+                },
+                "idx": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "op": {
+                  "enum": [
+                    "gh.pr.comment",
+                    "gh.pr.create",
+                    "repo.push"
+                  ],
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "pending",
+                    "approved",
+                    "executing",
+                    "executed",
+                    "refused",
+                    "failed",
+                    "indeterminate",
+                    "denied",
+                    "expired"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "idx",
+                "id",
+                "op",
+                "state"
+              ],
+              "type": "object"
+            },
+            "maxItems": 4,
+            "type": "array"
+          },
+          "op": {
+            "enum": [
+              "app.deploy",
+              "app.logs",
+              "app.remove",
+              "app.restart",
+              "app.rollback",
+              "app.start",
+              "app.status",
+              "app.stop",
+              "ask.batch",
+              "ask.quote",
+              "ask.status",
+              "bus.agents.list",
+              "bus.inbox.ack",
+              "bus.inbox.read",
+              "bus.lease.acquire",
+              "bus.lease.heartbeat",
+              "bus.lease.release",
+              "bus.message.send",
+              "bus.task.cancel",
+              "bus.task.claim",
+              "bus.task.get",
+              "bus.task.send",
+              "bus.task.update",
+              "disk.usage",
+              "file.write",
+              "gh.issue.comment",
+              "gh.issue.read",
+              "gh.pr.comment",
+              "gh.pr.create",
+              "gh.pr.read",
+              "memory.forget",
+              "memory.read",
+              "memory.write",
+              "net.allow_domain",
+              "os.generations",
+              "os.pkg.install",
+              "os.pkg.remove",
+              "os.rollback",
+              "os.unit.disable",
+              "os.unit.enable",
+              "os.update",
+              "pkg.search",
+              "repo.create",
+              "repo.merge",
+              "repo.push",
+              "system.info",
+              "workbench.add_package",
+              "workspace.restore",
+              "workspace.snapshot"
+            ],
+            "type": "string"
+          },
+          "result": {
+            "additionalProperties": false,
+            "description": "agentbox-generated outputs only (§5.3)",
+            "properties": {
+              "digest": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "gen": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "headOid": {
+                "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+                "type": "string"
+              },
+              "oid": {
+                "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+                "type": "string"
+              },
+              "remote": {
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "approved",
+              "executing",
+              "executed",
+              "refused",
+              "failed",
+              "indeterminate",
+              "denied",
+              "expired"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "op",
+          "state",
+          "channel",
+          "expiresAt"
+        ],
+        "type": "object"
+      },
+      "asks": {
+        "additionalProperties": false,
+        "properties": {
+          "granted": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "left": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "openBatch": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "used": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max",
+          "used",
+          "granted",
+          "open",
+          "openBatch",
+          "left"
+        ],
+        "type": "object"
+      },
+      "open": {
+        "items": {
+          "pattern": "^pnd_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "maxItems": 3,
+        "type": "array"
+      },
+      "taint": {
+        "additionalProperties": false,
+        "properties": {
+          "tainted": {
+            "type": "boolean"
+          },
+          "workspaceBound": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "tainted",
+          "workspaceBound"
+        ],
+        "type": "object"
+      }
+    },
+    "required": [
+      "asks",
+      "taint",
+      "open"
+    ],
+    "type": "object"
+  },
+  "quotable": [
+    "app.deploy",
+    "app.remove",
+    "app.restart",
+    "app.rollback",
+    "app.start",
+    "app.stop",
+    "file.write",
+    "gh.issue.comment",
+    "gh.pr.comment",
+    "gh.pr.create",
+    "memory.forget",
+    "memory.write",
+    "net.allow_domain",
+    "os.pkg.install",
+    "os.pkg.remove",
+    "os.rollback",
+    "os.unit.disable",
+    "os.unit.enable",
+    "repo.create",
+    "repo.merge",
+    "repo.push",
+    "workbench.add_package",
+    "workspace.restore",
+    "workspace.snapshot"
+  ]
+}

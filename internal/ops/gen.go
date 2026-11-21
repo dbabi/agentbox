@@ -25,7 +25,7 @@ const (
 )
 
 // Shipped is every file a release ships in gen/, and all that CheckFiles allows there.
-var Shipped = []string{CedarFile, SchemaFile, MCPFile}
+var Shipped = []string{CedarFile, SchemaFile, MCPFile, DenialFile, DenyFile, AskFile}
 
 const header = "Code generated from internal/ops/registry.go by go generate; DO NOT EDIT."
 
@@ -120,6 +120,8 @@ func Validate(reg []Op) error {
 			}
 		}
 	}
+	errs = append(errs, validateAsk(reg)...)
+	errs = append(errs, validateCodes(CodeTable, genCodes)...)
 	return errors.Join(errs...)
 }
 
@@ -309,9 +311,11 @@ func docs(reg []Op) []byte {
 	return b.Bytes()
 }
 
-// Generate returns every generated file, keyed by its name in gen/ (DocsFile is repo-relative).
+// Generate returns every generated file, keyed by its name in gen/; a name with a slash is repo-relative.
 func Generate(reg []Op) map[string][]byte {
-	return map[string][]byte{CedarFile: cedar(reg), SchemaFile: schemas(reg), MCPFile: mcp(reg), DocsFile: docs(reg)}
+	return map[string][]byte{CedarFile: cedar(reg), SchemaFile: schemas(reg), MCPFile: mcp(reg), DocsFile: docs(reg),
+		DenialFile: denialSchema(reg, CodeTable), DenyFile: denySchema(reg, CodeTable), AskFile: askSchema(reg),
+		GoldenFile: golden(CodeTable), CodesGoFile: codesGo(CodeTable), DenialDocFile: denialDocs(CodeTable)}
 }
 
 var reAction = regexp.MustCompile(`(?m)^  action "([^"]+)"`)
@@ -378,7 +382,8 @@ func CheckFiles(reg []Op, dir string) error {
 		return err
 	}
 	for _, e := range ents {
-		if _, ok := want[e.Name()]; !ok {
+		// codes.golden sits in the repo's gen/ for CI; a release never ships it
+		if !slices.Contains(Shipped, e.Name()) && e.Name() != filepath.Base(GoldenFile) {
 			return fmt.Errorf("%s: not a generated file", filepath.Join(dir, e.Name()))
 		}
 	}
@@ -388,12 +393,19 @@ func CheckFiles(reg []Op, dir string) error {
 		if err != nil {
 			return err
 		}
-		got, err := fileNames(f, b)
-		if err != nil {
-			return fmt.Errorf("%s: %v", p, err)
+		if f == DenialFile {
+			if err := checkChannels(reg, b); err != nil {
+				return fmt.Errorf("%s: %v", p, err)
+			}
 		}
-		if d := diff(want[f], got); d != "" {
-			return fmt.Errorf("%s does not match the registry one to one: %s", p, d)
+		if w, ok := want[f]; ok {
+			got, err := fileNames(f, b)
+			if err != nil {
+				return fmt.Errorf("%s: %v", p, err)
+			}
+			if d := diff(w, got); d != "" {
+				return fmt.Errorf("%s does not match the registry one to one: %s", p, d)
+			}
 		}
 		if !bytes.Equal(b, gen[f]) {
 			return fmt.Errorf("%s differs from what the registry generates (run go generate ./internal/ops)", p)

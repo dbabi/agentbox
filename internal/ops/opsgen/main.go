@@ -1,11 +1,13 @@
-// Command opsgen writes the files generated from the op registry (go generate ./internal/ops): gen/cedar.schema,
-// gen/ops.schema.json, gen/mcp-tools.json and docs/ops.md, under the repo root given as its one argument.
+// Command opsgen writes the files generated from the op registry and the codes table (go generate ./internal/ops)
+// under the repo root given as its one argument: gen/ (the shipped schemas and codes.golden), docs/ops.md,
+// docs/denials.md and internal/ops/codes_gen.go. It refuses to rewrite codes.golden except by appending.
 package main
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"agentbox/internal/ops"
 )
@@ -21,8 +23,16 @@ func main() {
 	}
 	for name, b := range ops.Generate(ops.Registry) {
 		p := filepath.Join(os.Args[1], name)
-		if name != ops.DocsFile {
+		if !strings.Contains(name, "/") {
 			p = filepath.Join(os.Args[1], "gen", name)
+		}
+		if name == ops.GoldenFile {
+			if old, err := os.ReadFile(p); err == nil {
+				if err := ops.AppendOnly(old, b); err != nil {
+					fmt.Fprintln(os.Stderr, "opsgen:", err)
+					os.Exit(1)
+				}
+			}
 		}
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			fmt.Fprintln(os.Stderr, "opsgen:", err)

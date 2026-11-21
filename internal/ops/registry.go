@@ -105,6 +105,12 @@ type Op struct {
 	TaintsOutput      bool // a read whose output agentbox doesn't generate (§5.3)
 	WorkspaceBindable bool // §8
 	Rootd             bool // reaches rootd; false means agentboxd alone executes it
+
+	// Batch and quote fields (§5.1), set from the lists in ask.go.
+	Batch     []string // the ask.batch shapes the op can be a member of
+	Quotable  bool     // ask.quote may price it
+	Exact     bool     // a quote can always compute its cost from its own inputs
+	CASBinder bool     // its binder writes CAS at admission
 }
 
 var (
@@ -137,7 +143,7 @@ func agentboxd(o Op) Op { o.Rootd = false; return o }
 func taints(o Op, out ...Field) Op { o.TaintsOutput, o.Out = true, out; return o }
 
 // Registry is every op in §5.3, sorted by name for review; generation sorts again.
-var Registry = []Op{
+var Registry = withAskFields([]Op{
 	admin("agent.add", SigNone, str("name")),
 	admin("agent.attach", SigNone, str("name"), str("workspace")),
 	admin("agent.remove", SigNone, str("name")),
@@ -265,7 +271,7 @@ var Registry = []Op{
 		Sig: SigAlways, Rollback: CovWS, Reversible: true, Rootd: true},
 	{Name: "workspace.snapshot", Desc: "Take a read-only snapshot of your workspace.", Class: Safe, Group: GSafe, Resource: []string{"Host", "Repo"},
 		Sig: SigNone, Rollback: CovNone, Rootd: true},
-}
+})
 
 // cedarHead is the hand-kept part of the Cedar schema (Appendix D): the context type and the entity types. The actions
 // are generated from Registry.
