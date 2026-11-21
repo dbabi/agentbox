@@ -16,6 +16,7 @@ import (
 
 	"agentbox/internal/fw"
 	"agentbox/internal/rootd/gens"
+	"agentbox/internal/sockets"
 )
 
 const (
@@ -26,7 +27,7 @@ const (
 	Topics       = "agentbox-*"
 	ConfigPath   = "/etc/ntfy/server.yml"
 	DropInPath   = "/etc/systemd/system/ntfy.service.d/50-agentbox.conf"
-	TmpfilesPath = "/etc/tmpfiles.d/agentbox-ntfy.conf"
+	TmpfilesPath = sockets.NtfyTmpfiles
 	Socket       = "/run/ntfy/ntfy.sock"
 	TokenPath    = "/var/lib/agentbox/control/ntfy/notify.token"
 	authFile     = "/var/lib/ntfy/user.db"
@@ -54,11 +55,8 @@ upstream-base-url: "https://ntfy.sh"
 // only the iOS push upstream hash depends on it.
 func BaseURL(host string) string { return "https://" + host + ":8443" }
 
-// tmpfiles: ntfy only chmods its socket and never chowns it, so the setgid dir gives the socket its group.
-const tmpfiles = `# Written by agentbox-reconcile (ARCHITECTURE.md §2).
-d /run/ntfy 2750 _ntfy agentbox-notify -
-d /var/lib/ntfy 0750 _ntfy _ntfy -
-`
+// tmpfiles: the ntfy dirs of the socket inventory (§2.1); the setgid /run/ntfy gives the socket its group.
+var tmpfiles = "# Written by agentbox-reconcile (ARCHITECTURE.md §2).\n" + sockets.TmpfilesLines(sockets.Inventory(), sockets.NtfyTmpfiles)
 
 // dropIn: the packaged unit orders only After=network.target, so without it ntfy starts outside the firewall gate.
 const dropIn = `# Written by agentbox-reconcile (ARCHITECTURE.md §2).

@@ -1,13 +1,15 @@
-# keys's producer socket for agentbox-auditd (ARCHITECTURE.md §2.1): agentbox-audit:agentbox-keys 0660; auditd also checks the
-# peer's uid with SO_PEERCRED. The dir comes from tmpfiles (0711).
+# keys's producer socket for agentbox-auditd (ARCHITECTURE.md §2.1).
+# PID 1 binds it with this owner and mode; the service checks SO_PEERCRED on every connection.
+# Generated from internal/sockets: go test ./internal/sockets -update
 [Unit]
-Description=agentbox-auditd producer socket (keys)
+Description=agentbox socket /run/agentbox-audit/keys.sock
 
 [Socket]
 ListenStream=/run/agentbox-audit/keys.sock
 SocketUser=agentbox-audit
 SocketGroup=agentbox-keys
 SocketMode=0660
+DirectoryMode=0711
 FileDescriptorName=keys
 Service=agentbox-auditd.service
 RemoveOnStop=yes

@@ -1,13 +1,15 @@
-# rootd's producer socket for agentbox-auditd (ARCHITECTURE.md §2.1): agentbox-audit:root 0660; auditd also checks the
-# peer's uid with SO_PEERCRED. The dir comes from tmpfiles (0711).
+# rootd's producer socket for agentbox-auditd (ARCHITECTURE.md §2.1).
+# PID 1 binds it with this owner and mode; the service checks SO_PEERCRED on every connection.
+# Generated from internal/sockets: go test ./internal/sockets -update
 [Unit]
-Description=agentbox-auditd producer socket (rootd)
+Description=agentbox socket /run/agentbox-audit/rootd.sock
 
 [Socket]
 ListenStream=/run/agentbox-audit/rootd.sock
 SocketUser=agentbox-audit
 SocketGroup=root
 SocketMode=0660
+DirectoryMode=0711
 FileDescriptorName=rootd
 Service=agentbox-auditd.service
 RemoveOnStop=yes

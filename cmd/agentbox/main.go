@@ -36,6 +36,7 @@ const usage = `usage:
   agentbox audit verify [--dir /var/lib/agentbox/audit]
   agentbox audit send --socket /run/agentbox-audit/<producer>.sock [--timeout 10s] JSON...   (a test producer)
   agentbox rootd [--element-timeout 10m] [--refill-interval 5m]   (agentbox-rootd.service, on the box)
+  agentbox sockets check [--root /]   (the live box against the §2.1 socket inventory)
   agentbox egress list | refill | allow|remove --svc keys|git|proxy --entry HOST:PORT   (admin, on the box)
 `
 
@@ -101,6 +102,8 @@ func run(args []string) error {
 		return cmdRootd(args[1:])
 	case "egress":
 		return cmdEgress(args[1:])
+	case "sockets":
+		return cmdSockets(args[1:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil

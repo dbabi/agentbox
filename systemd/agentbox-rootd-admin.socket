@@ -1,7 +1,8 @@
 # Admin ops for root and agentbox-admin members (ARCHITECTURE.md §2.1).
-# PID 1 binds it with this owner and mode; rootd checks SO_PEERCRED on every connection.
+# PID 1 binds it with this owner and mode; the service checks SO_PEERCRED on every connection.
+# Generated from internal/sockets: go test ./internal/sockets -update
 [Unit]
-Description=agentbox rootd admin socket
+Description=agentbox socket /run/agentbox-rootd/rootd-admin.sock
 
 [Socket]
 ListenStream=/run/agentbox-rootd/rootd-admin.sock
