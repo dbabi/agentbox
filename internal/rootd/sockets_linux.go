@@ -2,7 +2,6 @@ package rootd
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -156,14 +155,7 @@ func (s *server) serve(name string, c *net.UnixConn) {
 			if i < 0 {
 				break
 			}
-			var r request
-			dec := json.NewDecoder(bytes.NewReader(buf[:i]))
-			dec.DisallowUnknownFields()
-			rep := fail("bad_request")
-			if dec.Decode(&r) == nil {
-				rep = s.handle(name, r)
-			}
-			if _, err := c.Write(encode(rep)); err != nil {
+			if _, err := c.Write(s.line(name, buf[:i])); err != nil {
 				return
 			}
 			buf = buf[i+1:]

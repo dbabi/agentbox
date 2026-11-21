@@ -83,7 +83,9 @@ func TestParsePref64(t *testing.T) {
 	if err != nil || !slices.Equal(got, []netip.Prefix{netip.MustParsePrefix("2a01:5c0:64::/96")}) {
 		t.Fatalf("%v %v", got, err)
 	}
-	for _, bad := range []string{`{"error":"io.systemd.System"}`, `{"parameters":{"Interfaces":[{"NDisc":{"PREF64":[{"Prefix":[1,2,3,4],"PrefixLength":96}]}}]}}`} {
+	for _, bad := range []string{`{"error":"io.systemd.System"}`, `{"parameters":{"Interfaces":[{"NDisc":{"PREF64":[{"Prefix":[1,2,3,4],"PrefixLength":96}]}}]}}`,
+		// 298 is not a byte: it must not wrap to 42
+		`{"parameters":{"Interfaces":[{"NDisc":{"PREF64":[{"Prefix":[298,1,5,192,0,100,0,0,0,0,0,0,0,0,0,0],"PrefixLength":96}]}}]}}`} {
 		if _, err := parsePref64([]byte(bad)); err == nil {
 			t.Errorf("%s parsed", bad)
 		}
@@ -129,6 +131,9 @@ func TestParseSetJSON(t *testing.T) {
 	}
 	if _, err := ParseSetJSON([]byte(`{"nftables":[{"set":{"elem":[{"concat":["192.0.2.1"]}]}}]}`)); err == nil {
 		t.Fatal("a one-part element parsed")
+	}
+	if got, err := ParseSetJSON([]byte(`{"nftables":[{"set":{"elem":[{"concat":["192.0.2.1",65979]}]}}]}`)); err == nil {
+		t.Fatalf("port 65979 parsed as %v", got) // it must not wrap to 443
 	}
 }
 

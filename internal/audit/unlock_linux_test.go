@@ -12,7 +12,7 @@ import (
 
 // tempDir is t.TempDir whose files lose their chattr flags before its removal: a root run sets them, and RemoveAll cannot
 // delete an append-only or immutable file.
-func tempDir(t *testing.T) string {
+func tempDir(t testing.TB) string {
 	d := t.TempDir()
 	t.Cleanup(func() {
 		filepath.WalkDir(d, func(p string, e fs.DirEntry, err error) error {
@@ -26,7 +26,7 @@ func tempDir(t *testing.T) string {
 }
 
 // unlock clears the append-only and immutable flags on p, as an attacker with CAP_LINUX_IMMUTABLE could.
-func unlock(t *testing.T, p string) {
+func unlock(t testing.TB, p string) {
 	t.Helper()
 	f, err := os.Open(p)
 	if err != nil {

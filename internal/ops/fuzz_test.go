@@ -198,3 +198,46 @@ func FuzzDenyRecord(f *testing.F) {
 		}
 	})
 }
+
+// FuzzCheckArgs is the gate's schema check and the sink's args check for every registry op, not just the ask ops.
+func FuzzCheckArgs(f *testing.F) {
+	h := `{"sha256":"` + strings.Repeat("a", 64) + `","len":3}`
+	f.Add(uint16(0), []byte(`{"remote":"origin","ref":"refs/heads/agent/a/x","oid":"`+strings.Repeat("a", 40)+`"}`))
+	f.Add(uint16(1), []byte(`{"path":"/x","content":`+h+`}`))
+	f.Add(uint16(2), []byte(`{"ops":[{"name":"repo.push","args":{}}],"a":1,"a":2}`))
+	for i, s := range hostile {
+		f.Add(uint16(i), []byte(s))
+	}
+	f.Fuzz(func(t *testing.T, oi uint16, args []byte) {
+		op := Registry[int(oi)%len(Registry)].Name
+		if d := CheckArgs(op, args); d != nil {
+			if j := d.JSON(); len(j) > MaxDenial || !printable(j) || (d.Code != "INVALID_ARGS" && d.Code != "UNKNOWN_OP") {
+				t.Fatalf("%s: %s", op, j)
+			}
+			if _, err := ParseDenial(d.JSON()); err != nil {
+				t.Fatalf("%s: %s does not parse: %v", op, d.JSON(), err)
+			}
+		}
+		CheckAuditArgs(op, args)
+		for _, a := range []string{"ask.quote", "ask.status"} {
+			if out, _, _, ok := CheckAskReply(a, args, args); ok && !printable(out) {
+				t.Fatalf("%s: %q", a, out)
+			}
+		}
+	})
+}
+
+func FuzzParseDenial(f *testing.F) {
+	for _, c := range genCodes {
+		f.Add(Deny(c, "", Slots{Op: "net.connect", By: "proxy", Subject: Subject{Host: "a.example", Port: 443}}).JSON())
+	}
+	f.Fuzz(func(t *testing.T, b []byte) {
+		d, err := ParseDenial(b)
+		if err != nil {
+			return
+		}
+		if again, err := ParseDenial(d.JSON()); err != nil || !bytes.Equal(again.JSON(), d.JSON()) {
+			t.Fatalf("%s reads back as %s: %v", b, again.JSON(), err)
+		}
+	})
+}

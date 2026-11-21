@@ -143,7 +143,7 @@ func ParseSetJSON(b []byte) ([]string, error) {
 			}
 			var addr string
 			var port int
-			if len(cat) != 2 || json.Unmarshal(cat[0], &addr) != nil || json.Unmarshal(cat[1], &port) != nil {
+			if len(cat) != 2 || json.Unmarshal(cat[0], &addr) != nil || json.Unmarshal(cat[1], &port) != nil || port < 0 || port > 65535 {
 				return nil, fmt.Errorf("unexpected set element %s", raw)
 			}
 			a, err := netip.ParseAddr(addr)

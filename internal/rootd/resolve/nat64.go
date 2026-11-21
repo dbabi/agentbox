@@ -85,10 +85,13 @@ func parsePref64(msg []byte) ([]netip.Prefix, error) {
 	for _, l := range raw.Parameters.Interfaces {
 		for _, p := range l.NDisc.PREF64 {
 			b := make([]byte, len(p.Prefix))
+			ok := true
 			for i, x := range p.Prefix {
+				ok = ok && x >= 0 && x <= 255
 				b[i] = byte(x)
 			}
-			a, ok := netip.AddrFromSlice(b)
+			a, isAddr := netip.AddrFromSlice(b)
+			ok = ok && isAddr
 			pp, err := a.Prefix(p.PrefixLength)
 			if !ok || !a.Is6() || err != nil {
 				return nil, fmt.Errorf("bad PREF64 %v/%d", p.Prefix, p.PrefixLength)

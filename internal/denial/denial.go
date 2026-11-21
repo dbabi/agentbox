@@ -127,7 +127,7 @@ func New(code Code, by, rule, op, field, expectText string) Denial {
 }
 
 // Valid is the shape check of a received denial (relayed from rootd, or in a test): every field from this package's
-// grammars, printable ASCII, at most 1 KiB.
+// grammars, printable ASCII, at most 1 KiB, encoded as json.Marshal encodes it.
 func Valid(raw []byte) bool {
 	if len(raw) > maxLen || !printable.Match(raw) {
 		return false
@@ -136,6 +136,11 @@ func Valid(raw []byte) bool {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if dec.Decode(&d) != nil || d.V != 1 || !idRe.MatchString(d.ID) || !byRe.MatchString(d.By) || !ruleRe.MatchString(d.Rule) {
+		return false
+	}
+	// only the canonical encoding: no trailing data, duplicate keys or case-folded names, which a stricter reader
+	// downstream of the gate would read differently
+	if b, err := json.Marshal(d); err != nil || !bytes.Equal(b, raw) {
 		return false
 	}
 	s, ok := codes[d.Code]

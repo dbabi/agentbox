@@ -296,3 +296,13 @@ func TestCheck(t *testing.T) {
 		t.Errorf("a socket of an unbuilt service is required: %q", bad)
 	}
 }
+
+// A live name that is not UTF-8 matches no template; bound, it used to make the next template's regexp panic.
+func TestBindRefusesNonUTF8(t *testing.T) {
+	if _, ok := bind("/run/agentbox-gate/t/<task>/gate.sock", "/run/agentbox-gate/t/\xff/gate.sock", nil); ok {
+		t.Fatal("bound a non-UTF-8 task name")
+	}
+	if _, ok := bind("ag-<agent>", "ag-x", map[string]string{"<agent>": "\xff"}); ok {
+		t.Fatal("matched against a non-UTF-8 bound value")
+	}
+}

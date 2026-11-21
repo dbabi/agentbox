@@ -20,7 +20,7 @@ type rpcRep struct {
 	} `json:"error"`
 }
 
-func newServer(t *testing.T, fwd func(map[string]any) ([]byte, error)) (*Server, *task) {
+func newServer(t testing.TB, fwd func(map[string]any) ([]byte, error)) (*Server, *task) {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "gate") // sun_path is 104 bytes on macOS: t.TempDir is too long
 	if err != nil {

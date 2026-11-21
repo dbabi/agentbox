@@ -1,0 +1,54 @@
+# PLAN milestone row 4: fuzzers for every parser. Nightly, each target fuzzes 5 h in its own job; a crash fails that job
+# and uploads the crasher. Commit it to the package's testdata/fuzz/<target>/ with the fix. The 24 h gate itself is
+# hack/fuzz-all.sh on one machine.
+name: fuzz
+on:
+  schedule:
+    - cron: '41 1 * * *'
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: go test -fuzztime per target
+        default: 5h
+permissions:
+  contents: read
+jobs:
+  targets:
+    runs-on: ubuntu-26.04
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with: {go-version-file: go.mod, cache: false}
+      - id: list
+        run: | # the list goes to a file first: inside $() a failing fuzz-all.sh would not fail the step
+          hack/fuzz-all.sh -l > "$RUNNER_TEMP/targets"
+          echo "matrix=$(jq -Rnc '[inputs | split(" ") | {pkg: .[0], target: .[1]}]' < "$RUNNER_TEMP/targets")" >> "$GITHUB_OUTPUT"
+  fuzz:
+    needs: targets
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 340 # 5 h of fuzzing plus the build, under the hosted runner's 6 h cap
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with: {go-version-file: go.mod, cache: false}
+      - name: fuzz
+        env:
+          PKG: ${{ matrix.pkg }}
+          TARGET: ${{ matrix.target }}
+          FUZZTIME: ${{ inputs.fuzztime || '5h' }}
+        run: go test -run='^$' -fuzz="^${TARGET}\$" -fuzztime="$FUZZTIME" "$PKG"
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: crasher-${{ matrix.target }}
+          path: '**/testdata/fuzz/${{ matrix.target }}/'
+          if-no-files-found: ignore

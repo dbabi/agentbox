@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"agentbox/internal/ids"
 	"agentbox/internal/ops"
@@ -53,6 +54,9 @@ func newDenyAudit(send func(map[string]any)) *denyAudit {
 
 // deny queues one refusal; it never blocks the resolver.
 func (d *denyAudit) deny(svc, entry, code, detail string) bool {
+	if svc == "ntfy" { // rootd's own ntfy_dst refresh, no broker's request: no enforcer to name, so only the journal line (§6.1)
+		return true
+	}
 	select {
 	case d.q <- refusal{svc, entry, code, detail, time.Now()}:
 		return true
@@ -142,11 +146,17 @@ func denyRecord(k denyKey, w *denyWin) map[string]any {
 	return r
 }
 
+// trunc keeps at most n bytes of valid UTF-8: a cut rune or invalid byte would come back from JSON as U+FFFD, 3 bytes,
+// and push the detail over the sink's 1 KiB.
 func trunc(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+	s = strings.ToValidUTF8(s, "?")
+	if len(s) <= n {
+		return s
 	}
-	return s
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func newDenyID() string { return ids.New(ids.Denial) }
