@@ -128,7 +128,7 @@ func (s *server) accept(name string, ln *net.UnixListener) {
 	}
 }
 
-const maxLine = 64 << 10
+const maxLine = 128 << 10 // a gate request (gate.MaxRequest, 64 KiB) plus the provenance agentboxd adds
 
 // serve reads newline-delimited JSON requests and writes one JSON reply line each. Ancillary data of any kind
 // (SCM_RIGHTS included) closes the connection: rootd takes no descriptors (§2.1).

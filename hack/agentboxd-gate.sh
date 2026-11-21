@@ -56,7 +56,7 @@ D=/run/systemd/system/agentbox-rootd.service.d
 S=/run/agentbox-gate/t/G1/gate.sock
 intents() { cat $A/seg-*.jsonl | grep -c '"type":"INTENT"' || :; }
 effects() { ls $E | wc -l; }
-call() { runuser -u ag-gt -- $B gate call --socket $S "$1" > /tmp/gate-reply; cat /tmp/gate-reply; }
+call() { runuser -u ag-gt -- $B gate call --socket $S "$1" > /tmp/gate-reply; r=$?; cat /tmp/gate-reply; return $r; }
 # denied CODE REQ [FIELD]: a -32010 error with that code, a denial from the gate, no new INTENT and no effect
 denied() { i=$(intents) e=$(effects); call "$2" && grep -qF '"code":-32010' /tmp/gate-reply && grep -qF "\"message\":\"$1\"" /tmp/gate-reply &&
   grep -qF "\"code\":\"$1\"" /tmp/gate-reply && grep -qF '"v":1,"id":"dn_' /tmp/gate-reply &&
