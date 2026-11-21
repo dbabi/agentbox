@@ -1,5 +1,5 @@
 agentbox is early alpha. It is not for production use.
-Weeks 1-2 of a 16-week build plan are built and tested in QEMU VMs: the installer and the OS layer.
+Weeks 1-3 of a 20-week build plan are built and tested in QEMU VMs: the installer, the OS layer, and the first host services (firewall, audit daemon, root daemon skeleton, quotas, ntfy).
 No real hardware has run it yet.
 The agent runtime is designed but not built.
 
@@ -117,12 +117,17 @@ Without KVM the gate still runs, but in software emulation, which is much slower
 
 | Path | What it holds |
 |---|---|
-| `cmd/agentbox/` | The `agentbox` CLI. `main.go` has `seed`, `recovery`, `version` and `reconcile`. `os.go` has the `os` commands, which run on the box. |
+| `cmd/agentbox/` | The `agentbox` CLI. `main.go` has `seed`, `recovery`, `version` and `reconcile`. `os.go` has the `os` commands, `fw.go` the firewall commands, `audit.go` `auditd` and `audit`, and `rootd.go` `rootd` and `egress`. All but `seed` and `recovery` run on the box. |
 | `internal/seed/` | The seed generator. `user-data.tmpl` is the autoinstall template. It holds the installer's shell steps and the firstboot script. `reserved.go` lists admin names the seed refuses. |
 | `internal/recovery/` | The offline recovery key pair: `recovery keygen` and `recovery decrypt`. |
 | `internal/rootd/gens/` | A/B generations: `os plan`, the offline build, the fstab rewrite, the initrd gate, commit, failed trials and retention. |
+| `internal/rootd/` | The rootd skeleton: its sockets, `resolve/` (the resolver), `quota/` (qgroups) and `nl/` (netlink for nftables sets and conntrack). |
+| `internal/fw/` | The nftables ruleset (`agentbox.nft`), `fw load` and `fwcheck`. |
+| `internal/audit/` | `agentbox-auditd`: segments, the hash chain, the taint database, sealing and `audit verify`. |
+| `internal/ntfy/` | ntfy's config, ACLs, unit drop-in and fwcheck's ntfy check. |
+| `sysusers.d/`, `tmpfiles.d/` | The service users and runtime directories the release installs under `/usr/lib`. |
 | `install/install.sh` | The release installer. Firstboot runs it with `--from-firstboot`. |
-| `systemd/` | The units in the release: `agentbox-health.service`, `agentbox-health.timer` and `agentbox-reconcile.service`. |
+| `systemd/` | The units in the release: health and reconcile, the firewall, auditd and its sockets, rootd and its sockets, and the agent stand-in the gates use. |
 | `hack/` | Build and test tools. See the next table. |
 | `docs/THREAT-MODEL.md` | The one-page threat model. |
 | `.github/workflows/ci.yml` | CI. |
@@ -147,13 +152,13 @@ Without KVM the gate still runs, but in software emulation, which is much slower
 
 ### Go
 
-- Use only the standard library. `go.mod` has no `require` lines. Open an issue before you add a module.
+- Prefer the standard library. `go.mod` requires only `golang.org/x/sys` and `modernc.org/sqlite`. Open an issue before you add a module.
 - `gofmt -l .` must print nothing, and `go vet ./...` must pass.
 - agentbox is one binary. Add a command to `cmd/agentbox`, not a new binary. Tools under `hack/` are the exception.
 - Keep decisions in pure functions that a unit test can call. Keep the code that runs commands thin. In `internal/rootd/gens`, `gens.go` parses and decides, and `box.go` runs the commands.
 - Check input where it enters. An error says what is wrong and how to fix it. `agentbox seed` reports every problem at once and writes nothing.
 - Comments explain why. Cite the design section that the code implements, as the existing comments do.
-- Mark a known limit with a `// shortcut:` comment. Say what the limit is and when to lift it. The code uses these instead of TODO comments.
+- Mark a known limit with a `// shortcut:` comment. Say what the limit is and when to lift it. The code uses these instead of to-do comments.
 
 ### Shell
 
@@ -287,6 +292,10 @@ Then run the gate that covers what you changed:
 | Only docs | No gate. Check that each command you added works. |
 | `internal/seed/`, `internal/recovery/`, `cmd/agentbox/main.go` | `hack/gate.sh <mode>` for each encryption mode the change affects. Also run `hack/gate.sh <mode> bios` if it touches disks, partitions or GRUB. Add `hack/gate.sh dup-serial` if it touches the disk guard. |
 | `internal/rootd/gens/`, `cmd/agentbox/os.go` | `hack/apply-gate.sh <mode> install setup cycles breaks`. Add `cuts` if it changes what is written to disk, or in what order. |
+| `internal/fw/`, `cmd/agentbox/fw.go` | `hack/fw-gate.sh` |
+| `internal/audit/`, `cmd/agentbox/audit.go` | `hack/audit-gate.sh` |
+| `internal/rootd/` (outside `gens/`), `cmd/agentbox/rootd.go` | `hack/rootd-gate.sh`, and `hack/fw-gate.sh` if it touches the firewall sets |
+| `internal/rootd/quota/`, `internal/ntfy/` | `hack/quota-ntfy-gate.sh` |
 | `hack/release/`, `install/install.sh` | `hack/gate.sh none`. Every install gate builds test releases, and firstboot installs one. |
 | `systemd/` | `hack/apply-gate.sh tpm2 install setup cycles`. The health timer commits each trial. |
 | `hack/vm.sh`, `hack/remaster-iso.sh`, `hack/SHA256SUMS` | `hack/gate.sh none`. Add `hack/gate.sh none bios` if the change touches the amd64 VM. |
@@ -391,11 +400,11 @@ The next run rebuilds the image.
 
 How the docs relate to the design:
 
-- The design lives in [`docs/design/`](../design/): [`ARCHITECTURE.md`](../design/ARCHITECTURE.md), the 16-week build plan [`PLAN.md`](../design/PLAN.md), the audit [`LEDGER.md`](../design/LEDGER.md) and [`PROPOSALS-v5.3.md`](../design/PROPOSALS-v5.3.md). At the time of writing, both the architecture and the plan are at version 5.3.
+- The design lives in [`docs/design/`](../design/): [`ARCHITECTURE.md`](../design/ARCHITECTURE.md), the build plan [`PLAN.md`](../design/PLAN.md) (about 20 weeks with two engineers), the audit [`LEDGER.md`](../design/LEDGER.md) and [`PROPOSALS-v5.3.md`](../design/PROPOSALS-v5.3.md). At the time of writing, both the architecture and the plan are at version 5.3.
 - The design says what is planned. The code and the gates say what is built. When they disagree, the docs follow the code.
 - Code comments cite the design by file and section, for example `ARCHITECTURE.md §3.3` or `PLAN.md week 2`. Keep these citations when you move code.
 - The plan builds in order. Each milestone ends with a gate, and that gate must pass before the next milestone starts. Open an issue before you start on a planned component. [Roadmap](Roadmap.md) lists the milestones.
-- `docs/THREAT-MODEL.md` is the only design document in the repo. It summarizes the design's security model.
+- `docs/THREAT-MODEL.md` summarizes the design's security model in one page. `docs/design/` holds copies of the full design notes.
 
 When you change docs:
 

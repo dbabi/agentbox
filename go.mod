@@ -2,6 +2,9 @@ module agentbox
 
 go 1.26.0
 
+// setup-go installs this release in CI and for release builds; go 1.26.0 alone pins 1.26.0, which govulncheck flags
+toolchain go1.26.11
+
 require (
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.62.0

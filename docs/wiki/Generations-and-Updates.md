@@ -73,7 +73,7 @@ Its top level holds only subvolumes whose names start with `@`:
 ```
 
 Everything outside `@gen-N` persists across generations.
-Tailscale and ntfy are not installed yet. Their subvolumes are reserved for later.
+ntfy is installed from its Ubuntu package (week 3) and keeps its state in `@var_lib_ntfy`. Tailscale is not installed yet; its subvolume is reserved for later.
 
 Kernels and GRUB's files live on a separate 4 GiB ext4 partition, mounted at `/bootpart`.
 It is not encrypted. GRUB reads it directly.
@@ -298,7 +298,7 @@ GRUB finds `next_entry`, clears it, and boots the trial. This is the only boot t
 
 ### Step 4: health check and commit
 
-`agentbox-health.timer` runs `agentbox os health` 1 minute after boot, then 1 minute after each run ends.
+`agentbox-health.timer` runs `agentbox os health` 1 minute after boot, then every 50 seconds.
 On the trial, it checks five things:
 
 | Check | Passes when |
@@ -330,7 +330,7 @@ agentbox: health: trial agentbox-gen-17-<kernel> not committed yet; the boot dea
 On the committed generation, health only alerts: `agentbox: ALERT: the committed generation is unhealthy (see above)`.
 It also regenerates `grub.cfg` if it lists an entry whose kernel or initrd is gone.
 
-These checks are a first version. Checks for agentbox services, the firewall, DNS and Tailscale are designed, not built.
+These checks are a first version. Before them, `agentbox-health.service` runs `agentbox fwcheck --repair`, which restores an altered firewall table. Checks for agentbox services, DNS and Tailscale are designed, not built.
 
 ### What the new generation carries
 
@@ -583,7 +583,7 @@ On the box, call the binary by its full path, `/var/lib/agentbox/current/bin/age
 | `agentbox os plan [--install PKG[=VER] ...] [--remove PKG ...] [--reinstall]` (at least one `--install` or `--remove`) | Resolves and downloads a change against the running generation. Prints the plan and its SHA-256. Installs nothing. |
 | `agentbox os apply --approve <plan-sha256> [--no-reboot]` | Builds a new generation from that plan and sets up its one-time trial boot. Reboots unless `--no-reboot` is given. |
 | `agentbox os status` | Prints the booted and committed entries, `saved_entry`, `next_entry`, any pending or failed trial, and every generation with its kernels. |
-| `agentbox os health` | Runs the health check, and commits a healthy booted trial. `agentbox-health.timer` runs it every minute. |
+| `agentbox os health` | Runs the health check, and commits a healthy booted trial. `agentbox-health.timer` runs it every 50 seconds. |
 | `agentbox os mark-last-good` | Re-asserts the booted entry as committed, or commits the booted trial without the health checks. |
 
 Related pages: [Getting Started](Getting-Started.md), [Encryption and Recovery](Encryption-and-Recovery.md), [Testing and Gates](Testing-and-Gates.md), [Security Model](Security-Model.md), [Architecture](Architecture.md).

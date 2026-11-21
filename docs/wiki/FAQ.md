@@ -10,10 +10,10 @@ No. It is early alpha. Do not use it for production, or for data you cannot affo
 
 At the time of writing:
 
-- Weeks 1-2 of a 16-week plan are built: the installer and the OS layer.
+- Weeks 1-3 of a 20-week plan are built: the installer, the OS layer, and the first host services (a firewall, an audit daemon and a root daemon skeleton).
 - No AI agent can run on it yet.
 - It has run only in QEMU virtual machines. No real hardware has run it.
-- There is no host firewall. The agentbox firewall is planned for week 3.
+- The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules, so anything that listens is open to your LAN.
 - There are no automatic security updates: apt's daily timers are masked. Packages do not change on their own. To change them, an admin runs `agentbox os plan`, then `agentbox os apply`, as root on the box. The binary is not on `PATH`, so give its full path, for example `sudo /var/lib/agentbox/current/bin/agentbox os plan --install <pkg>`.
 - An installed box cannot update its agentbox release. A new release means a reinstall.
 
@@ -27,7 +27,7 @@ The design names three agent CLIs: Claude Code, Codex and opencode. The plan for
 - No credential exists inside a task. Broker services outside the container hold the LLM API keys and the GitHub token.
 - Every action that touches the host, secrets, the network, other agents or shared memory is a typed operation. Policy checks it, and the audit log records it. Risky operations wait for your approval.
 
-The current plan builds these pieces in weeks 3 to 14 (see [Roadmap](Roadmap.md)).
+The current plan builds these pieces in weeks 4 to 14 (see [Roadmap](Roadmap.md)). Week 3 built the host services they rely on: the firewall, the audit daemon and the root daemon's resolver.
 
 ### How is it different from a dev container?
 
@@ -79,7 +79,7 @@ btrfs makes OS generations cheap. It also keeps the OS and your data apart, in o
 - Each OS generation is a btrfs subvolume. `agentbox os apply` starts a new one with a copy-on-write snapshot of the running generation, so the copy is fast and small.
 - Data that must survive a fallback lives in its own subvolumes. They include `/home`, `/var/log`, `/srv` and `/var/lib/agentbox`. A fallback does not touch them.
 - All subvolumes share one pool with zstd compression. In the encrypted modes, that pool sits inside one LUKS2 volume.
-- The design also uses btrfs quotas for per-agent disk limits, and read-only snapshots for agent workspaces. Neither is built yet.
+- btrfs quotas keep a disk reserve: one parent quota group, `2/0`, caps every store agents and apps can fill, so the OS and agentbox's control state always have room (built in week 3). Per-agent limits and read-only snapshots for agent workspaces are designed, not built.
 
 The power-cut test harness replays the VM disk at each flush. It runs `btrfs check --readonly` on every replayed state. At the time of writing, every checked state passed. Those checks ran only on an unencrypted (`none`) disk. The harness does not model writes that land out of order between flushes, torn (partly written) sectors, or disks that ignore flushes. [Testing and Gates](Testing-and-Gates.md) has the full list.
 
@@ -114,18 +114,19 @@ Not today. No cloud VM has run agentbox. It is designed for a dedicated machine 
 - The installer boots the Ubuntu Server ISO and wipes one disk, matched by its exact serial. Most cloud VMs boot from a provider image, not from an installer ISO.
 - The encrypted modes need a TPM 2.0. The default mode, `tpm2+tang`, also needs a Tang server on the same LAN, at a private IPv4 address.
 - The disk encryption targets disk removal and whole-machine theft. Those are threats to a box you own.
-- There is no host firewall yet. Do not give the box a public IP address.
+- The host firewall has no inbound rules. Do not give the box a public IP address.
 
 So far, agentbox has run only in QEMU VMs on an Apple Silicon Mac.
 
 ### Does it need the internet?
 
-Yes, for the install and for package changes. The first boot also needs your release URL. Apart from package changes, agentbox itself needs no internet after first boot. No test has run a box offline yet.
+Yes, for the install and for package changes. The first boot also needs your release URL. Apart from package changes and ntfy's link to `ntfy.sh`, agentbox itself needs no internet after first boot. No test has run a box offline yet.
 
 | When | What it must reach |
 |---|---|
 | Install | Wired Ethernet with DHCP, and HTTP access to the Ubuntu archive. At the time of writing (Ubuntu 26.04.1), the installer downloads from `archive.ubuntu.com` (or a country mirror it picks, such as `<country>.archive.ubuntu.com`) and `security.ubuntu.com`, on both amd64 and arm64. On arm64, agentbox's pre-install check also contacts `ports.ubuntu.com`. Several required packages are not on the ISO. If the archive does not answer when the install starts, the install stops before it writes to any disk (not yet tested in a VM). If the connection drops later, the install fails on a disk it has already wiped. |
-| First boot | The release URL from the seed, over HTTPS. Firstboot retries 60 seconds after each failure, with no limit. |
+| First boot | The release URL from the seed, over HTTPS, and the Ubuntu archive: the release's `install.sh` installs the `ntfy` package. Firstboot retries 60 seconds after each failure, with no limit. |
+| After first boot | ntfy reaches `ntfy.sh` on port 443, for phone push. The firewall lets `_ntfy` reach only the addresses rootd resolved for that name. |
 | `agentbox os plan` | The Ubuntu archive, to download the packages for the change. `agentbox os apply` then installs them with no network. |
 | Disk unlock at each boot | `tpm2+tang`: the Tang server on your LAN. `tpm2` and `none`: nothing. |
 

@@ -297,13 +297,13 @@ For release `0.0.1`, they print `releases/0.0.1` and `0.0.1`. The binary is not 
 
 `agentbox-reconcile.service` ships in the release. It runs `/var/lib/agentbox/current/bin/agentbox reconcile`.
 
-- Today it does nothing. It prints `reconcile: no control state to re-apply yet` and exits 0.
+- Today it sets up the btrfs quota groups (the `2/0` reserve and the content-store cap) and ntfy's config, ACLs and unit drop-in, then enables ntfy. Each run gives the same result.
 - It has `Type=oneshot` and `RemainAfterExit=yes`, so it runs once per boot. A second start in the same boot does nothing.
 - Firstboot starts it on the first boot. After that, `multi-user.target` starts it at every boot (`WantedBy=multi-user.target`).
 - Never order it `After=multi-user.target` or `After=agentbox-firstboot.service`. Firstboot starts it from inside the boot. With either ordering, firstboot waits for that start, and the start waits for firstboot. The boot hangs until systemd stops the firstboot attempt at its 45-minute `TimeoutStartSec`.
 - `systemd-analyze verify` does not catch that mistake. The install gate checks the unit's `After=` list and then boots the box for real.
 
-Designed, not built: reconcile will rebuild what agentbox manages in the OS, such as agent accounts, from agentbox's own state. It runs at every boot, so whichever generation boots gets the same setup. Every agentbox service will require it and start after it.
+Designed, not built: reconcile will also rebuild agent accounts and the rest of what agentbox manages in the OS from agentbox's own state. It runs at every boot, so whichever generation boots gets the same setup. Every agentbox unit already requires it and starts after it.
 
 ## Units on the box
 
@@ -311,9 +311,12 @@ Designed, not built: reconcile will rebuild what agentbox manages in the OS, suc
 |---|---|---|
 | `agentbox-firstboot.service` | the seed | Installs the release once. |
 | `agentbox-boot-deadline.service` | the seed | Reboots the box if the booted generation is still not committed after 900 seconds. See [Generations and Updates](Generations-and-Updates.md). |
-| `agentbox-reconcile.service` | the release | Runs reconcile once per boot. Today it does nothing. |
-| `agentbox-health.timer` | the release | Starts `agentbox-health.service` 1 minute after boot, then 1 minute after each run ends. |
-| `agentbox-health.service` | the release | Runs `agentbox os health`. See [Generations and Updates](Generations-and-Updates.md). |
+| `agentbox-reconcile.service` | the release | Runs reconcile once per boot: quotas and ntfy's setup. |
+| `agentbox-firewall.service` | the release | Loads the `inet agentbox` nftables table. Every agentbox unit requires it. |
+| `agentbox-health.timer` | the release | Starts `agentbox-health.service` 1 minute after boot, then every 50 seconds. |
+| `agentbox-health.service` | the release | Runs `agentbox fwcheck --repair`, then `agentbox os health`. See [Generations and Updates](Generations-and-Updates.md). |
+| `agentbox-auditd.service`, `agentbox-rootd.service` and their sockets | the release | The audit daemon and the root daemon skeleton. See [Architecture](Architecture.md). |
+| `ntfy.service` | the `ntfy` package | `install.sh` installs the package, with its postinst start held back; reconcile configures and enables it. |
 
 ## Testing in a VM
 
@@ -356,8 +359,8 @@ At the time of writing, this takes about 9-17 minutes. The results go to `.vm/ga
 
 - There is no way to update the agentbox release on an installed box. `install.sh` supports only `--from-firstboot`. A new release means a reinstall with a new seed.
 - The design notes leave a release-update operation out of scope for v1. If one is built later, it must work like `os apply`: a health window, and on failure it switches `current` back to `previous` and restores the pre-migration database copy.
-- `agentbox reconcile` does nothing yet.
-- There is no official release, no release host and no project signing key. A signed project release is planned for the end of the 16-week plan. See [Roadmap](Roadmap.md).
+- `agentbox reconcile` sets up only quotas and ntfy so far.
+- There is no official release, no release host and no project signing key. A signed project release is planned for the last milestone of the plan (weeks 15-16). See [Roadmap](Roadmap.md).
 
 OS package updates use a different path, `agentbox os plan` and `agentbox os apply`. See [Generations and Updates](Generations-and-Updates.md).
 
