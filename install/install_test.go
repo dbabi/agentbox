@@ -40,7 +40,8 @@ func TestSyncBeforeRename(t *testing.T) {
 		"L=/usr/lib\n", "L="+box+"/usr/lib\n").Replace(s)
 	for name, body := range map[string]string{"install.sh": s, "bin/linux-arm64/agentbox": "#!/bin/sh\necho 1.0.0\n",
 		"systemd/agentbox-x.service": "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=multi-user.target\n",
-		"sysusers.d/agentbox.conf":   "u agentbox-x -\n", "tmpfiles.d/agentbox.conf": "d /run/agentbox-x 0711 root root -\n"} {
+		"sysusers.d/agentbox.conf":   "u agentbox-x -\n", "tmpfiles.d/agentbox.conf": "d /run/agentbox-x 0711 root root -\n",
+		"gen/cedar.schema": "namespace Agentbox {}\n"} {
 		os.MkdirAll(filepath.Dir(filepath.Join(rel, name)), 0o755)
 		os.WriteFile(filepath.Join(rel, name), []byte(body), 0o755)
 	}

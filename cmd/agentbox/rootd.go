@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"time"
 
 	"agentbox/internal/fw"
@@ -24,6 +26,10 @@ func cmdRootd(args []string) error {
 		AuditSocket: "/run/agentbox-audit/rootd.sock", SealCrash: crashHook()}
 	fs.DurationVar(&cfg.ElementTimeout, "element-timeout", 10*time.Minute, "dst set element timeout (Appendix B: 10m; shorter only for test VMs)")
 	fs.DurationVar(&cfg.RefillInterval, "refill-interval", 5*time.Minute, "timer refill and ntfy_dst refresh (§6.1: 5m)")
+	if exe, err := os.Executable(); err == nil {
+		cfg.GenDir = filepath.Join(filepath.Dir(filepath.Dir(exe)), "gen") // <release>/bin/agentbox: the same release's gen/
+	}
+	fs.StringVar(&cfg.GenDir, "gen-dir", cfg.GenDir, "the generated op registry files rootd checks at start")
 	fs.StringVar(&cfg.AuditDir, "audit-dir", cfg.AuditDir, "the audit segments rootd creates and seals (another dir only for test VMs)")
 	if err := parse(fs, args); err != nil {
 		return err

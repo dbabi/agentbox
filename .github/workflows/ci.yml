@@ -36,6 +36,15 @@ jobs:
       # warning and up: the info-level SC2016 hits are check strings that gate.sh and apply-gate.sh eval on purpose
       - run: shellcheck -S warning hack/*.sh install/*.sh
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+      # §5.1: denial codes are append-only. opsgen refuses a rename locally; this catches a hand edit of the golden list
+      - name: codes.golden only appends to the base branch's
+        if: github.event_name == 'pull_request'
+        env: {BASE: '${{ github.base_ref }}'}
+        run: |
+          git fetch -q --depth=1 origin "$BASE"
+          if git show FETCH_HEAD:gen/codes.golden > /tmp/base.golden 2>/dev/null; then
+            head -n "$(wc -l < /tmp/base.golden)" gen/codes.golden | cmp - /tmp/base.golden
+          fi
   # site/tui is its own module (Charm dependencies), so the root jobs, which stay stdlib-only, skip it
   site:
     runs-on: ubuntu-26.04

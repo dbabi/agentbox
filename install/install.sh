@@ -21,11 +21,12 @@ R=$A/releases
 N=$R/.$VER.new
 mkdir -p "$R"
 rm -rf "$N"
-mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d" "$N/tmpfiles.d"
+mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d" "$N/tmpfiles.d" "$N/gen"
 install -m 0755 "$BIN" "$N/bin/agentbox"
 install -m 0644 "$S"/systemd/* "$N/systemd/"
 install -m 0644 "$S"/sysusers.d/* "$N/sysusers.d/"
 install -m 0644 "$S"/tmpfiles.d/* "$N/tmpfiles.d/"
+install -m 0644 "$S"/gen/* "$N/gen/" # rootd refuses to start unless these match its op registry
 if [ -d "$R/$VER" ]; then
   diff -r "$N" "$R/$VER" >/dev/null || { rm -rf "$N"; die "release $VER is already installed with different content"; }
   rm -rf "$N"

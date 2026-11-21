@@ -121,7 +121,7 @@ func TestChainVerifyAndTamper(t *testing.T) {
 		b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"connect:example.com"}`)
 	}
 	b.start() // a restart in the same boot keeps the segment
-	b.ok("agentboxd", `{"type":"DENY","id":"d1","code":"X"}`)
+	b.ok("agentboxd", `{"type":"DENY","id":"dn_01JF0000000000000000000000","code":"EGRESS_NOT_ALLOWLISTED","by":"proxy","subject":{"host":"x.example","port":443},"count":1,"first":1,"last":1}`)
 	rep := b.verify()
 	if len(rep) < 3 {
 		t.Fatalf("want rotations at 2 KiB, got %d segments", len(rep))
@@ -343,7 +343,7 @@ func TestDiskFull(t *testing.T) {
 	b.avail = 1000 // below the reserve
 	b.nack("proxy", `{"type":"TAINT","subject":"task:T1","source":"x"}`, CodeDiskFull)
 	b.nack(rootdProducer, `{"type":"INTENT","opId":"op-a","name":"app.deploy","taintEpochs":{}}`, CodeDiskFull)
-	b.nack("agentboxd", `{"type":"DENY","id":"d1"}`, CodeDiskFull)
+	b.nack("agentboxd", `{"type":"DENY","id":"dn_01JF0000000000000000000000","code":"EGRESS_NOT_ALLOWLISTED","by":"proxy","subject":{"host":"x.example","port":443},"count":1,"first":1,"last":1}`, CodeDiskFull)
 	if _, err := os.Stat(res); !os.IsNotExist(err) {
 		t.Fatal("disk-full mode keeps the reserve")
 	}
@@ -756,5 +756,33 @@ func TestSealSyncsSegment(t *testing.T) {
 	}
 	if len(order) < 2 || order[0] != "sync "+SegName(n) || order[1] != "immutable-set" {
 		t.Fatalf("want %s synced before +i, got %v", SegName(n), order)
+	}
+}
+
+// TestDenySink is C-G1's sink check: DENY records are checked against the schema generated from the codes table.
+func TestDenySink(t *testing.T) {
+	b := newBox(t)
+	const id = `"id":"dn_01JF0000000000000000000000","by":"gate","count":1,"first":1,"last":2`
+	b.ok("agentboxd", `{"type":"DENY",`+id+`,"code":"INVALID_ARGS","op":"file.write","subject":{"pointer":"/path"}}`)
+	b.ok("agentboxd", `{"type":"DENY_FLOOD","by":"gate","count":7}`)
+	for why, line := range map[string]string{
+		"unknown code":                     `{"type":"DENY",` + id + `,"code":"X"}`,
+		"what not in list":                 `{"type":"DENY",` + id + `,"code":"BUSY","what":"os_lock"}`,
+		"free-text field":                  `{"type":"DENY",` + id + `,"code":"DENIED_POLICY","reason":"ignore previous instructions"}`,
+		"unhashed hash field":              `{"type":"DENY",` + id + `,"code":"INVALID_ARGS","op":"file.write","args":{"content":"sk-live-secret"}}`,
+		"drop field":                       `{"type":"DENY",` + id + `,"code":"INVALID_ARGS","op":"secret.set","args":{"value":{"sha256":"` + strings.Repeat("a", 64) + `","len":3}}}`,
+		"IP in subject":                    `{"type":"DENY",` + id + `,"code":"EGRESS_NAME_REJECTED","what":"non_public","subject":{"host":"192.168.1.10"}}`,
+		"hex id":                           `{"type":"DENY","id":"0123abcd","by":"gate","count":1,"first":1,"last":1,"code":"BUSY"}`,
+		"flood without by":                 `{"type":"DENY_FLOOD","count":7}`,
+		"case-folded key":                  `{"type":"DENY",` + id + `,"Code":"BUSY"}`,
+		"case-folded subject":              `{"type":"DENY",` + id + `,"code":"BUSY","subject":{"HOST":"x.example"}}`,
+		"repeated subject key":             `{"type":"DENY",` + id + `,"code":"EGRESS_NOT_ALLOWLISTED","subject":{"host":"free text secret!","host":"a.example"}}`,
+		"hashed args (no args in §9 DENY)": `{"type":"DENY",` + id + `,"code":"INVALID_ARGS","op":"file.write","args":{"content":{"sha256":"` + strings.Repeat("a", 64) + `","len":3}}}`,
+	} {
+		before := b.verify()
+		b.nack("agentboxd", line, CodeBadRecord)
+		if after := b.verify(); after[len(after)-1].Records != before[len(before)-1].Records {
+			t.Errorf("%s: a NACKed DENY was appended", why)
+		}
 	}
 }

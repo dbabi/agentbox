@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"agentbox/internal/ops"
 )
 
 // Producer is one producer socket: /run/agentbox-audit/<Name>.sock, accepted only from peers with UID (§2.1).
@@ -496,7 +498,11 @@ func (s *Server) Handle(p string, uid uint32, pid int32, line []byte) Reply {
 	defer s.mu.Unlock()
 	var raw map[string]json.RawMessage
 	var r request
-	if err := json.Unmarshal(line, &raw); err != nil || json.Unmarshal(line, &r) != nil {
+	if err := json.Unmarshal(line, &raw); err != nil || json.Unmarshal(raw["type"], &r.Type) != nil {
+		return Reply{Code: CodeBadRecord, Detail: "not a JSON object"}
+	}
+	// A DENY's subject is an object (§9), not a taint subject; CheckDenyRecord checks its schema below.
+	if r.Type != "DENY" && json.Unmarshal(line, &r) != nil {
 		return Reply{Code: CodeBadRecord, Detail: "not a JSON object"}
 	}
 	delete(raw, "type")
@@ -550,6 +556,11 @@ func (s *Server) Handle(p string, uid uint32, pid int32, line []byte) Reply {
 			return Reply{Code: CodeBadRecord, Detail: fmt.Sprintf("unknown record type %q", r.Type)}
 		}
 	}
+	body, _ := json.Marshal(raw)
+	// The DENY schema from the codes table (§9): an unknown code, a free-text field or an unhashed hash field is NACKed.
+	if err := ops.CheckDenyRecord(r.Type, body); err != nil {
+		return Reply{Code: CodeBadRecord, Detail: err.Error()}
+	}
 	s.checkSpace()
 	if s.diskFull && !s.admitDiskFull(isRootd, &r) {
 		return Reply{Code: CodeDiskFull}
@@ -558,7 +569,6 @@ func (s *Server) Handle(p string, uid uint32, pid int32, line []byte) Reply {
 		s.failed(err)
 		return Reply{Code: CodeUnavailable, Detail: err.Error()}
 	}
-	body, _ := json.Marshal(raw)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Reply{Code: CodeUnavailable, Detail: err.Error()}

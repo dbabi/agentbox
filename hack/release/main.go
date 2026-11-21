@@ -1,8 +1,8 @@
 // Command release builds an agentbox release; run it as `make release` from the repo root (PLAN.md milestones row
-// 1–2). It writes agentbox-<ver>.tgz (install.sh, the systemd units, the sysusers.d and tmpfiles.d files, agentbox for
-// linux/arm64 and linux/amd64) and agentbox-<ver>.tgz.minisig. The tarball is reproducible (sorted entries, fixed
-// mtime, root:root), so anyone can rebuild a commit with the same Go version and compare the hash a seed pins with
-// --release-sha256.
+// 1–2). It writes agentbox-<ver>.tgz (install.sh, the systemd units, the sysusers.d and tmpfiles.d files, the op
+// registry's generated gen/ files, agentbox for linux/arm64 and linux/amd64) and agentbox-<ver>.tgz.minisig. The
+// tarball is reproducible (sorted entries, fixed mtime, root:root), so anyone can rebuild a commit with the same Go
+// version and compare the hash a seed pins with --release-sha256.
 package main
 
 import (
@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"sort"
 	"time"
+
+	"agentbox/internal/ops"
 )
 
 // The version names /var/lib/agentbox/releases/<ver> on the box (install.sh checks the same charset) and the tarball,
@@ -98,6 +100,25 @@ func build(version, key, out string, sign bool) (string, []byte, error) {
 	units = append(append(units, sysusers...), tmpfiles...)
 	for _, u := range units {
 		files = append(files, file{u, u, 0o644})
+	}
+	// Ship exactly the op registry's generated files, checked as rootd checks them at start against the registry these
+	// binaries were built from, so a stray or stale file in gen/ fails here and not as a rootd restart loop on the box.
+	gen := filepath.Join(tmp, "gen")
+	if err := os.Mkdir(gen, 0o755); err != nil {
+		return "", nil, err
+	}
+	for _, g := range ops.Shipped {
+		b, err := os.ReadFile(filepath.Join("gen", g))
+		if err != nil {
+			return "", nil, err
+		}
+		if err := os.WriteFile(filepath.Join(gen, g), b, 0o644); err != nil {
+			return "", nil, err
+		}
+		files = append(files, file{"gen/" + g, filepath.Join(gen, g), 0o644})
+	}
+	if err := ops.CheckFiles(ops.Registry, gen); err != nil {
+		return "", nil, fmt.Errorf("gen/: %w", err)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
 

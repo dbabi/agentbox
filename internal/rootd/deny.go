@@ -2,9 +2,13 @@ package rootd
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"strconv"
+	"strings"
 	"time"
+
+	"agentbox/internal/ids"
+	"agentbox/internal/ops"
+	"agentbox/internal/rootd/resolve"
 )
 
 // §9's DENY producer rules, for rootd's resolver refusals.
@@ -104,19 +108,45 @@ func (d *denyAudit) flush(now time.Time) {
 	}
 	if !d.period.IsZero() && now.Sub(d.period) >= denyPeriod {
 		for svc, n := range d.skipped {
-			d.send(map[string]any{"type": "DENY_FLOOD", "by": "rootd", "svc": svc, "count": n})
+			d.send(map[string]any{"type": "DENY_FLOOD", "by": svc, "count": n})
 		}
 		d.sent, d.skipped, d.period = map[string]int{}, map[string]int{}, now
 	}
 }
 
-func denyRecord(k denyKey, w *denyWin) map[string]any {
-	return map[string]any{"type": "DENY", "id": w.id, "by": "rootd", "svc": k.svc, "entry": k.entry, "code": k.code,
-		"detail": w.detail, "count": w.n, "first": w.first.UnixMilli(), "last": w.last.UnixMilli()}
+// resolveCodes maps a resolver refusal reason to its §5.6 code and what (§6.2: the proxy maps them the same way).
+var resolveCodes = map[string][2]string{
+	resolve.NotAllowlisted: {"EGRESS_NOT_ALLOWLISTED", ""},
+	resolve.NonPublic:      {"EGRESS_NAME_REJECTED", "non_public"},
+	resolve.NoSuchName:     {"EGRESS_RESOLVE_FAILED", "no_such_name"},
+	resolve.Unavailable:    {"EGRESS_RESOLVE_FAILED", "unavailable"},
 }
 
-func newDenyID() string {
-	b := make([]byte, 8)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+// denyRecord is the DENY record for one window (§9): the broker is the enforcer, the entry is the subject (fields that
+// fail their grammar are dropped, so auditd's schema check passes), and the address and check stay in detail.
+func denyRecord(k denyKey, w *denyWin) map[string]any {
+	c, ok := resolveCodes[k.code]
+	if !ok {
+		c = resolveCodes[resolve.Unavailable]
+	}
+	host, port, _ := strings.Cut(k.entry, ":")
+	p, _ := strconv.ParseInt(port, 10, 64)
+	r := map[string]any{"type": "DENY", "id": w.id, "by": k.svc, "code": c[0], "detail": trunc(w.detail, 1024),
+		"count": w.n, "first": w.first.UnixMilli(), "last": w.last.UnixMilli()}
+	if c[1] != "" {
+		r["what"] = c[1]
+	}
+	if sub := (ops.Subject{Host: host, Port: p}).Clean(); sub != (ops.Subject{}) {
+		r["subject"] = sub
+	}
+	return r
 }
+
+func trunc(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+func newDenyID() string { return ids.New(ids.Denial) }

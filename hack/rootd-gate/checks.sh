@@ -37,7 +37,8 @@ for f in files:
         except ValueError:
             continue
         top = max(top, r.get("seq", 0))
-        if entry and r.get("seq", 0) > seq and r.get("type") == "DENY" and (r.get("body") or {}).get("entry") == entry:
+        sub = (r.get("body") or {}).get("subject") or {}
+        if entry and r.get("seq", 0) > seq and r.get("type") == "DENY" and "%s:%s" % (sub.get("host"), sub.get("port")) == entry:
             sys.exit(0)
 if not entry:
     print(top)

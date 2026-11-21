@@ -12,8 +12,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+
+	"agentbox/internal/ops"
 )
 
 // TestBuild builds one release twice: the same bytes both times, root-owned entries with fixed modes, one ELF per
@@ -78,12 +81,18 @@ func TestBuild(t *testing.T) {
 	sysusers, _ := filepath.Glob("sysusers.d/*")
 	tmpfiles, _ := filepath.Glob("tmpfiles.d/*")
 	units = append(append(units, sysusers...), tmpfiles...)
+	for _, g := range ops.Shipped { // exactly these, whatever else sits in gen/
+		units = append(units, "gen/"+g)
+	}
+	all := strings.Fields(want)
 	for _, u := range units {
 		mode[u] = 0o644
-		want += " " + u
+		all = append(all, u)
 	}
+	sort.Strings(all) // the tarball's order
+	want = strings.Join(all, " ")
 	if !strings.Contains(want, "systemd/agentbox-reconcile.service") || !strings.Contains(want, "sysusers.d/agentbox.conf") ||
-		!strings.Contains(want, "tmpfiles.d/agentbox.conf") {
+		!strings.Contains(want, "tmpfiles.d/agentbox.conf") || !strings.Contains(want, "gen/cedar.schema") {
 		t.Fatal("systemd/agentbox-reconcile.service, sysusers.d/agentbox.conf or tmpfiles.d/agentbox.conf is missing from the repo")
 	}
 	var names []string

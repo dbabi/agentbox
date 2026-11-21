@@ -25,6 +25,7 @@ import (
 
 	"agentbox/internal/audit"
 	"agentbox/internal/fw"
+	"agentbox/internal/ops"
 	"agentbox/internal/rootd/nl"
 	"agentbox/internal/rootd/resolve"
 
@@ -39,6 +40,7 @@ type Config struct {
 	ElementTimeout time.Duration // dst set element timeout (Appendix B: 10 min)
 	RefillInterval time.Duration // timer refill and ntfy_dst refresh (§6.1: 5 min)
 	AuditSocket    string        // auditd's rootd producer socket, for DENY records
+	GenDir         string        // the release's gen/: the files generated from the op registry (ops.Check)
 	SealCrash      func(string)  // audit.Files' crash-mid-seal test hook (AGENTBOX_TEST_CRASH); nil in production
 }
 
@@ -120,6 +122,10 @@ func approveNotAdmin() error {
 // Run is agentbox-rootd.service (Type=notify): check, open the store, make the dst sets match it, serve the
 // activated sockets, and only then send READY=1.
 func Run(cfg Config) error {
+	if err := ops.Check(cfg.GenDir); err != nil {
+		return fmt.Errorf("op registry mismatch, refusing to start (§5.1): %v", err)
+	}
+	log.Printf("op registry matches %s: %d ops", cfg.GenDir, len(ops.Registry))
 	if err := approveNotAdmin(); err != nil {
 		return err
 	}

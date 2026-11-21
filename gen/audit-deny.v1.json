@@ -1,0 +1,336 @@
+{
+  "$comment": "Code generated from internal/ops/registry.go by go generate; DO NOT EDIT. ARCHITECTURE.md §9: what auditd's sink accepts.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "DENY": {
+    "additionalProperties": false,
+    "properties": {
+      "agent": {
+        "pattern": "^[a-z][a-z0-9-]{0,31}$",
+        "type": "string"
+      },
+      "by": {
+        "enum": [
+          "gate",
+          "cedar",
+          "floor",
+          "proxy",
+          "keys",
+          "git",
+          "forwarder"
+        ],
+        "type": "string"
+      },
+      "code": {
+        "enum": [
+          "INVALID_ARGS",
+          "UNKNOWN_OP",
+          "TASK_ENDED",
+          "NOT_FOUND_OR_NOT_OWNED",
+          "DENIED_POLICY",
+          "POLICY_ERROR",
+          "MEMORY_QUARANTINED",
+          "CAP_REACHED",
+          "BUS_REFUSED",
+          "LEASE_HELD",
+          "NEEDS_SIGNATURE",
+          "ASK_DENIED",
+          "ASK_EXPIRED",
+          "ASK_CAP",
+          "STALE",
+          "BUSY",
+          "ADMISSION_REJECTED",
+          "FLOOR_NEVER",
+          "HUMAN_ONLY",
+          "REF_OUTSIDE_NAMESPACE",
+          "OID_NOT_IN_REMOTE_REPO",
+          "REMOTE_REJECTED",
+          "EFFECT_FAILED",
+          "INDETERMINATE",
+          "BATCH_ABORTED",
+          "NESTED_SUBVOLUME",
+          "AUDIT_UNAVAILABLE",
+          "EGRESS_NOT_ALLOWLISTED",
+          "EGRESS_WRONG_ROUTE",
+          "EGRESS_NAME_REJECTED",
+          "EGRESS_RESOLVE_FAILED",
+          "EGRESS_DIAL_FAILED",
+          "KEYS_REQUEST_REJECTED",
+          "KEYS_BUDGET",
+          "KEYS_UPSTREAM",
+          "BROKER_UNAVAILABLE"
+        ],
+        "type": "string"
+      },
+      "count": {
+        "minimum": 1,
+        "type": "integer"
+      },
+      "detail": {
+        "maxLength": 1024,
+        "type": "string"
+      },
+      "first": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "id": {
+        "pattern": "^(dn|pnd)_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+        "type": "string"
+      },
+      "last": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "op": {
+        "enum": [
+          "agent.add",
+          "agent.attach",
+          "agent.remove",
+          "agent.skills.set",
+          "app.deploy",
+          "app.logs",
+          "app.remove",
+          "app.restart",
+          "app.rollback",
+          "app.start",
+          "app.status",
+          "app.stop",
+          "approver.add",
+          "approver.remove",
+          "ask.batch",
+          "ask.quote",
+          "ask.status",
+          "budget.set",
+          "bus.agents.list",
+          "bus.inbox.ack",
+          "bus.inbox.read",
+          "bus.lease.acquire",
+          "bus.lease.heartbeat",
+          "bus.lease.release",
+          "bus.message.send",
+          "bus.task.cancel",
+          "bus.task.claim",
+          "bus.task.get",
+          "bus.task.send",
+          "bus.task.update",
+          "cache.purge",
+          "disk.usage",
+          "file.write",
+          "gh.issue.comment",
+          "gh.issue.read",
+          "gh.pr.comment",
+          "gh.pr.create",
+          "gh.pr.read",
+          "go.private.set",
+          "memory.forget",
+          "memory.purge",
+          "memory.read",
+          "memory.review",
+          "memory.write",
+          "net.allow_domain",
+          "op.resolve",
+          "os.generations",
+          "os.pkg.install",
+          "os.pkg.remove",
+          "os.rollback",
+          "os.unit.disable",
+          "os.unit.enable",
+          "os.update",
+          "passkey.confirm",
+          "passkey.register",
+          "passkey.revoke",
+          "pending.deny",
+          "pkg.search",
+          "policy.set",
+          "procedural.set",
+          "push.policy.set",
+          "remote.set",
+          "repo.create",
+          "repo.merge",
+          "repo.push",
+          "secret.set",
+          "system.info",
+          "taint.clear",
+          "update.policy.set",
+          "workbench.add_package",
+          "workspace.restore",
+          "workspace.snapshot"
+        ],
+        "type": "string"
+      },
+      "subject": {
+        "additionalProperties": false,
+        "properties": {
+          "app": {
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
+            "type": "string"
+          },
+          "host": {
+            "maxLength": 253,
+            "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "model": {
+            "pattern": "^[a-z0-9][a-z0-9.:-]{0,63}$",
+            "type": "string"
+          },
+          "oid": {
+            "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+            "type": "string"
+          },
+          "package": {
+            "pattern": "^[a-z0-9][a-z0-9+.-]{1,62}$",
+            "type": "string"
+          },
+          "pointer": {
+            "pattern": "^(/([A-Za-z][A-Za-z0-9_]{0,63}|[0-9]{1,3})){1,6}$",
+            "type": "string"
+          },
+          "port": {
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "ref": {
+            "pattern": "^refs/heads/[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$",
+            "type": "string"
+          },
+          "remote": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+            "type": "string"
+          },
+          "snapshot": {
+            "pattern": "^snap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "type": "string"
+          },
+          "unit": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9@._-]{0,127}\\.(service|socket|timer|target|path|mount)$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "task": {
+        "pattern": "^task_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+        "type": "string"
+      },
+      "what": {
+        "enum": [
+          "agent",
+          "agent_24h",
+          "agent_ops_24h",
+          "approval_expired",
+          "artifacts",
+          "auth",
+          "batch_member_open",
+          "batch_open",
+          "batch_remote_not_private",
+          "batch_shape",
+          "batch_text_cap",
+          "beta_header",
+          "block_type",
+          "blocked",
+          "bus_messages",
+          "cas_changed",
+          "children",
+          "closure_too_large",
+          "context_too_large",
+          "cycle",
+          "deadline",
+          "deputy_host",
+          "dropped_field",
+          "egress",
+          "endpoint",
+          "exposure_443",
+          "field",
+          "gate",
+          "git",
+          "hop",
+          "llm",
+          "llm_vendor",
+          "max_tokens",
+          "memory_bytes",
+          "memory_rows",
+          "memory_writes_task",
+          "model",
+          "never_available",
+          "no_commits",
+          "no_such_name",
+          "non_public",
+          "not_cancelable",
+          "not_found",
+          "other",
+          "own_cas_pending",
+          "parent_ended",
+          "plain_http",
+          "policy_changed",
+          "pr_exists",
+          "protected_package",
+          "protected_unit",
+          "push_bytes_day",
+          "quote_items_task",
+          "quote_items_trace",
+          "rate_limited",
+          "ref_moved",
+          "refused",
+          "remote_changed",
+          "ruleset",
+          "server_tool",
+          "signer_revoked",
+          "source_type",
+          "stale_base",
+          "taint_moved",
+          "task_budget",
+          "task_open",
+          "timeout",
+          "tool_type",
+          "trace",
+          "unavailable",
+          "unreachable",
+          "url_field",
+          "vendor_host"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "code",
+      "by",
+      "count",
+      "first",
+      "last"
+    ],
+    "type": "object"
+  },
+  "DENY_FLOOD": {
+    "additionalProperties": false,
+    "properties": {
+      "by": {
+        "enum": [
+          "gate",
+          "cedar",
+          "floor",
+          "proxy",
+          "keys",
+          "git",
+          "forwarder"
+        ],
+        "type": "string"
+      },
+      "count": {
+        "minimum": 1,
+        "type": "integer"
+      },
+      "task": {
+        "pattern": "^task_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "by",
+      "count"
+    ],
+    "type": "object"
+  }
+}
