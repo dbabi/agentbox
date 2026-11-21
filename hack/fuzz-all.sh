@@ -27,6 +27,7 @@ mkdir -p "$out"
 list >"$out/targets"
 trap 'trap - INT TERM; kill 0' INT TERM # the go test children and their fuzz workers too
 start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+commit=$(git describe --always --dirty 2>/dev/null || echo unknown) # before the run: a commit during it must not be credited
 while read -r p t; do
 	log=$out/$(echo "$p" | tr / _).$t.log
 	nice -n 10 go test -run='^$' -fuzz="^$t\$" -fuzztime="$dur" -parallel="${FUZZ_PARALLEL:-1}" "$p" >"$log" 2>&1 &
@@ -43,7 +44,7 @@ while read -r pid p t log; do
 	echo "$r $p $t execs=${execs:-0}${crash:+ crasher=$crash}" >>"$out/results"
 done <"$out/pids"
 {
-	echo "fuzz-all $dur per target, commit $(git describe --always --dirty 2>/dev/null || echo unknown), $start to $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	echo "fuzz-all $dur per target, commit $commit, $start to $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 	echo "targets=$(wc -l <"$out/results" | tr -d ' ') fails=$fail"
 	cat "$out/results"
 } >"$out/summary.txt"
