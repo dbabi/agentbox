@@ -1,0 +1,30 @@
+# Mirror docs/wiki/ (the source of truth) into the GitHub wiki on every change.
+name: wiki
+on:
+  push:
+    branches: [main]
+    paths: ['docs/wiki/**', 'hack/wiki-sync.py', '.github/workflows/wiki.yml']
+  workflow_dispatch:
+permissions:
+  contents: write # the wiki repo is written with this repo's token
+concurrency: {group: wiki, cancel-in-progress: false}
+jobs:
+  sync:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: .wiki
+      - run: python3 -I hack/wiki-sync.py docs/wiki .wiki "${{ github.repository }}"
+      - name: commit and push
+        working-directory: .wiki
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo "wiki already up to date"; exit 0; }
+          git commit -q -m "Sync from docs/wiki at ${GITHUB_SHA::7}"
+          git push

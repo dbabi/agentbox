@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"debug/buildinfo"
 	"debug/elf"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,7 +32,7 @@ func TestBuild(t *testing.T) {
 	if b, err := exec.Command(ms, "-G", "-W", "-s", key, "-p", pub).CombinedOutput(); err != nil {
 		t.Fatalf("minisign -G: %v\n%s", err, b)
 	}
-	tgz, sum, err := build("1.2.3-test", key, out)
+	tgz, sum, err := build("1.2.3-test", key, out, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,8 +50,18 @@ func TestBuild(t *testing.T) {
 		"GOFIPS140": "latest", "GOWORK": filepath.Join(dir, "go.work")} {
 		t.Setenv(k, v)
 	}
-	if _, again, err := build("1.2.3-test", key, out); err != nil || !bytes.Equal(sum, again) {
+	if _, again, err := build("1.2.3-test", key, out, true); err != nil || !bytes.Equal(sum, again) {
 		t.Fatalf("a second build, with the caller's Go settings changed, differs: %v", err)
+	}
+	// CI builds unsigned and the owner rebuilds and signs: both must give the same bytes, and no signature
+	if _, plain, err := build("1.2.3-test", "", out, false); err != nil || !bytes.Equal(sum, plain) {
+		t.Fatalf("unsigned build: %v, sum %x, want %x", err, plain, sum)
+	}
+	if _, err := os.Stat(tgz + ".minisig"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsigned build left a signature: %v", err)
+	}
+	if _, _, err := build("1.2.3-test", key, out, true); err != nil { // the checks below verify the signed release
+		t.Fatal(err)
 	}
 	if b, err := exec.Command(ms, "-V", "-m", tgz, "-p", pub).CombinedOutput(); err != nil || !bytes.Contains(b, []byte("Trusted comment: agentbox 1.2.3-test")) {
 		t.Fatalf("minisign -V: %v\n%s", err, b)
@@ -103,7 +114,7 @@ func TestBuild(t *testing.T) {
 		t.Errorf("entries: %s, want %s", got, want)
 	}
 	for _, v := range []string{"", "../x", ".hidden", "1 2", "a/b", "1.0+git", strings.Repeat("1", 65)} {
-		if _, _, err := build(v, key, out); err == nil {
+		if _, _, err := build(v, key, out, true); err == nil {
 			t.Errorf("version %q accepted", v)
 		}
 	}
@@ -113,7 +124,7 @@ func TestBuild(t *testing.T) {
 	}
 	defer func(n int64) { maxTarball = n }(maxTarball)
 	maxTarball = int64(len(data)) - 1
-	if _, _, err := build("1.2.3-test", key, out); err == nil || !strings.Contains(err.Error(), "--max-filesize") {
+	if _, _, err := build("1.2.3-test", key, out, true); err == nil || !strings.Contains(err.Error(), "--max-filesize") {
 		t.Errorf("a release 1 byte over the cap was built: %v", err)
 	}
 }

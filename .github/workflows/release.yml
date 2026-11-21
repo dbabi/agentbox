@@ -1,0 +1,50 @@
+# CD: a v* tag builds the release unsigned, attests where it came from, and drafts a GitHub Release.
+# The owner then runs hack/sign-release.sh <tag>: it rebuilds the same commit with the same Go version, checks the
+# bytes match CI's, signs with the owner's minisign key (which never leaves the owner's machine) and publishes.
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write     # create the draft release
+  id-token: write     # sign the build provenance
+  attestations: write
+jobs:
+  release:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: sudo apt-get update && sudo apt-get install -y minisign xorriso python3-yaml
+      - run: go vet ./... && go test ./...
+      - name: build unsigned
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          go run ./hack/release -unsigned -version "$v" -out dist
+          printf 'commit %s\ngo %s\nversion %s\n' "$GITHUB_SHA" "$(go env GOVERSION)" "$v" > dist/BUILDINFO
+          (cd dist && sha256sum "agentbox-$v.tgz" > SHA256SUMS)
+          cat dist/BUILDINFO dist/SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/agentbox-*.tgz
+      - name: draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          sum=$(cut -d' ' -f1 dist/SHA256SUMS)
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/agentbox-$v.tgz"
+          {
+            echo "Unsigned until the owner signs it: this stays a draft until \`hack/sign-release.sh $GITHUB_REF_NAME\` rebuilds it, checks the bytes match and adds \`agentbox-$v.tgz.minisig\`."
+            echo
+            echo "Seed flags: \`--release-url $url --release-sha256 $sum\`"
+            echo
+            echo "Built from \`$GITHUB_SHA\` with $(go env GOVERSION). Check the provenance with \`gh attestation verify agentbox-$v.tgz -R $GITHUB_REPOSITORY\`."
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/agentbox-*.tgz dist/SHA256SUMS dist/BUILDINFO --draft --verify-tag \
+            --title "agentbox $v" --notes-file notes.md --generate-notes

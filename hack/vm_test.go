@@ -192,9 +192,10 @@ func TestVMInstallSleep(t *testing.T) {
 		n := filepath.Join(bin, "n")
 		fakes := map[string]string{
 			"xorriso": "exit 0", "qemu-img": "exit 0", "sleep": "exit 0",
-			// the 4th read jumps 10000 s; every other read is 5 s after the one before
+			// the 4th read jumps 10000 s; every other read is 5 s after the one before, up to the 15th. After that the clock
+			// stands still, so a fast host that spins through extra reads cannot run the 100 s timeout out.
 			"date": `[ "$1" = +%s ] || exec /bin/date "$@"; c=$(cat "` + n + `" 2>/dev/null || echo 0); echo $((c+1)) > "` + n + `"
-[ "$c" -ge 3 ] && echo $((1000 + 5*c + 10000)) || echo $((1000 + 5*c))`,
+[ "$c" -gt 14 ] && c=14; [ "$c" -ge 3 ] && echo $((1000 + 5*c + 10000)) || echo $((1000 + 5*c))`,
 			// 15 reads: 70 s awake, under INSTALL_TIMEOUT=100 only if the 10000 s jump does not count
 			"qemu-system-x86_64": `while [ "$(cat "` + n + `" 2>/dev/null || echo 0)" -lt 15 ]; do /bin/sleep 0.05; done
 echo "` + tc.line + `" >> "` + filepath.Join(vm, "install.log") + `"

@@ -46,7 +46,7 @@ running() { [ -f "$VM/qemu.pid" ] && kill -0 "$(cat "$VM/qemu.pid")" 2>/dev/null
 aside() { [ ! -e "$VM/disk.qcow2.powercut" ] || die "$VM/disk.qcow2.powercut is the disk a killed 'boot' set aside; move it back"; }
 num() { for a; do case $a in ''|*[!0-9]*) die "not a number: $a" ;; esac; done; }
 # No ssh-agent: with AddKeysToAgent, every checkout's .vm/id_vm piles up in it, and sshd hangs up after 6 wrong offers.
-vmssh() { SSH_AUTH_SOCK= "$ROOT/hack/vm.sh" ssh "$@"; }
+vmssh() { SSH_AUTH_SOCK='' "$ROOT/hack/vm.sh" ssh "$@"; }
 root_sh() { { echo x; cat; } | vmssh 'sudo -S -p "" sh -s'; } # stdin: a script for root in the VM
 
 # replay <replay.sh args>: replay.sh in the podman machine, with $PC as its /w

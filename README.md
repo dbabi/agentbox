@@ -1,177 +1,309 @@
+<p align="center"><img src="mascot/banner.png" alt="agentbox banner with the pixel-art mascot" width="640"></p>
+
 # agentbox
 
-A headless home for AI agents on stock Ubuntu Server 26.04. Agents get full freedom inside disposable, network-less task containers. Everything that touches the host, secrets, the network, other agents or shared memory goes through typed, policy-checked, audited operations.
+> [!WARNING]
+> **Early alpha. Not for production use.** Today agentbox is an unattended, encrypted Ubuntu Server 26.04 installer with A/B OS generations, tested only in QEMU VMs. No AI agent can run on it yet.
 
-- **Design:** `~/workplace/ai-os-research/ARCHITECTURE.md`
-- **Plan:** `~/workplace/ai-os-research/PLAN.md`
-- **Threat model:** `docs/THREAT-MODEL.md`
+A headless OS for AI coding agents, built on stock Ubuntu Server 26.04. Early alpha: the agent runtime is designed, not built.
 
-## Status: week 3 (2026-11-20)
-**Passed** at `dbd8c9f`, on a fresh `none`-mode arm64 UEFI install with Secure Boot on. Suites are in `~/workplace/agentbox-evidence/week3-suites.json`; evidence in `~/workplace/agentbox-evidence/week3/reg1/<suite>/` (`w3-quota-ntfy`: `week3/reg2/`). The weeks 1-2 smoke suites (`gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso`) passed again at `dbd8c9f`. Item-by-item gate table: PLAN.md, "Where we are".
+[Getting started][gs] · [Architecture][arch] · [Security model][sec] · [Roadmap][road] · [Wiki][wiki]
 
-| Piece | State |
-|---|---|
-| Firewall (`agentbox fw`, `fwcheck`, `agentbox-firewall.service`) | **passed:** add-only load with hash and per-set checks; any alteration keeps agents down; reload and reboot keep rootd's sets; `nft flush ruleset` repaired in 50 s with an alert; conntrack keeps established flows; drops stay silent. `w3-firewall` |
-| auditd (`agentbox-auditd`, `agentbox audit verify`) | **passed:** ACK before every effect; down means nothing executes; taint epochs and write rules (only rootd's admin path clears, the row survives); disk-full mode still runs admin ops; torn tail, clock step across midnight and crash at each seal step don't stop ACKs. `w3-auditd` |
-| rootd skeleton and resolver (`agentbox-rootd`) | **passed:** resolved over Varlink, non-public answers refused; brokers reach only what rootd resolved; `Type=notify` refill; egress edits audited; log sealing (`+a`, `+i`). `w3-rootd` |
-| qgroups and packaged ntfy | **passed:** `2/0` reserve and CAS cap, EDQUOT while system state still writes; ntfy as `_ntfy` on a Unix socket only, behind the firewall. `w3-quota-ntfy` |
-| Broker units hiding resolved's AF_UNIX interfaces | **not built:** the broker units don't exist yet (residual in `docs/THREAT-MODEL.md`) |
-| Week-3 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | **not run** |
+## What is agentbox
 
-## Status: weeks 1-2 (2026-11-20)
-Each **passed** row names its suite (round, commit). Evidence: `~/workplace/agentbox-evidence/regress/r<round>/<suite>/`.
+agentbox aims to be an OS where AI agents can work safely. The design rests on four rules. Only the fourth is built today:
 
-| Piece | State |
-|---|---|
-| `agentbox recovery keygen` / `decrypt` | done: RSA-4096 key, OAEP-SHA256, proven interoperable with the installer's `openssl pkeyutl` call (`TestInstallerOpenSSLLine`, `go test` on `40d9832`) |
-| `agentbox seed` | done: renders the autoinstall seed (`tpm2+tang`, `tpm2`, `none`; UEFI or BIOS), validates every input against subiquity 26.04.1's rules, builds a 0600 cidata ISO |
-| Release pipeline and firstboot | done: `make release`, `install.sh`, `agentbox-reconcile.service`, `agentbox os mark-last-good`; firstboot refuses a tampered tarball, an older signed release and a wrong-key signature, and installs nothing. `gates-none` (r1, `40d9832`) |
-| `hack/verify-seed.py` | done: real YAML parse, structure asserts, `dash -n` on every embedded script (also run by `go test`) |
-| QEMU arm64 install, Secure Boot on: `none`, `tpm2`, `tpm2+tang` | **passed:** unattended install and first boot through shim and GRUB; LUKS2 unlocks through clevis in the dracut initramfs; Tang down means no unlock and a reboot about 490 s later; a typed recovery key unlocks; Tang back unlocks with no input. Suites: `gates-none` (r1, `40d9832`), `gates-tpm2` and `gates-tpm2-tang-down-typed-recovery` (r2, `46df5a6`) |
-| QEMU arm64 install, Secure Boot off (`DIRECT_KERNEL=1`) | **passed:** `secureboot-off-direct-kernel-none` (r1, `40d9832`) |
-| Disk guard: two disks with one `ID_SERIAL` | **passed:** the install stops before storage, and neither disk is written. `dup-serial-abort` (r1, `40d9832`) |
-| QEMU amd64 BIOS install (q35, SeaBIOS, SATA, swtpm, TCG) | **passed:** `none` and `tpm2` (an install takes 60-80 min under TCG). `bios-amd64-none` (r3, `46df5a6`), `bios-amd64-tpm2` (r1, `40d9832`) |
-| `agentbox os plan` / `apply` / `health` / `mark-last-good` / `status` | **passed:** `os.apply` per ARCHITECTURE §3.3. Three cycles with a kernel and systemd upgrade (`tpm2`, `tpm2+tang`); GRUB, initrd, fstab and blocking-unit breaks fall back with no console input (all three modes); QMP power cuts at six points fall back (`tpm2`). Gates: `hack/apply-gate.sh`. `os-apply-cycles-tpm2`, `os-apply-cycles-tpm2-tang`, `os-apply-breaks-tpm2`, `os-apply-powercuts-tpm2` (r1, `40d9832`); `os-apply-breaks-tpm2-tang`, `os-apply-breaks-none` (r2, `46df5a6`) |
-| Power-cut fidelity (`hack/powercut.sh`) | **passed:** `btrfs check` clean at every flush of a logged boot; replayed disks boot and settle. `powercut-fidelity` (r2, `46df5a6`); the GRUB-view replay of a logged apply ran in `os-apply-powercuts-tpm2` (r1, `40d9832`) |
-| `hack/remaster-iso.sh` (zero-touch USB) | done: the pinned ISO with `autoinstall ds=nocloud` on GRUB's linux line; `vm.sh install` boots it through the firmware (shim and GRUB on UEFI), with no `-kernel`. `zero-touch-iso` (r1, `40d9832`) |
-| GitHub CI (`.github/workflows/ci.yml`) | **not run:** needs a remote and a push |
-| Old x86 PC | **not run:** needs its owner and the PC (see [Old-PC gate](#old-pc-gate-needs-the-owner)) |
+- **No credentials in tasks (designed).** API keys and tokens will stay in broker services. The task will never hold them.
+- **No network for agents (designed).** Each task will run in a disposable container with no network. Traffic will leave only through the brokers.
+- **A human signs risky actions (designed).** The box will run a risky operation only after you sign it. The signature will cover its exact inputs, such as commit IDs and package hashes.
+- **OS changes fall back on failure (built).** An OS change builds offline into a new generation. The box keeps it only if it boots healthy. Otherwise it boots the last good generation.
 
-## Quick start (operator machine)
-The install needs wired Ethernet with DHCP and HTTP access to the Ubuntu archive: archive.ubuntu.com and security.ubuntu.com
-on amd64, ports.ubuntu.com on arm64. minisign, podman, crun, systemd-container, systemd-zram-generator, clevis*, clevis-dracut
-and tpm2-tools are not on the ISO. The seed stops before touching any disk when the archive is unreachable, when the disk
-serial matches anything but exactly one disk, or (encrypted modes) when there is no TPM2.
+## Status
 
-1. Create the recovery key pair. Keep `recovery.key` offline:
+Weeks 1-2 of a 16-week plan are built. agentbox has run only in QEMU virtual machines, never on real hardware.
+
+**Works today**, in VMs on an Apple Silicon Mac:
+
+- Unattended install of Ubuntu Server 26.04.1 from one seed, with disk encryption and a recovery key.
+- A/B OS generations: a package change builds offline, boots once, and stays only if healthy.
+- Releases you build and sign yourself with `make release`. First boot checks them against a pinned SHA-256 and your minisign key. There is no official release yet.
+- Zero-touch installs on arm64 UEFI with Secure Boot on, and on amd64 legacy BIOS.
+
+**Not yet:**
+
+- The agent runtime: task containers, brokers, policy, approvals, audit, bus and memory. All of it is designed. None of it is built.
+- Real hardware. amd64 UEFI has not run anywhere.
+- A host firewall and automatic security updates.
+- Updating agentbox itself on an installed box. This is out of scope for v1. A new release means a reinstall.
+
+## Why
+
+- **Agents read untrusted text all day.** Web pages, issues and package READMEs can carry prompt injection. A hijacked task should find nothing to steal and no way to send it out.
+- **Secrets belong outside the task.** In the design, brokers hold the keys and act for the task. A task cannot leak a key it never had.
+- **Some actions need a person.** A push or an OS change should run only after a human approves that exact operation.
+- **Updates must not break the box.** A new OS generation boots once and stays only if healthy. Otherwise the box falls back on its own.
+- **Stock parts.** agentbox uses the stock Ubuntu Server installer, archive and packages. There is no custom distro. You trust Ubuntu's packages plus agentbox's own install, boot and update scripts, which are in this repo.
+
+## Quickstart
+
+### On an Apple Silicon Mac (VM)
+
+These steps follow part 1 of [Getting started][gs]. You need about 12 GB of free disk space for `.vm/`, and an internet connection.
+
+1. Install the tools and get the code.
+   ```sh
+   brew install go qemu xorriso minisign uv
+   git clone https://github.com/dbabi/agentbox.git
+   cd agentbox
+   ```
+   For the encrypted gates, also run `brew install swtpm podman`. `make` and `ar` come with the Xcode Command Line Tools (`xcode-select --install`). If `command -v sha256sum` prints nothing, put a `sha256sum` on your `PATH`, for example from GNU coreutils.
+2. Get the pinned Ubuntu ISO and check it.
+   ```sh
+   mkdir -p .vm
+   curl -fL -o .vm/ubuntu-26.04.1-live-server-arm64.iso \
+     https://cdimage.ubuntu.com/releases/26.04.1/release/ubuntu-26.04.1-live-server-arm64.iso
+   (cd .vm && grep live-server-arm64.iso ../hack/SHA256SUMS | shasum -a 256 -c)
+   ```
+   The last command prints `ubuntu-26.04.1-live-server-arm64.iso: OK`. If the download returns 404, use https://old-releases.ubuntu.com/releases/26.04.1/ubuntu-26.04.1-live-server-arm64.iso.
+3. Build the CLI and run the unit tests.
    ```sh
    go build -o bin/agentbox ./cmd/agentbox
-   ./bin/agentbox recovery keygen --out ~/agentbox-keys
+   ./bin/agentbox version
+   go vet ./... && go test ./...
    ```
-2. Get the target disk's udev `ID_SERIAL`. `lsblk SERIAL` is the short form and never matches SATA, NVMe or USB disks.
-   Boot the target from the 26.04 ISO (stock or step 5's, with no seed attached: the installer then waits for you),
-   open a shell in the installer (F2, or Help, then Enter shell), and run:
+   `version` prints `dev` for a plain build.
+4. Optional: [Getting started, step 5][gs-dry] renders a test seed with no VM, in about a minute.
+5. Run the install gate.
    ```sh
-   udevadm info --query=property --property=ID_SERIAL --value /dev/nvme0n1   # or /dev/sda
-   [ -d /sys/firmware/efi ] && echo uefi || echo bios                        # the seed's --boot
+   caffeinate -i hack/gate.sh none
    ```
-   If you skip this step, the install stops before touching any disk and logs every disk's ID_SERIAL; read them from the
-   installer shell with `journalctl -b | grep 'agentbox: disk'`.
-3. Generate the seed (`tpm2+tang` shown). `user-data` and `seed.iso` hold your password hash: keep them private.
-   The hash must be yescrypt or sha512-crypt with `rounds=100000` or more; `openssl passwd -6` (5000 rounds) is refused.
-   `mkpasswd` is in Debian/Ubuntu's `whois` package; on a Mac, run it in a container:
-   `podman run --rm -it docker.io/library/ubuntu:26.04 sh -c 'apt-get update -qq && apt-get install -qq -y whois >/dev/null && mkpasswd -m yescrypt'`
+   The gate makes its own throwaway keys and seed. It installs the VM, boots it and checks it, in about 9-17 minutes. `caffeinate -i` stops idle sleep only, not the sleep that closing the lid starts. Keep the Mac on power with the lid open until the gate ends. On success, the gate prints `gate none: all checks passed`. Each check is listed in `.vm/gate-none.txt`.
+
+Next, `caffeinate -i hack/gate.sh tpm2` tests an encrypted install. `caffeinate -i hack/apply-gate.sh tpm2 install setup cycles` builds, boots and commits new OS generations (about 30 minutes). The tpm2 gates need `brew install swtpm` from step 1. See [Getting started][gs] and [Testing and gates][tests].
+
+### On real hardware (zero-touch USB)
+
+> [!CAUTION]
+> No real machine has run agentbox yet. The install erases the disk you name by its serial, with no prompt.
+
+You need two USB sticks and a target machine: amd64 (UEFI or legacy BIOS) or arm64 (UEFI). The machine needs one target disk, and wired Ethernet with DHCP and internet access. The encrypted modes also need a TPM 2.0.
+
+On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac, the password hash in step 1 also needs `brew install podman`. The operator commands also work on Linux.
+
+1. **Make your keys and a release, then host it.** From the top of the checkout:
+   ```sh
+   ./bin/agentbox recovery keygen --out ~/agentbox-keys
+   minisign -G -p ~/agentbox-keys/minisign.pub -s ~/agentbox-keys/minisign.key
+   make release VERSION=0.0.1 MINISIGN_KEY="$HOME/agentbox-keys/minisign.key"
+   ```
+   - `recovery keygen` writes `recovery.key` and `recovery.pub`. The seed needs only `recovery.pub`. `recovery.key` can unlock the box's disk, so keep it offline.
+   - `minisign -G` asks for a password for the release signing key. `make release` asks for it again.
+   - `make release` writes `dist/agentbox-0.0.1.tgz` and `dist/agentbox-0.0.1.tgz.minisig`. Then it prints the `--release-sha256` value.
+   - Upload both files side by side to an HTTPS server with a CA-trusted certificate. First boot fetches the tarball's URL plus `.minisig`. The URL must not have a query string.
+
+   Then make the admin password hash. On a Mac, run `mkpasswd` in a container. If `podman machine list` already shows a machine, skip `podman machine init`. If that machine is `Currently running`, also skip `podman machine start`.
+   ```sh
+   podman machine init
+   podman machine start
+   podman run --rm -it docker.io/library/ubuntu:26.04 sh -c 'apt-get update -qq && apt-get install -qq -y whois >/dev/null && mkpasswd -m yescrypt'
+   ```
+   It asks for the password and prints a hash that starts with `$y$`. On Debian or Ubuntu, run `mkpasswd -m yescrypt` directly (package `whois`).
+2. **Make the install stick.** Download the pinned ISO and add the zero-touch boot option. For amd64:
+   ```sh
+   curl -fLO https://releases.ubuntu.com/26.04.1/ubuntu-26.04.1-live-server-amd64.iso
+   hack/remaster-iso.sh ubuntu-26.04.1-live-server-amd64.iso agentbox-amd64.iso
+   ```
+   For arm64, use the ISO from Mac step 2:
+   ```sh
+   hack/remaster-iso.sh .vm/ubuntu-26.04.1-live-server-arm64.iso agentbox-arm64.iso
+   ```
+   These files are 26.04.1. After a newer point release, both files move to `https://old-releases.ubuntu.com/releases/26.04.1/`. The scripts accept only the pinned 26.04.1 ISOs.
+
+   Write `agentbox-amd64.iso` or `agentbox-arm64.iso` to a USB stick of 4 GB or more. On a Mac, replace `N` with the stick's number from `diskutil list external`. For arm64, use `if=agentbox-arm64.iso`. On Linux, use the commands in step 4 of [Installing on real hardware][hw].
+
+   **`dd` erases the device you name without asking. Check the disk number twice.**
+   ```sh
+   diskutil list external
+   diskutil unmountDisk /dev/diskN
+   sudo dd if=agentbox-amd64.iso of=/dev/rdiskN bs=4m
+   diskutil eject /dev/diskN
+   ```
+3. **Read the disk serial.** Boot the target from that stick, with no seed stick. The installer then waits for you. Open its shell (F2, or Help, then Enter shell) and run:
+   ```sh
+   lsblk -d -o NAME,SIZE,MODEL,TRAN
+   udevadm info --query=property --property=ID_SERIAL --value /dev/nvme0n1
+   [ -d /sys/firmware/efi ] && echo uefi || echo bios
+   test -c /dev/tpmrm0 && echo tpm2 || echo no-tpm
+   ```
+   Pick the disk to erase by its size and model. USB sticks show `usb` under `TRAN`. Put that disk's name in the `udevadm` line, for example `/dev/sda`. Use the full `ID_SERIAL` that `udevadm` prints. Do not use the `SERIAL` column of `lsblk`: it is a short form and never matches.
+4. **Render the real seed.** Use the keys, the release and the password hash from step 1, and the values from step 3. Replace each `<...>` with your value. Keep the single quotes: the hash contains `$` signs.
    ```sh
    ./bin/agentbox seed \
-     --disk-serial '<ID_SERIAL from step 2>' --boot '<uefi or bios from step 2>' \
+     --disk-serial '<ID_SERIAL from step 3>' \
+     --boot '<uefi or bios from step 3>' \
+     --encryption tpm2 --recovery-pub ~/agentbox-keys/recovery.pub \
      --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" \
-     --password-hash "$(mkpasswd -m yescrypt)" \
-     --minisign-pubkey RW... \
-     --release-url https://.../agentbox-<ver>.tgz --release-sha256 <hash that make release printed> \
-     --encryption tpm2+tang --tang-url http://<tang LAN IPv4>:7500 --tang-thp <thumbprint> \
-     --recovery-pub ~/agentbox-keys/recovery.pub \
+     --password-hash '<the $y$ hash>' \
+     --minisign-pubkey "$(sed -n 2p ~/agentbox-keys/minisign.pub)" \
+     --release-url '<https URL of agentbox-0.0.1.tgz>' \
+     --release-sha256 '<64 hex digits from make release>' \
      --out seed --iso seed.iso
-   ```
-4. Check it:
-   ```sh
    uv run --with pyyaml python3 -I hack/verify-seed.py seed/user-data
    ```
-5. Make the zero-touch USB stick: the pinned stock ISO with `autoinstall ds=nocloud` on its GRUB linux line, so subiquity
-   does not wait for a typed `yes`. Write `seed.iso` to a second stick (or drive); the installer finds it by its
-   `cidata` label.
-   ```sh
-   hack/remaster-iso.sh ubuntu-26.04.1-live-server-amd64.iso agentbox-amd64.iso   # checks the ISO against hack/SHA256SUMS
-   ```
-   Boot the stick once from the firmware's boot menu. Do not put USB first in the boot order: with both sticks still in,
-   every boot reinstalls. (With the stock ISO instead: at its GRUB menu press `e`, add `autoinstall` before ` ---`, then
-   press Ctrl-X.)
-6. After the first boot, copy the encrypted recovery blob off the box and keep it next to `recovery.key`:
-   ```sh
-   scp boxadmin@<box>:/bootpart/agentbox/recovery.bin ~/agentbox-keys/
-   ```
-   To unlock by hand: `agentbox recovery decrypt --key recovery.key --in recovery.bin --out luks.key`, then type its
-   48 digits at the disk passphrase prompt.
+   - With no TPM, use `--encryption none` and leave out `--recovery-pub`.
+   - No `~/.ssh/id_ed25519.pub`? `ssh-keygen -t ed25519` makes one.
+   - `seed/user-data` and `seed.iso` hold your password hash. Keep them private.
 
-## Old-PC gate (needs the owner)
-PLAN row 1-2 ends with "Old PC passes in week 2": the install and `os.apply` checks on the old x86 PC. The VMs run UEFI
-only on arm64 and BIOS only on amd64 (`hack/apply-gate.sh <mode> bios` exists on amd64,
-but `os.apply` on BIOS has one pre-merge run and no regression suite), so the PC runs the
-first `os.apply` on real hardware, and a UEFI PC the first amd64 UEFI install. About 1 h hands-on, plus the install.
-1. Publish a release the PC can fetch: `make release VERSION=<ver> MINISIGN_KEY=<your key>`, then put
-   `dist/agentbox-<ver>.tgz` and its `.minisig` side by side at one https URL with a CA-trusted certificate and no query
-   string (firstboot fetches `<url>` and `<url>.minisig`; `--dev`'s plain http is for the VM only). A public host
-   publishes the code: record the clearance first (PLAN "Required before writing code", LEDGER C-spec-conformance-17).
-2. Install with the Quick start steps above, seeded with that URL, the `--release-sha256` that `make release` printed
-   and your minisign public key. Use `--encryption tpm2` if `test -c /dev/tpmrm0` succeeds in the installer shell
-   (Quick start step 2), else `none`. A placeholder release checks the install only: `os.apply` runs from the release.
-3. After the first boot, from the Mac:
+   Write `seed.iso` to the second stick with the `dd` commands from step 2. Use `if=seed.iso` and the seed stick's disk number. The same warning applies.
+5. **Install.** Check that USB is not first in the permanent boot order. With both sticks in, a USB-first order reinstalls at every boot. Plug in both sticks. Boot the ISO stick once from the firmware's one-time boot menu. Pick the same kind of entry, UEFI or legacy, that you used in step 3. The stick's GRUB menu then waits 30 seconds, which gives you a chance to stop.
+6. **Find the box and save the recovery blob.** Find the box's address in your router's DHCP list, or run `ip -4 -br addr` on its console. On the console, `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` prints the host key fingerprint. Compare it with the one ssh shows when you first connect. In the commands below, replace `<box-ip>` with the address.
+
+   In an encrypted mode, copy the recovery blob next to `recovery.key`:
    ```sh
-   ssh -t boxadmin@<box> 'cat /proc/cmdline; findmnt -n -o SOURCE,FSROOT /; findmnt -n -o FSROOT /boot;
-     readlink /var/lib/agentbox/current; sudo grub-editenv /boot/grub/grubenv list; systemctl --failed --no-legend;
-     [ -d /sys/firmware/efi ] && mokutil --sb-state || echo bios'
+   scp boxadmin@<box-ip>:/bootpart/agentbox/recovery.bin ~/agentbox-keys/
    ```
-   Expect `BOOT_IMAGE=/agentbox/gens/gen-1/vmlinuz-...` with `rootflags=subvol=@gen-1`, root `/@gen-1` (on
-   `/dev/mapper/croot` if encrypted), `/boot` at `/agentbox/gens/gen-1`, `releases/<ver>`,
-   `saved_entry=agentbox-gen-1-...` and no failed units. Then do Quick start step 6: `recovery.bin` must decrypt.
-4. One `os.apply` on the PC:
+7. **Try an OS change.** Log in, then check that first boot installed the release. The second command runs on the box:
+   ```sh
+   ssh boxadmin@<box-ip>
+   test -e /var/lib/agentbox/.firstboot-done && echo firstboot done || echo firstboot not done
+   ```
+   If it prints `firstboot not done`, `sudo journalctl -u agentbox-firstboot` shows why. Then plan a change, and approve the plan by its hash. The binary is not on `PATH`.
    ```sh
    sudo /var/lib/agentbox/current/bin/agentbox os plan --reinstall --install base-files   # prints plan sha256: <H>
    sudo /var/lib/agentbox/current/bin/agentbox os apply --approve <H>                     # reboots into the trial
    ```
-   After the reboot `/proc/cmdline` must have `rootflags=subvol=@gen-2`. Within a few minutes the health timer commits
-   it: `/bootpart/agentbox/committed` and `saved_entry` in `sudo grub-editenv /boot/grub/grubenv list` both read
-   `agentbox-gen-2-<kernel>`. Left uncommitted, the box falls back to gen-1 after 15 min.
-5. Keep the outputs of steps 3 and 4 with the evidence, and put the firmware (`uefi` or `bios`) and the
-   `mokutil --sb-state` line in the status row above. On a UEFI PC, say there that this was the first amd64 UEFI run.
+   The new generation boots once. The health timer commits it about a minute after boot. If the trial fails, the box falls back to the last good generation by itself.
 
-## Release
-`make release VERSION=<ver> MINISIGN_KEY=<minisign secret key file>` builds agentbox for linux/arm64 and linux/amd64
-and writes `dist/agentbox-<ver>.tgz` (the binaries, `install/install.sh`, `systemd/*`) plus its `.minisig`, then prints
-the seed's `--release-sha256`. The tarball is reproducible: the same commit and Go version give the same hash.
-Firstboot checks that hash before minisign, because minisign alone accepts any older signed release. Then
-`install.sh --from-firstboot` installs `/var/lib/agentbox/releases/<ver>` and switches the `current` and `previous`
-links by rename.
+`tpm2+tang` is the default and recommended mode. It also needs a Tang server on your LAN. Only the test Tang container has been tested so far. If Tang is down at boot, the box cannot unlock by itself. It reboots about every 8 minutes until Tang is back or you type the 48-digit disk key. `agentbox recovery decrypt` gets that key from recovery.bin with recovery.key. See [Installing on real hardware][hw], [Encryption and recovery][enc] and [Generations and updates][gens].
 
-## QEMU test VM (Apple Silicon)
-The seed's `--boot` picks the VM. `uefi`: arm64 under HVF with resolute's AAVMF and Secure Boot on (`SECUREBOOT=0` starts
-with no keys enrolled); the disk is NVMe, so the seed needs `--disk-serial QEMU_NVMe_Ctrl_QM00001_1`. `bios`: amd64 q35
-with SeaBIOS under TCG, several times slower; the disk is SATA, `--disk-serial QEMU_HARDDISK_QM00001`
-(`DISKBUS=virtio` uses `QM00001` on both). `hack/vm.sh install` boots the zero-touch ISO through the firmware, as real
-hardware does; `DIRECT_KERNEL=1` boots the stock ISO's kernel with `-kernel` instead (UEFI: with `SECUREBOOT=0`).
-The firmware and the ISOs are pinned in `hack/SHA256SUMS`.
-`hack/vm.sh ssh` logs in as `boxadmin` with the throwaway key in `.vm/id_vm`.
-For `tpm2+tang`, run `hack/vm.sh tang up` first (needs podman); it prints the
-`--tang-url` and `--tang-thp` seed flags. `hack/gate.sh tpm2 bios` runs a gate on the amd64 VM.
+## Features
 
-`hack/gate.sh` needs minisign (`brew install minisign`). It signs its test releases with a throwaway key
-(`.vm/keys/minisign.key`), serves them with `hack/release-serve` on 127.0.0.1:7600+ID, and renders a `--dev` seed: only
-`--dev` accepts the plain-http `http://10.0.2.2:<port>` release URL, and firstboot still checks the sha256 pin and
-minisign.
+### Built
 
-Several VMs can run at once, one per checkout: each needs its own `AGENTBOX_VM_ID` (0-9: SSH on 127.0.0.1:2222+ID, Tang
-on 127.0.0.1:7500+ID, releases on 127.0.0.1:7600+ID) and its own git worktree, because everything else lives in the
-checkout's `.vm`.
-`AGENTBOX_ISO_DIR` lets worktrees share one ISO:
-```sh
-git worktree add --detach ../agentbox-wt/b main
-cd ../agentbox-wt/b && AGENTBOX_VM_ID=1 AGENTBOX_ISO_DIR=~/workplace/agentbox/.vm hack/gate.sh tpm2+tang
+| Feature | What it does |
+|---|---|
+| `agentbox seed` | Checks every input, then writes the autoinstall seed and an optional `cidata` ISO. It lists every problem at once. |
+| Unattended install | Installs stock Ubuntu Server 26.04.1 with no console input. It stops before any disk write unless the serial matches exactly one disk and the Ubuntu archive answers. Encrypted modes also need a TPM 2.0. The two-disk case is gate-tested. The archive and TPM checks are not yet. |
+| Disk encryption | Three modes. `tpm2+tang`: LUKS2, unlocked by clevis with the TPM 2.0 and a Tang server. `tpm2`: LUKS2, unlocked by the TPM 2.0 alone. `none`: no encryption. |
+| Recovery key | The 48-digit disk key, encrypted to your offline RSA-4096 key. `agentbox recovery decrypt` gets it back. |
+| A/B generations | Each OS version is a btrfs subvolume, plus its own `/boot` directory on the unencrypted boot partition. `/home`, `/var/log`, `/srv` and agentbox data live outside it. |
+| `os plan` and `os apply` | Plans a package change. Then it builds the change offline, in a network-less `systemd-nspawn` container, from the exact `.deb` files you approved. |
+| Trial boot and fallback | A new generation boots once and commits only if healthy. A broken trial falls back with no console input. |
+| Release pipeline | `make release` builds a tarball and a minisign signature. A CI build on Linux and a rebuild on a Mac with the same Go version are byte-identical; `hack/sign-release.sh` signs only when they match. First boot checks a pinned SHA-256, then the signature. |
+| Zero-touch ISO | `hack/remaster-iso.sh` adds `autoinstall ds=nocloud` to the stock ISO's boot menu. It changes only GRUB's config and its checksum line. |
+| Test harness | QEMU gates for the install, `os apply`, power cuts and disk-write replay, with swtpm and a test Tang container. |
+
+### Designed, not built
+
+| Feature | Plan |
+|---|---|
+| Task containers | One disposable podman container per task, with `Network=none` and a fresh HOME. |
+| Brokers | `proxy` holds no secrets. `keys` holds LLM API keys and budgets. `git` holds the GitHub token. |
+| Policy and approvals | Cedar policy. You sign approvals on your laptop with an SSH key. A phone passkey covers low-risk asks only. |
+| Firewall and audit | nftables, checked every 60 seconds. A hash-chained audit log and a taint ledger. |
+| Agent bus and memory | Messages between agents. Shared memory with quarantine and taint. |
+| OS updates | A nightly `os.update` into a new generation, with protected packages. |
+
+## Architecture
+
+```text
+   laptop: agentbox CLI                 phone: passkey
+   (designed) signs approvals           (designed) low-risk
+   over SSH                             asks only
+             |                                   |
++------------v-----------------------------------v-----------------+
+| agentbox host: stock Ubuntu Server 26.04                         |
+|                                                                  |
+|  DESIGNED, NOT BUILT                                             |
+|  agentboxd        task gate, policy, agent bus, shared memory    |
+|  agentbox-rootd   runs only the operations a human signed        |
+|  agentbox-auditd  hash-chained audit log and taint ledger        |
+|                                                                  |
+|  +----------------------+  unix sockets  +---------------------+ |
+|  | task container       |--------------->| brokers             |----> internet
+|  | no network, no keys  |                | proxy (no secrets)  | |
+|  | fresh HOME each task |                | keys (LLM API keys) | |
+|  +----------------------+                | git (GitHub token)  | |
+|                                          +---------------------+ |
+|                                                                  |
+|  BUILT TODAY                                                     |
+|  OS generations   btrfs @gen-N, os plan / os apply, trial boot,  |
+|                   health commit, fallback with no console input  |
+|  Releases         signed tarball, checked at first boot          |
+|  Disk             LUKS2 + clevis (TPM 2.0, Tang), recovery key   |
++------------------------------------------------------------------+
 ```
 
-`hack/apply-gate.sh none|tpm2|tpm2+tang [uefi|bios] [install setup cycles breaks cuts]` runs the `os.apply` gates on the
-same VM (all five scenarios take about 90 minutes on arm64); results land in `.vm/apply-gate-<mode>[-bios].txt`.
+All agentbox services will be subcommands of one Go binary, `agentbox`. Today it has the operator commands `seed` and `recovery`. On the box it has `os plan`, `os apply`, `os status`, `os health` and `os mark-last-good`. It also has `reconcile` and `version`. The [Architecture][arch] page walks through the design part by part.
 
-Power cuts: `hack/powercut.sh log boot` runs the VM with every disk write and flush logged (QEMU blklogwrites), and the
-podman machine replays the log with xfstests `replay-log`. `hack/powercut.sh check` runs `btrfs check --readonly` at
-every flush; `hack/powercut.sh boot <entry>...` boots the disk as it was after those log entries, and health must then
-settle it on the committed entry; `hack/powercut.sh grub` reads `/bootpart` as GRUB does (no journal replay) after
-every entry that writes it, fails unless GRUB would find its entry, kernel and initrd, and lists the splits, where
-Linux reads another grubenv after journal replay. The script header says what this models and what it does not.
+## Security model
 
-## Test
-```sh
-go vet ./... && go test ./...
-```
-`.github/workflows/ci.yml` runs the same on Linux, plus `hack/gate.sh none bios` and `hack/gate.sh tpm2 bios` under KVM,
-once the repo is pushed.
+The design treats prompt injection as the most likely attack. It also plans for a compromised agent tool, a thief, someone on your LAN, and bugs in agentbox itself. It has seven rules, and tests must prove each one:
 
-License: Apache-2.0.
+| Rule | Status |
+|---|---|
+| 1. Tasks have no network. | Designed |
+| 2. No credential exists inside a task. | Designed |
+| 3. Agents never change the running OS. Changes build offline into a new generation, which commits only after a health check. | Generations built and tested. The agent side is designed. |
+| 4. The root daemon (rootd) runs only the stored operation a human signed. | Designed |
+| 5. Taint is sticky. Work that touched untrusted content stays marked until a human clears it. | Designed |
+| 6. Nothing persists between tasks except the tainted workspace. | Designed |
+| 7. The seed and logs hold no plaintext secrets. | Built and tested |
+
+Known limits of what is built today:
+
+- In `tpm2` mode, a thief with the whole machine can unlock the disk. Use `tpm2+tang`.
+- In `tpm2+tang` mode, an attacker who stays on your LAN with physical access can unlock it too.
+- A signed but malicious package in a plan you approve runs as root at the trial boot. Fallback covers crashes, not hostile code.
+- The admin account is root-equivalent. The seed holds its password hash, so keep the seed private.
+- There is no host firewall yet, and no automatic security updates.
+
+Read the one-page [threat model](docs/THREAT-MODEL.md) and the [Security model][sec] page.
+
+## Roadmap
+
+The plan has 16 weeks of build work ([details][road]). Each milestone ends with a gate, and the gate must pass before the next milestone starts.
+
+| Weeks | Build | Status |
+|---|---|---|
+| 1-2 | Seed, encrypted install, recovery key, A/B generations, `os apply`, release pipeline, zero-touch ISO | Built and tested in VMs. Real hardware not run yet. |
+| 3 | Firewall, disk quotas, audit daemon, rootd skeleton, ntfy notifications | Designed, not built |
+| 4 | Operation registry, agentboxd gate, fuzzers | Designed, not built |
+| 5-6 | Agent accounts, one network-less container per task | Designed, not built |
+| 7-8 | Brokers: proxy, keys, git | Designed, not built |
+| 9-10 | Cedar policy, signed approvals, phone passkeys | Designed, not built |
+| 11-12 | Apps, file writes, package installs and nightly updates as new generations | Designed, not built |
+| 13-14 | Agent bus, shared memory | Designed, not built |
+| 15-16 | Benchmark, external threat-model review, signed release | Designed, not built |
+
+## Contributing
+
+agentbox is early, and the design still changes. Issues and pull requests are welcome.
+
+- Read [Contributing][contrib] for the dev setup and code style. The code is Go with the standard library only. The installer and the VM scripts are POSIX `sh`. The seed checker is Python, run with `uv`.
+- Run `go vet ./... && go test ./...` before you send a change.
+- For a change to the installer or to `os apply`, also run the matching VM gate.
+- Report security problems privately, as [SECURITY.md](SECURITY.md) and [Reporting a vulnerability][report] describe. Do not put any details in a public issue.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
+
+## Acknowledgements
+
+agentbox stands on the work of many open-source projects. It builds on Ubuntu Server and its installer, subiquity and curtin. Disk unlock at boot uses clevis and Tang. Every test VM runs on QEMU. The encrypted ones use swtpm as their TPM. It also relies on systemd, btrfs, GRUB, dracut, cryptsetup, minisign, xorriso and podman.
+
+<p align="center"><img src="mascot/agentbox-mascot.png" alt="The agentbox mascot in pixel art" width="128"></p>
+
+[wiki]: docs/wiki/README.md
+[gs]: docs/wiki/Getting-Started.md
+[gs-dry]: docs/wiki/Getting-Started.md#step-5-render-a-test-seed-dry-run-no-vm
+[hw]: docs/wiki/Installing-on-Real-Hardware.md
+[enc]: docs/wiki/Encryption-and-Recovery.md
+[gens]: docs/wiki/Generations-and-Updates.md
+[tests]: docs/wiki/Testing-and-Gates.md
+[arch]: docs/wiki/Architecture.md
+[sec]: docs/wiki/Security-Model.md
+[road]: docs/wiki/Roadmap.md
+[contrib]: docs/wiki/Contributing.md
+[report]: docs/wiki/Security-Model.md#reporting-a-vulnerability

@@ -1,6 +1,6 @@
 # agentbox threat model (one page)
 
-Source of truth: `~/workplace/ai-os-research/ARCHITECTURE.md` v5.2, §10. Update both together.
+Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md) v5.3, §10. Update both together.
 
 ## What we protect
 1. **The host:** the OS generations, the boot chain, and other users.
