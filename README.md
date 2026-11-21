@@ -3,24 +3,24 @@
 # agentbox
 
 > [!WARNING]
-> **Early alpha. Not for production use.** Today agentbox is an unattended, encrypted Ubuntu Server 26.04 installer with A/B OS generations, tested only in QEMU VMs. No AI agent can run on it yet.
+> **Early alpha. Not for production use.** Today agentbox is an unattended, encrypted Ubuntu Server 26.04 installer with A/B OS generations, plus the first host services of the safety layer: a firewall, an audit daemon and a root daemon. It is tested only in QEMU VMs. No AI agent can run on it yet.
 
-A headless OS for AI coding agents, built on stock Ubuntu Server 26.04. Early alpha: the agent runtime is designed, not built.
+A headless OS for AI coding agents, built on stock Ubuntu Server 26.04. Early alpha: the agent runtime (task containers, brokers, policy and approvals) is designed, not built.
 
 [Getting started][gs] · [Architecture][arch] · [Security model][sec] · [Roadmap][road] · [Wiki][wiki]
 
 ## What is agentbox
 
-agentbox aims to be an OS where AI agents can work safely. The design rests on four rules. Only the fourth is built today:
+agentbox aims to be an OS where AI agents can work safely. The design rests on four rules. Only the fourth is fully built today:
 
 - **No credentials in tasks (designed).** API keys and tokens will stay in broker services. The task will never hold them.
-- **No network for agents (designed).** Each task will run in a disposable container with no network. Traffic will leave only through the brokers.
-- **A human signs risky actions (designed).** The box will run a risky operation only after you sign it. The signature will cover its exact inputs, such as commit IDs and package hashes.
+- **No network for agents (partly built).** Each task will run in a disposable container with no network. Traffic will leave only through the brokers. The host firewall that holds each broker to the addresses rootd resolved for it is built. The task containers and the brokers are not.
+- **A human signs risky actions (designed).** The box will run a risky operation only after you sign it. The signature will cover its exact inputs, such as commit IDs and package hashes. The root daemon and the audit log it will rely on are built. Signed operations are not.
 - **OS changes fall back on failure (built).** An OS change builds offline into a new generation. The box keeps it only if it boots healthy. Otherwise it boots the last good generation.
 
 ## Status
 
-Weeks 1-2 of a 16-week plan are built. agentbox has run only in QEMU virtual machines, never on real hardware.
+Weeks 1-3 of a 20-week plan (v5.3, two engineers) are built. agentbox has run only in QEMU virtual machines, never on real hardware.
 
 **Works today**, in VMs on an Apple Silicon Mac:
 
@@ -28,12 +28,17 @@ Weeks 1-2 of a 16-week plan are built. agentbox has run only in QEMU virtual mac
 - A/B OS generations: a package change builds offline, boots once, and stays only if healthy.
 - Releases you build and sign yourself with `make release`. First boot checks them against a pinned SHA-256 and your minisign key. There is no official release yet.
 - Zero-touch installs on arm64 UEFI with Secure Boot on, and on amd64 legacy BIOS.
+- A host firewall (`agentbox-firewall.service`): an nftables table that limits each agentbox service user to its own destinations. `fwcheck` checks it about every 50 seconds, and a changed or flushed table keeps agent units from starting until it is restored.
+- An audit daemon (`agentbox-auditd`): a hash-chained log that records each operation before it runs, and a taint ledger. `agentbox audit verify` checks the chain.
+- A root daemon skeleton (`agentbox-rootd`): it resolves names for the brokers, fills their firewall sets, and seals finished audit segments.
+- Disk quotas that keep a disk reserve for the system, and packaged ntfy on a Unix socket only, for notifications.
 
 **Not yet:**
 
-- The agent runtime: task containers, brokers, policy, approvals, audit, bus and memory. All of it is designed. None of it is built.
+- The agent runtime: task containers, brokers, policy, approvals, bus and memory. All of it is designed. None of it is built.
 - Real hardware. amd64 UEFI has not run anywhere.
-- A host firewall and automatic security updates.
+- The week-3 gates in the encrypted modes and on amd64. They ran in `none` mode on arm64 UEFI only.
+- Inbound filtering and automatic security updates.
 - Updating agentbox itself on an installed box. This is out of scope for v1. A new release means a reinstall.
 
 ## Why
@@ -191,16 +196,21 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 | Trial boot and fallback | A new generation boots once and commits only if healthy. A broken trial falls back with no console input. |
 | Release pipeline | `make release` builds a tarball and a minisign signature. A CI build on Linux and a rebuild on a Mac with the same Go version are byte-identical; `hack/sign-release.sh` signs only when they match. First boot checks a pinned SHA-256, then the signature. |
 | Zero-touch ISO | `hack/remaster-iso.sh` adds `autoinstall ds=nocloud` to the stock ISO's boot menu. It changes only GRUB's config and its checksum line. |
-| Test harness | QEMU gates for the install, `os apply`, power cuts and disk-write replay, with swtpm and a test Tang container. |
+| Host firewall | `agentbox fw load` adds the `inet agentbox` table in one transaction and keeps every element rootd added. `fwcheck` compares the live table with the ruleset. On a mismatch it alerts and restores the table. Drops are silent. |
+| Audit daemon | `agentbox-auditd` acknowledges each record durably before its effect runs. If it is down, nothing runs. Sequence-named segments, per-subject taint epochs, taint write rules and a disk-full mode. `agentbox audit verify` checks the chain. |
+| Root daemon skeleton | `agentbox-rootd` resolves names through systemd-resolved and refuses private and special-purpose answers. It fills the brokers' firewall sets, refills them at start and on a timer, and seals audit segments. `agentbox egress list`, `refill`, `allow` and `remove` edit the allowlists. |
+| Disk quotas | btrfs qgroup `2/0` holds agent data under a disk reserve. The content store has its own cap. A writer at its limit gets `EDQUOT`, and system state still writes. |
+| Notifications | The Ubuntu `ntfy` package, run as `_ntfy`, on a Unix socket only, with topic ACLs. The firewall lets it reach only the `ntfy.sh` addresses rootd resolved. |
+| Test harness | QEMU gates for the install, `os apply`, power cuts and disk-write replay, with swtpm and a test Tang container. Week-3 gates for the firewall, auditd, rootd, quotas and ntfy. |
 
 ### Designed, not built
 
 | Feature | Plan |
 |---|---|
 | Task containers | One disposable podman container per task, with `Network=none` and a fresh HOME. |
-| Brokers | `proxy` holds no secrets. `keys` holds LLM API keys and budgets. `git` holds the GitHub token. |
-| Policy and approvals | Cedar policy. You sign approvals on your laptop with an SSH key. A phone passkey covers low-risk asks only. |
-| Firewall and audit | nftables, checked every 60 seconds. A hash-chained audit log and a taint ledger. |
+| Brokers | `proxy` holds no secrets. `keys` holds LLM API keys and budgets. `git` holds the GitHub token. Their firewall sets exist. The services do not. |
+| Operation registry | One registry of every operation, with generated code, schemas and denial codes, and fuzzers for every parser. |
+| Policy and approvals | Cedar policy. You sign approvals on your laptop with an SSH key. A phone passkey covers low-risk asks only. rootd runs only the operation you signed. |
 | Agent bus and memory | Messages between agents. Shared memory with quarantine and taint. |
 | OS updates | A nightly `os.update` into a new generation, with protected packages. |
 
@@ -216,8 +226,7 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 |                                                                  |
 |  DESIGNED, NOT BUILT                                             |
 |  agentboxd        task gate, policy, agent bus, shared memory    |
-|  agentbox-rootd   runs only the operations a human signed        |
-|  agentbox-auditd  hash-chained audit log and taint ledger        |
+|  agentbox-rootd   signed operations, bound to their exact inputs |
 |                                                                  |
 |  +----------------------+  unix sockets  +---------------------+ |
 |  | task container       |--------------->| brokers             |----> internet
@@ -227,6 +236,12 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 |                                          +---------------------+ |
 |                                                                  |
 |  BUILT TODAY                                                     |
+|  agentbox-rootd   skeleton: name resolver, broker firewall sets, |
+|                   audit segment sealing                          |
+|  agentbox-auditd  hash-chained audit log and taint ledger        |
+|  Firewall         outbound nftables rules per service user,      |
+|                   fwcheck restores an altered table              |
+|  Disk quotas      qgroup 2/0 with a reserve; ntfy on a socket    |
 |  OS generations   btrfs @gen-N, os plan / os apply, trial boot,  |
 |                   health commit, fallback with no console input  |
 |  Releases         signed tarball, checked at first boot          |
@@ -234,7 +249,7 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 +------------------------------------------------------------------+
 ```
 
-All agentbox services will be subcommands of one Go binary, `agentbox`. Today it has the operator commands `seed` and `recovery`. On the box it has `os plan`, `os apply`, `os status`, `os health` and `os mark-last-good`. It also has `reconcile` and `version`. The [Architecture][arch] page walks through the design part by part.
+All agentbox services will be subcommands of one Go binary, `agentbox`. Today it has the operator commands `seed` and `recovery`. On the box it has `os plan`, `os apply`, `os status`, `os health` and `os mark-last-good`; the firewall commands `fw load`, `fw check` and `fwcheck`; `audit verify`; and the admin command `egress`. The services `auditd` and `rootd` run from systemd units. It also has `reconcile` and `version`. The [Architecture][arch] page walks through the design part by part.
 
 ## Security model
 
@@ -246,7 +261,7 @@ The design treats prompt injection as the most likely attack. It also plans for 
 | 2. No credential exists inside a task. | Designed |
 | 3. Agents never change the running OS. Changes build offline into a new generation, which commits only after a health check. | Generations built and tested. The agent side is designed. |
 | 4. The root daemon (rootd) runs only the stored operation a human signed. | Designed |
-| 5. Taint is sticky. Work that touched untrusted content stays marked until a human clears it. | Designed |
+| 5. Taint is sticky. Work that touched untrusted content stays marked until a human clears it. | The taint ledger is built: only rootd's admin path can clear a subject, and the row stays. Nothing sets taint yet. |
 | 6. Nothing persists between tasks except the tainted workspace. | Designed |
 | 7. The seed and logs hold no plaintext secrets. | Built and tested |
 
@@ -256,31 +271,34 @@ Known limits of what is built today:
 - In `tpm2+tang` mode, an attacker who stays on your LAN with physical access can unlock it too.
 - A signed but malicious package in a plan you approve runs as root at the trial boot. Fallback covers crashes, not hostile code.
 - The admin account is root-equivalent. The seed holds its password hash, so keep the seed private.
-- There is no host firewall yet, and no automatic security updates.
+- The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules. SSH, and anything else that listens, is open to your LAN. Do not give the box a public IP address.
+- The brokers that the firewall confines are not built, so nothing yet hides systemd-resolved's local interfaces from them (a residual in the threat model).
+- There are no automatic security updates.
+- The week-3 gates ran only in `none` mode, on arm64 UEFI.
 
 Read the one-page [threat model](docs/THREAT-MODEL.md) and the [Security model][sec] page.
 
 ## Roadmap
 
-The plan has 16 weeks of build work ([details][road]). Each milestone ends with a gate, and the gate must pass before the next milestone starts.
+The plan (v5.3) takes about 20 weeks with two engineers ([details][road]). Its rows are numbered 1-16: they name phases, not calendar weeks. Each milestone ends with a gate, and the gate must pass before the next milestone starts. v5.3 adds four proposals (A-D) across the rows. It rejects a fifth, the delivery lane.
 
 | Weeks | Build | Status |
 |---|---|---|
-| 1-2 | Seed, encrypted install, recovery key, A/B generations, `os apply`, release pipeline, zero-touch ISO | Built and tested in VMs. Real hardware not run yet. |
-| 3 | Firewall, disk quotas, audit daemon, rootd skeleton, ntfy notifications | Designed, not built |
-| 4 | Operation registry, agentboxd gate, fuzzers | Designed, not built |
-| 5-6 | Agent accounts, one network-less container per task | Designed, not built |
-| 7-8 | Brokers: proxy, keys, git | Designed, not built |
-| 9-10 | Cedar policy, signed approvals, phone passkeys | Designed, not built |
+| 1-2 | Seed, encrypted install, recovery key, A/B generations, `os apply`, release pipeline, zero-touch ISO | Built. The gate passed in VMs at `e2e53af` and `61acfc7` ([suites][results]). Real hardware not run yet. |
+| 3 | Firewall, disk quotas, audit daemon, rootd skeleton and resolver, ntfy notifications | Built. Every gate item passed in VMs at `fb89de4`: suites `w3-firewall`, `w3-auditd`, `w3-rootd`, `w3-quota-ntfy`, plus the weeks 1-2 smoke suites ([results][results]). |
+| 4 | Operation registry, agentboxd gate, fuzzers; denial codes | Designed, not built |
+| 5-6 | Agent accounts, one network-less container per task; Go in the task image | Designed, not built |
+| 7-8 | Brokers: proxy (with a read-only Go module cache), keys, git | Designed, not built |
+| 9-10 | Cedar policy, signed approvals, phone passkeys; an ask budget and batched asks | Designed, not built |
 | 11-12 | Apps, file writes, package installs and nightly updates as new generations | Designed, not built |
-| 13-14 | Agent bus, shared memory | Designed, not built |
+| 13-14 | Agent bus, shared memory, bound to workspaces | Designed, not built |
 | 15-16 | Benchmark, external threat-model review, signed release | Designed, not built |
 
 ## Contributing
 
 agentbox is early, and the design still changes. Issues and pull requests are welcome.
 
-- Read [Contributing][contrib] for the dev setup and code style. The code is Go with the standard library only. The installer and the VM scripts are POSIX `sh`. The seed checker is Python, run with `uv`.
+- Read [Contributing][contrib] for the dev setup and code style. The code is Go: the standard library plus `golang.org/x/sys` and `modernc.org/sqlite`. The installer and the VM scripts are POSIX `sh`. The seed checker is Python, run with `uv`.
 - Run `go vet ./... && go test ./...` before you send a change.
 - For a change to the installer or to `os apply`, also run the matching VM gate.
 - Report security problems privately, as [SECURITY.md](SECURITY.md) and [Reporting a vulnerability][report] describe. Do not put any details in a public issue.
@@ -302,6 +320,7 @@ agentbox stands on the work of many open-source projects. It builds on Ubuntu Se
 [enc]: docs/wiki/Encryption-and-Recovery.md
 [gens]: docs/wiki/Generations-and-Updates.md
 [tests]: docs/wiki/Testing-and-Gates.md
+[results]: docs/wiki/Testing-and-Gates.md#results-at-the-time-of-writing
 [arch]: docs/wiki/Architecture.md
 [sec]: docs/wiki/Security-Model.md
 [road]: docs/wiki/Roadmap.md

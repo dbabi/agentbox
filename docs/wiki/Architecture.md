@@ -1,18 +1,18 @@
 # Architecture
 
-> **Early alpha. Not for production use.** No AI agent can run on agentbox yet. Weeks 1-2 of a 16-week plan are built: the installer and the OS layer. The agent runtime on this page is designed, not built.
+> **Early alpha. Not for production use.** No AI agent can run on agentbox yet. Weeks 1-3 of a 20-week plan are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon and a skeleton of the root daemon). The agent runtime on this page is designed, not built.
 
 This page explains the target design of agentbox for newcomers.
 It follows version 5.2 of the design.
-The full spec is `ARCHITECTURE.md` v5.2, in the design notes.
-The design notes are not published yet.
+The full spec is [`ARCHITECTURE.md`](../design/ARCHITECTURE.md) v5.3, in `docs/design/`.
+The build plan is [`PLAN.md`](../design/PLAN.md) v5.3.
 
 Two words mark the state of each part:
 
 - **Built:** the code is on `main`, and its test gates have passed in QEMU VMs ([Testing and Gates](Testing-and-Gates.md) says where and when). No real hardware has run it yet.
-- **Designed:** the design notes describe it, but there is no code yet.
+- **Designed:** the design in `docs/design/` describes it, but there is no code yet.
 
-Week numbers refer to the 16-week build plan. The plan can change.
+Week numbers refer to the rows of build plan v5.3. The rows are numbered 1-16 and name phases, not calendar weeks: with two engineers the plan takes about 20 weeks. The plan can change.
 [Roadmap](Roadmap.md) has the order of work.
 [Testing and Gates](Testing-and-Gates.md) says what each test gate proves.
 
@@ -24,7 +24,7 @@ Week numbers refer to the 16-week build plan. The plan can change.
 | btrfs A/B OS generations: `os plan`, `os apply`, health commit, unattended fallback | Built | 1-2 |
 | Signed release pipeline and firstboot install | Built | 1-2 |
 | Zero-touch install ISO, QEMU test harness, power-cut tests | Built | 1-2 |
-| Firewall, disk quotas, audit daemon, rootd skeleton, ntfy | Designed | 3 |
+| Firewall, disk quotas, audit daemon, rootd skeleton and resolver, ntfy | Built | 3 |
 | Operation registry and the agentboxd gate | Designed | 4 |
 | Agent accounts, task containers, interactive sessions | Designed | 5-6 |
 | Brokers: proxy, keys, git | Designed | 7-8 |
@@ -69,8 +69,9 @@ The design has two layers:
 1. **The OS layer (Built).** It installs Ubuntu, encrypts the disk and keeps the OS in btrfs A/B generations.
 2. **The agent runtime (Designed).** It runs each task in its own container. A few small services decide what the task may do outside that container.
 
-In the diagram, everything above the OS layer is designed.
-None of those services exists yet.
+In the diagram, everything above the OS layer is designed, with three exceptions built in week 3:
+`agentbox-auditd`, the host firewall, and a skeleton of `agentbox-rootd` (its name resolver, the brokers' firewall sets and audit-segment sealing).
+None of the other services exists yet.
 
 ## Principles
 
@@ -88,7 +89,7 @@ These eight rules shape the whole design.
    Task containers have no network at all.
    Traffic leaves only through the task's own Unix sockets, to the brokers.
    Brokers may connect only to addresses that rootd resolved for allowlisted names.
-   *Designed (weeks 3-8).*
+   *Built in part (week 3): the firewall and rootd's resolver, which hold each broker uid to rootd's answers. The containers and brokers are designed (weeks 5-8).*
 4. **The executor owns the floor.**
    `agentbox-rootd` stores every pending operation, bound to its exact inputs, such as commit IDs and package hashes.
    When an operation needs approval, rootd runs only the stored copy that a human signed.
@@ -106,7 +107,7 @@ These eight rules shape the whole design.
    Content from an untrusted source marks, or taints, the task that reads it.
    The mark spreads to what the task touches.
    Only a human can clear it.
-   *Designed (weeks 3-14).*
+   *Built in part (week 3): auditd's taint ledger, where only rootd's admin path clears a subject. What sets and spreads taint is designed (weeks 4-14).*
 8. **Honest guarantees.**
    The design states what each operation's rollback covers.
    It states the limits of disk encryption and of phone approvals.
@@ -151,7 +152,7 @@ More: [Encryption and Recovery](Encryption-and-Recovery.md) and [Installing on R
 - These subvolumes stay the same across generations: `@home`, `@var_log`, `@var_lib_agentbox`, `@var_lib_agentbox_data`, `@var_lib_tailscale`, `@var_lib_ntfy`, `@srv` and `@snapshots`.
   Persistent data is outside the generations, so it survives a fallback.
 - Each generation keeps its kernels and initrds in `/bootpart/agentbox/gens/gen-N/`, bind-mounted at `/boot`.
-- *Designed (week 3):* btrfs quotas. One parent quota group caps every store that agents and apps can fill. The OS and agentbox's control state stay outside it, so they always keep a reserve.
+- *Built (week 3):* btrfs quotas. One parent quota group, `2/0`, caps every store that agents and apps can fill, at the file system size minus max(10%, 4 GiB). The OS, agentbox's control state and the generations stay outside it, so they always keep a reserve. The content store (`cas`) has its own cap. Per-agent quota groups come with agent accounts (weeks 5-6).
 
 ### Generations
 
@@ -163,7 +164,7 @@ More: [Encryption and Recovery](Encryption-and-Recovery.md) and [Installing on R
   2. It installs the approved `.deb` files offline, in `systemd-nspawn` with a private user range and no network.
   3. It checks that every new initrd has the drivers and tools to unlock and mount the root.
   4. It sets GRUB to boot the new generation once, then reboots.
-- After the reboot, `agentbox-health.timer` runs `agentbox os health` every minute.
+- After the reboot, `agentbox-health.timer` runs `agentbox os health` every 50 seconds.
   A healthy trial is committed.
   Anything else falls back to the last committed generation, with no console input.
 - Fallback has several paths:
@@ -178,7 +179,7 @@ More: [Encryption and Recovery](Encryption-and-Recovery.md) and [Installing on R
   - the booted kernel's modules exist;
   - `/` has at least 2 GiB free;
   - there is an IPv4 default route.
-- Health checks for agentbox services, the firewall, DNS and Tailscale are designed.
+- Before those checks, `agentbox-health.service` runs `fwcheck --repair` (week 3). Health checks for agentbox services, DNS and Tailscale are designed.
 - The box keeps the three newest generations at or below the committed one, plus any generation that is booted, committed or pending.
 - Only one `os apply` runs at a time.
   Until `rootd.db` exists, the `os` commands keep their lock and trial records in `/var/lib/agentbox/os/`.
@@ -220,8 +221,13 @@ More: [Release Pipeline](Release-Pipeline.md).
 |---|---|---|
 | `agentbox-firstboot.service` | the seed | Installs the signed release once. Retries every 60 s until it succeeds. |
 | `agentbox-boot-deadline.service` | the seed | Reboots an uncommitted generation after 900 s. |
-| `agentbox-reconcile.service` | the release | Re-applies agentbox's control state to the booted generation. Today it does nothing. |
-| `agentbox-health.service`, `agentbox-health.timer` | the release | Runs `agentbox os health` every minute. |
+| `agentbox-reconcile.service` | the release | Re-applies agentbox's control state to the booted generation: the quota groups, and ntfy's config, ACLs and unit drop-in. |
+| `agentbox-firewall.service` | the release | Loads the `inet agentbox` nftables table. Every agentbox unit `Requires=` it. |
+| `agentbox-health.service`, `agentbox-health.timer` | the release | Every 50 s: `agentbox fwcheck --repair`, then `agentbox os health`. |
+| `agentbox-auditd.service` and its sockets | the release | The audit daemon. Socket-activated: one socket per producer (agentboxd, rootd, proxy, keys, git). |
+| `agentbox-rootd.service` and its sockets | the release | The root daemon skeleton: the resolver sockets for the three brokers, the admin socket, and the seal socket auditd calls. |
+| `ntfy.service` | the Ubuntu `ntfy` package | Notifications, as `_ntfy`, on a Unix socket only. `install.sh` installs the package; reconcile configures and enables it. |
+| `agentbox-agent-stub.service` | the release | A stand-in for an agent unit, for the gates. Not enabled. |
 
 ### Designed parts of the OS layer
 
@@ -232,7 +238,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 
 ## The services
 
-**Status:** Designed. None of these services exists yet. Today the only agentbox units on the box are the ones in [Units on the box today](#units-on-the-box-today).
+**Status:** Mostly designed. `agentbox-auditd`, a skeleton of `agentbox-rootd` and the packaged ntfy are built (week 3). The other services don't exist yet. [Units on the box today](#units-on-the-box-today) lists what runs today.
 
 In the design, rootd, agentboxd, auditd, approvald and the three brokers are all subcommands of the one `agentbox` binary.
 The local-model units run llama-server, and ntfy and tailscaled come from their own packages.
@@ -240,15 +246,15 @@ Each service runs as its own Linux user, with only the access it needs.
 
 | Service | Runs as | Job | Status |
 |---|---|---|---|
-| `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Designed (weeks 3-12). Its generation code is built. |
+| `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Skeleton built (week 3): the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing. Its generation code is built. The rest is designed (weeks 5-12). |
 | `agentboxd` | `agentbox` | The front door for agents: the task gate, Cedar policy, the agent bus, memory and decide. Has no network. | Designed (week 4 on) |
-| `agentbox-auditd` | `agentbox-audit` | Writes the hash-chained audit log and the taint ledger. Has no network. | Designed (week 3) |
+| `agentbox-auditd` | `agentbox-audit` | Writes the hash-chained audit log and the taint ledger. Has no network. | Built (week 3). Per-field audit classes are designed (week 4). |
 | `agentbox-proxy` | `agentbox-proxy` | Tunnels task traffic to allowlisted hosts. Holds no secrets. | Designed (weeks 7-8) |
 | `agentbox-keys` | `agentbox-keys` | Holds the LLM API keys and budgets. Checks every model request, then adds the key. | Designed (weeks 7-8) |
 | `agentbox-git` | `agentbox-git` | Hosts local git repos. Holds the GitHub token and runs the `gh.*` operations. | Designed (weeks 7-8) |
 | `agentbox-approvald` | `agentbox-approve` | Serves the phone approval page. Holds no keys. | Designed (weeks 9-10) |
 | `agentbox-llm@task`, `agentbox-llm@decide` | `agentbox-llm`, `agentbox-llm-decide` | Local models (llama-server) for tasks and for decide. Have no network. | Designed (weeks 7-8, 11-12) |
-| ntfy, tailscaled | `_ntfy`, root | Phone notifications. Tailnet access to the approval page. | Designed (ntfy in week 3). The seed creates their data subvolumes only. |
+| ntfy, tailscaled | `_ntfy`, root | Phone notifications. Tailnet access to the approval page. | ntfy: built (week 3). tailscaled: designed. |
 
 - rootd is the only agentbox service that runs as root.
   For OS builds, it starts short-lived helper units: `osbuild-fetch@` downloads packages, `osbuild-apply@` installs them in nspawn, and `osbuild-image@` builds the task image.
@@ -447,7 +453,7 @@ Root access is the approval.
 
 ## Network and secrets
 
-**Status:** Designed (weeks 3 and 7-8). Today the box has no host firewall. The seed installs `nftables` but masks the stock `nftables.service`.
+**Status:** The firewall and rootd's resolver are built (week 3). The brokers are designed (weeks 7-8). The seed still masks the stock `nftables.service`: `agentbox-firewall.service` loads agentbox's own table instead.
 
 ### Firewall
 
@@ -461,6 +467,12 @@ Root access is the approval.
   If the table changed, the check reloads it and restarts rootd, the brokers and each agent's systemd user manager.
   Running tasks are killed, and an alert goes out.
 - If the check fails, no agent or app can start.
+- Drops are silent: the table has no log statement.
+
+Built today (week 3): `agentbox fw load` adds the table as one add-only transaction, so a reload keeps every element rootd added.
+`fwcheck` runs from the health timer every 50 s, and from each agent-side unit's `ExecStartPre=`.
+On a mismatch it prints `agentbox: ALERT: firewall altered` and restarts the firewall unit, which restarts every unit that `Requires=` it.
+The table has an output chain only. It has no inbound rules, so SSH and any other listener stay open to the LAN.
 
 ### DNS and pinned dialing
 
@@ -471,6 +483,10 @@ Root access is the approval.
 - rootd adds the answers to the broker's address set, with a timeout, and returns them.
 - The broker dials only those addresses.
   TLS still checks the original hostname.
+
+Built today (week 3): the resolver, through systemd-resolved's Varlink socket, with every refusal rule above, NAT64 prefixes included.
+rootd keeps its answers in `rootd.db`, refills the sets at start (before `READY=1`) and on a timer, and `agentbox egress list|refill|allow|remove` edits the allowlists.
+The brokers that will use it are not built.
 
 ### The proxy
 
@@ -530,7 +546,7 @@ In the design, no credential of any kind exists inside a task.
 
 ## Taint
 
-**Status:** Designed (weeks 3-14).
+**Status:** Mostly designed (weeks 4-14). auditd's taint ledger is built (week 3): per-subject epochs, the write rules, and `taint.clear` only from rootd's admin path, after which the row stays with its epoch moved on.
 
 Taint is how agentbox tracks untrusted content.
 It decides when a task's actions need a human signature.
@@ -610,7 +626,7 @@ It decides when a task's actions need a human signature.
 
 ## Audit
 
-**Status:** Designed (week 3, with per-field audit rules in week 4). Today there is no audit log.
+**Status:** Built (week 3), except the per-field audit classes (week 4) and shipping the log off the box. No producer other than rootd and the test producer writes to it yet.
 
 - `agentbox-auditd` is the only writer of the audit log.
   It runs as its own user, with no network.
@@ -633,8 +649,10 @@ It decides when a task's actions need a human signature.
 - The design keeps audit records for 1 year, and it records no task transcripts by default.
 - Shipping the log off the box is recommended, so tampering on the box can be detected.
 
-What exists today: installer logs persist under `/var/log`, with no password hash.
-The `os` commands print alerts that start with `agentbox: ALERT:`.
+Built today: auditd with one socket per producer, sequence-named segments, the hash chain, taint epochs, disk-full mode and rootd's sealing (`chattr +a`, then `+i`).
+`agentbox audit verify` checks the chain.
+Installer logs persist under `/var/log`, with no password hash.
+The `os` commands and `fwcheck` print alerts that start with `agentbox: ALERT:`.
 When `os health` runs from its timer, those alerts land in the journal.
 
 ## When things fail
@@ -646,9 +664,9 @@ When `os health` runs from its timer, those alerts land in the journal.
 | Tang is down (`tpm2+tang`) | The disk can't unlock. The box reboots about every 8 minutes until Tang is back, or someone types the recovery key. | Built |
 | agentboxd is down | Running tasks keep running. A task's result still arrives if agentboxd returns before the task's deadline. | Designed |
 | rootd is down | Operations fail closed. On restart, rootd reconciles every open operation with auditd before it listens again. | Designed |
-| auditd is down | No effect runs, and no tainted read is delivered. | Designed |
-| The firewall check fails | No agent or app can start. | Designed |
-| The disk is nearly full | New task dispatch pauses at 92% used. Audit and control state keep a reserve, so admin operations still run. | Designed |
+| auditd is down | No effect runs, and no tainted read is delivered. | Built for rootd and the test producer |
+| The firewall check fails | No agent or app can start. | Built, with a stand-in agent unit |
+| The disk is nearly full | New task dispatch pauses at 92% used. Audit and control state keep a reserve, so admin operations still run. | auditd's disk-full mode and the `2/0` reserve are built. Dispatch is designed. |
 
 ## Security model in brief
 
@@ -658,8 +676,9 @@ When `os health` runs from its timer, those alerts land in the journal.
 - Prompt injection is the most likely attack.
   Others are a compromised agent CLI or dependency, a thief, someone on your LAN or tailnet, and bugs in agentbox's own services.
 - The threat model lists seven non-negotiables that tests must prove.
-  Two have built parts today:
+  Three have built parts today:
   - "Agents never mutate the running OS": the generation mechanism is built. Agents are not.
+  - "Taint is sticky": auditd's taint ledger is built. Nothing sets taint yet.
   - "The seed and logs contain no plaintext secrets": built. The seed still holds the admin password hash, so keep it private.
 - The threat model also lists accepted risks, many with a path for v2.
   Examples: shared-kernel exploits (v2: microVM tasks), and an admin account that is root-equivalent.
@@ -670,16 +689,21 @@ Read [Security Model](Security-Model.md) and the one-page threat model in the re
 
 | Path | What it holds | Status |
 |---|---|---|
-| `cmd/agentbox` | The CLI: `seed`, `recovery`, `os`, `reconcile` and `version` | Built |
+| `cmd/agentbox` | The CLI: `seed`, `recovery`, `os`, `reconcile`, `fw`, `fwcheck`, `auditd`, `audit`, `rootd`, `egress` and `version` | Built |
 | `internal/seed` | Seed validation and the autoinstall template | Built |
 | `internal/recovery` | Recovery key generation and decryption | Built |
 | `internal/rootd/gens` | A/B generations: plan, build, initrd checks, commit, fallback, retention | Built |
+| `internal/rootd`, `internal/rootd/{resolve,quota,nl}` | The rootd skeleton: sockets, the resolver, quota groups, netlink (nftables sets and conntrack) | Built (week 3) |
+| `internal/fw` | The nftables ruleset, `fw load` and `fwcheck` | Built (week 3) |
+| `internal/audit` | auditd: segments, the hash chain, the taint database, sealing, `audit verify` | Built (week 3) |
+| `internal/ntfy` | ntfy's config, ACLs, unit drop-in and fwcheck's ntfy check | Built (week 3) |
+| `sysusers.d/`, `tmpfiles.d/` | The service users and the runtime directories | Built (week 3) |
 | `install/`, `systemd/` | The release's `install.sh` and its systemd units | Built |
 | `hack/` | The release builder, the ISO remaster script, the QEMU harness and the test gates | Built |
-| `internal/{ops,gate,policy,bus,memory,decide,dispatch,audit,approvald,webauthn,proxy,keys,gitsvc,taskrun,reconcile}`, the rest of `internal/rootd` | The agent runtime | Designed |
+| `internal/{ops,gate,policy,bus,memory,decide,dispatch,approvald,webauthn,proxy,keys,gitsvc,taskrun,reconcile}`, the rest of `internal/rootd` | The agent runtime | Designed |
 
-Today the code uses only the Go standard library.
-The design adds Go modules later, such as cedar-go, an SQLite driver, the MCP Go SDK and a WebAuthn library.
+Today the code uses the Go standard library plus two modules: `golang.org/x/sys` and the pure-Go SQLite driver `modernc.org/sqlite` (for auditd's taint database and `rootd.db`).
+The design adds more later, such as cedar-go, the MCP Go SDK and a WebAuthn library.
 
 ## Read more
 
@@ -687,7 +711,7 @@ The design adds Go modules later, such as cedar-go, an SQLite driver, the MCP Go
 - [Security Model](Security-Model.md) covers the threats, the trust boundaries and the accepted risks.
 - [Roadmap](Roadmap.md) lists what each milestone adds.
 
-Where each topic lives in `ARCHITECTURE.md` v5.2, for when the design notes are published:
+Where each topic lives in [`ARCHITECTURE.md`](../design/ARCHITECTURE.md) v5.3:
 
 | Topic | Section |
 |---|---|
