@@ -17,12 +17,15 @@ import (
 
 // Schema is the resolver's part of rootd.db (Appendix E). set_elements is the refill source and what fwcheck reads:
 // every element any dst set may hold, with the latest expiry. set_answers says which entry each element answers, so a
-// removed entry revokes exactly its elements; an element two entries share stays until both are gone.
+// removed entry revokes exactly its elements; an element two entries share stays until both are gone. clock is the
+// fw.Clock the expiries are on (see rebase).
 const Schema = `
 CREATE TABLE IF NOT EXISTS set_elements(set_name TEXT NOT NULL, element TEXT NOT NULL, expires_at INTEGER,
   PRIMARY KEY(set_name, element)) STRICT;
 CREATE TABLE IF NOT EXISTS set_answers(entry TEXT NOT NULL, set_name TEXT NOT NULL, element TEXT NOT NULL,
   expires_at INTEGER NOT NULL, PRIMARY KEY(entry, set_name, element)) STRICT;
+CREATE TABLE IF NOT EXISTS clock(id INTEGER PRIMARY KEY CHECK (id = 1), boot_id TEXT NOT NULL,
+  offset_ms INTEGER NOT NULL) STRICT;
 `
 
 // Sets are the destination sets rootd owns.
@@ -42,7 +45,8 @@ type Service struct {
 	}
 	Flows   func(netip.Addr, uint16) (int, error) // nl.DeleteFlows
 	Now     func() time.Time
-	Timeout time.Duration // set element timeout: 10 min (Appendix B)
+	Clock   func() (string, int64) // fw.Clock
+	Timeout time.Duration          // set element timeout: 10 min (Appendix B)
 	// Deny receives each refusal; detail (addresses, the failed check) is for audit only.
 	Deny func(svc, entry, reason, detail string)
 	// TaskAgent maps a live task to its agent, for the proxy's per-agent list. Until the task registry lands
@@ -142,6 +146,9 @@ func (s *Service) Resolve(ctx context.Context, svc, task string, e Entry) ([]net
 		return nil, time.Time{}, s.deny(svc, e, Unavailable, err.Error())
 	}
 	defer tx.Rollback()
+	if err := s.rebase(tx); err != nil {
+		return nil, time.Time{}, s.deny(svc, e, Unavailable, err.Error())
+	}
 	for _, a := range addrs {
 		el := Elem{SetFor(svc, a), a, e.Port}
 		if _, err := tx.Exec(`INSERT INTO set_answers VALUES(?,?,?,?) ON CONFLICT DO UPDATE SET expires_at=excluded.expires_at`,
@@ -161,6 +168,31 @@ func (s *Service) Resolve(ctx context.Context, svc, task string, e Entry) ([]net
 		return nil, time.Time{}, s.deny(svc, e, Unavailable, err.Error())
 	}
 	return addrs, exp, nil
+}
+
+// rebase moves every dst expiry by the wall step since the clock row (same boot), so the rows stay in step with the
+// kernel's element timeouts, which a wall step does not move; then it records the current clock. Without it a forward
+// step makes fwcheck read live elements as alterations, and a backward one makes refill add expiries past the timeout.
+func (s *Service) rebase(tx *sql.Tx) error {
+	boot, off := s.Clock()
+	var b string
+	var o int64
+	err := tx.QueryRow(`SELECT boot_id, offset_ms FROM clock`).Scan(&b, &o)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if d := off - o; err == nil && b == boot && d != 0 {
+		in, args := inSets()
+		if _, err := tx.Exec(`UPDATE set_answers SET expires_at = expires_at + ?`, d); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE set_elements SET expires_at = expires_at + ? WHERE set_name IN `+in, append([]any{d}, args...)...); err != nil {
+			return err
+		}
+	}
+	_, err = tx.Exec(`INSERT INTO clock VALUES(1, ?, ?) ON CONFLICT DO UPDATE SET boot_id = excluded.boot_id,
+		offset_ms = excluded.offset_ms`, boot, off)
+	return err
 }
 
 // syncElements recomputes set_elements from the set_answers that are unexpired, or expired within fw.ElementSlack:
@@ -258,6 +290,9 @@ func (s *Service) Refill() (RefillResult, error) {
 		return res, err
 	}
 	defer tx.Rollback()
+	if err := s.rebase(tx); err != nil {
+		return res, err
+	}
 	before, err := elements(tx)
 	if err != nil {
 		return res, err

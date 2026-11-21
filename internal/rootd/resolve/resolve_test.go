@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"agentbox/internal/fw"
 	"agentbox/internal/rootd/nl"
 
 	_ "modernc.org/sqlite"
@@ -155,6 +156,8 @@ func TestParseVarlink(t *testing.T) {
 }
 
 // fakes for the resolver's dependencies
+func fixedClock() (string, int64) { return "boot-1", 0 }
+
 type fakeDNS map[string][]netip.Addr
 
 func (f fakeDNS) ResolveHostname(_ context.Context, n string) ([]netip.Addr, error) {
@@ -216,7 +219,7 @@ func TestResolveAndRefill(t *testing.T) {
 	var cut []string
 	var denied []string
 	s := &Service{
-		DB: db, Dir: dir, Now: func() time.Time { return now }, Timeout: 10 * time.Minute, Nft: nft,
+		DB: db, Dir: dir, Now: func() time.Time { return now }, Clock: fixedClock, Timeout: 10 * time.Minute, Nft: nft,
 		Resolver: fakeDNS{"api.example.com": {pub4, pub6}, "own.example.com": {pub4, own}, "v4only.example.com": {pub4, pub6},
 			"priv.example.com": {pub4, netip.MustParseAddr("10.0.0.1")},
 			// DNS64 with a network-specific prefix, and a name that publishes only an AAAA wrapping a LAN address
@@ -361,7 +364,7 @@ func TestRevocationRetriedAndSlack(t *testing.T) {
 	nft := &failNft{fakeNft: &fakeNft{map[string]map[string]bool{}}}
 	flowsFail := 0
 	var cut []string
-	s := &Service{DB: db, Dir: dir, Now: func() time.Time { return now }, Timeout: 10 * time.Minute, Nft: nft,
+	s := &Service{DB: db, Dir: dir, Now: func() time.Time { return now }, Clock: fixedClock, Timeout: 10 * time.Minute, Nft: nft,
 		Resolver: fakeDNS{"a.example.com": {a1}, "b.example.com": {a2}, "ipv4only.arpa": wka}, Route: func(netip.Addr) string { return "" },
 		Flows: func(a netip.Addr, p uint16) (int, error) {
 			if flowsFail > 0 {
@@ -407,5 +410,54 @@ func TestRevocationRetriedAndSlack(t *testing.T) {
 	s.Resolve(context.Background(), "keys", "", Entry{"b.example.com", 443})
 	if rows(`SELECT count(*) FROM set_elements WHERE element = '93.184.215.14 . 443'`) != 0 {
 		t.Fatal("a row past the slack stayed")
+	}
+}
+
+// A wall step moves Now but not the kernel's element timeouts: rootd rebases the rows by the step (same boot only), so
+// a forward step neither expires live elements early nor makes fwcheck see them as alterations, and a backward step
+// never asks nft for an expiry past the timeout.
+func TestRebaseOnClockStep(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "rootd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(Schema); err != nil {
+		t.Fatal(err)
+	}
+	now := time.UnixMilli(1_800_000_000_000)
+	boot, off := "boot-1", int64(0)
+	nft := &fakeNft{map[string]map[string]bool{}}
+	s := &Service{DB: db, Dir: dir, Now: func() time.Time { return now }, Clock: func() (string, int64) { return boot, off },
+		Timeout: 10 * time.Minute, Nft: nft, Resolver: fakeDNS{"a.example.com": {netip.MustParseAddr("93.184.215.14")},
+			"ipv4only.arpa": wka}, Route: func(netip.Addr) string { return "" },
+		Flows: func(netip.Addr, uint16) (int, error) { return 0, nil }}
+	EditList(dir, "keys", Entry{"a.example.com", 443}, true)
+	if _, _, err := s.Resolve(context.Background(), "keys", "", Entry{"a.example.com", 443}); err != nil {
+		t.Fatal(err)
+	}
+	expires := func() (e int64) {
+		db.QueryRow(`SELECT expires_at FROM set_elements WHERE set_name = 'keys_dst4'`).Scan(&e)
+		return
+	}
+	want := now.Add(10 * time.Minute).UnixMilli()
+	for _, step := range []time.Duration{time.Hour, -2 * time.Hour} {
+		now, off = now.Add(time.Minute+step), off+step.Milliseconds()
+		want += step.Milliseconds()
+		res, err := s.Refill()
+		if err != nil || res.Expired != 0 || res.Added != 1 || expires() != want {
+			t.Fatalf("step %v: %+v %v, expires %d want %d", step, res, err, expires(), want)
+		}
+		rows, _ := fw.ReadRows(db)
+		if bad := fw.Compare(map[string][]string{"keys_dst4": {"93.184.215.14 . 443"}}, rows, now); len(bad) != 0 {
+			t.Fatalf("step %v: %v", step, bad)
+		}
+	}
+	// a new boot: no rebase (the refill at boot re-adds with the wall-clock time left)
+	boot, off = "boot-2", off+time.Hour.Milliseconds()
+	if _, err := s.Refill(); err != nil || expires() != want {
+		t.Fatalf("new boot: %v, expires %d want %d", err, expires(), want)
 	}
 }

@@ -257,7 +257,7 @@ add element inet agentbox port_allow { 0 . 43200 }
 
 func TestReadDB(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "rootd.db")
-	if rows, err := readDB(p); rows != nil || err != nil {
+	if rows, _, err := readDB(p, "b", 0); rows != nil || err != nil {
 		t.Fatalf("no rootd.db: %v %v", rows, err)
 	}
 	db, err := sql.Open("sqlite", "file:"+p)
@@ -268,7 +268,7 @@ func TestReadDB(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE x(a)`); err != nil {
 		t.Fatal(err)
 	}
-	if rows, err := readDB(p); rows != nil || err != nil {
+	if rows, _, err := readDB(p, "b", 0); rows != nil || err != nil {
 		t.Fatalf("no set_elements table: %v %v", rows, err)
 	}
 	if _, err := db.Exec(`CREATE TABLE set_elements(set_name TEXT NOT NULL, element TEXT NOT NULL, expires_at INTEGER,
@@ -276,9 +276,38 @@ func TestReadDB(t *testing.T) {
 		('keys_dst4', '1.2.3.4 . 443', 1800000000000)`); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := readDB(p)
-	if err != nil || len(rows) != 2 || rows[0].Expires != nil || rows[1].Expires == nil || *rows[1].Expires != 1_800_000_000_000 {
-		t.Fatalf("rows %+v %v", rows, err)
+	rows, step, err := readDB(p, "b", 0)
+	if err != nil || step != 0 || len(rows) != 2 || rows[0].Expires != nil || rows[1].Expires == nil || *rows[1].Expires != 1_800_000_000_000 {
+		t.Fatalf("rows %+v %d %v", rows, step, err)
+	}
+	// rootd recorded the clock at offset 1000; a +1 h wall step since then in this boot is a step, in another boot not
+	if _, err := db.Exec(`CREATE TABLE clock(id INTEGER PRIMARY KEY CHECK (id = 1), boot_id TEXT NOT NULL,
+		offset_ms INTEGER NOT NULL) STRICT; INSERT INTO clock VALUES (1, 'b', 1000)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, step, err := readDB(p, "b", 1000+3_600_000); err != nil || step != 3_600_000 {
+		t.Fatalf("same boot: step %d %v", step, err)
+	}
+	if _, step, err := readDB(p, "c", 1000+3_600_000); err != nil || step != 0 {
+		t.Fatalf("new boot: step %d %v", step, err)
+	}
+}
+
+// A forward wall step moves now but not the kernel's element timeouts: fwcheck compares on the rows' clock, so a live
+// element is not an alteration, while one past its row's expiry on that clock still is.
+func TestCompareAcrossClockStep(t *testing.T) {
+	t0 := time.Unix(1_800_000_000, 0)
+	rows := []Row{{"ntfy_dst4", "1.2.3.4 . 443", i64(t0.Add(10 * time.Minute).UnixMilli())}}
+	live := map[string][]string{"ntfy_dst4": {"1.2.3.4 . 443"}}
+	stepped, step := t0.Add(time.Minute+time.Hour), time.Hour
+	if bad := Compare(live, rows, stepped); len(bad) == 0 {
+		t.Fatal("the unrebased compare should see the element as expired")
+	}
+	if bad := Compare(live, rows, stepped.Add(-step)); len(bad) != 0 {
+		t.Fatalf("rebased: %v", bad)
+	}
+	if bad := Compare(live, rows, stepped.Add(-step+10*time.Minute)); len(bad) == 0 {
+		t.Fatal("an element past its row's expiry on the rows' clock passed")
 	}
 }
 
@@ -306,7 +335,7 @@ func TestRecordFixed(t *testing.T) {
 	if err := errors.Join(RecordFixed(db), RecordFixed(db)); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := readDB(p)
+	rows, _, err := readDB(p, "b", 0)
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("rows %+v %v", rows, err)
 	}

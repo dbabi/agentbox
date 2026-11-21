@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
 )
 
@@ -236,25 +237,57 @@ func ReadRows(db *sql.DB) ([]Row, error) {
 	return rows, rs.Err()
 }
 
+// Clock returns this boot's id and the wall clock minus CLOCK_MONOTONIC, in ms. nft element timeouts run on jiffies,
+// which keep the monotonic clock's pace: within one boot, a change in the offset is a wall step (timesyncd, a VM
+// resume) that the dst rows' wall-clock expiries must follow (rootd rebases them; fwcheck rebases its now).
+func Clock() (string, int64) {
+	b, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	var ts unix.Timespec
+	_ = unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts)
+	return strings.TrimSpace(string(b)), time.Now().UnixMilli() - ts.Nano()/1e6
+}
+
+// ClockStep is the wall step, in ms, since rootd last recorded the clock in rootd.db (its clock row) in this boot: the
+// rows' expiries are on the wall clock as it was then. 0 across a reboot, or before rootd recorded one.
+func ClockStep(db *sql.DB, boot string, off int64) (int64, error) {
+	var b string
+	var o int64
+	err := db.QueryRow(`SELECT boot_id, offset_ms FROM clock`).Scan(&b, &o)
+	if errors.Is(err, sql.ErrNoRows) || (err != nil && strings.Contains(err.Error(), "no such table")) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("rootd.db clock: %w", err)
+	}
+	if b != boot {
+		return 0, nil
+	}
+	return off - o, nil
+}
+
 // readDB is fwcheck's read-only look at rootd.db. A missing rootd.db or set_elements table means rootd has never run,
-// so it has recorded no element.
-func readDB(path string) ([]Row, error) {
+// so it has recorded no element. step is ClockStep for boot and off (Clock).
+func readDB(path, boot string, off int64) (rows []Row, step int64, err error) {
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, 0, nil
 	}
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer db.Close()
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='set_elements'`).Scan(&n); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, 0, fmt.Errorf("%s: %w", path, err)
 	}
 	if n == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
-	return ReadRows(db)
+	if step, err = ClockStep(db, boot, off); err != nil {
+		return nil, 0, err
+	}
+	rows, err = ReadRows(db)
+	return rows, step, err
 }
 
 // Static checks the static sets against the constants (rootd never inserts into them); each problem is one line.
@@ -457,11 +490,13 @@ func Check(db string, now time.Time) ([]string, error) {
 		return nil, err
 	}
 	if t.Elems != nil {
-		rows, err := readDB(db)
+		boot, off := Clock()
+		rows, step, err := readDB(db, boot, off)
 		if err != nil {
 			return nil, err
 		}
-		bad = append(bad, Compare(t.Elems, rows, now)...)
+		// a wall step since rootd's last write moved now, not the kernel's timeouts: compare on the rows' clock
+		bad = append(bad, Compare(t.Elems, rows, now.Add(-time.Duration(step)*time.Millisecond))...)
 	}
 	if b, err := os.ReadFile(reservedSysctl); err != nil || !ReservedOK(string(b)) {
 		bad = append(bad, fmt.Sprintf("%s is %q, not covering %d-%d", reservedSysctl, strings.TrimSpace(string(b)), ReservedLo, ReservedHi))
