@@ -774,6 +774,8 @@ func TestDenySink(t *testing.T) {
 		"IP in subject":       `{"type":"DENY",` + id + `,"code":"EGRESS_NAME_REJECTED","what":"non_public","subject":{"host":"192.168.1.10"}}`,
 		"hex id":              `{"type":"DENY","id":"0123abcd","by":"gate","count":1,"first":1,"last":1,"code":"BUSY"}`,
 		"flood without by":    `{"type":"DENY_FLOOD","count":7}`,
+		"case-folded key":     `{"type":"DENY",` + id + `,"Code":"BUSY"}`,
+		"case-folded subject": `{"type":"DENY",` + id + `,"code":"BUSY","subject":{"HOST":"x.example"}}`,
 	} {
 		before := b.verify()
 		b.nack("agentboxd", line, CodeBadRecord)

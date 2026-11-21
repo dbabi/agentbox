@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
+	"strings"
 
 	"agentbox/internal/ids"
 )
@@ -38,12 +40,10 @@ const maxKeep = 1024 // §9: a keep string over 1 KiB is NACKed
 // CheckDenyRecord is auditd's sink check of a DENY or DENY_FLOOD body (the record minus its type): the closed schema,
 // a known code and what, and the op's audit classes on any args. Other types pass.
 func CheckDenyRecord(typ string, body []byte) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.DisallowUnknownFields()
 	switch typ {
 	case "DENY_FLOOD":
 		var f denyFlood
-		if err := dec.Decode(&f); err != nil {
+		if err := exactDecode(body, &f); err != nil {
 			return err
 		}
 		if !slices.Contains(enforcers, f.By) || f.Count < 1 || f.Task != "" && !ids.Is(ids.Task, f.Task) {
@@ -55,8 +55,17 @@ func CheckDenyRecord(typ string, body []byte) error {
 		return nil
 	}
 	var r DenyRecord
-	if err := dec.Decode(&r); err != nil {
+	if err := exactDecode(body, &r); err != nil {
 		return err // an unknown field, such as a free-text reason, lands here
+	}
+	if r.Subject != nil {
+		var raw struct {
+			S json.RawMessage `json:"subject"`
+		}
+		json.Unmarshal(body, &raw)
+		if err := exactDecode(raw.S, &Subject{}); err != nil {
+			return fmt.Errorf("subject: %v", err)
+		}
 	}
 	def := codeDefs[r.Code]
 	switch {
@@ -115,9 +124,7 @@ func CheckAuditArgs(op string, args []byte) error {
 				SHA256 string `json:"sha256"`
 				Len    *int64 `json:"len"`
 			}
-			d := json.NewDecoder(bytes.NewReader(raw))
-			d.DisallowUnknownFields()
-			if d.Decode(&h) != nil || len(h.SHA256) != 64 || !reOID.MatchString(h.SHA256) || h.Len == nil || *h.Len < 0 {
+			if exactDecode(raw, &h) != nil || len(h.SHA256) != 64 || !reOID.MatchString(h.SHA256) || h.Len == nil || *h.Len < 0 {
 				return fmt.Errorf("%s.%s: a hash field must be {sha256, len}", op, k)
 			}
 		case Keep:
@@ -140,4 +147,24 @@ func CheckAuditArgs(op string, args []byte) error {
 		}
 	}
 	return nil
+}
+
+// exactDecode decodes one JSON object into v with no unknown field, no key that only case-folds to a field (auditd
+// logs the raw bytes, so a reader must find "code", not "Code"), and nothing after it.
+func exactDecode(b []byte, v any) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	t := reflect.TypeOf(v).Elem()
+	for k := range raw {
+		if !slices.ContainsFunc(reflect.VisibleFields(t), func(f reflect.StructField) bool {
+			return strings.Split(f.Tag.Get("json"), ",")[0] == k
+		}) {
+			return fmt.Errorf("unknown field %q", k)
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v) // json.Unmarshal above already refused trailing data
 }

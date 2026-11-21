@@ -441,10 +441,8 @@ func rebuild(c Code, d Denial) Denial {
 		}
 	}
 	x := Deny(c, d.What, s)
-	if d.Code != "NEEDS_SIGNATURE" {
-		x.ID = d.ID
-		render(&x, codeDefs[x.Code], s.Expect)
-	}
+	x.ID = d.ID
+	render(&x, codeDefs[x.Code], s.Expect)
 	return x
 }
 
