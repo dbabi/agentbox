@@ -46,7 +46,7 @@ reports() { ! $A sockets check >/tmp/sc.out 2>&1; cat /tmp/sc.out; grep -qxF "$1
 MATCH='booted
 check "agentbox sockets check: the box matches the inventory" "$A sockets check"
 check "the installed tmpfiles.d is the generated one" "cmp /usr/lib/tmpfiles.d/agentbox.conf /var/lib/agentbox/current/tmpfiles.d/agentbox.conf && grep -qx \"# Generated from internal/sockets: go test ./internal/sockets -update\" /usr/lib/tmpfiles.d/agentbox.conf"
-for d in /run/agentbox /run/agentbox-rootd-approve /run/agentbox-gate/t /run/agentbox-proxy/t /run/agentbox-keys/t /run/agentbox-git/t /run/agentbox-witness/t; do
+for d in /run/agentbox /run/agentbox-rootd-approve /run/agentbox-llm /run/agentbox-llm-decide /run/agentbox-apps /run/agentbox-gate/t /run/agentbox-proxy/t /run/agentbox-keys/t /run/agentbox-git/t /run/agentbox-witness/t; do
   check "tmpfiles made $d" "[ -d $d ]"; done
 check "the live sockets are there and were checked: rootd, auditd, ntfy" "for s in /run/agentbox-rootd/rootd-admin.sock /run/agentbox-rootd/audit-seal.sock /run/agentbox-rootd/resolve-git.sock /run/agentbox-audit/rootd.sock /run/agentbox-audit/git.sock /run/ntfy/ntfy.sock; do [ -S \$s ] || exit 1; done"
 '

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/user"
 	"path"
@@ -66,7 +67,6 @@ func Inventory() []Entry {
 		{Path: "/run/agentbox-rootd/rootd-admin.sock", Type: s, User: "root", Group: "agentbox-admin", Mode: 0o660, By: "agentbox-rootd-admin.socket", Peers: "Admin ops for root and agentbox-admin members", Service: "agentbox-rootd.service", FDName: "admin"},
 		// §9: only rootd can set +a and +i, so rootd serves audit.Files to auditd here
 		{Path: "/run/agentbox-rootd/audit-seal.sock", Type: s, User: "root", Group: "agentbox-audit", Mode: 0o660, By: "agentbox-audit-seal.socket", Peers: "audit.create and audit.seal from agentbox-auditd only (§9)", Service: "agentbox-rootd.service", FDName: "audit-seal"},
-		{Path: "/run/agentbox-rootd/svc-<svc>.sock", Type: s, User: "<svc>", Group: "root", Mode: 0o600, By: "the brokers' .socket units (not built yet)", Peers: "uid 0 only"},
 		{Path: "/run/agentbox-rootd-approve", Type: d, User: "root", Group: "agentbox-approve", Mode: 0o750, By: Tmpfiles},
 		{Path: "/run/agentbox-rootd-approve/approve.sock", Type: s, User: "root", Group: "agentbox-approve", Mode: 0o660, By: "approvald's .socket unit (not built yet)", Peers: "uid agentbox-approve only"},
 		{Path: "/run/agentbox-audit", Type: d, User: "agentbox-audit", Group: "agentbox-audit", Mode: 0o711, By: Tmpfiles},
@@ -75,9 +75,16 @@ func Inventory() []Entry {
 		{Path: "/run/agentbox-witness/t", Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
 		{Path: "/run/agentbox-witness/t/<task>", Type: d, User: "root", Group: "ag-<agent>", Mode: 0o750, By: "rootd (task.start)"},
 		{Path: "/run/agentbox-witness/t/<task>/witness", Type: fs.ModeNamedPipe, User: "root", Group: "ag-<agent>", Mode: 0o620, By: "rootd (task.start)", Peers: "written by the task's agent, read by rootd (§5.6)"},
+		// §2.1 gives the llm and app dirs no owner or mode: each llm dir lets only its peer group traverse it, and
+		// /run/agentbox-apps holds rootd's per-app dirs, like /run/agentbox-<svc>/t
+		{Path: "/run/agentbox-llm", Type: d, User: "agentbox-llm", Group: "agentbox-keys", Mode: 0o750, By: Tmpfiles},
+		{Path: "/run/agentbox-llm-decide", Type: d, User: "agentbox-llm-decide", Group: "agentbox", Mode: 0o750, By: Tmpfiles},
+		{Path: "/run/agentbox-apps", Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
+		{Path: "/run/agentbox-apps/<m>", Type: d, User: "root", Group: "root", Mode: 0o711, By: "rootd (app start)"},
 		{Path: "/run/agentbox-llm/llama.sock", Type: s, User: "agentbox-llm", Group: "agentbox-keys", Mode: 0o660, By: "agentbox-llm@task (not built yet)", Peers: "agentbox-keys"},
 		{Path: "/run/agentbox-llm-decide/llama.sock", Type: s, User: "agentbox-llm-decide", Group: "agentbox", Mode: 0o660, By: "agentbox-llm@decide (not built yet)", Peers: "agentbox"},
 		{Path: "/run/agentbox-apps/<m>/in", Type: d, User: "app-<m>", Group: "agentbox-ingress", Mode: 0o2750, By: "rootd (app start)"},
+		// §2.1 names no owner: a rootless pod's shim may bind it as an unmapped subuid; the setgid group and 0660 gate it
 		{Path: "/run/agentbox-apps/<m>/in/in.sock", Type: s, User: "<shim>", Group: "agentbox-ingress", Mode: 0o660, By: "the app's pod shim", Peers: "agentbox-ingress"},
 		{Path: "/run/agentbox-apps/<m>/egress", Type: d, User: "agentbox-proxy", Group: "app-<m>", Mode: 0o2750, By: "rootd (app start)"},
 		{Path: "/run/agentbox-apps/<m>/egress/egress.sock", Type: s, User: "agentbox-proxy", Group: "app-<m>", Mode: 0o660, By: "agentbox-proxy", Peers: "app-<m>"},
@@ -97,6 +104,8 @@ func Inventory() []Entry {
 	for _, v := range []string{"gate", "proxy", "keys", "git"} {
 		r := "/run/agentbox-" + v
 		inv = append(inv,
+			Entry{Path: "/run/agentbox-rootd/svc-" + v + ".sock", Type: s, User: svcUser[v], Group: "root", Mode: 0o600,
+				By: "agentbox-" + v + "'s .socket unit (not built yet)", Peers: "uid 0 only: task registration and revocation"},
 			Entry{Path: r, Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
 			Entry{Path: r + "/t", Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
 			Entry{Path: r + "/t/<task>", Type: d, User: svcUser[v], Group: "ag-<agent>", Mode: 0o2750, By: "rootd (task.start)"},
@@ -151,11 +160,48 @@ var tmpl = regexp.MustCompile(`<[^>]+>`)
 
 func templated(s string) bool { return strings.Contains(s, "<") }
 
-// match: a <name> part matches one path element or any name.
-func match(pattern, s string) bool {
-	ok, _ := path.Match(tmpl.ReplaceAllString(pattern, "*"), s)
-	return ok
+// bind matches s against pattern, where a <name> is one path element or one name. A name bound in b must take its
+// bound value, so a per-task socket's group is its dir's; the result adds the names bound here.
+func bind(pattern, s string, b map[string]string) (map[string]string, bool) {
+	re, last, names := "^", 0, []string{}
+	for _, ix := range tmpl.FindAllStringIndex(pattern, -1) {
+		re += regexp.QuoteMeta(pattern[last:ix[0]])
+		if v, ok := b[pattern[ix[0]:ix[1]]]; ok {
+			re += regexp.QuoteMeta(v)
+		} else {
+			re += "([^/]+)"
+			names = append(names, pattern[ix[0]:ix[1]])
+		}
+		last = ix[1]
+	}
+	m := regexp.MustCompile(re + regexp.QuoteMeta(pattern[last:]) + "$").FindStringSubmatch(s)
+	if m == nil {
+		return nil, false
+	}
+	out := maps.Clone(b)
+	if out == nil {
+		out = map[string]string{}
+	}
+	for i, n := range names {
+		if v, ok := out[n]; ok && v != m[i+1] {
+			return nil, false
+		}
+		out[n] = m[i+1]
+	}
+	return out, true
 }
+
+// fill puts b's values into pattern's bound names.
+func fill(pattern string, b map[string]string) string {
+	return tmpl.ReplaceAllStringFunc(pattern, func(n string) string {
+		if v, ok := b[n]; ok {
+			return v
+		}
+		return n
+	})
+}
+
+var lstat = os.Lstat // a test hook: a per-task dir can go between ReadDir and Lstat
 
 // Check compares the tree under root ("/" on the box) with inv, one line per mismatch: a required entry missing, a
 // wrong type, mode, owner or group, or anything inside an inventory dir under /run that the inventory doesn't name.
@@ -166,15 +212,19 @@ func Check(root string, inv []Entry) []string {
 	for _, e := range inv {
 		exact[e.Path] = true
 	}
-	var walk func(dir string)
-	visit := func(e Entry, p string, fi fs.FileInfo) {
-		bad = append(bad, compare(e, p, fi)...)
+	var walk func(dir string, b map[string]string)
+	visit := func(e Entry, p string, fi fs.FileInfo, b map[string]string) {
+		nb, msgs := compare(e, p, fi, b)
+		bad = append(bad, msgs...)
 		if e.Type == fs.ModeDir && fi.IsDir() && strings.HasPrefix(p, "/run/") {
-			walk(p)
+			walk(p, nb)
 		}
 	}
-	walk = func(dir string) {
+	walk = func(dir string, b map[string]string) {
 		des, err := os.ReadDir(root + dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			return // a task or app stopped after its dir was checked
+		}
 		if err != nil {
 			bad = append(bad, fmt.Sprintf("%s: %v", dir, err))
 			return
@@ -184,15 +234,21 @@ func Check(root string, inv []Entry) []string {
 			if exact[p] {
 				continue // checked as its own entry
 			}
-			i := slices.IndexFunc(inv, func(e Entry) bool { return templated(e.Path) && match(e.Path, p) })
+			i := slices.IndexFunc(inv, func(e Entry) bool {
+				_, ok := bind(e.Path, p, b)
+				return templated(e.Path) && ok
+			})
 			if i < 0 {
 				bad = append(bad, p+": not in the inventory")
 				continue
 			}
-			if fi, err := os.Lstat(root + p); err != nil {
+			fi, err := lstat(root + p)
+			switch {
+			case errors.Is(err, fs.ErrNotExist): // gone since ReadDir
+			case err != nil:
 				bad = append(bad, fmt.Sprintf("%s: %v", p, err))
-			} else {
-				visit(inv[i], p, fi)
+			default:
+				visit(inv[i], p, fi, b)
 			}
 		}
 	}
@@ -200,21 +256,23 @@ func Check(root string, inv []Entry) []string {
 		if templated(e.Path) {
 			continue
 		}
-		fi, err := os.Lstat(root + e.Path)
+		fi, err := lstat(root + e.Path)
 		switch {
 		case errors.Is(err, fs.ErrNotExist) && !e.required():
 		case err != nil:
 			bad = append(bad, fmt.Sprintf("%s: %v (made by %s)", e.Path, err, e.By))
 		default:
-			visit(e, e.Path, fi)
+			visit(e, e.Path, fi, nil)
 		}
 	}
 	return bad
 }
 
-func compare(e Entry, p string, fi fs.FileInfo) []string {
+// compare checks one live path against its entry, with b the names its parent dirs bound, and returns b plus the
+// names this entry binds.
+func compare(e Entry, p string, fi fs.FileInfo, b map[string]string) (map[string]string, []string) {
 	if fi.Mode().Type() != e.Type {
-		return []string{fmt.Sprintf("%s: type %v, want %v", p, fi.Mode().Type(), e.Type)}
+		return b, []string{fmt.Sprintf("%s: type %v, want %v", p, fi.Mode().Type(), e.Type)}
 	}
 	st := fi.Sys().(*syscall.Stat_t)
 	var bad []string
@@ -228,8 +286,15 @@ func compare(e Entry, p string, fi fs.FileInfo) []string {
 	if x, err := user.LookupGroupId(g); err == nil {
 		g = x.Name
 	}
-	if !match(e.User, u) || !match(e.Group, g) {
-		bad = append(bad, fmt.Sprintf("%s: owner %s:%s, want %s:%s", p, u, g, e.User, e.Group))
+	nb, ok := bind(e.Path, p, b)
+	if ok {
+		nb, ok = bind(e.User, u, nb)
 	}
-	return bad
+	if ok {
+		nb, ok = bind(e.Group, g, nb)
+	}
+	if !ok {
+		return b, append(bad, fmt.Sprintf("%s: owner %s:%s, want %s:%s", p, u, g, fill(e.User, b), fill(e.Group, b)))
+	}
+	return nb, bad
 }

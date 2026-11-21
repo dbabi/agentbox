@@ -2,14 +2,18 @@ package sockets
 
 import (
 	"flag"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -100,6 +104,82 @@ func TestInventoryMatchesDesign(t *testing.T) {
 			t.Errorf("design socket %s has no inventory entry", m[1])
 		}
 	}
+	// every socket's dir is in the inventory, so Check walks it, and a fixed dir is made at boot
+	byPath := map[string]Entry{}
+	for _, e := range inv {
+		byPath[e.Path] = e
+	}
+	for _, e := range inv {
+		if e.Type == fs.ModeDir {
+			continue
+		}
+		d, ok := byPath[path.Dir(e.Path)]
+		switch {
+		case !ok || d.Type != fs.ModeDir:
+			t.Errorf("%s: its dir is not an inventory dir", e.Path)
+		case !templated(d.Path) && d.By != Tmpfiles && d.By != NtfyTmpfiles:
+			t.Errorf("%s: its dir %s is made by %s, not tmpfiles", e.Path, d.Path, d.By)
+		}
+	}
+}
+
+// uidOf is the service uid a <svc> or <producer> in a §2.1 owner or group cell stands for.
+var uidOf = map[string]string{"rootd": "root", "agentboxd": "agentbox", "gate": "agentbox", "proxy": "agentbox-proxy", "keys": "agentbox-keys", "git": "agentbox-git"}
+
+// The inventory has each §2.1 table row's owner, group and mode, for the socket and, where the row gives one, its dir.
+// A <svc> or <producer> is the uid of the service the path names; any other <name> stays a template.
+func TestInventoryOwnersMatchDesign(t *testing.T) {
+	b, err := os.ReadFile("../../docs/design/ARCHITECTURE.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := regexp.MustCompile("(?m)^\\| `(/run/[^`]+)`[^|]*\\| ([^|]+) \\|")
+	cell := regexp.MustCompile(`(?:(dir|FIFO|socket) )?(?:([\w<>-]+)(?::([\w<>-]+))? )?(\d{4})`)
+	byPath := map[string]Entry{}
+	for _, e := range Inventory() {
+		byPath[e.Path] = e
+	}
+	rows := row.FindAllStringSubmatch(string(b), -1)
+	if len(rows) < 14 {
+		t.Fatalf("found only %d socket rows in the §2.1 table", len(rows))
+	}
+	n := 0
+	for _, r := range rows {
+		c := strings.NewReplacer("`", "", "**", "").Replace(r[2])
+		for _, e := range Inventory() {
+			vals, ok := bind(r[1], e.Path, nil)
+			if !ok || templated(e.Path) && !strings.Contains(r[1], "<") {
+				continue
+			}
+			n++
+			for _, m := range cell.FindAllStringSubmatch(c, -1) {
+				want := Entry{Path: e.Path, User: m[2], Group: m[3]}
+				fmt.Sscanf(m[4], "%o", &want.Mode)
+				if m[1] == "dir" {
+					want.Path = path.Dir(e.Path)
+				}
+				got, ok := byPath[want.Path]
+				if !ok {
+					t.Errorf("%s (row %s): no inventory entry", want.Path, r[1])
+					continue
+				}
+				for _, f := range []*string{&want.User, &want.Group} {
+					*f = tmpl.ReplaceAllStringFunc(*f, func(n string) string {
+						if v, ok := uidOf[vals[n]]; ok && (n == "<svc>" || n == "<producer>") {
+							return v
+						}
+						return n
+					})
+				}
+				if got.Mode != want.Mode || want.User != "" && got.User != want.User || want.Group != "" && got.Group != want.Group {
+					t.Errorf("%s: inventory %s:%s %04o, §2.1 says %s:%s %04o", want.Path, got.User, got.Group, got.Mode, want.User, want.Group, want.Mode)
+				}
+			}
+		}
+	}
+	if n < 20 {
+		t.Errorf("only %d inventory entries matched a §2.1 row", n)
+	}
 }
 
 func TestCheck(t *testing.T) {
@@ -116,7 +196,8 @@ func TestCheck(t *testing.T) {
 		{Path: "/run/a/s.sock", Type: fs.ModeSocket, User: me, Group: grp, Mode: 0o660, By: "a.socket"},
 		{Path: "/run/a/later.sock", Type: fs.ModeSocket, User: me, Group: grp, Mode: 0o600, By: "not built yet"},
 		{Path: "/run/a/t-<task>", Type: fs.ModeDir, User: me, Group: "<any>", Mode: 0o750, By: "rootd"}, // macOS drops setgid for non-root; the VM gate covers 2750
-		{Path: "/run/a/t-<task>/x.sock", Type: fs.ModeSocket, User: me, Group: grp, Mode: 0o660, By: "svc"},
+		{Path: "/run/a/t-<task>/x.sock", Type: fs.ModeSocket, User: me, Group: "<any>", Mode: 0o660, By: "svc"},
+		{Path: "/run/a/svc-x.sock", Type: fs.ModeSocket, User: "nobody", Group: grp, Mode: 0o600, By: "not built yet"},
 	}
 	os.MkdirAll(root+"/run/a", 0o711)
 	os.Chmod(root+"/run/a", 0o711)
@@ -157,7 +238,57 @@ func TestCheck(t *testing.T) {
 	}
 	os.Chmod(root+"/run/a/t-1", 0o700)
 	want("a templated dir with the wrong mode", "/run/a/t-1: mode 0700, want 0750")
-	os.Remove(root + "/run/a/t-1")
+	os.Chmod(root+"/run/a/t-1", 0o750)
+	x, err := net.Listen("unix", root+"/run/a/t-1/x.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(root+"/run/a/t-1/x.sock", 0o660)
+	if bad := Check(root, inv); len(bad) != 0 {
+		t.Errorf("a per-task socket in its dir's group: %q", bad)
+	}
+	fi, _ := os.Stat(root + "/run/a/t-1")
+	dg := strconv.Itoa(int(fi.Sys().(*syscall.Stat_t).Gid))
+	gids, _ := u.GroupIds()
+	if i := slices.IndexFunc(gids, func(g string) bool { return g != dg }); i < 0 {
+		t.Log("one group only: skipping the per-task group binding case")
+	} else if other, err := user.LookupGroupId(gids[i]); err == nil {
+		gid, _ := strconv.Atoi(gids[i])
+		os.Lchown(root+"/run/a/t-1/x.sock", -1, gid)
+		dn, _ := user.LookupGroupId(dg)
+		want("a per-task socket in another group than its dir", "/run/a/t-1/x.sock: owner "+me+":"+other.Name+", want "+me+":"+dn.Name)
+	}
+	// a task that stops mid-check is not a mismatch: its dir goes after ReadDir lists it, or after it is checked
+	for _, after := range []bool{false, true} {
+		lstat = func(p string) (fs.FileInfo, error) {
+			if !strings.HasSuffix(p, "/t-1") {
+				return os.Lstat(p)
+			}
+			if after {
+				fi, err := os.Lstat(p)
+				os.RemoveAll(p)
+				return fi, err
+			}
+			os.RemoveAll(p)
+			return os.Lstat(p)
+		}
+		os.MkdirAll(root+"/run/a/t-1", 0o750)
+		os.Chmod(root+"/run/a/t-1", 0o750)
+		if bad := Check(root, inv); len(bad) != 0 {
+			t.Errorf("a per-task dir removed mid-check (after its Lstat: %v): %q", after, bad)
+		}
+	}
+	lstat = os.Lstat
+	x.Close()
+	l2, err := net.Listen("unix", root+"/run/a/svc-x.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(root+"/run/a/svc-x.sock", 0o600)
+	want("a service socket owned by the wrong user", "/run/a/svc-x.sock: owner "+me+":"+grp+", want nobody:"+grp)
+	l2.Close()
+	os.Remove(root + "/run/a/svc-x.sock")
+	os.RemoveAll(root + "/run/a/t-1")
 	l.Close()
 	os.Remove(root + "/run/a/s.sock")
 	want("a missing unit socket", "/run/a/s.sock: lstat")
