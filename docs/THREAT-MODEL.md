@@ -57,6 +57,9 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | A compromised auditd can forge ACKs and mask taint until off-box verification catches it | v2: rootd keeps its own append-only taint record and refuses on regression |
 | Until the broker units land, nothing hides resolved's AF_UNIX interfaces (Varlink socket mode 0666, D-Bus `ResolveHostname`) from the broker uids: nft sees only IP, so a broker process could resolve, and leak data in query names, there | Each broker unit sets `InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket` (§6.1); `TestBrokerUnitsHideResolved` and the rootd gate check it per unit |
 | While the disk is full (below the audit reserve), auditd refuses DENY and other best-effort records with `DISK_FULL`: denials in that window leave no audit record, only the critical disk-full alert | Ship audit off-box |
+| Attach session-home is persistent and agent-writable. Hooks, MCP servers, shell startup files and git config stay off, and Claude's settings are read-only, but instructions a session leaves there (`~/.claude/CLAUDE.md`, skills, rules, agents) load into later attaches without review | Baseline and ack them like workspace control paths (#153) |
+| The post-attach token scan polls the credential files and doesn't unpack git packfiles: a token version that lives less than one poll, or one committed and then packed by `git gc`, is missed | inotify on the credential files; scan packed objects (#154) |
+| The task seccomp profile is podman's default minus btrfs ioctls: it allows every socket family but audit netlink, and clone, clone3, setns and unshare with no conditions | A socket family allowlist and conditional namespace syscalls (#155) |
 | Root can always remove confinement: after a root-level flush, brokers are unconfined for up to 60 s, until the next `fwcheck` | |
 | One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late | |
 | Jev egress when enabled | |
@@ -73,4 +76,6 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | Power-cut replay needs a plain btrfs partition | Encrypted disks are not replayed: `powercut-fidelity` runs in `none`. QMP cuts (`os-apply-powercuts-tpm2`) run in `tpm2` only. `vm.sh cut` models only a disk with no volatile write cache. |
 | The test VM's network (`hack/vmnet`) still reaches the Mac's LAN | It reaches the Mac's `127.0.0.1` only on the Tang and release-serve ports. `gate.sh` checks that a loopback listener with no forward sees nothing. |
 | The arm64 VM has no hardware watchdog | arm64 tests softdog only; the i6300esb path runs on amd64. Watchdog detection on real x86 hardware is unit-tested only (the old-PC gate checks it). |
+| The milestone 4 gates use stand-in brokers | Broker restart, outage and retry checks run against stubs that bind the same per-task sockets. No task reaches a model or the internet in a gate. |
+| A skill's frontmatter hook needs a model reply to fire | The tasks gate checks only the setting that turns hooks off. |
 | HVF guests stop while the Mac sleeps | Long gates need AC power and an open lid; `vm.sh` does not count sleep against the install timeout. |

@@ -1,8 +1,8 @@
 agentbox is early alpha. It is not for production use.
 
-Milestones 1 and 2 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon, the root daemon's skeleton and resolver, disk quotas and packaged ntfy). Milestone 3, the operation registry and the request gate, is built and its VM gates passed. Its 24-hour fuzz run is pending, so it stays in progress. The agent runtime is designed but not built. No AI agent can run on agentbox yet.
+Milestones 1 and 2 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon, the root daemon's skeleton and resolver, disk quotas and packaged ntfy). Milestone 3, the operation registry and the request gate, is built and its VM gates passed. Its 24-hour fuzz run is pending, so it stays in progress. Milestone 4 is done: agent accounts, one sealed container per task, and interactive sessions. The brokers, policy and approvals are designed but not built. So a task can start an agent CLI, but it can't reach a model yet.
 
-The full design is in [`docs/design/`](../design/). Status is as of the time of writing (2026-11-21).
+The full design is in [`docs/design/`](../design/). Status is as of the time of writing (2026-11-22).
 
 Two terms used below:
 
@@ -18,7 +18,7 @@ agentbox is built in nine milestones, in this order. Each one ends with a gate: 
 | 1. Installer and safe OS updates | Seed generator; unattended install with optional disk encryption; recovery key; btrfs A/B OS generations with unattended fallback; release pipeline and signed firstboot install; zero-touch install ISO; power-cut tests | Unattended first boot in both TPM modes. Broken updates and power cuts fall back with no console input. The install and `os apply` checks on a real x86 PC. | **Done.** The gate passed in QEMU VMs ([Testing and Gates](Testing-and-Gates.md#milestone-1)), except the install and `os apply` checks on a real x86 PC, which have not run. |
 | 2. Firewall, audit log, root daemon | Host firewall (nftables) with `fwcheck`; btrfs quotas with a disk reserve and a content-store cap; the audit daemon, with a hash-chained log, taint epochs that never lose a row, and a disk-full mode; the root daemon's skeleton, name resolver and audit-log sealing; packaged ntfy on a Unix socket | An altered firewall stops agents from starting. With the audit daemon down, nothing runs. A broker reaches only addresses rootd resolved. `nft flush ruleset` is repaired within 60 s, with an alert. | **Done.** Every gate item passed in QEMU VMs ([Testing and Gates](Testing-and-Gates.md#milestone-2-gates)). Ran in `none` mode on arm64 UEFI only. |
 | 3. Operation registry and request gate | One registry of every operation, with generated code and schemas; the request gate in `agentboxd`; stable denial codes; the socket layout as code; fuzzers for every parser | A registry mismatch stops startup. An audit record with a secret or an unhashed body is refused, and nothing runs. 24 hours of fuzzing find no crash. | **In progress.** Built, and the VM gates passed ([Testing and Gates](Testing-and-Gates.md#milestone-3)). The 24-hour fuzz run is pending. |
-| 4. Agent accounts and one sealed container per task | Agent accounts with disk quotas; one disposable container per task, with no network, a fresh HOME and Go in the image; a seccomp profile that blocks btrfs ioctls; task stop; interactive sessions in a separate home; `agentbox why` to explain a denial | Claude Code or Codex hooks and MCP config that one task plants don't run in the next task. A task's leftover processes are gone within 20 s of its timeout. | Next |
+| 4. Agent accounts and one sealed container per task | Agent accounts with disk quotas; one disposable container per task, with no network, a fresh HOME and Go in the image; a seccomp profile that blocks btrfs ioctls; task stop; interactive sessions in a separate home; `agentbox why` to explain a denial | Claude Code or Codex hooks and MCP config that one task plants don't run in the next task. A task's leftover processes are gone within 20 s of its timeout. | **Done.** Every gate item passed in QEMU VMs ([Testing and Gates](Testing-and-Gates.md#milestone-4)). Ran in `none` mode on arm64 UEFI only. |
 | 5. Brokers | A proxy that holds no secrets, with a read-only Go module cache; a keys broker for LLM API keys and budgets; a git service that holds the GitHub token | No credential of any kind exists inside a task. Rebinding, raw IP, LAN and metadata-address attempts fail. | Designed, not built |
 | 6. Signed approvals | Cedar policies (Cedar is an open-source policy language); the floor (the minimum rules the root daemon enforces; policy can only make them stricter); pending operations bound to exact inputs, such as commit IDs and package hashes; approvals signed with an SSH key on the laptop; phone approvals with a passkey, for low-risk operations only; a visible ask budget, with `ask.quote`, `ask.status` and `ask.batch`; `agentbox egress allow` | Race, replay and argument swap fail. A phone approval of a laptop-only operation is refused. | Designed, not built |
 | 7. Apps and OS updates by agents | Apps in pods with no network, built offline; file writes; agent operations for package changes and nightly updates, built on the milestone 1 generations, with a floor of protected packages; workspace snapshots; a local-model "decide" helper | Protected packages can't be removed or downgraded. A nightly update with a kernel upgrade commits. | Designed, not built |
@@ -86,15 +86,34 @@ Every milestone 3 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 | 24 hours of fuzzing with no crash | Pending. Each fuzz test has run for at least 12 minutes so far. The nightly fuzz job, or one `hack/fuzz-all.sh` run, will cover it. |
 | Fuzzing on Linux | Not run yet. The short runs were on macOS, so Linux-only code waits for the nightly job. |
 | The milestone 3 gates in `tpm2`, `tpm2+tang` and on amd64 BIOS | Not run. The milestone 3 code doesn't touch unlock or boot. |
-| Refusing a malformed task id when a task starts | Waits for task start, in milestone 4. The id check itself is built and tested. |
-| The `agentbox mcp` command for agent CLIs | Waits for task containers. The error mapping it will use is built and tested. |
+| The `agentbox mcp` command for agent CLIs | Not built. The error mapping it will use is built and tested. |
+
+## Milestone 4: what passed
+
+Every milestone 4 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. The tests for milestones 1-3 also passed again, after one fix. [Testing and Gates](Testing-and-Gates.md#milestone-4) lists each result and the commit it ran at.
+
+- `agentbox agent add` makes one Linux account per agent, with its own uid, sub-id range, disk quota and limits. An agent at its quota gets `EDQUOT`, and system state keeps writing. A removed agent's uid and sub-id range are never reused.
+- `agentbox task new` runs each task in its own rootless podman container: no network, no capabilities, a read-only root, a seccomp profile and a fresh home directory. Hooks and MCP config that one task plants don't reach the next task. A tainted task makes the next task on that workspace start tainted.
+- A task's leftover processes are gone within 20 s of its timeout or of `agentbox task stop`. Canceling a task removes its container and sockets within 5 s, also with the audit daemon stopped. btrfs ioctls from a task fail with `EOPNOTSUPP`.
+- Each task gets a fixed environment: no DNS, quiet npm and pip, Go settings that follow the agent's allowlist, and local forwarders that retry while a broker restarts. `agentbox why` explains a recent denial.
+- `agentbox attach` opens an interactive session with a separate, persistent home. Planted hooks, MCP servers and shell startup files don't run in it. Its output is filtered, and tasks stay blocked until a scan finds no copy of its login token in the workspace.
+
+## Milestone 4: what has not run
+
+| Item | State |
+|---|---|
+| Brokers | Not built (milestone 5). The gates use stand-ins that bind the same per-task sockets. |
+| The full task image, with Go and the agent CLIs | Not built into the box yet (milestone 7). By default a task runs a small root file system with the host's `/usr`, read-only. The task env gate builds a test image with Go. The gates run the Claude Code CLI from the host. Codex and opencode have not run. |
+| A skill's frontmatter hook in a task | Not provable yet: it needs a model reply. The gate checks only the setting that turns hooks off. |
+| A network path for attach sessions | Not built (issue #90). A real Claude login can't reach its servers from an attach yet. |
+| The milestone 4 gates in `tpm2`, `tpm2+tang` and on amd64 BIOS | Not run. The milestone 4 code doesn't touch unlock or boot. |
 
 ## Known gaps
 
 | Gap today | Where the plan closes it |
 |---|---|
 | The host firewall filters outbound traffic from agentbox's service users only. It has no inbound rules, so SSH and any other listener are open to the LAN. | Not in the plan yet. Keep the box on a network you trust. |
-| No agent support. The design targets Claude Code, Codex and opencode as agent CLIs. | Milestones 4-5 |
+| No task can reach a model or the internet yet, and no agent CLI is in the task image. The design targets Claude Code, Codex and opencode. | Milestone 5: the brokers |
 | No signed approvals. Today an admin approves an OS change by passing the plan's SHA-256 to `os apply` as root. | Milestone 6 |
 | No automatic OS updates. apt's daily timers are masked. Updates happen only when an admin runs `os plan` and `os apply`. | Milestone 7: nightly updates |
 | No command to boot or pin an older generation. Fallback after a failed update is automatic. | Milestone 7: a signed rollback operation |

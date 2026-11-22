@@ -11,9 +11,9 @@
 # agentbox
 
 > [!WARNING]
-> **Early alpha. Not for production use.** Tested only in QEMU VMs. No AI agent can run on it yet.
+> **Early alpha. Not for production use.** Tested only in QEMU VMs. No AI agent can do useful work on it yet: tasks can't reach a model.
 
-A headless OS for AI coding agents, built on stock Ubuntu Server 26.04. Early alpha: the agent runtime (task containers, brokers, policy and approvals) is designed, not built.
+A headless OS for AI coding agents, built on stock Ubuntu Server 26.04. Early alpha: agent accounts and sealed task containers are built. The brokers, policy and approvals are designed, not built.
 
 [Getting started][gs] · [Architecture][arch] · [Security model][sec] · [Roadmap][road] · [Wiki][wiki]
 
@@ -21,28 +21,28 @@ Website: https://dbabi.github.io/agentbox-web/. It is also a terminal app, and i
 
 ## What is agentbox
 
-agentbox aims to be an OS where AI agents can work safely. The design rests on four rules. Only the fourth is fully built today:
+agentbox aims to be an OS where AI agents can work safely. The design rests on four rules. Two are built today:
 
 - **No credentials in tasks (designed).** API keys and tokens will stay in broker services. The task will never hold them.
-- **No network for agents (designed).** Each task will run in a disposable container with no network. Traffic will leave only through the brokers.
+- **No network for agents (built).** Each task runs in a disposable container with no network. Traffic will leave only through the brokers, which are not built yet.
 - **A human signs risky actions (designed).** The box will run a risky operation only after you sign it. The signature will cover its exact inputs, such as commit IDs and package hashes.
 - **OS changes fall back on failure (built).** An OS change builds offline into a new generation. The box keeps it only if it boots healthy. Otherwise it boots the last good generation.
 
 ## Status
 
-The installer, safe OS updates, the first host services (firewall, audit log, root daemon) and the checks for agent requests are built. The request checks still need one 24-hour fuzz run. agentbox has run only in QEMU virtual machines, never on real hardware. The host services and request checks have been tested only in unencrypted arm64 UEFI VMs.
+The installer, safe OS updates, the first host services (firewall, audit log, root daemon), the checks for agent requests, agent accounts and sealed task containers are built. The request checks still need one 24-hour fuzz run. No task can reach a model yet, because the brokers are not built. agentbox has run only in QEMU virtual machines, never on real hardware. Everything after the OS layer has been tested only in unencrypted arm64 UEFI VMs.
 
 **Works today**, in VMs on an Apple Silicon Mac:
 
-- Unattended install of Ubuntu Server 26.04.1 from one seed, with disk encryption and a recovery key.
+- Unattended install of Ubuntu Server 26.04.1 from one seed, with disk encryption and a recovery key. Zero-touch installs work on arm64 UEFI with Secure Boot on, and on amd64 legacy BIOS.
 - A/B OS generations: a package change builds offline, boots once, and stays only if healthy.
 - Releases you build and sign yourself with `make release`. First boot checks them against a pinned SHA-256 and your minisign key. There is no official release yet.
-- Zero-touch installs on arm64 UEFI with Secure Boot on, and on amd64 legacy BIOS.
 - A host firewall that limits each agentbox service to its allowed destinations.
+- Agent accounts and sealed tasks. `agentbox task new` runs each task in a disposable container with no network and a fresh home. `agentbox attach` opens a filtered interactive session.
 
 **Not yet:**
 
-- The agent runtime: task containers, brokers, policy, approvals, bus and memory. All of it is designed. None of it is built.
+- Brokers, policy, approvals, the agent bus and memory. All of them are designed. None of them is built. Until the brokers land, no task can reach a model or the internet.
 - Real hardware. amd64 UEFI has not run anywhere.
 - Inbound filtering and automatic security updates.
 - Updating agentbox itself on an installed box. This is out of scope for the first release. A new release means a reinstall.
@@ -208,6 +208,10 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 | Disk limits | Caps the disk space agent data can use, and keeps a reserve for system services. |
 | Notifications | The Ubuntu `ntfy` package. It takes only local requests, and can reach only `ntfy.sh`. |
 | Operation registry | One list of every operation an agent may request. The policy schema, the JSON schemas and the MCP tool list are generated from it. The root daemon refuses to start if any of them differ. |
+| Agent accounts | `agentbox agent add` makes one Linux account per agent, with its own uid, sub-id range, disk quota and limits. A removed agent's ids are never reused. |
+| Task containers | `agentbox task new` runs each task in a disposable rootless podman container: no network, no capabilities, a read-only root, a seccomp profile and a fresh home. Leftover processes are killed at the end. |
+| Task environment | Each task gets no DNS, quiet package managers and Go settings that follow its allowlist. `agentbox why` explains a recent denial. |
+| Interactive sessions | `agentbox attach` runs an agent CLI or a shell in a container, with a separate persistent home. Planted hooks don't run, the output is filtered, and tasks wait for a token scan. |
 | Request checks | `agentboxd` gives each task its own socket. It checks each request's caller and arguments before anything privileged runs. A refused request gets a stable denial code, never the raw input. |
 | Socket layout | Every service socket and directory, with its owner and mode, is defined in code. `agentbox sockets check` compares the box with it. |
 | Test harness | Checks installs, OS changes, power cuts and the host services in throwaway QEMU VMs. See [Testing and gates][tests]. |
@@ -216,7 +220,6 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 
 | Feature | Plan |
 |---|---|
-| Task containers | Each task will get a disposable podman container with no network and a fresh home directory. |
 | Brokers | `proxy` holds no secrets. `keys` holds LLM API keys and budgets. `git` holds the GitHub token. |
 | Policy and approvals | Cedar policy. You will sign approvals on your laptop with an SSH key. A phone passkey will cover only low-risk requests. The box will run only the operation you signed. |
 | Agent bus and memory | Messages between agents. Shared memory with quarantine and taint. |
@@ -232,20 +235,21 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 +------------v-----------------------------------v-----------------+
 | agentbox host: stock Ubuntu Server 26.04                         |
 |                                                                  |
-|  DESIGNED, NOT BUILT                                             |
+|  DESIGNED, NOT BUILT (except where marked)                       |
 |  agentboxd        policy, agent bus, shared memory               |
 |  agentbox-rootd   signed operations, bound to their exact inputs |
 |                                                                  |
 |  +----------------------+  unix sockets  +---------------------+ |
-|  | task container       |--------------->| brokers             |----> internet
-|  | no network, no keys  |                | proxy (no secrets)  | |
+|  | task container       |--------------->| brokers (designed)  |----> internet
+|  | (built) no network,  |                | proxy (no secrets)  | |
 |  | fresh HOME each task |                | keys (LLM API keys) | |
 |  +----------------------+                | git (GitHub token)  | |
 |                                          +---------------------+ |
 |                                                                  |
 |  BUILT TODAY                                                     |
 |  agentboxd        request checks: caller, arguments, denials     |
-|  agentbox-rootd   prepares allowed broker destinations           |
+|  agentbox-rootd   agent accounts, task start and stop, attach,   |
+|                   allowed broker destinations                    |
 |  agentbox-auditd  hash-chained audit log and taint ledger        |
 |  Firewall         outbound rules per service,                    |
 |                   restores configured rules after changes        |
@@ -257,7 +261,7 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 +------------------------------------------------------------------+
 ```
 
-All agentbox services are subcommands of one Go binary, `agentbox`. Today it prepares installs, manages OS generations, checks audit logs and checks agent requests. The [Architecture][arch] page walks through the design part by part.
+All agentbox services are subcommands of one Go binary, `agentbox`. Today it prepares installs, manages OS generations, checks audit logs, checks agent requests and runs task containers. The [Architecture][arch] page walks through the design part by part.
 
 ## Security model
 
@@ -265,12 +269,12 @@ The design treats prompt injection as the most likely attack. It also plans for 
 
 | Rule | Status |
 |---|---|
-| 1. Tasks have no network. | Designed |
+| 1. Tasks have no network. | Built and tested. The brokers that will carry task traffic are designed. |
 | 2. No credential exists inside a task. | Designed |
 | 3. Agents never change the running OS. Changes build offline into a new generation, which commits only after a health check. | Generations built and tested. The agent side is designed. |
 | 4. Privileged operations run only with the exact inputs a human signed. | Designed |
-| 5. Taint is sticky. Work that touched untrusted content stays marked until a human clears it. | Designed. Taint storage is built, but nothing marks work as tainted yet. |
-| 6. Nothing persists between tasks except the tainted workspace. | Designed |
+| 5. Taint is sticky. Work that touched untrusted content stays marked until a human clears it. | Partly built. A tainted task taints its workspace, and the next task there starts tainted. What marks a task tainted, the brokers, is designed. |
+| 6. Nothing persists between tasks except the tainted workspace. | Built and tested |
 | 7. The seed and logs hold no plaintext secrets. | Built and tested |
 
 Known limits of what is built today:
@@ -281,6 +285,8 @@ Known limits of what is built today:
 - The admin account is root-equivalent. The seed holds its password hash, so keep the seed private.
 - The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules. SSH, and anything else that listens, is open to your LAN. Do not give the box a public IP address.
 - There are no automatic security updates.
+- An interactive session's home persists. Instructions a session writes there, such as Claude Code skills or `CLAUDE.md`, load into later sessions without review. Hooks and MCP servers stay off.
+- All tasks share the host kernel. A kernel exploit escapes the container.
 
 Read the one-page [threat model](docs/THREAT-MODEL.md) and the [Security model][sec] page.
 
@@ -291,8 +297,8 @@ agentbox is built in milestones, in this order. Each one ends with tests that mu
 1. **Installer and safe OS updates: done.** Encrypted installs, recovery keys, signed releases and package changes with automatic fallback. Tested in VMs only.
 2. **Firewall and audit log: done.** Outbound limits for agentbox services, an audit log you can verify, disk limits and local notifications. Tested in VMs only.
 3. **Checks for agent requests: in progress.** Built and tested in VMs. Each agent request is checked against one list of allowed operations before anything privileged runs. A 24-hour fuzz run is the last step.
-4. **Isolated tasks: next.** Each task will run in a disposable container with no network.
-5. **Brokers: planned.** Credentials will stay outside tasks. Brokers will make network requests for each task.
+4. **Isolated tasks: done.** Agent accounts, one disposable container per task with no network, and interactive sessions. Tested in VMs only.
+5. **Brokers: next.** Credentials will stay outside tasks. Brokers will make network requests for each task.
 6. **Signed approvals: planned.** Risky actions will need your SSH signature. A phone passkey will cover low-risk requests.
 7. **Apps and OS updates by agents: planned.** Agents will request app installs, file changes and package updates. OS changes will build offline into new generations.
 8. **Agent bus and shared memory: planned.** Tasks will hand work to each other. Facts from untrusted sources will stay marked.

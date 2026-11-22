@@ -1,4 +1,4 @@
-> **Early alpha. Not for production use.** Today agentbox is an installer, an OS layer and the first host services: a firewall, an audit daemon and a root daemon skeleton. The agent runtime holds most of the security design, and it is not built. No agent runs on agentbox yet. No external security review has happened yet.
+> **Early alpha. Not for production use.** Today agentbox is an installer, an OS layer, the first host services (a firewall, an audit daemon and a root daemon), agent accounts and sealed task containers. The brokers, policy and approvals hold most of the rest of the security design, and they are not built. No task can reach a model yet. No external security review has happened yet.
 
 This page summarizes the agentbox threat model. It covers what agentbox protects, who it defends against, the trust boundaries, and the risks that remain.
 
@@ -11,7 +11,7 @@ This page uses the two status words from [Home](README.md):
 - **Built:** the code exists and has passed its tests in QEMU VMs.
 - **Designed:** the design in [`docs/design/`](../design/ARCHITECTURE.md) describes it, but there is no code yet.
 
-Milestone numbers refer to the ordered list on the [Roadmap](Roadmap.md). Milestones 1 and 2 are built. v1 is the first release, and v2 is the version after it. Facts on this page describe the `main` branch at the time of writing.
+Milestone numbers refer to the ordered list on the [Roadmap](Roadmap.md). Milestones 1, 2 and 4 are built. Milestone 3 is built and waits only for its 24-hour fuzz run. v1 is the first release, and v2 is the version after it. Facts on this page describe the `main` branch at the time of writing.
 
 Contents:
 
@@ -39,7 +39,9 @@ Built controls cover part of this today:
 - the agentbox release that firstboot installs;
 - the integrity of OS package changes;
 - outbound traffic from agentbox's own service users, which the host firewall holds to the addresses rootd resolved;
-- an audit log that records each rootd effect before it runs, and a taint ledger that only rootd's admin path can clear.
+- an audit log that records each rootd effect before it runs, and a taint ledger that only rootd's admin path can clear;
+- the host and other agents, from code in a task: each task runs under its agent's own account, in a disposable container with no network, no capabilities and a seccomp profile;
+- the admin's terminal and later tasks, from an interactive session: its output is filtered, and tasks wait until a scan finds no copy of its login token.
 
 Everything else depends on parts that are designed, not built.
 
@@ -47,8 +49,8 @@ Everything else depends on parts that are designed, not built.
 
 | Attacker | Way in | Defense today | Planned |
 |---|---|---|---|
-| Prompt injection, the most likely attacker | Web pages, package READMEs, issues and pull requests, logs, other agents' messages, shared memory | None. No agent runs on agentbox yet. An agent you install by hand is not confined. | The agent runtime (milestones 3-8) |
-| A compromised agent CLI or dependency | Code that runs inside a task | None. Task containers are not built. | One disposable container per task, with no network (milestone 4) |
+| Prompt injection, the most likely attacker | Web pages, package READMEs, issues and pull requests, logs, other agents' messages, shared memory | Tasks are sealed: no network, and nothing but the workspace carries over to the next task. No task can reach a model or the internet yet. An agent you run outside a task is not confined. | The brokers, policy and approvals (milestones 5-8) |
+| A compromised agent CLI or dependency | Code that runs inside a task | One disposable rootless container per task, with no network, no capabilities and a seccomp profile. **Built.** All tasks share the host kernel. | microVM tasks (v2) |
 | A thief | The disk alone, or the whole powered-off machine | Disk encryption. **Built.** | A signed PCR 11 policy for `tpm2` mode (v2) |
 | Someone on your LAN or Tailscale network | Open ports, the approval page | SSH accepts keys only. The host firewall filters outbound traffic only, so it does not narrow what the LAN can reach. Tailscale and the approval page are not installed or built. | The approval page comes in milestone 6. Each approval needs a passkey, and the page handles low-risk operations only. |
 | A bug in agentbox's own code | Today: the seed generator, the installer, firstboot and `agentbox os`. Designed: the parsers in every agentbox service and in the local model server. | Strict input checks in `agentbox seed`. OS changes build offline. agentbox itself listens on no network port. | Fuzzers for agentbox's own parsers: JSON-RPC, WebAuthn, git pkt-line, HTTP and nft JSON (milestone 3). The local model server runs with no network and no secrets. |
@@ -71,6 +73,9 @@ A trust boundary is a place where data or control passes between parts that trus
 | agentbox service users to the network | Outbound connections from the broker uids and `_ntfy` | The `inet agentbox` nftables table: each uid reaches only the address and port pairs in its own set. Private and special-purpose ranges are dropped unless that exact uid, address and port is on an allow list. Only rootd fills the sets, from names it resolved. `fwcheck` restores an altered table within 60 s, and agent units can't start while it fails. |
 | Producers to the audit log | Audit records | One socket per producer, checked with `SO_PEERCRED`. auditd acknowledges a record only after it is on disk, and the effect waits for that. rootd seals each finished segment immutable. |
 | Console to box | The keyboard and boot media | Console login needs the admin password. GRUB has no password. |
+| Container to host kernel | Task code | One rootless podman container per task, under the agent's own uid and sub-id range: no network, no capabilities, `no-new-privileges`, a read-only root and a seccomp profile that blocks btrfs ioctls. All tasks share the host kernel. |
+| Task to its own sockets | Requests from task code | rootd creates a socket directory for each task, and revokes it when the task ends. agentboxd checks the caller of each request from the socket. |
+| Interactive session to the admin's terminal | Session output | rootd relays it through a filter that drops clipboard writes, DCS strings and terminal report requests. |
 
 agentbox trusts these anchors today:
 
@@ -88,8 +93,6 @@ In the design, `agentboxd` is the gate and policy daemon, and `agentbox-rootd` (
 | Boundary | Planned control |
 |---|---|
 | Internet to proxy | Tasks have no network. Egress goes only through per-task Unix sockets. The proxy holds no secrets, and it reaches only allowlisted hosts. |
-| Container to host kernel | One disposable container per task, with `Network=none`, an ephemeral HOME and a seccomp profile. All tasks share the host kernel. |
-| Task to its own sockets | rootd creates a socket directory for each task. A task reaches only its own sockets. |
 | agentboxd to rootd | For operations that need a signature, rootd runs only the stored operation a human signed, bound to its exact inputs. |
 | Agent to agent | A typed message bus with provenance and sticky taint. |
 | Model to policy | Models propose, and code decides. No model output grants a permission. |
@@ -182,12 +185,12 @@ The design sets seven rules, and tests must prove each one. Most of them depend 
 
 | # | Rule | Status |
 |---|---|---|
-| 1 | Tasks have no network. | Designed. The firewall that confines the brokers is built (milestone 2). |
+| 1 | Tasks have no network. | **Built** and gate-proven for task containers (milestone 4). The firewall that confines the brokers is built (milestone 2). The brokers are designed. |
 | 2 | No credential exists inside a task. | Designed |
 | 3 | Agents never change the running OS. OS changes are built offline into a new generation, and committed only after a health check. | The generation mechanism is **built** and gate-proven. Agents and their path to it are designed. |
 | 4 | rootd runs only the stored operation a human signed. | Designed. Today, root approves a plan by passing its SHA-256 to `os apply`. |
-| 5 | Taint is sticky. Only a human clears it. | The ledger is **built** (milestone 2): a clear from any socket but rootd's admin path is rejected, and the row stays with its epoch moved on. What sets taint is designed. |
-| 6 | Nothing persists between tasks except the tainted workspace. | Designed |
+| 5 | Taint is sticky. Only a human clears it. | The ledger is **built** (milestone 2): a clear from any socket but rootd's admin path is rejected, and the row stays with its epoch moved on. A tainted task taints its workspace, and the next task there starts tainted (milestone 4). What sets taint is designed. |
+| 6 | Nothing persists between tasks except the tainted workspace. | **Built** and gate-proven for task containers (milestone 4) |
 | 7 | The seed and logs contain no plaintext secrets. | **Built** and gate-proven. The seed holds the password hash, so keep it private. |
 
 ## Residual risks
@@ -196,14 +199,22 @@ These are the known risks. They are listed so you can decide where agentbox fits
 
 ### In the built parts
 
-**No sandbox, and an outbound-only firewall**
+**Outside tasks: no sandbox, and an outbound-only firewall**
 
-- agentbox confines no program you run. Any program you run on the box is a normal Linux process.
+- agentbox confines only tasks and interactive sessions. Any other program you run on the box is a normal Linux process.
 - The host firewall (milestone 2) filters only outbound traffic, and only from agentbox's own service users. It has no inbound rules, and it does not filter your admin account or root.
 - Any port that a service opens is reachable from every network the box is on. Do not give the box a public IP address.
 - The brokers don't exist yet, so nothing yet hides systemd-resolved's local Varlink and D-Bus interfaces from the broker uids. The broker units will do that (`docs/THREAT-MODEL.md` lists it).
 - While the disk is full, auditd refuses best-effort records such as denials, so those leave no audit record.
 - The milestone 2 gates ran in `none` mode on arm64 UEFI only, not in the encrypted modes or on amd64.
+
+**Tasks and interactive sessions**
+
+- All tasks share the host kernel. A kernel exploit escapes the container. The v2 plan is microVM tasks.
+- An interactive session's home persists, and the session can write to it. Instructions it leaves there, such as Claude Code skills or `CLAUDE.md`, load into later sessions without review (issue #153). Hooks, MCP servers and shell startup files stay off.
+- The token scan after a session polls the login files and doesn't read git packfiles. A token that lives for less than one poll, or one committed and then packed by `git gc`, can be missed (issue #154).
+- The task seccomp profile is podman's default with btrfs ioctls removed. It still allows every socket family but audit netlink, AF_ALG included, and the namespace syscalls (issue #155).
+- The milestone 4 gates ran in `none` mode on arm64 UEFI only, with stand-in brokers.
 
 **Updates**
 
@@ -251,7 +262,6 @@ These are the known risks. They are listed so you can decide where agentbox fits
 
 When the agent runtime is built, the design accepts these risks for v1:
 
-- Shared-kernel exploits. Tasks share the host kernel. The v2 plan is microVM tasks.
 - A connection to an allowlisted host on a CDN can reach other sites on the same CDN (domain fronting). An allowlisted host that accepts uploads can also receive data.
 - Root can tamper with the audit log on the box. The fix is to ship audit records off the box.
 - Root can always remove confinement. After a root-level firewall flush, brokers are unconfined for up to 60 s, until the next check.

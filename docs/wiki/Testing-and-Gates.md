@@ -1,7 +1,7 @@
 How agentbox is tested, what each test proves, and what it does not. For an overview, start at [Home](README.md).
 
 agentbox is early alpha. Every gate on this page runs in a QEMU virtual machine. No real hardware has run agentbox yet.
-The tests cover the installer, the OS layer, the milestone 2 host services (the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy) the milestone 3 request checks and milestone 4 interactive sessions. The rest of the agent runtime is not built, so no test covers it yet.
+The tests cover the installer, the OS layer, the milestone 2 host services (the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy) the milestone 3 request checks, and the milestone 4 agent accounts, task containers and interactive sessions. The brokers, policy, approvals, agent bus and memory are not built, so no test covers them yet.
 
 ## Two kinds of tests
 
@@ -9,7 +9,7 @@ The tests cover the installer, the OS layer, the milestone 2 host services (the 
 - **Fuzz tests** are Go fuzz tests. Each one feeds random inputs to one parser for as long as you let it run. They need no VM.
 - **Gates** are shell scripts in `hack/`. A gate installs Ubuntu into a QEMU VM, boots it, and checks the result. Each check prints one `PASS` or `FAIL` line. A gate passes only if every check passes.
 
-The build plan also uses the word "gate" for the set of tests that ends a milestone (see [Roadmap](Roadmap.md)). The scripts on this page run the tests for milestones 1-3.
+The build plan also uses the word "gate" for the set of tests that ends a milestone (see [Roadmap](Roadmap.md)). The scripts on this page run the tests for milestones 1-4.
 
 ## At a glance
 
@@ -52,12 +52,15 @@ What they check:
 | `internal/rootd/gens` | Generation logic: numbering, GRUB entries and grubenv, kernel order, retention, the fstab rewrite, initrd checks, plan parsing and the plan hash. |
 | `internal/fw` | The rendered ruleset, the table hash and the per-set comparisons that `fwcheck` makes, the refill script, the reserved-ports check, and a wall-clock step between writes. |
 | `internal/audit` | auditd: the hash chain, segment rotation and sealing, torn tails, clock steps, crashes at each seal step, disk-full mode, taint epochs and write rules, the checks on denial records and audit classes, and `audit verify`. On Linux, the tests that need `chattr` skip unless they run with `CAP_LINUX_IMMUTABLE`. |
-| `internal/rootd`, `internal/rootd/resolve`, `internal/rootd/quota`, `internal/rootd/nl` | rootd: audited egress edits, the fixed port pairs, throttled denial records, and the broker units that will hide systemd-resolved; the resolver's refusal rules (private, special-purpose and NAT64-wrapped answers, the route check); the quota limits and `btrfs qgroup show` parsing; the netlink messages for sets and conntrack. |
+| `internal/rootd`, `internal/rootd/resolve`, `internal/rootd/quota`, `internal/rootd/nl` | rootd: audited egress edits, the fixed port pairs, throttled denial records, and the broker units that will hide systemd-resolved; the resolver's refusal rules (private, special-purpose and NAT64-wrapped answers, the route check); the quota limits and `btrfs qgroup show` parsing; the netlink messages for sets and conntrack. Task start and stop, the rule that an attach and a task of one agent exclude each other, the task block that survives a restart, and `rootd.db`'s mode and STRICT tables. |
 | `internal/ops` | The operation registry: every operation's fields, the generated files in `gen/` and the startup check against them, the denial codes table and its append-only golden list, the denial constructor, the argument and audit-class checks, and the reply checks a task will run on denials. |
 | `internal/gate`, `internal/denial`, `internal/ids` | agentboxd's task gate: per-task sockets, caller identity from the socket, schema checks and typed denials. The denial encoder and its check. The `<kind>_<ULID>` ids. |
 | `internal/task`, `internal/seccomp` | The task container's launch command, its generated CLI configs, the PAM line that skips motd for agent users, and how the task's PID 1 retries the gate. The task seccomp profile: no unconditional `ioctl` rule, and every 16-bit command, with and without high bits set, gets `EOPNOTSUPP` for btrfs and is allowed otherwise. |
 | `internal/sockets` | The socket inventory, the tmpfiles.d and `.socket` units generated from it, and `agentbox sockets check` against a live tree. |
 | `internal/ntfy` | ntfy's `server.yml`, the check that the running unit's uid is `_ntfy`, and publishing an alert over the Unix socket. |
+| `internal/rootd/accounts` | Agent accounts: the `ids` table never reuses an agent number, so no uid or sub-id range comes back. The sub-id lines and the systemd drop-ins it writes. |
+| `internal/controlpaths` | The workspace control-path list: lockfiles such as `go.sum` and `package-lock.json` need no acknowledgement, and a planted `.mcp.json`, skill or git hook does. |
+| `internal/taskenv`, `internal/taskrun`, `internal/rootd/witness` | The task environment: Go, npm and pip settings, `GOPRIVATE` patterns and the no-DNS `resolv.conf`. The in-task forwarders, their retry and `503 BROKER_UNAVAILABLE`. `agentbox why`. The witness FIFO, which rootd reads and caps at 64 KiB. |
 | `internal/rootd/attach` | Interactive sessions: the output filter (also fuzzed), the token scan with its git objects, rotated tokens, entry names, symlink targets and large files, the task block, the control-path baseline, and the session-home checks that refuse a planted symlink. On Linux, a whole attach through rootd with a stand-in session. |
 | `cmd/agentbox` | Flag parsing, help text, `os` arguments. `recovery decrypt` refuses an existing output file. |
 | `hack/gate-dns` | The DNS test server that the rootd gate runs in the guest. |
@@ -65,7 +68,7 @@ What they check:
 | `hack/release` | Two builds of one release give the same bytes, and minisign verifies the signature. |
 | `hack` | The test harness itself. The QEMU command line is right even from a path with spaces, commas and glob characters. The ISO pin check and `remaster-iso.sh` work. The `dup-serial` disk check works on real qcow2 images. No `apply-gate.sh` check runs a value from the VM as code on the host. `powercut.sh boot` puts the VM disk back whether its checks pass or fail. |
 
-At the time of writing there are 155 top-level tests and 45 fuzz tests.
+At the time of writing there are 207 top-level tests and 49 fuzz tests.
 
 Some tests need outside tools: `dash`, `sha256sum`, `xorriso`, `openssl`, `minisign`, `qemu-img` and `qemu-io`, `uv` (or `python3` with PyYAML), and the `agentbox-powercut` image in the podman machine.
 
@@ -449,47 +452,41 @@ caffeinate -i hack/sockets-gate.sh
 
 - They ran in `none` mode on arm64 UEFI only. The milestone 3 code does not touch unlock or boot.
 - No real operation runs behind the gate yet. The agentboxd gate uses a test effect in rootd for `file.write`.
-- No task container exists yet. The gate registers a task the way rootd's task start will.
+- The agentboxd gate registers its test task by hand. The milestone 4 tasks gate covers the real task start.
 - The fuzz tests have not had their 24-hour run yet.
 
 ## Milestone 4 gates
 
-Each milestone 4 gate script starts with `install`, like the milestone 3 ones. Then it runs its checks as root on the box.
+Each milestone 4 gate script starts with `install`: `hack/gate.sh none`, so podman, the units, the seccomp profile and the PAM line reach the box by the real path. The later steps run as root on that box. Each script writes `PASS` and `FAIL` lines to `.vm/<name>.txt`, command output to `.vm/<name>.log`, and exits 1 on any `FAIL`.
 
 ```sh
 caffeinate -i hack/accounts-gate.sh
-```
-
-The tasks gate's `install` is `hack/gate.sh none`, so podman, the units, the seccomp profile and the PAM line reach the box by the real path. It writes `PASS` and `FAIL` lines to `.vm/tasks-gate.txt` and command output to `.vm/tasks-gate.log`, and exits 1 on any `FAIL`.
-
-```sh
 caffeinate -i hack/tasks-gate.sh
-```
-
-The attach gate's `install` is `hack/gate.sh none` too. Its `checks` step copies the Claude Code CLI for linux-arm64 to the VM. It fetches the CLI with `npm pack` and checks it against `hack/SHA256SUMS`.
-
-```sh
 caffeinate -i hack/attach-gate.sh
+caffeinate -i hack/taskenv-gate.sh
 ```
+
+The attach gate needs `npm` and internet on the Mac. Its `checks` step fetches the Claude Code CLI for linux-arm64 with `npm pack`, checks it against `hack/SHA256SUMS`, and copies it to the VM. The task env gate builds its task image on the box from `ubuntu:26.04`, so the VM needs internet too.
 
 ### What the milestone 4 gates prove
 
 | Suite | Script | What it proves |
 |---|---|---|
-| `w5-accounts` | `hack/accounts-gate.sh` | `agentbox agent add` makes one Unix account per agent: uid and gid 70000+N, no login shell, a root-owned empty home, a 65536-wide sub-id block, root-owned config dirs the agent can read, a user manager that starts only behind the firewall, and workspace, storage and session-home subvolumes in the agent's own quota group under the shared disk reserve. An agent at its quota gets `EDQUOT`, also in its storage, while system state keeps writing. Removing the newest agent deletes its account and archives its data. Adding another agent never reuses its uid or sub-id range. A nested subvolume refuses the removal with `NESTED_SUBVOLUME` and taints the workspace. A foreign sub-id entry inside the agentbox range stops reconcile. After a reboot, reconcile brings back the same accounts. |
-| `w5-tasks` | `hack/tasks-gate.sh` | A human's `agentbox task new` runs as one rootless podman container with no network, no capabilities, a read-only root, the task seccomp profile and a fresh tmpfs HOME, inside its own systemd unit. rootd sets the provenance. Hooks, settings and MCP config that one task plants in HOME or the workspace, and a skill's frontmatter hook, don't reach the next task. The real Claude Code CLI runs the planted workspace hook and MCP server without the task flags, and runs neither in a `--cli claude` task. An attach is refused while a task of the agent runs. A task tainted mid-run makes the next task start tainted. The agent can't write a user unit or podman config. A task that ignores SIGTERM and forks `sleep infinity` is gone within 20 s of its timeout or of `cgroup.kill`, and writes nothing after. Canceling a task removes its container and sockets within 5 s, also with auditd stopped. A task keeps working across restarts of the gate and of stand-in brokers. 20 launches each take under 300 ms, open one login session and run no `update-motd.d`. btrfs ioctls from a task fail with `EOPNOTSUPP`, also with high command bits set. |
+| `m4-accounts` | `hack/accounts-gate.sh` | `agentbox agent add` makes one Unix account per agent: uid and gid 70000+N, no login shell, a root-owned empty home, a 65536-wide sub-id block, root-owned config dirs the agent can read, a user manager that starts only behind the firewall, and workspace, storage and session-home subvolumes in the agent's own quota group under the shared disk reserve. An agent at its quota gets `EDQUOT`, also in its storage, while system state keeps writing. Removing the newest agent deletes its account and archives its data. Adding another agent never reuses its uid or sub-id range. A nested subvolume refuses the removal with `NESTED_SUBVOLUME` and taints the workspace. A foreign sub-id entry inside the agentbox range stops reconcile. After a reboot, reconcile brings back the same accounts. |
+| `m4-tasks` | `hack/tasks-gate.sh` | A human's `agentbox task new` runs as one rootless podman container with no network, no capabilities, a read-only root, the task seccomp profile and a fresh tmpfs HOME, inside its own systemd unit. rootd sets the provenance. Hooks, settings and MCP config that one task plants in HOME or the workspace, and a skill's frontmatter hook, don't reach the next task. The real Claude Code CLI runs the planted workspace hook and MCP server without the task flags, and runs neither in a `--cli claude` task. An attach is refused while a task of the agent runs. A task tainted mid-run makes the next task start tainted. The agent can't write a user unit or podman config. A task that ignores SIGTERM and forks `sleep infinity` is gone within 20 s of its timeout or of `cgroup.kill`, and writes nothing after. Canceling a task removes its container and sockets within 5 s, also with auditd stopped. A task keeps working across restarts of the gate and of stand-in brokers. 20 launches each take under 300 ms, open one login session and run no `update-motd.d`. btrfs ioctls from a task fail with `EOPNOTSUPP`, also with high command bits set. |
 | `m4-attach` | `hack/attach-gate.sh` | Hooks and servers planted in the workspace and in session-home run outside an attach. An attach is refused, naming the changed control paths, until `--ack-control-changes`. In that attach none of the plants runs: not the project, local or user SessionStart hooks, not the `.mcp.json` server, not the git pre-commit hook, a repo-local pager, or session-home's shell startup files and git config. That holds for Claude started by rootd, for Claude started by hand in a bash session, and for the bash shell. A file the session touches in the workspace shows on the host, so the marker checks can fail. The session can't write, remove or move session-home's Claude settings, and they stay byte for byte the same. The output filter drops a clipboard write (OSC 52), a DCS string and terminal report requests, and keeps colors. Tasks are blocked while an attach runs, and `task new` is refused. A session that copies its login token into the workspace and into a git object, then rotates the token, leaves tasks blocked and sends an ntfy alert. A rescan lifts the block only once the token is gone. After a rootd restart, a clean rescan keeps the block until `--ack-restart`. Each attach is audited, and the chain verifies. The session runs in the agent's rootless podman with a task's hardening: loopback only, the task seccomp profile and no capabilities. |
+| `m4-taskenv` | `hack/taskenv-gate.sh` | Each task gets the environment its agent's allowlist implies. With `proxy.golang.org` allowed, Go fetches through the forwarder. Without it, `GOPROXY=off`, and `go mod download` and a `go.mod` that needs a newer Go fail at once with no connection. Image settings such as `GOFLAGS`, `GOINSECURE` and `HTTP_PROXY` are dropped. `npm test` and `pip list` open no connection. Caches a task writes don't reach the next task. With the proxy settings removed, a DNS lookup and `curl` each fail in under 1 s. The forwarders on `127.0.0.1:8080-8082` relay a CONNECT tunnel and an LLM `POST`. They survive a 3 s broker outage, and answer `503 BROKER_UNAVAILABLE` within 6 s when the broker stays down. `agentbox why` shows the newest denials and the seccomp guidance. Two agents get the same generated `CLAUDE.md` and `AGENTS.md`. The task can write its witness FIFO but not read it, rootd keeps at most 64 KiB of it, and a rootd restart marks it incomplete with no alert. `go.private.set` is audited. |
 
 ### What they do not prove
 
-- They ran in `none` mode on arm64 UEFI only.
-- No Claude, Codex or opencode binary is in the task image yet. The tasks gate runs the Claude Code CLI from the host's `/usr/bin`. It doesn't run Codex or opencode.
-- A skill's frontmatter hook needs a model reply to fire, and tasks have no model yet. The gate checks only the setting that turns it off.
-- The brokers are not built yet. The restart check uses `agentbox broker-stub`, a stand-in that binds the same per-task sockets.
-- The task image is a small root file system with the host's `/usr` mounted read-only.
-- The session has no network, so a real Claude login can't reach its servers from an attach yet.
-- The Claude Code CLI comes from the host's `/usr/bin`, which the small task image mounts read-only.
-- The token scan doesn't read git packfiles yet.
+- They ran in `none` mode on arm64 UEFI only. The milestone 4 code does not touch unlock or boot.
+- The brokers are not built yet. The tasks gate uses `agentbox broker-stub`, and the task env gate uses a small stand-in that binds each task's broker sockets. No task can reach a model or the internet yet.
+- By default a task runs a small image: a root file system with the host's `/usr`, read-only. Only the task env gate builds and runs `image/task`, which adds Go. No Claude, Codex or opencode binary is in any task image yet. The tasks and attach gates run the Claude Code CLI from the host's `/usr/bin`. Codex and opencode have not run.
+- A skill's frontmatter hook needs a model reply to fire, and tasks have no model yet. The tasks gate checks only the setting that turns it off.
+- podman refuses `--dns=none` together with `--network=none`. The task env gate checks the image's `resolv.conf` instead.
+- An attach session has no network, so a real Claude login can't reach its servers from an attach yet (issue #90).
+- The token scan polls instead of watching files, and it doesn't read git packfiles.
+- The 300 ms check times the whole `systemd-run` call, an upper bound on the bridge's own overhead.
 
 ## Several VMs at once
 
@@ -587,7 +584,7 @@ The `unit` job runs as an unprivileged user, so the `internal/audit` tests that 
 
 ## Results at the time of writing
 
-2026-11-21. The "Tested at" column names the commit on `main` each result comes from. Most milestone 1 results come from `e2e53af`, after the review fixes. A later rerun of six suites at `61acfc7`, which changes only `hack/vm.sh`'s install timeout, also passed. The milestone 2 results come from `fb89de4`, the last milestone 2 code commit. The milestone 3 results come from `ac68bc8`, the last milestone 3 code commit, and from the registry gate fix that merged as `8c9a5fc`. A later commit can change a result, so rerun a gate before you rely on it.
+2026-11-22. The "Tested at" column names the commit on `main` each result comes from. Most milestone 1 results come from `e2e53af`, after the review fixes. A later rerun of six suites at `61acfc7`, which changes only `hack/vm.sh`'s install timeout, also passed. The milestone 2 results come from `fb89de4`, the last milestone 2 code commit. The milestone 3 results come from `ac68bc8`, the last milestone 3 code commit, and from the registry gate fix that merged as `8c9a5fc`. The milestone 4 results come from the regression after the milestone 4 review fixes, at `deb0ef9`, `7394cd9` (which adds the task env gate) and `8b2a87c` (the `rootd.db` fix). A later commit can change a result, so rerun a gate before you rely on it.
 
 The raw logs stay in the maintainer's local evidence store, not in the repo.
 
@@ -637,19 +634,26 @@ All VM gates on a fresh `none`-mode install, arm64 UEFI, Secure Boot on, with fo
 | Milestone 2 suites | Passed again: `w3-firewall` 54, `w3-auditd` 112, `w3-rootd` 104 and `w3-quota-ntfy` 54 PASS, 0 FAIL each | `ac68bc8` |
 | Milestone 1 smoke: `gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso` | Passed | `ac68bc8`; `zero-touch-iso` at `008e121`, which adds only docs and the docs lint |
 | Fuzz tests, short run | All 45 for 12 minutes at once on macOS: 43 passed and 2 crashed. Both bugs are fixed, each crash input is a committed test, and the 4 affected fuzz tests then ran 12 minutes each with no crash. | the pull request branch before it merged as `ac68bc8` |
-| Fuzz tests, 24 hours | Not run yet. The first nightly `fuzz` run has not happened. | |
+| Fuzz tests, 24 hours | Not run yet. A 24-hour local run stopped when the host restarted, with no result. The first nightly `fuzz` run: 41 of 46 fuzz tests ran 5 hours each with no crash, and 5 were still running. | `a6897c0` |
 | CI: `internal/audit` as root | Passed: 28 PASS, 0 SKIP | `3b4c438` |
 | `go vet ./...` and `go test ./...` | Passed on the Mac | `ac68bc8` |
 | Milestone 3 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
 
 ### Milestone 4
 
-On a fresh `none`-mode install, arm64 UEFI, Secure Boot on, with four VMs at once.
+The regression after the review fixes. Every VM gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Boot on, with four VMs at once. Before the review, each milestone 4 gate also passed once on its own pull request branch.
 
 | Suite | Result | Tested at |
 |---|---|---|
-| `m4-attach` | Passed: 27 PASS (the install and 26 checks), 0 FAIL, with Claude Code 2.1.330 | `f7226cf` |
-| `go vet ./...` and `go test ./...` | Passed on the Mac; the Linux-only attach tests passed on linux/arm64 | `c701e78` |
+| `m4-accounts` | Passed: 34 PASS, 0 FAIL | `deb0ef9` |
+| `m4-tasks` | Passed: 43 PASS, 0 FAIL | `deb0ef9` |
+| `m4-attach` | Passed: 34 PASS, 0 FAIL, with Claude Code 2.1.330 | `deb0ef9` |
+| `m4-taskenv` | Passed: 40 PASS, 0 FAIL. Its first two runs could not start, because the gate script was not on `main` yet. | `8b2a87c` |
+| Milestone 3 suites | Passed again: `w4-registry` 12, `w4-agentboxd` 30 and `w4-sockets` 38 PASS, 0 FAIL each | `7394cd9` |
+| Milestone 2 suites | `w3-firewall` 54, `w3-auditd` 114 and `w3-quota-ntfy` 54 PASS, 0 FAIL each. `w3-rootd` failed 2 checks at `7394cd9`: `rootd.db` was world-readable, because reconcile now creates it first, and two new tables were not STRICT (issue #150). After the fix: 104 PASS, 0 FAIL. | `7394cd9`; `w3-rootd` at `8b2a87c` |
+| Milestone 1 smoke: `gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso` | Passed | `deb0ef9` |
+| Milestone 4 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
+| `go vet ./...` and `go test ./...` | Passed on the Mac | `8b2a87c` |
 
 ## Troubleshooting
 
