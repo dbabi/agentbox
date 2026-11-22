@@ -205,7 +205,7 @@ mkdir -p $W/.gate && chmod 0755 $W/.gate # task-side helpers (not a control path
 
 # --- #77: the policy files in the task image ---
 cat > $G/p <<'P'
-for f in /etc/claude-code/managed-settings.json /etc/codex/requirements.toml; do stat -c "%u %a %n" $f; echo x >> $f 2>/dev/null && echo WRITABLE; done
+for f in /etc/claude-code/managed-settings.json /etc/codex/requirements.toml; do stat -c "%u %a %n" $f; { echo x >> $f; } 2>/dev/null && echo WRITABLE; done
 grep -c '"allowManagedMcpServersOnly": true' /etc/claude-code/managed-settings.json; grep -cx 'allowed_web_search_modes = \[\]' /etc/codex/requirements.toml
 P
 check "#77 the task image has /etc/claude-code/managed-settings.json and /etc/codex/requirements.toml, root-owned 0644, read-only" '
@@ -213,9 +213,9 @@ check "#77 the task image has /etc/claude-code/managed-settings.json and /etc/co
 0 644 /etc/codex/requirements.toml
 1
 1" ]'
-# pty.py OUT KEYS... -- ARGV: ARGV in a 200x50 PTY; types each key group (a literal \r is Enter) after a pause, and
+# ptyrun.py OUT KEYS... -- ARGV: ARGV in a 200x50 PTY; types each key group (a literal \r is Enter) after a pause, and
 # saves the output
-cat > $W/.gate/pty.py <<'PY'
+cat > $W/.gate/ptyrun.py <<'PY'
 import fcntl, os, pty, select, struct, sys, termios, time
 out = sys.argv[1]; i = sys.argv.index("--"); keys, argv = sys.argv[2:i], sys.argv[i + 1:]
 pid, fd = pty.fork()
@@ -243,7 +243,7 @@ open(out, "wb").write(buf); os.kill(pid, 9)
 PY
 cat > $G/p <<'P'
 echo '{"hasCompletedOnboarding":true,"customApiKeyResponses":{"approved":["agentbox-placeholder"],"rejected":[]},"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}' > ~/.claude.json
-cd /workspace && python3 .gate/pty.py /tmp/st /status '\r' -- claude --setting-sources user --strict-mcp-config --settings /opt/agentbox/exports/claude-settings.json --mcp-config /opt/agentbox/exports/mcp.json
+cd /workspace && python3 .gate/ptyrun.py /tmp/st /status '\r' -- claude --setting-sources user --strict-mcp-config --settings /opt/agentbox/exports/claude-settings.json --mcp-config /opt/agentbox/exports/mcp.json
 sed 's/\x1b\[[0-9;?]*[A-Za-z]/ /g' /tmp/st | tr '\r' '\n' | grep -a 'Setting sources:'
 P
 check "#77 Claude's /status in a task, before any model turn: Setting sources names Enterprise managed settings (file)" '
@@ -358,7 +358,7 @@ P
 check "#123 a task writes .vscode/tasks.json, a nested repo sub/.git and a venv named env/" 'sht < $G/p && [ -f $W/.vscode/tasks.json ] && [ -f $W/sub/.git/config ] && [ -L $W/env/bin/python ]'
 check "  ... the next attach is refused, naming each" '! attach --cli bash </dev/null > $G/a2 2>&1; cat $G/a2; grep -q "control paths changed" $G/a2 &&
   for p in .vscode/tasks.json sub/.git/config env/pyvenv.cfg env/bin/python; do grep -qF "$p" $G/a2 || exit 1; done && ! grep -q "sub/.git/objects\|\.gate" $G/a2'
-check "  ... and passes with --ack-control-changes" 'echo exit | attach --cli bash --ack-control-changes > $G/a3 2>&1; cat $G/a3; grep -qF "[agentbox] session ended" $G/a3'
+check "  ... and passes with --ack-control-changes" '{ sleep 3; echo "sleep 1; exit"; } | attach --cli bash --ack-control-changes > $G/a3 2>&1; cat $G/a3; grep -qF "[agentbox] session ended" $G/a3'
 
 # --- the box afterwards ---
 for v in proxy keys; do kill "$(cat $G/svc-$v.pid)" 2>/dev/null; rm -f /run/agentbox-rootd/svc-$v.sock; done
