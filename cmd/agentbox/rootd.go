@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"agentbox/internal/rootd"
 	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/resolve"
+	"agentbox/internal/task"
 )
 
 // AdminSocket is rootd-admin.sock (§2.1): root and agentbox-admin members.
@@ -41,6 +44,20 @@ func cmdRootd(args []string) error {
 	}
 	cfg.Effects, cfg.RawAudit = testEffects()
 	cfg.Tasks = rootd.DefaultTaskConfig()
+	// hack/taskenv-gate.sh: tasks run a full image (image/task, with the pinned Go) the gate loads into each agent's
+	// podman, instead of the stub skeleton and the host's /usr. Test VMs only.
+	if img := os.Getenv("AGENTBOX_TEST_TASK_IMAGE"); img != "" {
+		cfg.Tasks.Image, cfg.Tasks.HostUsr = img, nil
+		// one podman call through the agent's user manager before each launch, as rootd's ensureImage makes: podman's
+		// pause process then gets its own scope there, not the task's unit, which task.stop kills (and a rootd restart
+		// stops user@, so the scope goes too)
+		cfg.Tasks.EnsureImage = func(a rootd.Account) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			return exec.CommandContext(ctx, "systemd-run", "--user", "-M", "ag-"+a.Name+"@", "--wait", "--quiet", "--collect",
+				task.Podman, "image", "exists", img).Run()
+		}
+	}
 	cfg.Alert = func(title, msg string) error {
 		return ntfy.Publish(ntfy.Socket, ntfy.TokenPath, ntfy.AlertTopic, title, msg)
 	}

@@ -188,7 +188,11 @@ func Run(cfg Config) error {
 	if cfg.Tasks.Accounts == nil {
 		cfg.Tasks.Accounts = idsAccounts{db}
 	}
+	if cfg.Tasks.EgressDir == "" {
+		cfg.Tasks.EgressDir = cfg.EgressDir
+	}
 	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, alert: cfg.Alert, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
+	s.tasks.reopenWitnesses()
 	s.tasks.resume()
 	if s.cfg.Attach == nil {
 		t := s.tasks.cfg
@@ -364,6 +368,8 @@ type request struct {
 	// agent.attach --ack-control-changes (§4.2); attach.rescan --ack-restart
 	AckControlChanges bool `json:"ackControlChanges,omitempty"`
 	AckRestart        bool `json:"ackRestart,omitempty"`
+	// go.private.set (§5.3)
+	Patterns *string `json:"patterns,omitempty"`
 }
 
 // peer is a connection's SO_PEERCRED uid and SO_PEERGROUPS groups.
@@ -468,6 +474,8 @@ func (s *server) admin(r request, p peer) reply {
 			return reply{"ok": false, "error": err.Error()}
 		}
 		return reply{"ok": true, "agents": all}
+	case "go.private.set":
+		return s.goPrivateSet(r)
 	case "sets.refill":
 		return s.refill(r)
 	case "attach.status":

@@ -30,6 +30,7 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | Accounts gate (milestone 4) | `hack/accounts-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
 | Tasks gate (milestone 4) | `hack/tasks-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
 | Attach gate (milestone 4) | `hack/attach-gate.sh [install\|checks ...]` | Apple Silicon Mac, with `npm` and internet for the Claude Code CLI | not timed separately |
+| Task env gate (milestone 4) | `hack/taskenv-gate.sh [install\|checks ...]` | Apple Silicon Mac, with internet for the task image build | not timed separately |
 | Fuzz tests | `hack/fuzz-all.sh [DURATION]` | macOS or Linux | 24 h by default |
 
 The times come from one Apple Silicon Mac. The milestone 2 and 3 times come from runs with four VMs at once.
