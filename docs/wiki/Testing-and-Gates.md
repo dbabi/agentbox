@@ -27,6 +27,7 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | Registry gate (milestone 3) | `hack/registry-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
 | agentboxd gate (milestone 3) | `hack/agentboxd-gate.sh [install\|checks ...]` | Apple Silicon Mac | about 10 min, with the `none` install |
 | Sockets gate (milestone 3) | `hack/sockets-gate.sh [install] [check]` | Apple Silicon Mac | not timed separately |
+| Accounts gate (milestone 4) | `hack/accounts-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
 | Fuzz tests | `hack/fuzz-all.sh [DURATION]` | macOS or Linux | 24 h by default |
 
 The times come from one Apple Silicon Mac. The milestone 2 and 3 times come from runs with four VMs at once.
@@ -445,6 +446,25 @@ caffeinate -i hack/sockets-gate.sh
 - No real operation runs behind the gate yet. The agentboxd gate uses a test effect in rootd for `file.write`.
 - No task container exists yet. The gate registers a task the way rootd's task start will.
 - The fuzz tests have not had their 24-hour run yet.
+
+## Milestone 4 gates
+
+Each milestone 4 gate script starts with `install`, like the milestone 3 ones. Then it runs its checks as root on the box.
+
+```sh
+caffeinate -i hack/accounts-gate.sh
+```
+
+### What the milestone 4 gates prove
+
+| Suite | Script | What it proves |
+|---|---|---|
+| `w5-accounts` | `hack/accounts-gate.sh` | `agentbox agent add` makes one Unix account per agent: uid and gid 70000+N, no login shell, a root-owned empty home, a 65536-wide sub-id block, root-owned config dirs the agent can read, a user manager that starts only behind the firewall, and workspace and storage subvolumes in the agent's own quota group under the shared disk reserve. An agent at its quota gets `EDQUOT`, also in its storage, while system state keeps writing. Removing the newest agent deletes its account and archives its data. Adding another agent never reuses its uid or sub-id range. A nested subvolume refuses the removal with `NESTED_SUBVOLUME` and taints the workspace. A foreign sub-id entry inside the agentbox range stops reconcile. After a reboot, reconcile brings back the same accounts. |
+
+### What they do not prove
+
+- They ran in `none` mode on arm64 UEFI only.
+- No task runs in an agent's account yet, so nothing here starts a container with the sub-id block.
 
 ## Several VMs at once
 

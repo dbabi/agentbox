@@ -1,10 +1,12 @@
 package rootd
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
 
+	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/resolve"
 )
 
@@ -41,5 +43,70 @@ func TestEgressEditIsAudited(t *testing.T) {
 	if !listed() || len(recs) != 2 || recs[0]["type"] != "INTENT" || recs[0]["origin"] != "admin" || recs[0]["listed"] != false ||
 		recs[1]["type"] != "RESULT" || recs[1]["opId"] != recs[0]["opId"] || recs[1]["status"] != "executed" || recs[1]["listed"] != true {
 		t.Fatalf("records %v, listed %v", recs, listed())
+	}
+}
+
+// agent.add and agent.remove are registry admin ops: INTENT, its ACK, the effect, RESULT. A nested subvolume refuses
+// the removal before any INTENT and taints the workspace; a removed agent's uid is never handed out again.
+func TestAgentOps(t *testing.T) {
+	db, err := OpenDB(filepath.Join(t.TempDir(), "rootd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var recs []map[string]any
+	var limits []uint64
+	applied, nested := 0, map[string][]string{}
+	s := &server{db: db, audit: func(r map[string]any) error { recs = append(recs, r); return nil },
+		store:   func(a accounts.Agent, l uint64) error { limits = append(limits, l); return nil },
+		nested:  func(p string) ([]string, error) { return nested[p], nil },
+		applyOS: func() error { applied++; return nil }}
+	call := func(op, args string) reply { return s.admin(request{Op: op, Args: json.RawMessage(args)}) }
+	if rep := call("agent.add", `{"name":"a","diskBytes":67108864}`); rep["ok"] != true || limits[0] != 64<<20 {
+		t.Fatalf("add a: %v %v", rep, limits)
+	}
+	if len(recs) != 2 || recs[0]["type"] != "INTENT" || recs[0]["name"] != "agent.add" || recs[0]["origin"] != "admin" ||
+		recs[1]["type"] != "RESULT" || recs[1]["status"] != "executed" || recs[1]["opId"] != recs[0]["opId"] || applied != 1 {
+		t.Fatalf("records %v, applied %d", recs, applied)
+	}
+	for _, bad := range []string{`{"name":"A"}`, `{"name":"a","diskBytes":1}`, `{"name":"a","extra":1}`, `{}`} {
+		if rep := call("agent.add", bad); rep["ok"] != false {
+			t.Errorf("add %s: %v", bad, rep)
+		}
+	}
+	call("agent.add", `{"name":"b"}`)
+	b := accounts.Agent{N: 2, Name: "b"}
+	nested[b.Storage()] = []string{"@var_lib_agentbox_data/agents/b/storage/x"}
+	recs = nil
+	rep := call("agent.remove", `{"name":"b"}`)
+	if rep["ok"] != false || rep["code"] != "NESTED_SUBVOLUME" || rep["tainted"] != true || len(recs) != 1 ||
+		recs[0]["type"] != "TAINT" || recs[0]["subject"] != "workspace:b" {
+		t.Fatalf("nested: %v, records %v", rep, recs)
+	}
+	if a, err := accounts.Lookup(db, "b"); err != nil || a.N != 2 {
+		t.Fatalf("a refused removal must leave b active: %v %v", a, err)
+	}
+	delete(nested, b.Storage())
+	recs = nil
+	if rep := call("agent.remove", `{"name":"nope"}`); rep["ok"] != false || len(recs) != 0 {
+		t.Fatalf("removing an unknown agent: %v %v", rep, recs)
+	}
+	if rep := call("agent.remove", `{"name":"b"}`); rep["ok"] != true || rep["agent"].(map[string]any)["active"] != false || applied != 3 {
+		t.Fatalf("remove b: %v, applied %d", rep, applied)
+	}
+	c := call("agent.add", `{"name":"c"}`)["agent"].(map[string]any)
+	if c["n"] != 3 || c["uid"] != 70003 {
+		t.Fatalf("after removing b (n 2), c got %v", c)
+	}
+	if rep := call("agent.list", ""); rep["ok"] != true || len(rep["agents"].([]accounts.Agent)) != 3 {
+		t.Fatalf("list: %v", rep)
+	}
+	recs = nil
+	s.audit = func(map[string]any) error { return errors.New("down") }
+	if rep := call("agent.add", `{"name":"d"}`); rep["ok"] != false {
+		t.Fatalf("auditd down: %v", rep)
+	}
+	if _, err := accounts.Lookup(db, "d"); err != accounts.ErrNotFound {
+		t.Fatalf("auditd down: d was allocated: %v", err)
 	}
 }

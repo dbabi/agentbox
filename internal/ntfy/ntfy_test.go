@@ -35,3 +35,21 @@ func TestCheckStatusUID(t *testing.T) {
 		t.Error("accepted another uid")
 	}
 }
+
+// #84: ntfy between fork and setuid passes once it drops to _ntfy; one that stays root fails.
+func TestSettleUID(t *testing.T) {
+	root, ntfy := "Uid:\t0\t0\t0\t0\n", "Uid:\t972\t972\t972\t972\n"
+	n := 0
+	seq := func() (string, error) {
+		if n++; n < 3 {
+			return root, nil
+		}
+		return ntfy, nil
+	}
+	if err := settleUID(seq, "972", 10, 0); err != nil {
+		t.Errorf("dropped to _ntfy on the third read: %v", err)
+	}
+	if err := settleUID(func() (string, error) { return root, nil }, "972", 10, 0); err == nil {
+		t.Error("a process that stays root passed")
+	}
+}

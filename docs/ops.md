@@ -5,7 +5,7 @@ Every op, from `internal/ops/registry.go` (ARCHITECTURE.md §5.1, §5.3). Args a
 
 | Op | Class | Cedar group | Resource | Args | Outputs | Signature | Bound inputs | Rollback coverage | Reversible | Taints output | Workspace-bindable | Reaches rootd | Batch and quote |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `agent.add` | admin | n/a |  | name |  | none | n/a | n/a |  |  |  | yes |  |
+| `agent.add` | admin | n/a |  | name, diskBytes? |  | none | n/a | n/a |  |  |  | yes |  |
 | `agent.attach` | admin | n/a |  | name, workspace |  | none | n/a | n/a |  |  |  | yes |  |
 | `agent.remove` | admin | n/a |  | name |  | none | n/a | n/a |  |  |  | yes |  |
 | `agent.skills.set` | admin | n/a |  | agent, skills |  | none | n/a | n/a |  |  |  | yes |  |
