@@ -168,7 +168,7 @@ P
 check "  ... the next task's HOME is fresh: only the generated configs, byte for byte, read-only at the source" 'T3=$(new 2m < /tmp/tg-p) &&
   wait_end $T3 60 && [ "$(field $T3 end_reason)" = completed ] && [ "$(cat $W/t3.claude $W/t3.codex $W/t3.exports)" = "same
 same
-ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.agentbox/output /home/agent/.claude /home/agent/.claude/settings.json /home/agent/.codex /home/agent/.codex/config.toml " ] || { cat $W/t3.home $W/t3.claude $W/t3.codex $W/t3.exports; false; }'
+ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.agentbox/output /home/agent/.claude /home/agent/.claude/CLAUDE.md /home/agent/.claude/settings.json /home/agent/.codex /home/agent/.codex/AGENTS.md /home/agent/.codex/config.toml /home/agent/.config /home/agent/.config/opencode /home/agent/.config/opencode/AGENTS.md " ] || { cat $W/t3.home $W/t3.claude $W/t3.codex $W/t3.exports; false; }'
 check "  ... hooks are off for every settings source (disableAllHooks, the skill frontmatter hook included), MCP config empty, git hooks off" '
   grep -qx "  \"disableAllHooks\": true" /var/lib/agentbox/control/exports/gt/claude-settings.json && grep -q "\"mcpServers\": {}" /var/lib/agentbox/control/exports/gt/mcp.json &&
   [ "$(cat $W/t3.git)" = /opt/agentbox/exports/nohooks ] && [ -z "$(ls -A /var/lib/agentbox/control/exports/gt/nohooks)" ]'
@@ -306,7 +306,7 @@ PY
 { echo "cat > /tmp/sys.py <<'PY'"; cat /tmp/tg-sys.py; echo PY; echo 'python3 /tmp/sys.py > /workspace/t14.sys 2>&1'
   echo 'unshare -Ur true > /workspace/t14.unshare 2>&1; echo $? >> /workspace/t14.unshare'
   echo 'agentbox gate call --socket /run/agentbox/gate/gate.sock "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"file.delete\",\"params\":{}}" > /workspace/t14.gate 2>&1'
-  echo '{ git init -q /tmp/r && go version && echo ok; } > /workspace/t14.go 2>&1'; } > /tmp/tg-p
+  echo '{ git init -q /tmp/r && git -C /tmp/r status --short && echo ok; } > /workspace/t14.go 2>&1'; } > /tmp/tg-p
 check "a task can open AF_UNIX, AF_INET, AF_INET6 and NETLINK_ROUTE sockets and an AF_UNIX socketpair, fork, and unshare CLONE_FS" 'T14=$(new 2m < /tmp/tg-p) &&
   echo $T14 > /tmp/tg-t14 && wait_end $T14 60 && cat $W/t14.sys $W/t14.unshare &&
   for l in unix inet inet6 route pair-unix clone-fork unshare-fs; do grep -qx "$l 0 0" $W/t14.sys || exit 1; done'
@@ -315,7 +315,7 @@ check "  ... AF_ALG, AF_VSOCK (also with high bits set) and NETLINK_AUDIT socket
 check "  ... clone with CLONE_NEWUSER, unshare with CLONE_NEWNS or CLONE_NEWTIME, and setns get EPERM; clone3 gets ENOSYS" '
   for l in clone-newuser unshare-newns unshare-newtime setns; do grep -qx "$l -1 1" $W/t14.sys || exit 1; done && grep -qx "clone3 -1 38" $W/t14.sys'
 check "  ... unshare -Ur true fails" '[ "$(tail -1 $W/t14.unshare)" != 0 ] && grep -qi "operation not permitted" $W/t14.unshare'
-check "  ... the gate socket still answers, and git and go still run" 'cat $W/t14.gate $W/t14.go; grep -q UNKNOWN_OP $W/t14.gate && [ "$(tail -1 $W/t14.go)" = ok ]'
+check "  ... the gate socket still answers, and git still runs (the toolchains: m4-taskenv)" 'cat $W/t14.go; grep -q UNKNOWN_OP $W/t14.gate && [ "$(tail -1 $W/t14.go)" = ok ]'
 
 # --- #13: 20 consecutive launches ---
 printf '#!/bin/sh\ntouch /run/tg-motd-ran\n' > /etc/update-motd.d/00-tg-marker && chmod 0755 /etc/update-motd.d/00-tg-marker
