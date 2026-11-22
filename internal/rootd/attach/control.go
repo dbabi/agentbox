@@ -34,23 +34,77 @@ func inertGit(rel string) bool {
 	return i >= 0 && i+1 < len(segs) && slices.Contains(gitInert, segs[i+1])
 }
 
+// HomePaths are the session-home paths a CLI loads as instructions or runs from (#153). Session-home persists and the
+// session can write it, so a file planted there would steer every later attach: they are control paths too, in the
+// same baseline as the workspace's, keyed by their path in the session (/home/agent/...), which no workspace-relative
+// path can match.
+var HomePaths = []string{".claude/CLAUDE.md", ".claude/rules", ".claude/skills", ".claude/agents", ".claude/commands", ".npmrc", ".local/bin"}
+
+// Controls is an attach's control-path state: the workspace's control paths, and session-home's HomePaths.
+func Controls(p Paths) (map[string]string, error) {
+	m, err := Manifest(p.Workspace)
+	if err != nil {
+		return nil, err
+	}
+	h, err := walk(p.SessionHome, func(rel string, d fs.DirEntry) sel {
+		for _, hp := range HomePaths {
+			switch {
+			case rel == hp || strings.HasPrefix(rel, hp+"/"):
+				return record
+			case strings.HasPrefix(hp, rel+"/") && d.Type()&fs.ModeSymlink != 0:
+				return record // ~/.local as a link: the CLI would follow it to a bin dir no walk sees
+			case strings.HasPrefix(hp, rel+"/"):
+				return descend
+			}
+		}
+		return skip
+	})
+	for k, v := range h {
+		m[Home+"/"+k] = v
+	}
+	return m, err
+}
+
 // Manifest is the workspace's control paths: each file's mode and sha256, each symlink's target. Symlinks are not
 // followed.
 func Manifest(ws string) (map[string]string, error) {
+	return walk(ws, func(rel string, _ fs.DirEntry) sel {
+		switch {
+		case !controlpaths.Is(rel):
+			return descend
+		case inertGit(rel):
+			return skip
+		}
+		return record
+	})
+}
+
+type sel int
+
+const (
+	record  sel = iota // in the manifest, with everything under it
+	descend            // not itself, but maybe something under it
+	skip               // neither
+)
+
+func walk(root string, which func(rel string, d fs.DirEntry) sel) (map[string]string, error) {
 	m := map[string]string{}
-	err := filepath.WalkDir(ws, func(p string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(ws, p)
+		rel, _ := filepath.Rel(root, p)
 		rel = filepath.ToSlash(rel)
-		if rel == "." || !controlpaths.Is(rel) {
+		if rel == "." {
 			return nil
 		}
-		if inertGit(rel) {
+		switch which(rel, d) {
+		case skip:
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		case descend:
 			return nil
 		}
 		switch t := d.Type(); {

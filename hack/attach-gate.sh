@@ -15,7 +15,8 @@
 #          plant runs (the control). attach is refused, naming the changed control paths, until --ack-control-changes;
 #          then claude with its attach flags, claude started by hand in a bash attach, the bash shell itself and git
 #          commit, log, add and the alias run none of them. A control path the session changes needs an ack in the
-#          next attach, and only that one is listed.
+#          next attach, and only that one is listed: AGENTS.md in the workspace, and a skill and a CLAUDE.md it left in
+#          session-home.
 #          The session can't write, remove or move session-home's settings, which stay byte-for-byte unchanged. The
 #          output filter drops OSC 52, DCS and CSI report requests and keeps SGR. Tasks are blocked while an attach is
 #          live, and task.start refuses. A session that copies its token into the workspace (and into a git object) and then rotates it leaves
@@ -132,6 +133,7 @@ b64=Z2F0ZV9vc2M1Mg # base64 of gate_osc52, sent in two halves so the echoed comm
 cat > /tmp/gate-in2 <<IN
 cd /workspace
 touch $M/m-probe; echo planted >> AGENTS.md
+mkdir -p ~/.claude/skills/gate && echo planted > ~/.claude/skills/gate/SKILL.md && echo planted > ~/.claude/CLAUDE.md
 # git log pages through less (core.pager), which may stop at "Press RETURN": the empty line after it answers that
 git st; git log -1 --oneline
 
@@ -149,8 +151,8 @@ IN
 check "attach 2: a bash session, input relayed, token scan clean (with --ack-control-changes: the claude session wrote its own)" 'typed /tmp/gate-in2 | attach --cli bash --ack-control-changes >/tmp/gate-a2 2>&1; cat -v /tmp/gate-a2;
   grep -qF "[agentbox] session ended; token scan: clean" /tmp/gate-a2 && grep -q "commit=0" /tmp/gate-a2'
 check "  ... the file it touched in the marker dir shows on the host (markers are live)" '[ -e $M/m-probe ] && rm $M/m-probe'
-check "  ... the next attach is refused naming only AGENTS.md, which the session changed: the ack saved the rest" '! attach --cli bash </dev/null >/tmp/gate-a2b 2>&1;
-  cat /tmp/gate-a2b; grep -q "changed since the last accepted state: AGENTS.md;" /tmp/gate-a2b'
+check "  ... the next attach is refused naming only what the session changed: AGENTS.md, and the skill and CLAUDE.md it left in session-home" '! attach --cli bash </dev/null >/tmp/gate-a2b 2>&1;
+  cat /tmp/gate-a2b; grep -qF "changed since the last accepted state: /home/agent/.claude/CLAUDE.md, /home/agent/.claude/skills/gate/SKILL.md, AGENTS.md;" /tmp/gate-a2b'
 check "  ... bash read no startup file; git used no ~/.gitconfig pager, alias or filter and no repo-local pager" 'none || { markers; false; }'
 check "  ... in a container: loopback only, the seccomp filter, no_new_privs and no capabilities" 'grep -q "^net=lo.\$" /tmp/gate-a2 &&
   grep -q "^Seccomp:2" /tmp/gate-a2 && grep -q "^NoNewPrivs:1" /tmp/gate-a2 && grep -q "^CapEff:0000000000000000" /tmp/gate-a2'

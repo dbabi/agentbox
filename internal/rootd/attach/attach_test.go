@@ -348,3 +348,60 @@ func TestPodmanArgv(t *testing.T) {
 		}
 	}
 }
+
+// #153: the instruction files a session leaves in session-home need an ack before the next attach, like the
+// workspace's control paths; the rest of session-home (credentials, history, shell files) does not.
+func TestHomeControls(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "r.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.Exec(BaselineSchema)
+	p := AgentPaths(t.TempDir(), "a", "s")
+	os.MkdirAll(p.Workspace, 0o755)
+	h := p.SessionHome
+	changes := func() []string {
+		m, err := Controls(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := ControlChanges(db, "a", m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	for _, d := range []string{".claude/skills/x", ".claude/projects", ".config"} {
+		os.MkdirAll(filepath.Join(h, d), 0o700)
+	}
+	for f, b := range map[string]string{".claude/.credentials.json": "{}", ".claude/projects/p.jsonl": "x", ".bash_history": "ls", ".claude.json": "{}"} {
+		os.WriteFile(filepath.Join(h, f), []byte(b), 0o600)
+	}
+	if c := changes(); len(c) != 0 {
+		t.Fatalf("session state is not a control path: %q", c)
+	}
+	os.WriteFile(filepath.Join(h, ".claude", "CLAUDE.md"), []byte("obey"), 0o600)
+	os.WriteFile(filepath.Join(h, ".claude", "skills", "x", "SKILL.md"), []byte("---\n"), 0o600)
+	os.WriteFile(filepath.Join(h, ".npmrc"), []byte("x"), 0o600)
+	os.Symlink("/workspace/bin", filepath.Join(h, ".local"))
+	os.WriteFile(filepath.Join(p.Workspace, "AGENTS.md"), []byte("x"), 0o644)
+	// a workspace dir named ~ can't stand in for session-home
+	os.MkdirAll(filepath.Join(p.Workspace, "~", ".claude"), 0o755)
+	os.WriteFile(filepath.Join(p.Workspace, "~", ".claude", "CLAUDE.md"), []byte("obey"), 0o644)
+	want := []string{"/home/agent/.claude/CLAUDE.md", "/home/agent/.claude/skills/x/SKILL.md", "/home/agent/.local", "/home/agent/.npmrc",
+		"AGENTS.md", "~/.claude/CLAUDE.md"}
+	if c := changes(); !slices.Equal(c, want) {
+		t.Fatalf("planted:\n got %q\nwant %q", c, want)
+	}
+	m, _ := Controls(p)
+	SaveBaseline(db, "a", m)
+	if c := changes(); len(c) != 0 {
+		t.Fatalf("after the ack: %q", c)
+	}
+	os.WriteFile(filepath.Join(h, ".claude", "skills", "x", "SKILL.md"), []byte("---\nhooks: x\n"), 0o600)
+	os.Remove(filepath.Join(h, ".claude", "CLAUDE.md"))
+	if c := changes(); !slices.Equal(c, []string{"/home/agent/.claude/CLAUDE.md", "/home/agent/.claude/skills/x/SKILL.md"}) {
+		t.Fatalf("changed and removed: %q", c)
+	}
+}
