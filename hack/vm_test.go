@@ -10,11 +10,24 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
+
+// fakeVMNet gives a test checkout a .vm/vmnet newer than hack/vmnet/vmnet.c, so vm.sh does not build it. The fake writes
+// its argv to .vm/vmnet.argv and execs the QEMU after "--".
+func fakeVMNet(root string) {
+	src := filepath.Join(root, "hack", "vmnet", "vmnet.c")
+	os.MkdirAll(filepath.Dir(src), 0o755)
+	os.WriteFile(src, nil, 0o644)
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(src, old, old)
+	os.WriteFile(filepath.Join(root, ".vm", "vmnet"),
+		[]byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.argv\"\nwhile [ \"$1\" != -- ]; do shift; done; shift\nexec \"$@\"\n"), 0o755)
+}
 
 // TestVMArgv runs vm.sh boot under dash from a checkout whose path has a space, a comma and glob characters, with fake
 // QEMU and swtpm that record their argv: commas are doubled only inside QEMU key=value options, swtpm gets relative
-// paths, and each arch gets its machine, firmware, disk bus and TPM device.
+// paths, and each arch gets its machine, firmware, disk bus and TPM device. QEMU runs under vmnet, with its network on fd 3.
 // The checkout also has a DUP_DISK second disk, so the same-serial NVMe controller args are checked too, and
 // AGENTBOX_BLKLOG logs the disk through blklogwrites.
 func TestVMArgv(t *testing.T) {
@@ -31,6 +44,7 @@ func TestVMArgv(t *testing.T) {
 	os.MkdirAll(filepath.Join(root, "hack"), 0o755)
 	os.MkdirAll(vm, 0o755)
 	os.WriteFile(filepath.Join(root, "hack", "vm.sh"), src, 0o755)
+	fakeVMNet(root)
 	os.WriteFile(filepath.Join(vm, "disk.qcow2"), nil, 0o644)
 	os.WriteFile(filepath.Join(vm, "disk2.qcow2"), nil, 0o644) // DUP_DISK=1: a second disk with the same serial
 	os.WriteFile(filepath.Join(vm, "tpm.on"), nil, 0o644)
@@ -56,7 +70,7 @@ func TestVMArgv(t *testing.T) {
 	q := strings.ReplaceAll(vm, ",", ",,")
 	common := []string{
 		"if=none,id=d0,format=qcow2,file=" + q + "/disk.qcow2",
-		"user,id=n0,hostfwd=tcp:127.0.0.1:2229-:22",
+		"stream,id=n0,addr.type=fd,addr.str=3",
 		"unix:" + q + "/qmp.sock,server=on,wait=off",
 		"socket,id=chrtpm,path=" + q + "/tpm/sock",
 		vm + "/qemu.pid",
@@ -76,6 +90,10 @@ func TestVMArgv(t *testing.T) {
 			t.Fatalf("vm.sh boot (%s): %v\n%s", m.arch, err, out)
 		}
 		qemu := argv(m.qemu)[1:]
+		// SSH on 127.0.0.1:2222+ID; Tang (7500+ID) and release-serve (7600+ID) the only host ports the guest reaches
+		if net, _ := os.ReadFile(filepath.Join(vm, "vmnet.argv")); !strings.HasPrefix(string(net), "2229\n7507\n7607\n--\n"+m.qemu+"\n") {
+			t.Errorf("%s vmnet argv:\n%s", m.arch, net)
+		}
 		for _, want := range slices.Concat(common, m.want) {
 			if !slices.Contains(qemu, want) {
 				t.Errorf("%s QEMU argv lacks %q:\n%s", m.arch, want, strings.Join(qemu, "\n"))
@@ -184,6 +202,7 @@ func TestVMInstallSleep(t *testing.T) {
 		os.MkdirAll(hack, 0o755)
 		os.MkdirAll(vm, 0o755)
 		os.WriteFile(filepath.Join(hack, "vm.sh"), src, 0o755)
+		fakeVMNet(root)
 		os.WriteFile(filepath.Join(vm, iso), []byte("iso\n"), 0o644)
 		h := sha256.Sum256([]byte("iso\n"))
 		os.WriteFile(filepath.Join(hack, "SHA256SUMS"), []byte(hex.EncodeToString(h[:])+"  "+iso+"\n"), 0o644)
