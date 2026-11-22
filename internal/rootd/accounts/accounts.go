@@ -68,6 +68,9 @@ func (a Agent) Dir() string     { return quota.Data + "/agents/" + a.Name }
 func (a Agent) Home() string    { return a.Dir() + "/account" } // root-owned and empty
 func (a Agent) XDG() string     { return Control + "/xdg/" + a.Name }
 func (a Agent) Storage() string { return a.Dir() + "/storage" }
+
+// SessionHome is the persistent HOME agent.attach mounts (§4.2), never mounted into tasks.
+func (a Agent) SessionHome() string { return a.Dir() + "/session-home" }
 func (a Agent) Workspace() string {
 	return quota.Data + "/workspaces/" + a.Name
 }
@@ -175,10 +178,12 @@ func (a Agent) StorageConf() string {
 }
 
 // EnsureStore makes a's persistent state, idempotently: the root-owned home and XDG dirs with storage.conf, and the
-// workspace and storage subvolumes, each in qgroup 1/N (limit as in quota.EnsureAgent) before the agent owns them.
+// workspace, storage and session-home subvolumes, each in qgroup 1/N (limit as in quota.EnsureAgent) before the agent
+// owns them.
 // A store still owned by another uid (a retired agent of the same name that is not archived yet) is an error.
 func EnsureStore(a Agent, limit uint64) error {
-	for _, p := range []string{a.Workspace(), a.Storage()} {
+	stores := []string{a.Workspace(), a.Storage(), a.SessionHome()}
+	for _, p := range stores {
 		if u, err := owner(p); err != nil {
 			return err
 		} else if u != -1 && u != 0 && u != a.UID() {
@@ -200,15 +205,15 @@ func EnsureStore(a Agent, limit uint64) error {
 	if err := writeIfChanged(a.XDG()+"/config/containers/storage.conf", a.StorageConf()); err != nil {
 		return err
 	}
-	for _, p := range []string{a.Workspace(), a.Storage()} {
+	for _, p := range stores {
 		if err := quota.EnsureSubvol(p); err != nil {
 			return err
 		}
 	}
-	if err := quota.EnsureAgent(a.N, limit, a.Workspace(), a.Storage()); err != nil {
+	if err := quota.EnsureAgent(a.N, limit, stores...); err != nil {
 		return err
 	}
-	for _, p := range []string{a.Workspace(), a.Storage()} {
+	for _, p := range stores {
 		if err := os.Lchown(p, a.UID(), a.UID()); err != nil {
 			return err
 		}

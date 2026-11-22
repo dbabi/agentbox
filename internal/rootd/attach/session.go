@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"agentbox/internal/task"
@@ -56,19 +57,36 @@ const ManagedDir = "/etc/claude-code"
 // NoHooks is the empty dir core.hooksPath names, in tasks and in attach.
 const NoHooks = "nohooks"
 
-// GitEnv is the command-line-precedence git config tasks and attach sessions share (§4.2, Appendix C): repo-local
-// .git/config and session-home's ~/.gitconfig can't re-enable hooks or fsmonitor.
+// GitEnv is the command-line-precedence git config of attach sessions (§4.2, Appendix C; task.Argv sets the first two
+// for tasks, whose HOME holds no login): repo-local
+// .git/config can't re-enable hooks or fsmonitor, or name its own pager, editor or ssh command. Filters, aliases and
+// diff drivers can't be pinned this way; the control-path gate covers them (.git/ is a control path).
 var GitEnv = []string{
-	"GIT_CONFIG_COUNT=2",
+	"GIT_CONFIG_COUNT=6",
 	"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=" + Exports + "/" + NoHooks,
 	"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
+	"GIT_CONFIG_KEY_2=core.pager", "GIT_CONFIG_VALUE_2=less",
+	"GIT_CONFIG_KEY_3=core.editor", "GIT_CONFIG_VALUE_3=vi",
+	"GIT_CONFIG_KEY_4=sequence.editor", "GIT_CONFIG_VALUE_4=vi",
+	"GIT_CONFIG_KEY_5=core.sshCommand", "GIT_CONFIG_VALUE_5=ssh",
 }
+
+// GitConfigs are git's per-user config files in session-home; EmptyGitConfig, in the exports, is bound read-only over
+// both.
+var GitConfigs = []string{".gitconfig", ".config/git/config"}
+
+const EmptyGitConfig = "gitconfig-empty"
+
+// sessionEnv keeps session-home's dotfiles from running: session-home is agent-writable and persistent, so a session
+// could plant code there for every later attach. Git reads no ~/.gitconfig, readline no ~/.inputrc (a macro can type
+// a command), and bash no startup file (CLIs: --noprofile --norc).
+var sessionEnv = []string{"GIT_CONFIG_GLOBAL=/dev/null", "INPUTRC=/dev/null", "BASH_ENV=", "ENV="}
 
 // CLIs is what an attach can run. Each argv starts with the lockdown flags; the admin's extra arguments follow.
 var CLIs = map[string][]string{
 	"claude": {"claude", "--setting-sources", "user", "--strict-mcp-config", "--settings", Exports + "/" + SettingsFile},
 	"codex":  {"codex"},
-	"bash":   {"bash", "-l"},
+	"bash":   {"bash", "--noprofile", "--norc", "-i"},
 }
 
 // Mount is one bind mount into the session.
@@ -127,7 +145,7 @@ func WriteExports(dir string) error {
 		}
 	}
 	b, _ := json.MarshalIndent(settings, "", "  ")
-	for name, body := range map[string][]byte{SettingsFile: append(b, '\n'), "codex-config.toml": []byte(CodexConfig)} {
+	for name, body := range map[string][]byte{SettingsFile: append(b, '\n'), "codex-config.toml": []byte(CodexConfig), EmptyGitConfig: nil} {
 		if err := writeFile(filepath.Join(dir, name), body); err != nil {
 			return err
 		}
@@ -165,8 +183,10 @@ func Prepare(root, id, agent, cli string, extra []string, uid, gid int, tty, ter
 	if err := homeOwned(p.SessionHome, uid); err != nil {
 		return Session{}, err
 	}
-	if err := settingsMountpoint(p.SessionHome, uid, gid); err != nil {
-		return Session{}, err
+	for _, rel := range append([]string{".claude/settings.json"}, GitConfigs...) {
+		if err := fileMountpoint(p.SessionHome, rel, uid, gid); err != nil {
+			return Session{}, err
+		}
 	}
 	if fi, err := os.Lstat(p.Workspace); err != nil || !fi.IsDir() {
 		return Session{}, fmt.Errorf("no workspace dir %s", p.Workspace)
@@ -184,7 +204,7 @@ func Prepare(root, id, agent, cli string, extra []string, uid, gid int, tty, ter
 		"HOME=" + Home, "USER=ag-" + agent, "LOGNAME=ag-" + agent, "TERM=" + term, "LANG=C.UTF-8",
 		"PATH=/usr/local/bin:/usr/bin:/bin", "SHELL=/bin/bash", "CODEX_HOME=" + CodexHome,
 		"CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-	}, GitEnv...)
+	}, append(sessionEnv, GitEnv...)...)
 	return Session{
 		ID: id, Agent: agent, UID: uid, GID: gid, TTY: tty, Dir: Workspace, Env: env,
 		Argv: append(append([]string{}, argv...), extra...),
@@ -196,6 +216,9 @@ func Prepare(root, id, agent, cli string, extra []string, uid, gid int, tty, ter
 			// managed settings outrank every other source, so a claude the admin starts by hand in a bash attach,
 			// without the flags, still runs no hooks and no MCP servers
 			{Src: filepath.Join(p.Exports, SettingsFile), Dst: ManagedDir + "/managed-settings.json", RO: true},
+			// an empty git config over session-home's, in case a CLI drops GIT_CONFIG_GLOBAL for its own git
+			{Src: filepath.Join(p.Exports, EmptyGitConfig), Dst: Home + "/" + GitConfigs[0], RO: true},
+			{Src: filepath.Join(p.Exports, EmptyGitConfig), Dst: Home + "/" + GitConfigs[1], RO: true},
 			{Src: p.Workspace, Dst: Workspace},
 			{Src: p.Exports, Dst: Exports, RO: true},
 			{Src: p.Codex, Dst: CodexHome},
@@ -214,32 +237,37 @@ func homeOwned(dir string, uid int) error {
 	return nil
 }
 
-// settingsMountpoint makes sure ~/.claude is a dir and ~/.claude/settings.json a regular file, so the read-only bind
-// has a target. A session that renamed ~/.claude away gets a new one here: the bind covers it again.
-func settingsMountpoint(home string, uid, gid int) error {
-	h, err := unix.Open(home, unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+// fileMountpoint makes sure each dir of rel's path below home is a dir and rel a regular file, so a read-only bind has
+// a target. A session that renamed a dir away gets a new one here: the bind covers it again.
+func fileMountpoint(home, rel string, uid, gid int) error {
+	d, err := unix.Open(home, unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return err
 	}
-	defer unix.Close(h)
-	if err := unix.Mkdirat(h, ".claude", 0o700); err == nil {
-		unix.Fchownat(h, ".claude", uid, gid, unix.AT_SYMLINK_NOFOLLOW)
-	} else if !errors.Is(err, unix.EEXIST) {
-		return err
-	}
-	d, err := unix.Openat(h, ".claude", unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return fmt.Errorf("session-home ~/.claude is not a dir: %v", err)
+	parts := strings.Split(rel, "/")
+	for _, name := range parts[:len(parts)-1] {
+		if err := unix.Mkdirat(d, name, 0o700); err == nil {
+			unix.Fchownat(d, name, uid, gid, unix.AT_SYMLINK_NOFOLLOW)
+		} else if !errors.Is(err, unix.EEXIST) {
+			unix.Close(d)
+			return err
+		}
+		next, err := unix.Openat(d, name, unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		unix.Close(d)
+		if err != nil {
+			return fmt.Errorf("session-home ~/%s: %s is not a dir: %v", rel, name, err)
+		}
+		d = next
 	}
 	defer unix.Close(d)
-	f, err := unix.Openat(d, "settings.json", unix.O_CREAT|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o600)
+	f, err := unix.Openat(d, parts[len(parts)-1], unix.O_CREAT|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o600)
 	if err != nil {
-		return fmt.Errorf("session-home ~/.claude/settings.json: %v", err)
+		return fmt.Errorf("session-home ~/%s: %v", rel, err)
 	}
 	defer unix.Close(f)
 	var st unix.Stat_t
 	if err := unix.Fstat(f, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG {
-		return errors.New("session-home ~/.claude/settings.json is not a regular file")
+		return fmt.Errorf("session-home ~/%s is not a regular file", rel)
 	}
 	if int(st.Uid) != uid {
 		unix.Fchown(f, uid, gid)

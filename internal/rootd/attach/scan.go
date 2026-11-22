@@ -119,14 +119,12 @@ func (s *Seen) Watch(home string, every time.Duration, stop <-chan struct{}) {
 	}
 }
 
-// maxScanFile bounds what the scan reads of one file: §4.2's output cap is 50 MB, and a token sits anywhere in it.
-const maxScanFile = 64 << 20
-
 // Hit is one file that holds a token. It never carries the token.
 type Hit struct{ Path string }
 
-// Scan looks for any of tokens in the workspace files that changed since start (ctime: a session can't set it back),
-// including loose git objects, which hold a committed file zlib-compressed. Symlinks are not followed.
+// Scan looks for any of tokens in the workspace entries that changed since start (ctime: a session can't set it back):
+// whole file bodies, symlink targets, and the name of every entry (changed or not), including loose git objects,
+// which hold a committed file zlib-compressed. Symlinks are not followed.
 // shortcut: packfiles aren't unpacked; a session that commits the token and runs git gc hides it from this scan. The
 // review diff (§7) covers that until a pack reader lands.
 func Scan(ws string, start time.Time, tokens []string) ([]Hit, error) {
@@ -134,29 +132,39 @@ func Scan(ws string, start time.Time, tokens []string) ([]Hit, error) {
 		return nil, nil
 	}
 	since := start.Add(-time.Second) // the kernel stamps ctime from a coarse clock, up to a tick behind time.Now
-	pats := make([][]byte, len(tokens))
-	for i, t := range tokens {
-		pats[i] = []byte(t)
-	}
-	has := func(b []byte) bool {
-		for _, p := range pats {
-			if bytes.Contains(b, p) {
-				return true
-			}
-		}
-		return false
-	}
+	m := newMatcher(tokens)
 	var hits []Hit
 	err := filepath.WalkDir(ws, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() {
+		if err != nil {
 			return err
+		}
+		rel, _ := filepath.Rel(ws, p)
+		hit := func() error { hits = append(hits, Hit{rel}); return nil }
+		if m.has([]byte(d.Name())) {
+			// the hit names the entry's dir, never the name itself; nothing under a named dir is listed either
+			hits = append(hits, Hit{filepath.Join(filepath.Dir(rel), "(an entry named with a token)")})
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		t := d.Type()
+		if !t.IsRegular() && t&fs.ModeSymlink == 0 {
+			return nil
 		}
 		fi, err := d.Info()
 		if err != nil {
 			return err
 		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if ok && ctime(st).Before(since) {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && ctime(st).Before(since) {
+			return nil
+		}
+		if t&fs.ModeSymlink != 0 {
+			if l, err := os.Readlink(p); err != nil {
+				return err
+			} else if m.has([]byte(l)) {
+				return hit()
+			}
 			return nil
 		}
 		f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
@@ -164,22 +172,69 @@ func Scan(ws string, start time.Time, tokens []string) ([]Hit, error) {
 			return err
 		}
 		defer f.Close()
-		b, err := io.ReadAll(io.LimitReader(f, maxScanFile))
-		if err != nil {
-			return err
-		}
-		if !has(b) && looseObject(p) {
-			if z, err := zlib.NewReader(bytes.NewReader(b)); err == nil {
-				b, _ = io.ReadAll(io.LimitReader(z, maxScanFile))
+		if ok, err := m.in(f); err != nil || ok {
+			if err != nil {
+				return err
 			}
+			return hit()
 		}
-		if has(b) {
-			rel, _ := filepath.Rel(ws, p)
-			hits = append(hits, Hit{rel})
+		if looseObject(p) {
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				return err
+			}
+			if z, err := zlib.NewReader(f); err == nil {
+				if ok, _ := m.in(z); ok { // a corrupt object is still scanned up to the damage
+					return hit()
+				}
+			}
 		}
 		return nil
 	})
 	return hits, err
+}
+
+// matcher finds any token in a stream of any length: each chunk is searched with the last longest-1 bytes of the
+// one before, so a token split across chunks is still found.
+type matcher struct {
+	pats    [][]byte
+	longest int
+}
+
+func newMatcher(tokens []string) *matcher {
+	m := &matcher{}
+	for _, t := range tokens {
+		m.pats = append(m.pats, []byte(t))
+		m.longest = max(m.longest, len(t))
+	}
+	return m
+}
+
+func (m *matcher) has(b []byte) bool {
+	for _, p := range m.pats {
+		if bytes.Contains(b, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *matcher) in(r io.Reader) (bool, error) {
+	buf := make([]byte, 0, m.longest-1+1<<20)
+	for {
+		n, err := io.ReadFull(r, buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if m.has(buf) {
+			return true, nil
+		}
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		keep := min(len(buf), m.longest-1)
+		buf = append(buf[:0], buf[len(buf)-keep:]...)
+	}
 }
 
 var objRe = regexp.MustCompile(`/objects/[0-9a-f]{2}/[0-9a-f]{38,62}$`)

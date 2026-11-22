@@ -39,8 +39,10 @@ func (s *server) agentSeen(agent string) *attach.Seen {
 }
 
 // rescan is attach.rescan: the whole workspace against every session-home token version rootd has seen. A clean scan
-// lifts a standing block (a hit the admin removed, or an attach whose scan never ran).
-func (s *server) rescan(agent string) reply {
+// lifts a standing block (a hit the admin removed, or an attach whose scan never ran). If rootd restarted since that
+// attach, the versions it rotated away are gone from memory, so a clean scan lifts the block only with ack (the admin
+// checked the workspace).
+func (s *server) rescan(agent string, ack bool) reply {
 	if !agentRe.MatchString(agent) {
 		return reply{"ok": false, "error": "bad agent name"}
 	}
@@ -64,10 +66,15 @@ func (s *server) rescan(agent string) reply {
 	if err != nil {
 		return reply{"ok": false, "error": err.Error()}
 	}
+	if w, _ := s.watched.Load(agent); len(hits) == 0 && w != b.Session && !ack {
+		log.Printf("attach.rescan %s: clean, but rootd restarted since session %s: block kept", agent, b.Session)
+		return reply{"ok": true, "blocked": true, "error": "rootd restarted since this attach, so the token versions it saw are gone: " +
+			"check the workspace by hand, then agentbox attach rescan --agent " + agent + " --ack-restart"}
+	}
 	if err := attach.End(s.db, agent, b.Session, hits); err != nil {
 		return reply{"ok": false, "error": err.Error()}
 	}
-	log.Printf("attach.rescan %s: %d hit(s)", agent, len(hits))
+	log.Printf("attach.rescan %s: %d hit(s), ack-restart %v", agent, len(hits), ack)
 	return reply{"ok": true, "blocked": len(hits) > 0, "hits": hits}
 }
 

@@ -107,6 +107,97 @@ func TestScan(t *testing.T) {
 	}
 }
 
+// A token in a file name, a dir name, a symlink target, past 64 MiB of a file, or split across the 1 MiB read chunks
+// is a hit; no hit path carries the token.
+func TestScanEverywhere(t *testing.T) {
+	ws := t.TempDir()
+	start := time.Now()
+	os.WriteFile(filepath.Join(ws, "plain"), []byte(access), 0o644)
+	os.Symlink(access, filepath.Join(ws, "link"))
+	os.WriteFile(filepath.Join(ws, "x-"+access), nil, 0o644)
+	os.MkdirAll(filepath.Join(ws, "d", access, "sub"), 0o755)
+	os.WriteFile(filepath.Join(ws, "d", access, "sub", "f"), []byte(access), 0o644)
+	big, _ := os.Create(filepath.Join(ws, "big"))
+	big.Write(make([]byte, 65<<20))
+	big.WriteString(access)
+	big.Close()
+	split := append(make([]byte, 1<<20-5), access...) // straddles the first chunk boundary
+	os.WriteFile(filepath.Join(ws, "split"), split, 0o644)
+	hits, err := Scan(ws, start, []string{access, refresh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, h := range hits {
+		if strings.Contains(h.Path, access) {
+			t.Fatalf("a hit names the token: %q", h.Path)
+		}
+		paths = append(paths, h.Path)
+	}
+	slices.Sort(paths)
+	want := []string{"(an entry named with a token)", "big", "d/(an entry named with a token)", "link", "plain", "split"}
+	if !slices.Equal(paths, want) {
+		t.Fatalf("hits %q, want %q", paths, want)
+	}
+}
+
+// §4.2 control-path gate: an empty workspace needs no ack; a planted control path, an exec bit and a removal each
+// show up until saved as the baseline; lockfiles and git objects and refs never do.
+func TestControlChanges(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "r.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.Exec(BaselineSchema)
+	ws := t.TempDir()
+	changes := func() []string {
+		m, err := Manifest(ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := ControlChanges(db, "a", m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	accept := func() { m, _ := Manifest(ws); SaveBaseline(db, "a", m) }
+	if c := changes(); len(c) != 0 {
+		t.Fatalf("empty workspace: %q", c)
+	}
+	for _, d := range []string{".git/objects/ab", ".git/refs/heads", ".git/hooks", "p/.claude"} {
+		os.MkdirAll(filepath.Join(ws, d), 0o755)
+	}
+	for f, b := range map[string]string{"go.sum": "x", "package-lock.json": "{}", ".git/objects/ab/cd": "o", ".git/refs/heads/main": "r",
+		".git/HEAD": "ref", ".git/index": "i"} {
+		os.WriteFile(filepath.Join(ws, f), []byte(b), 0o644)
+	}
+	if c := changes(); len(c) != 0 {
+		t.Fatalf("lockfiles and git objects need no ack: %q", c)
+	}
+	os.WriteFile(filepath.Join(ws, ".git", "config"), []byte("[core]\n\tpager = evil\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, ".mcp.json"), []byte("{}"), 0o644)
+	os.WriteFile(filepath.Join(ws, ".git", "hooks", "pre-commit"), []byte("#!/bin/sh\n"), 0o644)
+	os.Symlink("/etc/passwd", filepath.Join(ws, "p", ".claude", "settings.json"))
+	if c := changes(); !slices.Equal(c, []string{".git/config", ".git/hooks/pre-commit", ".mcp.json", "p/.claude/settings.json"}) {
+		t.Fatalf("planted: %q", c)
+	}
+	accept()
+	if c := changes(); len(c) != 0 {
+		t.Fatalf("after the ack: %q", c)
+	}
+	os.Chmod(filepath.Join(ws, ".git", "hooks", "pre-commit"), 0o755)
+	os.Remove(filepath.Join(ws, ".mcp.json"))
+	if c := changes(); !slices.Equal(c, []string{".git/hooks/pre-commit", ".mcp.json"}) {
+		t.Fatalf("exec bit and removal: %q", c)
+	}
+	ForgetBaseline(db, "a")
+	if c := changes(); len(c) != 3 {
+		t.Fatalf("a forgotten baseline is the empty workspace: %q", c)
+	}
+}
+
 func TestBlock(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "r.db"))
 	if err != nil {
@@ -171,7 +262,13 @@ func TestPrepare(t *testing.T) {
 	if !slices.Contains(s.Mounts, Mount{Src: filepath.Join(p.Exports, SettingsFile), Dst: Home + "/.claude/settings.json", RO: true}) {
 		t.Fatalf("no read-only settings bind: %+v", s.Mounts)
 	}
-	for _, e := range append(GitEnv, "TERM=screen", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "CODEX_HOME="+CodexHome) {
+	for _, g := range GitConfigs { // an empty read-only git config over session-home's, with a regular file to bind over
+		if fi, err := os.Lstat(filepath.Join(p.SessionHome, g)); err != nil || !fi.Mode().IsRegular() ||
+			!slices.Contains(s.Mounts, Mount{Src: filepath.Join(p.Exports, EmptyGitConfig), Dst: Home + "/" + g, RO: true}) {
+			t.Fatalf("~/%s: %v %v %+v", g, fi, err, s.Mounts)
+		}
+	}
+	for _, e := range append(append(GitEnv, sessionEnv...), "TERM=screen", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "CODEX_HOME="+CodexHome) {
 		if !slices.Contains(s.Env, e) {
 			t.Errorf("env lacks %s", e)
 		}
@@ -195,6 +292,16 @@ func TestPrepare(t *testing.T) {
 	}
 	RemoveRun(p)
 	// a planted symlink in session-home makes rootd refuse, not follow it
+	os.RemoveAll(filepath.Join(p.SessionHome, ".config"))
+	cfg := t.TempDir()
+	os.Symlink(cfg, filepath.Join(p.SessionHome, ".config"))
+	if _, err := Prepare(root, "ses_3", "at", "claude", nil, uid, gid, "/dev/pts/9", ""); err == nil {
+		t.Fatal("~/.config as a symlink: must refuse")
+	}
+	if ents, _ := os.ReadDir(cfg); len(ents) != 0 {
+		t.Fatal("rootd wrote through the ~/.config symlink")
+	}
+	os.Remove(filepath.Join(p.SessionHome, ".config"))
 	os.RemoveAll(filepath.Join(p.SessionHome, ".claude"))
 	target := t.TempDir()
 	os.Symlink(target, filepath.Join(p.SessionHome, ".claude"))
@@ -220,7 +327,7 @@ func TestPrepare(t *testing.T) {
 
 // The session container gets a task's hardening (§4.2) and session-home in place of the tmpfs HOME, as ag-<agent>.
 func TestPodmanArgv(t *testing.T) {
-	s := Session{ID: "ses_1", Agent: "at", TTY: "/dev/pts/3", Dir: Workspace, Env: []string{"HOME=" + Home}, Argv: []string{"bash", "-l"},
+	s := Session{ID: "ses_1", Agent: "at", TTY: "/dev/pts/3", Dir: Workspace, Env: []string{"HOME=" + Home}, Argv: []string{"bash", "--noprofile", "--norc", "-i"},
 		Mounts: []Mount{{Src: "/sh", Dst: Home}, {Src: "/x.json", Dst: Home + "/.claude/settings.json", RO: true}}}
 	a := strings.Join(Podman{Seccomp: "/s.json", Image: "img", HostUsr: []string{"/usr/bin"}}.Argv(s), " ")
 	for _, want := range []string{
@@ -229,7 +336,7 @@ func TestPodmanArgv(t *testing.T) {
 		"-p ExecStopPost=-/usr/bin/podman rm -f -i -t 0 attach-ses_1 /usr/bin/podman run --cgroups=split --rm -it --name attach-ses_1",
 		"--network=none --userns=keep-id --security-opt=no-new-privileges --cap-drop=all --security-opt=seccomp=/s.json --read-only",
 		"-w /workspace -v /sh:/home/agent -v /x.json:/home/agent/.claude/settings.json:ro", "-v /usr/bin:/usr/bin:ro",
-		"-e HOME=/home/agent img bash -l",
+		"-e HOME=/home/agent img bash --noprofile --norc -i",
 	} {
 		if !strings.Contains(a, want) {
 			t.Errorf("argv lacks %q:\n%s", want, a)

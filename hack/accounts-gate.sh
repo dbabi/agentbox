@@ -6,8 +6,8 @@
 # checks   `agentbox agent add` over rootd-admin.sock makes ag-<name> with uid/gid 70000+N, nologin and a root-owned
 #          empty home; its 65536-wide sub-id block at 0x70000000+N*65536 in /etc/subuid and /etc/subgid; root-owned
 #          XDG dirs with storage.conf; the user@ drop-in (Requires= and After= firewall, reconcile, rootd; the XDG env;
-#          ExecStartPre=+fwcheck), the slice drop-in, linger and a running user manager; workspace and storage
-#          subvolumes owned by the agent in qgroup 1/N under 2/0 with the requested limit. An agent at its quota gets
+#          ExecStartPre=+fwcheck), the slice drop-in, linger and a running user manager; workspace, storage and
+#          session-home subvolumes owned by the agent in qgroup 1/N under 2/0 with the requested limit. An agent at its quota gets
 #          EDQUOT, also in its storage, while system state keeps writing and 2/0 keeps its limit. Removing the newest
 #          agent deletes its user, sub-ids and drop-ins and archives its subvolumes; adding another never reuses its
 #          uid or sub-id range, and re-adding its name gets a new N. A nested subvolume refuses agent.remove with
@@ -79,8 +79,8 @@ check "  ... user@$UA: Requires= and After= firewall, reconcile and rootd; the X
   systemctl show -P Environment $u | grep -q "XDG_CONFIG_HOME=$M/control/xdg/$QA/config" && systemctl show -P ExecStartPre $u | grep -q "agentbox fwcheck"'
 check "  ... slice drop-in: MemoryMax 8G, TasksMax 4096" '[ "$(systemctl show -P MemoryMax user-$UA.slice)" = 8589934592 ] && [ "$(systemctl show -P TasksMax user-$UA.slice)" = 4096 ]'
 check "  ... linger on, and its user manager runs" '[ "$(loginctl show-user ag-$QA -P Linger)" = yes ] && for i in $(seq 30); do systemctl is-active -q user@$UA.service && exit 0; sleep 1; done; exit 1'
-W=$D/workspaces/$QA ST=$D/agents/$QA/storage
-check "  ... workspace and storage: subvolumes owned by ag-$QA, 0700, in qgroup 1/$NA" 'for p in $W $ST; do
+W=$D/workspaces/$QA ST=$D/agents/$QA/storage SH=$D/agents/$QA/session-home
+check "  ... workspace, storage and session-home: subvolumes owned by ag-$QA, 0700, in qgroup 1/$NA" 'for p in $W $ST $SH; do
   [ "$(stat -c "%i %u %a" $p)" = "256 $UA 700" ] && qg "$(qid $p)" parents | tr , "\n" | grep -qx 1/$NA || exit 1; done'
 check "  ... 1/$NA is under 2/0 with a 64 MiB exclusive limit; 2/0 keeps its fs size - max(10%, 4 GiB) limit" '
   qg 1/$NA parents | tr , "\n" | grep -qx 2/0 && [ "$(qg 1/$NA max_exclusive)" = $((64 << 20)) ] && [ "$(qg 2/0 max_referenced)" = $((S - R)) ]'
@@ -95,7 +95,7 @@ check "  ... ag-$QB, its group, sub-ids, linger, drop-ins and processes are gone
   ! grep -q "^ag-$QB:" /etc/subuid /etc/subgid && [ ! -e /var/lib/systemd/linger/ag-$QB ] && [ ! -e /etc/systemd/system/user@$UB.service.d ] &&
   ! systemctl is-active -q user@$UB.service && ! pgrep -U $UB'
 check "  ... its subvolumes moved to data/archive/agent-$NB, still in 1/$NB under 2/0" 'a=$D/archive/agent-$NB &&
-  [ "$(stat -c "%i %u" $a/workspace $a/agent/storage)" = "$(printf "256 $UB\n256 $UB")" ] && [ ! -e $D/workspaces/$QB ] && [ ! -e $D/agents/$QB ] &&
+  [ "$(stat -c "%i %u" $a/workspace $a/agent/storage $a/agent/session-home)" = "$(printf "256 $UB\n256 $UB\n256 $UB")" ] && [ ! -e $D/workspaces/$QB ] && [ ! -e $D/agents/$QB ] &&
   qg "$(qid $a/workspace)" parents | tr , "\n" | grep -qx 1/$NB && qg 1/$NB parents | tr , "\n" | grep -qx 2/0 && [ ! -e $M/control/xdg/$QB ]'
 check "  ... its ids row stays, retired" 'python3 -c "import sqlite3,sys; c=sqlite3.connect(\"file:$M/rootd.db?mode=ro\", uri=True); exit(0 if c.execute(\"select name, state from ids where kind=\x27agent\x27 and n=?\", (int(sys.argv[1]),)).fetchone() == (sys.argv[2], \"retired\") else 1)" $NB $QB'
 check "agent add $QC after removing $QB: a new N, so neither the uid nor the sub-id range is reused" 'ag add --name $QC && NC=$(f n) &&

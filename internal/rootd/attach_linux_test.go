@@ -127,15 +127,52 @@ func TestAttach(t *testing.T) {
 		t.Fatalf("attach over a block: %s", l)
 	}
 	writeCreds(leaked) // the admin's session-home still holds it, or the admin re-logged with it
-	if rep := s.rescan("at"); rep["blocked"] != true {
+	if rep := s.rescan("at", false); rep["blocked"] != true {
 		t.Fatalf("rescan with the token still there: %v", rep)
 	}
 	os.Remove(filepath.Join(p.Workspace, "notes.md"))
-	if rep := s.rescan("at"); rep["ok"] != true || rep["blocked"] != false {
+	if rep := s.rescan("at", false); rep["ok"] != true || rep["blocked"] != false {
 		t.Fatalf("rescan after removal: %v", rep)
 	}
 	if _, ok, _ := attach.Blocked(db, "at"); ok {
 		t.Fatal("still blocked")
+	}
+
+	// rootd stopped mid-attach: a restarted rootd lost the session's token versions, so a clean rescan keeps the block
+	// until the admin acks it
+	attach.Begin(db, "at", "ses_old", time.Now())
+	s2 := &server{db: db, cfg: s.cfg, audit: s.audit}
+	if rep := s2.rescan("at", false); rep["blocked"] != true || !strings.Contains(rep["error"].(string), "--ack-restart") {
+		t.Fatalf("clean rescan after a restart: %v", rep)
+	}
+	if rep := s2.rescan("at", true); rep["blocked"] != false {
+		t.Fatalf("rescan --ack-restart: %v", rep)
+	}
+
+	// the control-path gate: a planted .mcp.json refuses the attach, with no block left, until --ack-control-changes
+	os.WriteFile(filepath.Join(p.Workspace, ".mcp.json"), []byte(`{"mcpServers":{}}`), 0o644)
+	cli, srv = pair(t)
+	go s.attach(srv, request{Op: "agent.attach", Name: "at", CLI: "bash"}, nil)
+	if l, _ := bufio.NewReader(cli).ReadString('\n'); !strings.Contains(l, "control paths changed") || !strings.Contains(l, ".mcp.json") {
+		t.Fatalf("attach over a planted .mcp.json: %s", l)
+	}
+	if _, ok, _ := attach.Blocked(db, "at"); ok {
+		t.Fatal("a refused attach left a block")
+	}
+	fr.run = func(attach.Session) error { return nil }
+	for _, ack := range []bool{true, false} { // acked once, the next attach needs no flag
+		cli, srv = pair(t)
+		go s.attach(srv, request{Op: "agent.attach", Name: "at", CLI: "bash", AckControlChanges: ack}, nil)
+		if l, _ := bufio.NewReader(cli).ReadString('\n'); !strings.Contains(l, `"ok":true`) {
+			t.Fatalf("attach, ack %v: %s", ack, l)
+		}
+		io.ReadAll(cli)
+		for i := 0; i < 100; i++ {
+			if _, ok, _ := attach.Blocked(db, "at"); !ok {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
 
 	// auditd down: no session, no block left behind

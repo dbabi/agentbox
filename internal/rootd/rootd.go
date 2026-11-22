@@ -85,7 +85,7 @@ func OpenDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("rootd.db: journal_mode=%s synchronous=%d, need wal and FULL (2)", mode, syncv)
 	}
-	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, attach.Schema} {
+	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, attach.Schema, attach.BaselineSchema} {
 		if _, err := db.Exec(schema); err != nil {
 			db.Close()
 			return nil, err
@@ -252,6 +252,9 @@ type server struct {
 
 	live sync.Map // agent -> session id of each running attach
 	seen sync.Map // agent -> *attach.Seen: every session-home token version since rootd started, in memory only
+	// watched is agent -> the session id whose every token version this rootd process saw: after a restart a rescan
+	// can't match the versions the session rotated away, so it doesn't lift that block alone
+	watched sync.Map
 }
 
 // refresh re-resolves ntfy.sh:443 into ntfy_dst (§6.1). A failure only logs: ntfy is down until the next try.
@@ -358,6 +361,9 @@ type request struct {
 	Rows      int      `json:"rows,omitempty"`
 	Cols      int      `json:"cols,omitempty"`
 	Term      string   `json:"term,omitempty"`
+	// agent.attach --ack-control-changes (§4.2); attach.rescan --ack-restart
+	AckControlChanges bool `json:"ackControlChanges,omitempty"`
+	AckRestart        bool `json:"ackRestart,omitempty"`
 }
 
 // peer is a connection's SO_PEERCRED uid and SO_PEERGROUPS groups.
@@ -471,7 +477,7 @@ func (s *server) admin(r request, p peer) reply {
 		}
 		return reply{"ok": true, "blocks": l}
 	case "attach.rescan":
-		return s.rescan(r.Name)
+		return s.rescan(r.Name, r.AckRestart)
 	case "egress.list":
 		l, err := resolve.LoadLists(s.cfg.EgressDir)
 		if err != nil {
