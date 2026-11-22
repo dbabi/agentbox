@@ -9,6 +9,7 @@ import (
 	"net"
 	"os/user"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -63,6 +64,32 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	s.live.Store(r.Name, id)
 	defer s.live.Delete(r.Name)
 	unblock := func() { attach.End(s.db, r.Name, id, nil) } // nothing ran: no scan to wait for
+	p := attach.AgentPaths(root, r.Name, id)
+	// the control-path gate (§4.2), after Begin: no task can change the workspace from here on
+	cur, err := attach.Manifest(p.Workspace)
+	var changed []string
+	if err == nil {
+		changed, err = attach.ControlChanges(s.db, r.Name, cur)
+	}
+	if err == nil && len(changed) > 0 {
+		if !r.AckControlChanges {
+			unblock()
+			list := changed
+			if len(list) > 50 {
+				list = append(list[:50:50], fmt.Sprintf("... %d more", len(changed)-50))
+			}
+			refuse("workspace control paths changed since the last accepted state: %s; review them, then attach with --ack-control-changes",
+				strings.Join(list, ", "))
+			return
+		}
+		err = attach.SaveBaseline(s.db, r.Name, cur)
+		log.Printf("agent.attach %s: %d control path change(s) acknowledged", r.Name, len(changed))
+	}
+	if err != nil {
+		unblock()
+		refuse("control paths: %v", err)
+		return
+	}
 	o, _ := ops.Lookup("agent.attach")
 	args := map[string]any{"name": r.Name, "workspace": r.Name}
 	holder, ws := "session:"+id, "workspace:"+r.Name
@@ -92,7 +119,6 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	if err == nil {
 		sess, err = attach.Prepare(root, id, r.Name, r.CLI, r.Argv, uid, gid, slave.Name(), r.Term)
 	}
-	p := attach.AgentPaths(root, r.Name, id)
 	defer attach.RemoveRun(p)
 	if err != nil {
 		if master != nil {
@@ -108,6 +134,7 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	defer master.Close()
 	seen := s.agentSeen(r.Name)
 	seen.Add(attach.Tokens(p.SessionHome)) // before the session can rotate it
+	s.watched.Store(r.Name, id)
 	stop := make(chan struct{})
 	watched := make(chan struct{})
 	go func() { seen.Watch(p.SessionHome, 2*time.Second, stop); close(watched) }()

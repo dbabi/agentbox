@@ -89,13 +89,17 @@ func (s *server) forget(name string) {
 	if err := attach.Clear(s.db, name); err != nil {
 		log.Printf("agent.remove %s: task block: %v", name, err)
 	}
+	if err := attach.ForgetBaseline(s.db, name); err != nil {
+		log.Printf("agent.remove %s: control-path baseline: %v", name, err)
+	}
 	s.seen.Delete(name)
+	s.watched.Delete(name)
 }
 
 // refuseNested is §4.1's check before removal: a subvolume nested in an agent subvolume would be missing from its
 // archive and snapshots, so rootd refuses NESTED_SUBVOLUME, taints the workspace, and never deletes recursively.
 func (s *server) refuseNested(a accounts.Agent) reply {
-	for _, p := range []string{a.Workspace(), a.Storage()} {
+	for _, p := range []string{a.Workspace(), a.Storage(), a.SessionHome()} {
 		nested, err := s.nested(p)
 		if err != nil {
 			return reply{"ok": false, "error": "nested subvolume check: " + err.Error()}

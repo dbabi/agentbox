@@ -311,11 +311,11 @@ func TestTaskNotEmptyBlock(t *testing.T) {
 		t.Fatalf("after a restart: %v", rep)
 	}
 	s := &server{db: r.db, tasks: restarted}
-	if rep := s.rescan("claude"); rep["blocked"] != true {
+	if rep := s.rescan("claude", false); rep["blocked"] != true {
 		t.Fatalf("rescan with the cgroup still populated: %v", rep)
 	}
 	os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 0\n"), 0o644)
-	if rep := s.rescan("claude"); rep["blocked"] != false {
+	if rep := s.rescan("claude", false); rep["blocked"] != false {
 		t.Fatalf("rescan with the cgroup empty: %v", rep)
 	}
 	if rep := restarted.start(ids.New(ids.Task), "claude", "daemon"); rep["ok"] != true {

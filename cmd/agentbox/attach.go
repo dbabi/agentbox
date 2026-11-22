@@ -19,6 +19,7 @@ func cmdAttach(args []string) error {
 	if len(args) > 0 && (args[0] == "status" || args[0] == "rescan") {
 		fs := flag.NewFlagSet("attach "+args[0], flag.ContinueOnError)
 		agent := fs.String("agent", "", "agent name")
+		ack := fs.Bool("ack-restart", false, "rescan: lift a clean block although rootd restarted since that attach (check the workspace first)")
 		if err := parse(fs, args[1:]); err != nil {
 			return err
 		}
@@ -28,7 +29,7 @@ func cmdAttach(args []string) error {
 		if *agent == "" {
 			return errors.New("attach rescan: --agent is required")
 		}
-		return adminCall(map[string]any{"op": "attach.rescan", "name": *agent}, "attach rescan")
+		return adminCall(map[string]any{"op": "attach.rescan", "name": *agent, "ackRestart": *ack}, "attach rescan")
 	}
 	var extra []string
 	if i := slices.Index(args, "--"); i >= 0 {
@@ -37,6 +38,7 @@ func cmdAttach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	agent := fs.String("agent", "", "agent name")
 	cli := fs.String("cli", "claude", "claude, codex or bash")
+	ack := fs.Bool("ack-control-changes", false, "accept the workspace control-path changes rootd listed")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -49,7 +51,8 @@ func cmdAttach(args []string) error {
 		return err
 	}
 	defer c.Close()
-	req := map[string]any{"op": "agent.attach", "name": *agent, "cli": *cli, "argv": extra, "rows": rows, "cols": cols, "term": os.Getenv("TERM")}
+	req := map[string]any{"op": "agent.attach", "name": *agent, "cli": *cli, "argv": extra, "rows": rows, "cols": cols, "term": os.Getenv("TERM"),
+		"ackControlChanges": *ack}
 	b, _ := json.Marshal(req)
 	c.SetDeadline(time.Now().Add(60 * time.Second))
 	if _, err := c.Write(append(b, '\n')); err != nil {

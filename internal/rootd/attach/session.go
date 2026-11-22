@@ -56,19 +56,30 @@ const ManagedDir = "/etc/claude-code"
 // NoHooks is the empty dir core.hooksPath names, in tasks and in attach.
 const NoHooks = "nohooks"
 
-// GitEnv is the command-line-precedence git config tasks and attach sessions share (§4.2, Appendix C): repo-local
-// .git/config and session-home's ~/.gitconfig can't re-enable hooks or fsmonitor.
+// GitEnv is the command-line-precedence git config of attach sessions (§4.2, Appendix C; task.Argv sets the first two
+// for tasks, whose HOME holds no login): repo-local
+// .git/config can't re-enable hooks or fsmonitor, or name its own pager, editor or ssh command. Filters, aliases and
+// diff drivers can't be pinned this way; the control-path gate covers them (.git/ is a control path).
 var GitEnv = []string{
-	"GIT_CONFIG_COUNT=2",
+	"GIT_CONFIG_COUNT=6",
 	"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=" + Exports + "/" + NoHooks,
 	"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
+	"GIT_CONFIG_KEY_2=core.pager", "GIT_CONFIG_VALUE_2=less",
+	"GIT_CONFIG_KEY_3=core.editor", "GIT_CONFIG_VALUE_3=vi",
+	"GIT_CONFIG_KEY_4=sequence.editor", "GIT_CONFIG_VALUE_4=vi",
+	"GIT_CONFIG_KEY_5=core.sshCommand", "GIT_CONFIG_VALUE_5=ssh",
 }
+
+// sessionEnv keeps session-home's dotfiles from running: session-home is agent-writable and persistent, so a session
+// could plant code there for every later attach. Git reads no ~/.gitconfig, readline no ~/.inputrc (a macro can type
+// a command), and bash no startup file (CLIs: --noprofile --norc).
+var sessionEnv = []string{"GIT_CONFIG_GLOBAL=/dev/null", "INPUTRC=/dev/null", "BASH_ENV=", "ENV="}
 
 // CLIs is what an attach can run. Each argv starts with the lockdown flags; the admin's extra arguments follow.
 var CLIs = map[string][]string{
 	"claude": {"claude", "--setting-sources", "user", "--strict-mcp-config", "--settings", Exports + "/" + SettingsFile},
 	"codex":  {"codex"},
-	"bash":   {"bash", "-l"},
+	"bash":   {"bash", "--noprofile", "--norc", "-i"},
 }
 
 // Mount is one bind mount into the session.
@@ -184,7 +195,7 @@ func Prepare(root, id, agent, cli string, extra []string, uid, gid int, tty, ter
 		"HOME=" + Home, "USER=ag-" + agent, "LOGNAME=ag-" + agent, "TERM=" + term, "LANG=C.UTF-8",
 		"PATH=/usr/local/bin:/usr/bin:/bin", "SHELL=/bin/bash", "CODEX_HOME=" + CodexHome,
 		"CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-	}, GitEnv...)
+	}, append(sessionEnv, GitEnv...)...)
 	return Session{
 		ID: id, Agent: agent, UID: uid, GID: gid, TTY: tty, Dir: Workspace, Env: env,
 		Argv: append(append([]string{}, argv...), extra...),
