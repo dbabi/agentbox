@@ -25,8 +25,9 @@ git clone -q --no-checkout "https://github.com/$REPO.git" "$W/src"
 git -C "$W/src" checkout -q --detach "$commit"
 [ "$(git -C "$W/src" rev-parse "$TAG^{commit}")" = "$commit" ] || die "tag $TAG does not point at $commit"
 # a toolchain in ~/sdk/<goversion> (from dl.google.com) wins; otherwise Go downloads it through its module proxy
-if [ -x "$HOME/sdk/$gover/bin/go" ]; then tc="GOTOOLCHAIN=local PATH=$HOME/sdk/$gover/bin:$PATH"; else tc="GOTOOLCHAIN=$gover"; fi
-(cd "$W/src" && env $tc go run ./hack/release -version "$ver" -key "$KEY" -out "$W/local")
+# exported, not passed as "env $tc": a PATH entry with a space would split into separate words
+if [ -x "$HOME/sdk/$gover/bin/go" ]; then export GOTOOLCHAIN=local PATH="$HOME/sdk/$gover/bin:$PATH"; else export GOTOOLCHAIN="$gover"; fi
+(cd "$W/src" && go run ./hack/release -version "$ver" -key "$KEY" -out "$W/local")
 ci=$(shasum -a 256 "$W/ci/$tgz" | cut -d' ' -f1); mine=$(shasum -a 256 "$W/local/$tgz" | cut -d' ' -f1)
 [ "$ci" = "$mine" ] || die "local rebuild $mine differs from CI's $ci; not signing"
 
