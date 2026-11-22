@@ -72,6 +72,7 @@ as() { runuser -u ag-at -- "$@"; }
 markers() { ls $M | tr '\n' ' '; }
 none() { [ -z "$(ls $M)" ]; }
 attach() { timeout 180 $B attach --agent at "$@"; }
+typed() { sleep 3; cat "$1"; } # after the prompt, as a human types: earlier bytes race the session's terminal setup
 hook() { printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch %s/%s"}]}]}}\n' $M "$1"; }
 
 check "agent add: ag-at, its workspace, and its user manager" '$B agent add --name at && U=$(id -u ag-at) &&
@@ -114,7 +115,7 @@ check "  ... rootd ran it as cli claude in a session unit of ag-at's user manage
 b64=Z2F0ZV9vc2M1Mg # base64 of gate_osc52, sent in two halves so the echoed command line never holds it whole
 cat > /tmp/gate-in2 <<IN
 cd /workspace
-echo "net=\$(ls /sys/class/net | tr "\n" " ")"; grep -E "^(Seccomp|NoNewPrivs|CapEff):" /proc/self/status | tr -d "\t"
+echo "net=\$(ls /sys/class/net)"; grep -E "^(Seccomp|NoNewPrivs|CapEff):" /proc/self/status | tr -d "[:blank:]"
 git -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m attach; echo "commit=\$?"
 claude -p hi --dangerously-skip-permissions </dev/null 2>&1 | grep -c "Not logged in" | sed "s/^/handclaude=/"
 echo '{"hooks":{}}' >> ~/.claude/settings.json; echo "write=\$?"
@@ -124,9 +125,9 @@ mv ~ /tmp/x 2>/dev/null; echo "mvhome=\$?"
 h=${b64%??????}; printf '\033]52;c;%s%s\007\033P1\$r\033\\\\\033[6n\033[c\033[>c\033[14t\033[1mGATEBOLD\033[0m\n' "\$h" "${b64#????????}"
 sleep 1; exit
 IN
-check "attach 2: a bash session, input relayed, token scan clean" 'attach --cli bash </tmp/gate-in2 >/tmp/gate-a2 2>&1; cat -v /tmp/gate-a2;
+check "attach 2: a bash session, input relayed, token scan clean" 'typed /tmp/gate-in2 | attach --cli bash >/tmp/gate-a2 2>&1; cat -v /tmp/gate-a2;
   grep -qF "[agentbox] session ended; token scan: clean" /tmp/gate-a2 && grep -q "commit=0" /tmp/gate-a2'
-check "  ... in a container: loopback only, the seccomp filter, no_new_privs and no capabilities" 'grep -q "^net=lo \$" /tmp/gate-a2 &&
+check "  ... in a container: loopback only, the seccomp filter, no_new_privs and no capabilities" 'grep -q "^net=lo.\$" /tmp/gate-a2 &&
   grep -q "^Seccomp:2" /tmp/gate-a2 && grep -q "^NoNewPrivs:1" /tmp/gate-a2 && grep -q "^CapEff:0000000000000000" /tmp/gate-a2'
 check "  ... git commit in the attach shell ran no pre-commit hook" '! [ -e $M/m-precommit ]'
 check "  ... claude started by hand without the flags ran no hook and no .mcp.json server (managed settings)" 'grep -q "handclaude=1" /tmp/gate-a2 && none || { markers; false; }'
@@ -151,7 +152,7 @@ IN
 cat > /tmp/gate-blocked.sh <<'SH'
 $B attach status > /tmp/gate-st; cat /tmp/gate-st; grep -q "\"reason\":\"$1\"" /tmp/gate-st
 SH
-check "attach 3: tasks are blocked while it is live" '( attach --cli bash </tmp/gate-in3 >/tmp/gate-a3 2>&1 & ); sleep 2;
+check "attach 3: tasks are blocked while it is live" '( typed /tmp/gate-in3 | attach --cli bash >/tmp/gate-a3 2>&1 & ); sleep 2;
   B=$B sh /tmp/gate-blocked.sh attach_live'
 check "  ... and task.start refuses a task for its workspace" '! $B task new --agent at --cli claude </dev/null >/tmp/gate-tn 2>&1; cat /tmp/gate-tn; grep -q attach_blocked /tmp/gate-tn'
 check "  ... a second attach of the same agent is refused while it runs" '! attach --cli bash </dev/null >/tmp/gate-a3b 2>&1 && grep -q "an attach is live" /tmp/gate-a3b'

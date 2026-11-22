@@ -121,17 +121,24 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	}
 	var wg sync.WaitGroup
 	wg.Add(1)
+	out := make(chan struct{})
+	first := &firstRead{r: master, ch: make(chan struct{})}
 	go func() { // admin input, as typed; EOF stops input only
 		defer wg.Done()
+		// podman -t sets the PTY raw with TCSAFLUSH, which drops input not yet read: hold it until the session writes
+		select {
+		case <-first.ch:
+		case <-out:
+		case <-time.After(30 * time.Second):
+		}
 		if len(pending) > 0 {
 			master.Write(pending)
 		}
 		io.Copy(master, c)
 	}()
-	out := make(chan struct{})
 	go func() { // session output, filtered; a gone admin stops the session
 		defer close(out)
-		if _, err := io.Copy(attach.NewFilter(c), master); err != nil && !errors.Is(err, syscall.EIO) {
+		if _, err := io.Copy(attach.NewFilter(c), first); err != nil && !errors.Is(err, syscall.EIO) {
 			log.Printf("agent.attach %s %s: relay: %v", r.Name, id, err)
 		}
 		cancel()
@@ -177,4 +184,19 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	c.CloseWrite()
 	c.SetReadDeadline(time.Now().Add(5 * time.Second)) // the admin's side closes once it has read the end
 	wg.Wait()
+}
+
+// firstRead closes ch once its reader has returned a byte.
+type firstRead struct {
+	r    io.Reader
+	ch   chan struct{}
+	once sync.Once
+}
+
+func (f *firstRead) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if n > 0 {
+		f.once.Do(func() { close(f.ch) })
+	}
+	return n, err
 }
