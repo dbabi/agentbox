@@ -241,3 +241,23 @@ func FuzzParseDenial(f *testing.F) {
 		}
 	})
 }
+
+// FuzzDenialHeader: a parsed header names a table code, one of the six next moves and a denial or pending id, and
+// DenialHeader round-trips it.
+func FuzzDenialHeader(f *testing.F) {
+	d := Deny(BrokerUnavailable, "llm", Slots{By: "forwarder"})
+	f.Add(DenialHeader(d))
+	f.Add("v1 code=NOPE next=retry id=dn_00000000000000000000000000")
+	f.Fuzz(func(t *testing.T, v string) {
+		c, next, id, ok := ParseDenialHeader(v)
+		if !ok {
+			return
+		}
+		if _, known := LookupCode(c.String()); !known || !ids.Valid(id) {
+			t.Fatalf("%q parsed to %v %v %v", v, c, next, id)
+		}
+		if got := DenialHeader(Denial{Code: c.String(), Next: next, ID: id}); got != v {
+			t.Fatalf("%q does not round-trip: %q", v, got)
+		}
+	})
+}

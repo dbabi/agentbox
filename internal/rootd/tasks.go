@@ -22,8 +22,10 @@ import (
 	"agentbox/internal/ids"
 	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/attach"
+	"agentbox/internal/rootd/witness"
 	"agentbox/internal/seccomp"
 	"agentbox/internal/task"
+	"agentbox/internal/taskenv"
 )
 
 // The task registry (Appendix E) and the human requests behind admin-origin tasks. task_requests is not in Appendix E:
@@ -88,13 +90,15 @@ type TaskConfig struct {
 	// socket (proxy, keys and git until weeks 7-8).
 	Svc func(svc string, req map[string]any) (map[string]any, error)
 	// MakeDir makes one per-task dir: mkdirat, fchownat (no symlink follow) to owner:gid, mode 2750 (§2.1).
-	MakeDir func(path, owner string, gid uint32) error
-	Cgroup  string // the cgroup2 root, /sys/fs/cgroup
-	Exports string // control/exports
-	Seccomp string
-	Image   string
-	HostUsr []string
-	Now     func() time.Time
+	MakeDir     func(path, owner string, gid uint32) error
+	Cgroup      string // the cgroup2 root, /sys/fs/cgroup
+	Exports     string // control/exports
+	EgressDir   string // control/egress: the allowlists and go.private patterns the task env comes from; rootd's own if ""
+	WitnessRoot string // /run/agentbox-witness/t (§5.6 Witness)
+	Seccomp     string
+	Image       string
+	HostUsr     []string
+	Now         func() time.Time
 }
 
 type tasks struct {
@@ -107,6 +111,8 @@ type tasks struct {
 	stops   map[string]*sync.Mutex // one task.stop at a time per task
 	watch   map[string]bool
 	noWatch bool // tests: no cgroup to watch
+	witMu   sync.Mutex
+	wit     map[string]*witness.W // the live tasks' witnesses, by task id
 }
 
 type auditReply struct {
@@ -313,6 +319,13 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 			return false, fmt.Errorf("%s register: %v", v.Name, err)
 		}
 	}
+	env, err := taskenv.ForAgent(t.cfg.EgressDir, acct.Name)
+	if err != nil {
+		return false, fmt.Errorf("task env: %v", err)
+	}
+	if err := t.openWitness(id, acct.GID); err != nil {
+		return false, fmt.Errorf("witness: %v", err)
+	}
 	if err := task.WriteExports(filepath.Join(t.cfg.Exports, acct.Name)); err != nil {
 		return false, fmt.Errorf("exports: %v", err)
 	}
@@ -323,9 +336,9 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 	}
 	dl := time.UnixMilli(si.deadline)
 	argv := task.Argv(task.Spec{Task: id, Agent: acct.Name, Runtime: dl.Sub(t.cfg.Now()), Deadline: dl, Workspace: acct.Workspace,
-		Seccomp: t.cfg.Seccomp, Image: t.cfg.Image, HostUsr: t.cfg.HostUsr})
+		Seccomp: t.cfg.Seccomp, Image: t.cfg.Image, HostUsr: t.cfg.HostUsr, Env: env, Witness: filepath.Join(t.cfg.WitnessRoot, id)})
 	t0 := time.Now()
-	err := t.cfg.Launch(argv)
+	err = t.cfg.Launch(argv)
 	log.Printf("task %s (agent %s): launch %d ms over the user bus: %v", id, acct.Name, time.Since(t0).Milliseconds(), err)
 	if err != nil {
 		return false, fmt.Errorf("systemd-run: %v", err)
@@ -385,6 +398,8 @@ func (t *tasks) stop(id, reason string) reply {
 			}()
 		}
 	}
+	// 2a: with no writer left, the witness holds every line the task wrote; WITNESS goes to auditd unwaited
+	t.closeWitness(id)
 	// 3: the unit's ExecStopPost already removes the container; this is its backup, outside the user bus
 	acct, err := t.cfg.Accounts.Lookup(agent)
 	if err == nil {
@@ -549,14 +564,15 @@ func DefaultTaskConfig() TaskConfig {
 			}
 			return runFor(5*time.Second, append(a, argv...)...)
 		},
-		Svc:     svcCall,
-		MakeDir: makeTaskDir,
-		Cgroup:  "/sys/fs/cgroup",
-		Exports: task.ExportsDir,
-		Seccomp: seccomp.Path,
-		Image:   task.Image(),
-		HostUsr: task.HostUsr(),
-		Now:     time.Now,
+		Svc:         svcCall,
+		MakeDir:     makeTaskDir,
+		Cgroup:      "/sys/fs/cgroup",
+		Exports:     task.ExportsDir,
+		WitnessRoot: witness.Root,
+		Seccomp:     seccomp.Path,
+		Image:       task.Image(),
+		HostUsr:     task.HostUsr(),
+		Now:         time.Now,
 	}
 }
 

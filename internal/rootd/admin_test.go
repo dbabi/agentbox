@@ -10,6 +10,7 @@ import (
 	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/attach"
 	"agentbox/internal/rootd/resolve"
+	"agentbox/internal/taskenv"
 )
 
 // §9: an allowlist edit is INTENT, ACK, effect, RESULT. With auditd down the INTENT gets no ACK and the list stays.
@@ -115,5 +116,23 @@ func TestAgentOps(t *testing.T) {
 	}
 	if _, err := accounts.Lookup(db, "d"); err != accounts.ErrNotFound {
 		t.Fatalf("auditd down: d was allocated: %v", err)
+	}
+}
+
+// go.private.set is audited like an egress edit; a bad pattern is refused before any INTENT.
+func TestGoPrivateSet(t *testing.T) {
+	dir := t.TempDir()
+	var recs []map[string]any
+	s := &server{cfg: Config{EgressDir: dir}, audit: func(r map[string]any) error { recs = append(recs, r); return nil }}
+	p := "corp.example/*"
+	if rep := s.admin(request{Op: "go.private.set", Agent: "ga", Patterns: &p}, peer{}); rep["ok"] != true || len(recs) != 2 || recs[0]["name"] != "go.private.set" {
+		t.Fatalf("%v %v", rep, recs)
+	}
+	if gp, _ := taskenv.ReadGoPrivate(dir, "ga"); gp != p {
+		t.Fatalf("patterns %q", gp)
+	}
+	bad := "a b"
+	if rep := s.admin(request{Op: "go.private.set", Agent: "ga", Patterns: &bad}, peer{}); rep["ok"] != false || len(recs) != 2 {
+		t.Fatalf("bad patterns: %v", rep)
 	}
 }

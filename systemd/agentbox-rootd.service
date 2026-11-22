@@ -28,6 +28,8 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 MemoryDenyWriteExecute=yes
 SystemCallFilter=@system-service
+# mknodat: the per-task witness FIFO (§5.6)
+SystemCallFilter=mknodat
 SystemCallArchitectures=native
 
 [Install]

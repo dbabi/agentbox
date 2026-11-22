@@ -41,6 +41,11 @@ func cmdRootd(args []string) error {
 	}
 	cfg.Effects, cfg.RawAudit = testEffects()
 	cfg.Tasks = rootd.DefaultTaskConfig()
+	// hack/taskenv-gate.sh: tasks run a full image (image/task, with the pinned Go) the gate loads into each agent's
+	// podman, instead of the stub skeleton and the host's /usr. Test VMs only.
+	if img := os.Getenv("AGENTBOX_TEST_TASK_IMAGE"); img != "" {
+		cfg.Tasks.Image, cfg.Tasks.HostUsr, cfg.Tasks.EnsureImage = img, nil, nil
+	}
 	cfg.Alert = func(title, msg string) error {
 		return ntfy.Publish(ntfy.Socket, ntfy.TokenPath, ntfy.AlertTopic, title, msg)
 	}

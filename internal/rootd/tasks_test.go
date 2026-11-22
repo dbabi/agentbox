@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agentbox/internal/ids"
+	"agentbox/internal/ops"
 	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/attach"
 	"agentbox/internal/task"
@@ -22,7 +23,7 @@ func (fakeAccounts) Lookup(a string) (Account, error) {
 	if a != "claude" {
 		return Account{}, errors.New("no such agent")
 	}
-	return Account{Name: a, UID: 70001, GID: 70001, Workspace: "/ws/claude"}, nil
+	return Account{Name: a, UID: 70001, GID: uint32(os.Getgid()), Workspace: "/ws/claude"}, nil
 }
 
 type rig struct {
@@ -45,6 +46,7 @@ func newRig(t *testing.T) *rig {
 	r := &rig{db: db, auditUp: true}
 	now := time.UnixMilli(1_800_000_000_000)
 	r.t = &tasks{db: db, noWatch: true, cfg: TaskConfig{Accounts: fakeAccounts{}, Cgroup: filepath.Join(dir, "cg"), Exports: filepath.Join(dir, "exports"),
+		EgressDir: filepath.Join(dir, "egress"), WitnessRoot: dir,
 		Seccomp: "/s.json", Image: "img", Now: func() time.Time { return now },
 		Launch:  func(a []string) error { r.launch = append(r.launch, a); return nil },
 		RunAs:   func(uint32, []string, ...string) error { r.calls = append(r.calls, "podman rm"); return nil },
@@ -113,8 +115,13 @@ func TestTaskStartAdmin(t *testing.T) {
 	if got := r.types(); !slices.Equal(got, []string{"WRITER_ADD"}) || r.records[0]["workspace"] != "workspace:claude" {
 		t.Fatalf("audit: %v", r.records)
 	}
-	if len(r.launch) != 1 || !strings.Contains(strings.Join(r.launch[0], " "), "--unit="+task.Unit(id)) {
+	argv := strings.Join(r.launch[0], " ")
+	if len(r.launch) != 1 || !strings.Contains(argv, "--unit="+task.Unit(id)) || !strings.Contains(argv, " -e GOPROXY=off ") ||
+		!strings.Contains(argv, " -v "+filepath.Join(r.t.cfg.WitnessRoot, id)+":/run/agentbox/witness:ro ") {
 		t.Fatalf("launch: %v", r.launch)
+	}
+	if fi, err := os.Stat(filepath.Join(r.t.cfg.WitnessRoot, id, "witness")); err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatalf("witness: %v %v", fi, err)
 	}
 	if !slices.Contains(r.calls, "mkdir "+task.SockDir("proxy", id)+" agentbox-proxy") || !slices.Contains(r.calls, "gate register") {
 		t.Fatalf("calls: %v", r.calls)
@@ -124,6 +131,11 @@ func TestTaskStartAdmin(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(r.t.cfg.Exports, "claude", "claude-settings.json")); err != nil || !strings.Contains(string(b), "disableAllHooks") {
 		t.Fatalf("exports: %q %v", b, err)
+	}
+	for _, f := range []string{"CLAUDE.md", "AGENTS.md"} {
+		if b, err := os.ReadFile(filepath.Join(r.t.cfg.Exports, "claude", f)); err != nil || !strings.HasSuffix(string(b), ops.FixedLines[7]+"\n") {
+			t.Fatalf("exports %s: %q %v", f, b, err)
+		}
 	}
 	if l := r.t.listLive()["tasks"].([]liveRow); len(l) != 1 || l[0].Task != id {
 		t.Fatalf("list_live: %+v", l)
@@ -356,4 +368,38 @@ func TestIdsAccounts(t *testing.T) {
 	if _, err := ia.Lookup("../x"); err == nil {
 		t.Fatal("a bad name has an account")
 	}
+}
+
+// The witness lives from task.start to task.stop; a rootd restart reopens a live task's witness marked incomplete, and
+// task.stop sends it to auditd and removes the dir.
+func TestTaskWitness(t *testing.T) {
+	r := newRig(t)
+	id := ids.New(ids.Task)
+	if rep := r.t.start(id, "claude", "daemon"); rep["ok"] != true {
+		t.Fatal(rep)
+	}
+	line := "dn_00000000000000000000000000 - BROKER_UNAVAILABLE forwarder"
+	r.t.wit[id].Drain()                                                                     // the old rootd stops reading
+	r.t = &tasks{db: r.db, cfg: r.t.cfg, audit: r.t.audit, query: r.t.query, noWatch: true} // and restarts
+	r.t.reopenWitnesses()
+	f, err := os.OpenFile(filepath.Join(r.t.cfg.WitnessRoot, id, "witness"), os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(line + "\n")
+	f.Close()
+	r.records = nil
+	r.t.stop(id, "completed")
+	if _, err := os.Stat(filepath.Join(r.t.cfg.WitnessRoot, id)); !os.IsNotExist(err) {
+		t.Fatal("task.stop left the witness dir")
+	}
+	for i := 0; i < 100 && !slices.Contains(r.types(), "WITNESS"); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, m := range r.records {
+		if m["type"] == "WITNESS" && m["task"] == id && m["incomplete"] == true && slices.Equal(m["lines"].([]string), []string{line}) {
+			return
+		}
+	}
+	t.Fatalf("no incomplete WITNESS for %s: %v", id, r.records)
 }

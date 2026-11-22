@@ -2,6 +2,7 @@ package task
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,9 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"agentbox/internal/taskenv"
+	"agentbox/internal/taskrun"
 )
 
 // GateSock is the task's gate socket inside the container.
@@ -118,11 +122,19 @@ func (r *Runner) Setup() error {
 	if err := cp("codex-config.toml", filepath.Join(r.Home, ".codex", "config.toml")); err != nil {
 		return err
 	}
+	for src, dst := range map[string]string{"CLAUDE.md": ".claude/CLAUDE.md", "AGENTS.md": ".codex/AGENTS.md"} {
+		if err := cp(src, filepath.Join(r.Home, dst)); err != nil {
+			return err
+		}
+	}
+	if err := cp("AGENTS.md", filepath.Join(r.Home, ".config", "opencode", "AGENTS.md")); err != nil {
+		return err
+	}
 	return os.MkdirAll(filepath.Join(r.Home, ".agentbox"), 0o700)
 }
 
-// Taskrun is the container's PID 1 (§4.2): set up HOME, fetch the task, run the CLI with the prompt on stdin, post the
-// result. SIGTERM (the unit stopping) goes on to the CLI's process group; systemd SIGKILLs the rest after
+// Taskrun is the container's PID 1 (§4.2): set up HOME, clean the env and start the forwarders, fetch the task, run the
+// CLI with the prompt on stdin, post the result. SIGTERM (the unit stopping) goes on to the CLI's process group; systemd SIGKILLs the rest after
 // TimeoutStopSec, and the payload is inside the unit's cgroup.
 func Taskrun() int {
 	dl, _ := strconv.ParseInt(os.Getenv("AGENTBOX_DEADLINE"), 10, 64)
@@ -130,6 +142,12 @@ func Taskrun() int {
 		Sleep: time.Sleep, Now: time.Now}
 	if err := r.Setup(); err != nil {
 		fmt.Fprintln(os.Stderr, "taskrun: setup:", err)
+		return 1
+	}
+	taskenv.Clean()
+	rec := &taskrun.Recorder{Log: taskrun.LogPath(), Witness: taskrun.WitnessPath}
+	if err := taskrun.Start(context.Background(), taskrun.Channels, rec); err != nil {
+		fmt.Fprintln(os.Stderr, "taskrun: forwarders:", err)
 		return 1
 	}
 	var job Job

@@ -1,0 +1,7 @@
+# The task image's mise tools (ARCHITECTURE.md §13): pinned, and never newer than 3 days at build time. The image Go
+# is the only Go a task runs by default (GOTOOLCHAIN=local, §4.2).
+[settings]
+minimum_release_age = "3d"
+
+[tools]
+go = "1.27.4"

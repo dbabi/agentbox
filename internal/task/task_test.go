@@ -1,8 +1,11 @@
 package task
 
 import (
+	"archive/tar"
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -10,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agentbox/internal/ops"
+	"agentbox/internal/taskenv"
 )
 
 // The launch is Appendix C's: one systemd-run over the agent's user bus, --cgroups=split with Delegate=yes, no network,
@@ -18,7 +24,8 @@ func TestArgv(t *testing.T) {
 	id := "task_01JD000000000000000000000Z"
 	a := Argv(Spec{Task: id, Agent: "claude", Runtime: 7200 * time.Second, Deadline: time.UnixMilli(1_800_000_000_000),
 		Workspace: "/var/lib/agentbox/data/workspaces/claude", Seccomp: "/var/lib/agentbox/control/seccomp-task.json",
-		Image: "localhost/agentbox-task:x", HostUsr: []string{"/usr/bin"}})
+		Image: "localhost/agentbox-task:x", HostUsr: []string{"/usr/bin"},
+		Env: []string{"-e", "GOPROXY=off"}, Witness: "/run/agentbox-witness/t/" + id})
 	s := strings.Join(a, " ")
 	for _, want := range []string{
 		"systemd-run --user -M ag-claude@ --unit=agentbox-task-" + id + ".service --collect",
@@ -29,11 +36,11 @@ func TestArgv(t *testing.T) {
 		"-v /var/lib/agentbox/data/workspaces/claude:/workspace",
 		"-v /run/agentbox-gate/t/" + id + ":/run/agentbox/gate:ro -v /run/agentbox-proxy/t/" + id + ":/run/agentbox/egress:ro",
 		"-v /run/agentbox-keys/t/" + id + ":/run/agentbox/llm:ro -v /run/agentbox-git/t/" + id + ":/run/agentbox/git:ro",
-		"-v /var/lib/agentbox/control/exports/claude:/opt/agentbox/exports:ro -v /var/lib/agentbox/current/bin/agentbox:/usr/local/bin/agentbox:ro",
+		"-v /run/agentbox-witness/t/" + id + ":/run/agentbox/witness:ro -v /var/lib/agentbox/control/exports/claude:/opt/agentbox/exports:ro -v /var/lib/agentbox/current/bin/agentbox:/usr/local/bin/agentbox:ro",
 		"-v /usr/bin:/usr/bin:ro",
 		"-e GIT_CONFIG_KEY_0=core.hooksPath -e GIT_CONFIG_VALUE_0=/opt/agentbox/exports/nohooks -e GIT_CONFIG_KEY_1=core.fsmonitor -e GIT_CONFIG_VALUE_1=false",
 		"-e AGENTBOX_DEADLINE=1800000000000",
-		"localhost/agentbox-task:x /usr/local/bin/agentbox taskrun",
+		"-e GOPROXY=off localhost/agentbox-task:x /usr/local/bin/agentbox taskrun",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("argv lacks %q:\n%s", want, s)
@@ -76,6 +83,19 @@ func TestSkeletonStable(t *testing.T) {
 	a, b := Skeleton(), Skeleton()
 	if string(a) != string(b) || !strings.HasPrefix(Image(), "localhost/agentbox-task:") {
 		t.Fatal("the skeleton tar must be the same bytes every time")
+	}
+	tr := tar.NewReader(bytes.NewReader(a))
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			t.Fatal("no etc/resolv.conf in the skeleton:", err)
+		}
+		if h.Name == "etc/resolv.conf" {
+			if c, _ := io.ReadAll(tr); string(c) != taskenv.ResolvConf {
+				t.Fatalf("resolv.conf %q", c)
+			}
+			return
+		}
 	}
 }
 
@@ -131,5 +151,10 @@ func TestSetupAndExports(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 	if string(b) != Exports["claude-settings.json"] {
 		t.Fatalf("settings %q", b)
+	}
+	for f, dst := range map[string]string{"CLAUDE.md": ".claude/CLAUDE.md", "AGENTS.md": ".config/opencode/AGENTS.md"} {
+		if b, _ := os.ReadFile(filepath.Join(home, dst)); string(b) != string(ops.Exports()[f]) {
+			t.Fatalf("%s: %q", dst, b)
+		}
 	}
 }
