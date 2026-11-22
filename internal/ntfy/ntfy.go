@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"agentbox/internal/fw"
 	"agentbox/internal/rootd/gens"
@@ -239,14 +240,29 @@ func CheckUser() error {
 	if pid == "0" || pid == "" {
 		return nil
 	}
-	st, err := os.ReadFile("/proc/" + pid + "/status")
-	if errors.Is(err, os.ErrNotExist) {
-		return nil // exited since systemctl show
+	return settleUID(func() (string, error) {
+		st, err := os.ReadFile("/proc/" + pid + "/status")
+		return string(st), err
+	}, u.Uid, 10, 100*time.Millisecond)
+}
+
+// settleUID checks one process's uids, again up to tries times: systemd forks ntfy as root and drops to _ntfy just
+// before exec, so a check in that window must wait (#84). A process that stays on another uid still fails.
+func settleUID(status func() (string, error), uid string, tries int, wait time.Duration) error {
+	for i := 0; ; i++ {
+		st, err := status()
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // exited since systemctl show
+		}
+		if err != nil {
+			return err
+		}
+		err = checkStatusUID(st, uid)
+		if err == nil || i >= tries {
+			return err
+		}
+		time.Sleep(wait)
 	}
-	if err != nil {
-		return err
-	}
-	return checkStatusUID(string(st), u.Uid)
 }
 
 // checkStatusUID checks the real, effective, saved and fs uids of /proc/<pid>/status.
