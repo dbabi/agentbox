@@ -1,7 +1,7 @@
 How agentbox is tested, what each test proves, and what it does not. For an overview, start at [Home](README.md).
 
 agentbox is early alpha. Every gate on this page runs in a QEMU virtual machine. No real hardware has run agentbox yet.
-The tests cover the installer, the OS layer, the milestone 2 host services (the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy) and the milestone 3 request checks. The rest of the agent runtime is not built, so no test covers it yet.
+The tests cover the installer, the OS layer, the milestone 2 host services (the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy) the milestone 3 request checks and milestone 4 interactive sessions. The rest of the agent runtime is not built, so no test covers it yet.
 
 ## Two kinds of tests
 
@@ -29,6 +29,7 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | Sockets gate (milestone 3) | `hack/sockets-gate.sh [install] [check]` | Apple Silicon Mac | not timed separately |
 | Accounts gate (milestone 4) | `hack/accounts-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
 | Tasks gate (milestone 4) | `hack/tasks-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
+| Attach gate (milestone 4) | `hack/attach-gate.sh [install\|checks ...]` | Apple Silicon Mac, with `npm` and internet for the Claude Code CLI | not timed separately |
 | Fuzz tests | `hack/fuzz-all.sh [DURATION]` | macOS or Linux | 24 h by default |
 
 The times come from one Apple Silicon Mac. The milestone 2 and 3 times come from runs with four VMs at once.
@@ -55,7 +56,8 @@ What they check:
 | `internal/gate`, `internal/denial`, `internal/ids` | agentboxd's task gate: per-task sockets, caller identity from the socket, schema checks and typed denials. The denial encoder and its check. The `<kind>_<ULID>` ids. |
 | `internal/task`, `internal/seccomp` | The task container's launch command, its generated CLI configs, the PAM line that skips motd for agent users, and how the task's PID 1 retries the gate. The task seccomp profile: no unconditional `ioctl` rule, and every 16-bit command, with and without high bits set, gets `EOPNOTSUPP` for btrfs and is allowed otherwise. |
 | `internal/sockets` | The socket inventory, the tmpfiles.d and `.socket` units generated from it, and `agentbox sockets check` against a live tree. |
-| `internal/ntfy` | ntfy's `server.yml`, and the check that the running unit's uid is `_ntfy`. |
+| `internal/ntfy` | ntfy's `server.yml`, the check that the running unit's uid is `_ntfy`, and publishing an alert over the Unix socket. |
+| `internal/rootd/attach` | Interactive sessions: the output filter (also fuzzed), the token scan with its git objects and rotated tokens, the task block, and the session-home checks that refuse a planted symlink. On Linux, a whole attach through rootd with a stand-in session. |
 | `cmd/agentbox` | Flag parsing, help text, `os` arguments. `recovery decrypt` refuses an existing output file. |
 | `hack/gate-dns` | The DNS test server that the rootd gate runs in the guest. |
 | `install` | `install.sh` syncs to disk before it renames the release into place. It runs under `dash` with fake tools. |
@@ -463,12 +465,19 @@ The tasks gate's `install` is `hack/gate.sh none`, so podman, the units, the sec
 caffeinate -i hack/tasks-gate.sh
 ```
 
+The attach gate's `install` is `hack/gate.sh none` too. Its `checks` step copies the Claude Code CLI for linux-arm64 to the VM. It fetches the CLI with `npm pack` and checks it against `hack/SHA256SUMS`.
+
+```sh
+caffeinate -i hack/attach-gate.sh
+```
+
 ### What the milestone 4 gates prove
 
 | Suite | Script | What it proves |
 |---|---|---|
 | `w5-accounts` | `hack/accounts-gate.sh` | `agentbox agent add` makes one Unix account per agent: uid and gid 70000+N, no login shell, a root-owned empty home, a 65536-wide sub-id block, root-owned config dirs the agent can read, a user manager that starts only behind the firewall, and workspace and storage subvolumes in the agent's own quota group under the shared disk reserve. An agent at its quota gets `EDQUOT`, also in its storage, while system state keeps writing. Removing the newest agent deletes its account and archives its data. Adding another agent never reuses its uid or sub-id range. A nested subvolume refuses the removal with `NESTED_SUBVOLUME` and taints the workspace. A foreign sub-id entry inside the agentbox range stops reconcile. After a reboot, reconcile brings back the same accounts. |
 | `w5-tasks` | `hack/tasks-gate.sh` | A human's `agentbox task new` runs as one rootless podman container with no network, no capabilities, a read-only root, the task seccomp profile and a fresh tmpfs HOME, inside its own systemd unit. rootd sets the provenance. Hooks, settings and MCP config that one task plants in HOME or the workspace, and a skill's frontmatter hook, don't reach the next task. A task tainted mid-run makes the next task start tainted. The agent can't write a user unit or podman config. A task that ignores SIGTERM and forks `sleep infinity` is gone within 20 s of its timeout or of `cgroup.kill`, and writes nothing after. Canceling a task removes its container and sockets within 5 s, also with auditd stopped. A task keeps working across restarts of the gate and of stand-in brokers. 20 launches each take under 300 ms, open one login session and run no `update-motd.d`. btrfs ioctls from a task fail with `EOPNOTSUPP`, also with high command bits set. |
+| `m4-attach` | `hack/attach-gate.sh` | Hooks and servers planted in the workspace and in session-home run outside an attach. In a later attach none of them runs: not the project, local or user SessionStart hooks, not the `.mcp.json` server, not the git pre-commit hook. That holds for Claude started by rootd and for Claude started by hand in a bash session. The session can't write, remove or move session-home's Claude settings, and they stay byte for byte the same. The output filter drops a clipboard write (OSC 52), a DCS string and terminal report requests, and keeps colors. Tasks are blocked while an attach runs. A session that copies its login token into the workspace and into a git object, then rotates the token, leaves tasks blocked and sends an ntfy alert. A rescan lifts the block only once the token is gone. Each attach is audited, and the chain verifies. |
 
 ### What they do not prove
 
@@ -476,6 +485,10 @@ caffeinate -i hack/tasks-gate.sh
 - No Claude, Codex or opencode binary is in the task image yet. The gate checks the settings, flags and fresh HOME that keep planted hooks and MCP servers from running. It does not run a real CLI against them.
 - The brokers are not built yet. The restart check uses `agentbox broker-stub`, a stand-in that binds the same per-task sockets.
 - The task image is a small root file system with the host's `/usr` mounted read-only.
+- The session runs in a systemd unit with its own mounts, not yet in a container. It has no seccomp profile and keeps the network.
+- No task launcher exists yet, so the gate reads the task block from `agentbox attach status`.
+- The agent user and its directories are made by the gate, not by `agent.add`.
+- The token scan doesn't read git packfiles yet.
 
 ## Several VMs at once
 
