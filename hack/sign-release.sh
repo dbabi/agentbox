@@ -11,7 +11,7 @@ die() { echo "sign-release: $*" >&2; exit 1; }
 for c in gh git go minisign shasum; do command -v $c >/dev/null || die "$c not installed"; done
 [ -f "$KEY" ] || die "no minisign secret key at $KEY (issue: make it with minisign -G)"
 W=$(mktemp -d "${TMPDIR:-/tmp}/agentbox-sign.XXXX")
-trap 'rm -r "$W"' EXIT
+trap 'rm -rf "$W"' EXIT
 
 gh release download "$TAG" -R "$REPO" -D "$W/ci" -p 'agentbox-*.tgz' -p SHA256SUMS -p BUILDINFO
 commit=$(sed -n 's/^commit //p' "$W/ci/BUILDINFO"); gover=$(sed -n 's/^go //p' "$W/ci/BUILDINFO"); ver=$(sed -n 's/^version //p' "$W/ci/BUILDINFO")
