@@ -57,11 +57,6 @@ func listeners() (map[string]*net.UnixListener, error) {
 	return out, nil
 }
 
-type peer struct {
-	uid    uint32
-	groups []uint32
-}
-
 func peerCred(c *net.UnixConn) (peer, error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
@@ -155,7 +150,7 @@ func (s *server) serve(name string, c *net.UnixConn) {
 			if i < 0 {
 				break
 			}
-			if _, err := c.Write(s.line(name, buf[:i])); err != nil {
+			if _, err := c.Write(s.lineFrom(name, p, buf[:i])); err != nil {
 				return
 			}
 			buf = buf[i+1:]

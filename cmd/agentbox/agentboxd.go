@@ -53,8 +53,16 @@ func cmdAgentboxd(args []string) error {
 	if !ok || len(ls) != 1 {
 		return errors.New("agentboxd: want exactly the svc-gate socket from systemd")
 	}
-	s := &gate.Server{Dir: gateDir, Forward: func(req map[string]any) ([]byte, error) { return lineCall(*rootdSock, req, 30*time.Second) },
-		AgentIDs: func(agent string) (uint32, uint32, error) { return uidOf("ag-" + agent) }}
+	s := &gate.Server{Dir: gateDir, Forward: func(req map[string]any) ([]byte, error) { return lineCall(*rootdSock, req, 60*time.Second) },
+		AgentIDs: func(agent string) (uint32, uint32, error) { return uidOf("ag-" + agent) }, CLIs: []string{"claude", "codex", "opencode"}}
+	if os.Getenv("AGENTBOX_TEST_CLI") == "sh" {
+		s.CLIs = append(s.CLIs, "sh") // test boxes only: the prompt runs as a shell script in the task
+	}
+	if l, err := lineCall(*rootdSock, map[string]any{"op": "task.list_live"}, 10*time.Second); err != nil {
+		log.Printf("task.list_live: %v: no task sockets rebound", err)
+	} else if err := s.Rebind(l); err != nil {
+		log.Print(err)
+	}
 	sdNotify("READY=1")
 	return s.ServeControl(ctl)
 }

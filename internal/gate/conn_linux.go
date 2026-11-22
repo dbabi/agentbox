@@ -101,6 +101,10 @@ func (s *Server) serve(t *task, c *net.UnixConn) {
 	t.conns[c] = true
 	t.mu.Unlock()
 	defer func() { t.mu.Lock(); delete(t.conns, c); t.mu.Unlock() }()
+	if s.Handle != nil {
+		lines(c, 10*time.Minute, func(l []byte) []byte { return s.Handle(t.id, l) })
+		return
+	}
 	lines(c, 10*time.Minute, func(l []byte) []byte { return s.call(t, l) })
 }
 

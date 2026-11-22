@@ -22,7 +22,8 @@ RestrictAddressFamilies=AF_UNIX AF_NETLINK
 ProtectHome=yes
 ProtectKernelModules=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/agentbox
+# per-task socket dirs (§2.1); tasks launch through systemd-run, so their processes don't inherit this sandbox
+ReadWritePaths=/var/lib/agentbox /run/agentbox-gate /run/agentbox-proxy /run/agentbox-keys /run/agentbox-git /run/agentbox-witness
 PrivateTmp=yes
 NoNewPrivileges=yes
 MemoryDenyWriteExecute=yes
