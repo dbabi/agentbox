@@ -1,5 +1,5 @@
 #!/bin/sh
-# Weeks 5-6 task gate (PLAN.md row 5-6; ARCHITECTURE.md §4.2, §10, Appendix C; issues #13, #14 and #155) on the local QEMU
+# Weeks 5-6 task gate (PLAN.md row 5-6; ARCHITECTURE.md §4.2, §10, Appendix C; issues #13, #14, #106 and #155) on the local QEMU
 # VM, arm64 UEFI, none mode, through the real rootd, agentboxd and auditd and rootless podman.
 #   hack/tasks-gate.sh [install|checks ...]   default: both, in order
 # install  hack/gate.sh none: the unattended install and the release pipeline, so podman, the units, the seccomp
@@ -33,7 +33,11 @@
 #          - after its user manager restarts under a running rootd, the next 3 tasks start and stop cleanly with the
 #            pause process in the user manager (#149);
 #          - a dead pause process whose PID an agent-uid process took (the podman 5.7 bug) doesn't stop the next task,
-#            and rootd audits PAUSE_PID_STALE (#125).
+#            and rootd audits PAUSE_PID_STALE (#125);
+#          - taskrun's isolation probe: a network interface, a default route, a sibling task's socket dir and an
+#            abstract socket, each added on its own through a wrapper over podman, stop the task with
+#            TASK_ISOLATION_PROBE before the CLI runs, with an audit ALERT and an ntfy alert; a normal task passes it in
+#            under 100 ms (#106).
 # PASS/FAIL lines go to .vm/tasks-gate.txt, command output to .vm/tasks-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -325,6 +329,47 @@ check "  ... clone with CLONE_NEWUSER, unshare with CLONE_NEWNS or CLONE_NEWTIME
   for l in clone-newuser unshare-newns unshare-newtime setns; do grep -qx "$l -1 1" $W/t14.sys || exit 1; done && grep -qx "clone3 -1 38" $W/t14.sys'
 check "  ... unshare -Ur true fails" '[ "$(tail -1 $W/t14.unshare)" != 0 ] && grep -qi "operation not permitted" $W/t14.unshare'
 check "  ... the gate socket still answers, and git still runs (the toolchains: m4-taskenv)" 'cat $W/t14.go; grep -q UNKNOWN_OP $W/t14.gate && [ "$(tail -1 $W/t14.go)" = ok ]'
+
+# --- #106: the isolation probe, one broken layer at a time ---
+# A wrapper bound over /usr/bin/podman changes only a task's `podman run` while /run/tg-break exists: its line is
+# extra podman args, and /workspace/.tg-break.sh runs in the container before taskrun.
+cp /usr/bin/podman /usr/local/bin/podman-real
+cat > /usr/local/bin/tg-podman <<'W'
+#!/bin/sh
+[ "$1" = run ] && [ -e /run/tg-break ] || exec /usr/local/bin/podman-real "$@"
+shift; n=$#; i=0
+for a; do i=$((i+1)); [ $i -gt $((n-2)) ] || set -- "$@" "$a"; done # all but the command, agentbox taskrun
+shift $n
+exec /usr/local/bin/podman-real run $(cat /run/tg-break) "$@" /usr/bin/sh -c '. /workspace/.tg-break.sh; exec /usr/local/bin/agentbox taskrun'
+W
+chmod 0755 /usr/local/bin/tg-podman && mount --bind /usr/local/bin/tg-podman /usr/bin/podman && modprobe dummy
+mkdir -p /tmp/tg-sib && python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("/tmp/tg-sib/gate.sock")' && chown -R ag-gt /tmp/tg-sib
+printf 'export PATH=/usr/sbin:/usr/bin:$PATH\nip link add tg0 type dummy\n' > /tmp/tg-b-netdev
+printf 'export PATH=/usr/sbin:/usr/bin:$PATH\nip link set lo up\nip route add default dev lo\n' > /tmp/tg-b-route
+: > /tmp/tg-b-sibling
+cat > /tmp/tg-b-abstract <<'S'
+python3 -c 'import socket, time; s = socket.socket(socket.AF_UNIX); s.bind(b"\0agentbox-proxy"); s.listen(); open("/tmp/ab", "w").close(); time.sleep(600)' &
+while [ ! -e /tmp/ab ]; do sleep 0.05; done
+S
+# brk MODE CHECK [ARGS]: a task launched with ARGS and /tmp/tg-b-MODE stops with TASK_ISOLATION_PROBE on CHECK, and its
+# prompt never runs
+brk() { echo "${3:-}" > /run/tg-break && cp /tmp/tg-b-$1 $W/.tg-break.sh && rm -f $W/tb-ran && echo 'touch /workspace/tb-ran' > /tmp/tg-p &&
+  T=$(new 2m < /tmp/tg-p) && wait_end $T 60 && [ "$(field $T end_reason)" = failed ] && [ ! -e $W/tb-ran ] &&
+  journalctl -b -u agentbox-rootd -o cat | grep -q "ALERT task $T (agent gt): TASK_ISOLATION_PROBE: the $2 check failed" &&
+  journalctl -b -u agentboxd -o cat | grep -q "task $T result: .*isolation probe [0-9]* ms \"$2\"" && echo "$T $2" >> /tmp/tg-brk; }
+: > /tmp/tg-brk
+check "isolation probe: a network interface (a dummy link) fails the launch with TASK_ISOLATION_PROBE, before the CLI" 'brk netdev netdev --cap-add=NET_ADMIN'
+check "  ... a default route (via lo) fails it" 'brk route route --cap-add=NET_ADMIN'
+check "  ... a sibling task's socket dir mounted at its host path fails it" 'brk sibling sibling_socket "-v /tmp/tg-sib:/run/agentbox-gate/t/task_01SIBLING:ro"'
+check "  ... an abstract socket bound in the task's network namespace (a broker's name) fails it" 'brk abstract abstract_socket'
+rm -f /run/tg-break $W/.tg-break.sh /tmp/tg-b-*; umount /usr/bin/podman; sleep 2; rm -rf /usr/local/bin/tg-podman /usr/local/bin/podman-real /tmp/tg-sib
+check "  ... each one is an ALERT in auditd's chain naming its check, and an ntfy alert" 'sleep 2; cat /var/lib/agentbox/audit/seg-*.jsonl > /tmp/tg-audit &&
+  [ "$(wc -l < /tmp/tg-brk)" = 4 ] && while read -r T c; do grep "\"reason\":\"TASK_ISOLATION_PROBE\"" /tmp/tg-audit | grep "\"task\":\"$T\"" | grep -q "\"check\":\"$c\"" || exit 1; done < /tmp/tg-brk &&
+  python3 -c "import sqlite3,sys; c=sqlite3.connect(\"file:/var/lib/ntfy/cache.db?mode=ro\",uri=True); sys.exit(0 if c.execute(\"select count(*) from messages where topic=\x27agentbox-alerts\x27 and message like \x27%TASK_ISOLATION_PROBE%\x27\").fetchone()[0] >= 4 else 1)"'
+check "  ... with the wrapper gone, a normal task passes the probe and runs its prompt" 'rm -f $W/tb-ran && echo "touch /workspace/tb-ran" > /tmp/tg-p && T=$(new 2m < /tmp/tg-p) && wait_end $T 60 &&
+  [ "$(field $T end_reason)" = completed ] && [ -e $W/tb-ran ]'
+check "  ... and every task that passed it took under 100 ms in the probe" 'journalctl -b -u agentboxd -o cat | sed -n "s/.* result: .*isolation probe \([0-9]*\) ms \"\"$/\1/p" > /tmp/tg-pms &&
+  cat /tmp/tg-pms | tr "\n" " " && [ "$(wc -l < /tmp/tg-pms)" -ge 10 ] && [ "$(sort -n /tmp/tg-pms | tail -1)" -lt 100 ]'
 
 # --- #13: 20 consecutive launches ---
 printf '#!/bin/sh\ntouch /run/tg-motd-ran\n' > /etc/update-motd.d/00-tg-marker && chmod 0755 /etc/update-motd.d/00-tg-marker

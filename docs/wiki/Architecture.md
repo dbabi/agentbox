@@ -306,6 +306,9 @@ Each service runs as its own Linux user, with only the access it needs.
 
 - `agentbox taskrun` runs as PID 1.
   It copies generated CLI configs into the home directory, starts local forwarders, and runs the agent CLI with the prompt on stdin.
+- Before the CLI starts, taskrun checks its own boundary from inside.
+  The task must see only `lo`, no default route, `ENETUNREACH` for a public IP, only `127.0.0.1` in `resolv.conf`, no other task's sockets and no abstract socket.
+  Any failure stops the task with `TASK_ISOLATION_PROBE`, an audit record and an ntfy alert.
 - The design names three agent CLIs: Claude Code, Codex and opencode.
   Their configs and flags are built.
   The CLIs are not in the task image yet, and only Claude Code has run in a test.

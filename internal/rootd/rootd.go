@@ -365,6 +365,7 @@ type request struct {
 	// task.start, task.stop and task.new (§4.2); agent.attach takes cli too
 	Origin   string `json:"origin,omitempty"`
 	Reason   string `json:"reason,omitempty"`
+	Probe    string `json:"probe,omitempty"` // gate task.stop: the isolation check a task failed (taskrun.ProbeChecks)
 	Prompt   string `json:"prompt,omitempty"`
 	CLI      string `json:"cli,omitempty"`
 	Asks     *int   `json:"asks,omitempty"`
@@ -415,6 +416,9 @@ func (s *server) handle(sock string, p peer, r request) reply {
 	case sock == sockGate && r.Op == "task.start":
 		return s.tasks.start(r.Task, r.Agent, r.Origin)
 	case sock == sockGate && r.Op == "task.stop":
+		if r.Probe != "" {
+			s.tasks.probeFailed(r.Task, r.Probe)
+		}
 		return s.tasks.stop(r.Task, r.Reason)
 	case (sock == sockGate || strings.HasPrefix(sock, "resolve-")) && r.Op == "task.list_live":
 		return s.tasks.listLive()

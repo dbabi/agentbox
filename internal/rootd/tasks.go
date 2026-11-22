@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 	"agentbox/internal/seccomp"
 	"agentbox/internal/task"
 	"agentbox/internal/taskenv"
+	"agentbox/internal/taskrun"
 )
 
 // The task registry (Appendix E) and the human requests behind admin-origin tasks. task_requests is not in Appendix E:
@@ -352,6 +354,28 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 	}
 	t.watchTask(id, acct.UID, si.deadline)
 	return tainted, nil
+}
+
+// probeFailed records a task whose isolation probe found a way out (taskrun.Probe): an ALERT to auditd and ntfy. The
+// check name comes from the task, so only a known one is passed on.
+func (t *tasks) probeFailed(id, check string) {
+	if !slices.Contains(taskrun.ProbeChecks, check) {
+		check = "unknown"
+	}
+	var agent string
+	t.db.QueryRow(`SELECT agent FROM task_registry WHERE task=?`, id).Scan(&agent)
+	msg := fmt.Sprintf("task %s (agent %s): %s: the %s check failed inside the task; it stopped before the CLI started", id, agent, taskrun.ProbeFailed, check)
+	log.Printf("ALERT %s", msg)
+	go t.audit(map[string]any{"type": "ALERT", "reason": taskrun.ProbeFailed, "task": id, "check": check})
+	if t.alert != nil {
+		go func() {
+			if err := t.alert("agentbox: task "+agent, msg); err != nil {
+				log.Printf("alert not sent: %v", err)
+				return
+			}
+			log.Printf("alert sent: %s", msg)
+		}()
+	}
 }
 
 // stop is task.stop{task, reason} (§4.2), each step idempotent and none waiting for auditd.

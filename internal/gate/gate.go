@@ -334,7 +334,8 @@ func (s *Server) call(t *task, line []byte) []byte {
 }
 
 // taskCall is taskrun's own two calls, outside the op registry (§4.2): task.fetch returns the job, task.result ends the
-// task through rootd's task.stop (completed for exit 0, failed otherwise) before it answers.
+// task through rootd's task.stop (completed for exit 0, failed otherwise) before it answers. A failed isolation probe
+// goes on to rootd, which audits it and alerts.
 func (s *Server) taskCall(t *task, r rpcReq) []byte {
 	ok := func(v any) []byte {
 		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": r.ID, "result": v})
@@ -355,6 +356,8 @@ func (s *Server) taskCall(t *task, r rpcReq) []byte {
 		Exit      int    `json:"exit"`
 		Output    string `json:"output"`
 		OutputLen int64  `json:"outputLen"`
+		Probe     string `json:"probe"`
+		ProbeMS   int64  `json:"probeMs"`
 	}
 	if r.Params == nil || d.Decode(&res) != nil {
 		return rpcError(r.ID, -32602, "invalid params", nil)
@@ -363,8 +366,12 @@ func (s *Server) taskCall(t *task, r rpcReq) []byte {
 	if res.Exit != 0 {
 		reason = "failed"
 	}
-	log.Printf("task %s result: exit %d, %d output bytes", t.id, res.Exit, res.OutputLen)
-	if _, err := s.Forward(map[string]any{"op": "task.stop", "task": t.id, "reason": reason}); err != nil {
+	stop := map[string]any{"op": "task.stop", "task": t.id, "reason": reason}
+	if res.Probe != "" {
+		reason, stop["reason"], stop["probe"] = "failed", "failed", res.Probe
+	}
+	log.Printf("task %s result: exit %d, %d output bytes, isolation probe %d ms %q", t.id, res.Exit, res.OutputLen, res.ProbeMS, res.Probe)
+	if _, err := s.Forward(stop); err != nil {
 		log.Printf("task %s: task.stop: %v", t.id, err) // rootd still stops it on unit exit
 	}
 	return ok(map[string]any{"stopped": reason})
