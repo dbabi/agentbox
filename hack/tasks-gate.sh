@@ -96,7 +96,8 @@ check "agent add: ag-gt, uid 70000+N, its sub-id block, linger, root-owned XDG a
   [ "$(stat -c "%U %a" $W)" = "ag-gt 700" ]'
 U=$(id -u ag-gt)
 find $W -mindepth 1 -delete 2>/dev/null || : # a rerun on the same box starts from an empty workspace
-check "  ... its user manager runs with the root-owned XDG dirs" 'systemctl is-active -q user@$U.service &&
+# linger starts the user manager in the background, after agent add returns
+check "  ... its user manager runs with the root-owned XDG dirs" 'i=0; until systemctl is-active -q user@$U.service; do i=$((i+1)); [ $i -lt 50 ] || exit 1; sleep 0.2; done &&
   tr "\0" "\n" < /proc/$(systemctl show -P MainPID user@$U.service)/environ | grep -qx "XDG_CONFIG_HOME=$X/config"'
 mkdir -p $RS/agentboxd.service.d && printf '[Service]\nEnvironment=AGENTBOX_TEST_CLI=sh\n' > $RS/agentboxd.service.d/50-tg.conf
 for v in proxy keys git; do
@@ -250,6 +251,7 @@ check "  ... the workspace is btrfs, and from the host (no task profile) GET_FEA
 # --- #13: 20 consecutive launches ---
 printf '#!/bin/sh\ntouch /run/tg-motd-ran\n' > /etc/update-motd.d/00-tg-marker && chmod 0755 /etc/update-motd.d/00-tg-marker
 rm -f /run/tg-motd-ran
+sleep 1 # --since has 1 s steps: the last launch before it must fall outside
 since=$(date "+%Y-%m-%d %H:%M:%S")
 echo 'true' > /tmp/tg-p
 : > /tmp/tg-20
