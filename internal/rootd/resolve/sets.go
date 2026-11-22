@@ -150,6 +150,9 @@ func ParseSetJSON(b []byte) ([]string, error) {
 			if err != nil {
 				return nil, err
 			}
+			if a.Zone() != "" { // a set element has no zone; ParseElem refuses one, so the key would not read back
+				return nil, fmt.Errorf("zoned address in set element %s", raw)
+			}
 			keys = append(keys, Elem{Addr: a, Port: uint16(port)}.Key())
 		}
 	}
