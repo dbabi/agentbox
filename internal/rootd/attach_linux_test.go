@@ -23,7 +23,7 @@ type fakeRunner struct {
 }
 
 func (f *fakeRunner) Run(_ context.Context, s attach.Session) error { return f.run(s) }
-func (f *fakeRunner) Stop(id string) error                          { f.stopped = append(f.stopped, id); return nil }
+func (f *fakeRunner) Stop(_, id string) error                       { f.stopped = append(f.stopped, id); return nil }
 
 const leaked = "gate-oauth-at-gate-FFFFFFFFFFFFFFFFFFFFFFFF"
 

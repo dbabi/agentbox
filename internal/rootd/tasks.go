@@ -21,6 +21,7 @@ import (
 	"agentbox/internal/denial"
 	"agentbox/internal/ids"
 	"agentbox/internal/rootd/accounts"
+	"agentbox/internal/rootd/attach"
 	"agentbox/internal/seccomp"
 	"agentbox/internal/task"
 )
@@ -175,6 +176,11 @@ func (t *tasks) start(id, agent, origin string) reply {
 	t.mu.Unlock()
 	if blocked {
 		return fail("agent_blocked")
+	}
+	// an attach holds the workspace until its token scan is clean (§4.2); an unreadable block refuses too
+	if b, on, err := attach.Blocked(t.db, agent); on || err != nil {
+		log.Printf("task.start %s: agent %s: attach block %s %v", id, agent, b.Reason, err)
+		return fail("attach_blocked")
 	}
 	si, why := t.provenance(id, agent, origin)
 	if why != "" {

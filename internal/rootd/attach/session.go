@@ -1,6 +1,6 @@
 // Package attach is rootd's half of agent.attach (ARCHITECTURE.md §4.2 Interactive sessions, §4.3): the session-home
 // control-file lockdown, the PTY output filter and the token scan that runs after the session, before the next task.
-// The container that holds the session is the task launcher's job; Runner is that seam.
+// Podman runs the session in a task-like container.
 package attach
 
 import (
@@ -14,6 +14,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"time"
+
+	"agentbox/internal/task"
 
 	"golang.org/x/sys/unix"
 )
@@ -86,12 +89,10 @@ type Session struct {
 	Dir      string // working directory
 }
 
-// Runner starts a session and returns once it and every process it started are gone. The task launcher (containers
-// area) implements it with the same podman flags as a task (§4.2: --network=none aside, seccomp-task.json, no btrfs
-// ioctls); Systemd is the stand-in until then.
+// Runner starts a session and returns once it and every process it started are gone. Podman is the real one.
 type Runner interface {
 	Run(ctx context.Context, s Session) error
-	Stop(id string) error // a session left running when rootd stopped mid-attach
+	Stop(agent, id string) error // a session left running when rootd stopped mid-attach
 }
 
 var agentRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
@@ -251,8 +252,14 @@ func settingsMountpoint(home string, uid, gid int) error {
 // shortcut: if Codex replaces auth.json by rename, the refresh stays in this dir and is lost at the end; copy it back
 // (with the token scan's version tracking) if the real CLI does that.
 func codexHome(p Paths, uid, gid int) error {
-	if err := os.MkdirAll(p.Run, 0o700); err != nil {
+	if err := os.MkdirAll(p.Run, 0o711); err != nil {
 		return err
+	}
+	// the agent's rootless podman makes the binds, so it must traverse to CODEX_HOME (rootd's UMask=0077)
+	for _, d := range []string{filepath.Dir(p.Run), p.Run} {
+		if err := os.Chmod(d, 0o711); err != nil {
+			return err
+		}
 	}
 	if err := os.Mkdir(p.Codex, 0o700); err != nil {
 		return err
@@ -272,42 +279,62 @@ func codexHome(p Paths, uid, gid int) error {
 // RemoveRun removes the session's own dir (its CODEX_HOME).
 func RemoveRun(p Paths) error { return os.RemoveAll(p.Run) }
 
-// Systemd runs a session as a transient system unit: the agent uid, the binds above in the unit's own mount
-// namespace, the PTY as its controlling terminal. Stopping the unit kills every process in its cgroup.
-// shortcut: no container, seccomp profile or Network=none yet; the task launcher's podman Runner replaces this.
-type Systemd struct{}
+// Podman runs a session as the agent's rootless podman container, in a transient unit of the agent's user manager,
+// with a task's container flags (task.Argv: no network, no capabilities, a read-only root, the task seccomp profile).
+// It mounts session-home where a task has its tmpfs HOME. The unit's stdio is the PTY rootd owns; podman -t relays it.
+type Podman struct {
+	Seccomp, Image string
+	HostUsr        []string                 // the host dirs the stub task image mounts read-only (task.HostUsr)
+	Ensure         func(agent string) error // the task image in the agent's podman, before its first session
+}
 
 func unit(id string) string { return "agentbox-attach-" + id + ".service" }
 
-func (Systemd) Stop(id string) error { return exec.Command("systemctl", "stop", unit(id)).Run() }
+func userBus(agent string) []string { return []string{"--user", "-M", "ag-" + agent + "@"} }
 
-func (Systemd) Run(ctx context.Context, s Session) error {
-	u := unit(s.ID)
-	args := []string{"--wait", "--collect", "--quiet", "--service-type=exec", "--unit=" + u,
-		"-p", "User=" + strconv.Itoa(s.UID), "-p", "Group=" + strconv.Itoa(s.GID),
-		"-p", "TTYPath=" + s.TTY, "-p", "StandardInput=tty", "-p", "StandardOutput=tty", "-p", "StandardError=tty",
-		"-p", "WorkingDirectory=" + s.Dir, "-p", "NoNewPrivileges=yes", "-p", "PrivateTmp=yes", "-p", "KillMode=control-group",
-		"-p", "TimeoutStopSec=5",
-		// a tmpfs under the managed bind: systemd makes missing bind targets on the host's own file system, and an
-		// empty managed-settings.json there would reach every claude on the host
-		"-p", "TemporaryFileSystem=" + ManagedDir + ":ro"}
+func (Podman) Stop(agent, id string) error {
+	return exec.Command("systemctl", append(userBus(agent), "stop", unit(id))...).Run()
+}
+
+// Argv is the session's one systemd-run.
+func (p Podman) Argv(s Session) []string {
+	a := append([]string{"systemd-run"}, userBus(s.Agent)...)
+	a = append(a, "--wait", "--collect", "--quiet", "--service-type=exec", "--unit="+unit(s.ID),
+		"-p", "TTYPath="+s.TTY, "-p", "StandardInput=tty", "-p", "StandardOutput=tty", "-p", "StandardError=tty",
+		"-p", "Delegate=yes", "-p", "KillMode=mixed", "-p", "TimeoutStopSec="+strconv.Itoa(int(task.StopTimeout/time.Second)),
+		"-p", "ExecStopPost=-"+task.Podman+" rm -f -i -t 0 attach-"+s.ID,
+		task.Podman, "run", "--cgroups=split", "--rm", "-it", "--name", "attach-"+s.ID, "--network=none", "--userns=keep-id",
+		"--security-opt=no-new-privileges", "--cap-drop=all", "--security-opt=seccomp="+p.Seccomp,
+		"--read-only", "--tmpfs", "/tmp:rw,size=2g", "--pids-limit=4096", "--log-driver=none", "-w", s.Dir)
 	for _, m := range s.Mounts {
-		k := "BindPaths="
+		v := m.Src + ":" + m.Dst
 		if m.RO {
-			k = "BindReadOnlyPaths="
+			v += ":ro"
 		}
-		args = append(args, "-p", k+m.Src+":"+m.Dst)
+		a = append(a, "-v", v)
+	}
+	a = append(a, "-v", task.Binary+":/usr/local/bin/agentbox:ro")
+	for _, m := range p.HostUsr {
+		a = append(a, "-v", m+":"+m+":ro")
 	}
 	for _, e := range s.Env {
-		args = append(args, "-E", e)
+		a = append(a, "-e", e)
 	}
-	args = append(append(args, "--"), s.Argv...)
-	return run(ctx, u, args)
+	return append(append(a, p.Image), s.Argv...)
+}
+
+func (p Podman) Run(ctx context.Context, s Session) error {
+	if p.Ensure != nil {
+		if err := p.Ensure(s.Agent); err != nil {
+			return fmt.Errorf("task image: %v", err)
+		}
+	}
+	return run(ctx, s.Agent, unit(s.ID), p.Argv(s))
 }
 
 // run runs systemd-run until the unit is gone. A canceled ctx stops the unit: killing systemd-run alone would leave it.
-func run(ctx context.Context, unit string, args []string) error {
-	c := exec.Command("systemd-run", args...)
+func run(ctx context.Context, agent, unit string, argv []string) error {
+	c := exec.Command(argv[0], argv[1:]...)
 	var stderr bytes.Buffer
 	c.Stderr = &stderr
 	if err := c.Start(); err != nil {
@@ -319,7 +346,7 @@ func run(ctx context.Context, unit string, args []string) error {
 	case err := <-done:
 		return exitErr(err, &stderr)
 	case <-ctx.Done():
-		exec.Command("systemctl", "stop", unit).Run()
+		exec.Command("systemctl", append(userBus(agent), "stop", unit)...).Run()
 		return exitErr(<-done, &stderr)
 	}
 }

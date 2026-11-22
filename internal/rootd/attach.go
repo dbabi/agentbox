@@ -50,7 +50,7 @@ func (s *server) rescan(agent string) reply {
 		return reply{"ok": err == nil, "blocked": false}
 	}
 	if b.Reason == attach.Live {
-		s.cfg.Attach.Stop(b.Session) // rootd stopped mid-attach: its session must not outlive the scan
+		s.cfg.Attach.Stop(agent, b.Session) // rootd stopped mid-attach: its session must not outlive the scan
 	}
 	p := attach.AgentPaths(s.attachRoot(), agent, b.Session)
 	seen := s.agentSeen(agent)

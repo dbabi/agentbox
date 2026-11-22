@@ -50,7 +50,7 @@ type Config struct {
 	Effects        map[string]Effect // the agent ops rootd can execute, by name
 	RawAudit       bool              // AGENTBOX_TEST_AUDIT_RAW: INTENT args without their audit classes (test VMs only)
 	Tasks          TaskConfig        // task.start and task.stop (§4.2)
-	Attach         attach.Runner     // runs agent.attach sessions
+	Attach         attach.Runner     // runs agent.attach sessions; nil: attach.Podman with the task image
 	AttachRoot     string            // /var/lib/agentbox (attach.Root) unless a test sets it
 	Alert          func(title, msg string) error
 }
@@ -190,6 +190,16 @@ func Run(cfg Config) error {
 	}
 	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
 	s.tasks.resume()
+	if s.cfg.Attach == nil {
+		t := s.tasks.cfg
+		s.cfg.Attach = attach.Podman{Seccomp: t.Seccomp, Image: t.Image, HostUsr: t.HostUsr, Ensure: func(agent string) error {
+			a, err := t.Accounts.Lookup(agent)
+			if err != nil || t.EnsureImage == nil {
+				return err
+			}
+			return t.EnsureImage(a)
+		}}
+	}
 	for name, ln := range lns {
 		go s.accept(name, ln)
 	}
