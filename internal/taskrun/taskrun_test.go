@@ -74,11 +74,12 @@ func TestReverseProxyRetryAndUnavailable(t *testing.T) {
 	}
 	// the broker restarts: down for 500 ms, inside the retry window, so the request still succeeds
 	stop()
-	go func() { time.Sleep(500 * time.Millisecond); stop = broker(t, sock, ok) }()
+	restarted := make(chan func(), 1)
+	go func() { time.Sleep(500 * time.Millisecond); restarted <- broker(t, sock, ok) }()
 	if r, b := get(); r.StatusCode != 200 || b != "pong /v1/messages" {
 		t.Fatalf("after restart: %d %q", r.StatusCode, b)
 	}
-	stop()
+	(<-restarted)()
 	t0 := time.Now()
 	r, b := get()
 	if el := time.Since(t0); r.StatusCode != 503 || el < 2*time.Second || el > 4*time.Second {

@@ -93,7 +93,9 @@ func (f *Forwarder) Handler() http.Handler {
 		Transport: &http.Transport{
 			DialContext:        func(ctx context.Context, _, _ string) (net.Conn, error) { return f.dial(ctx) },
 			DisableCompression: true,
-			IdleConnTimeout:    30 * time.Second,
+			// a fresh dial per request: a kept-alive conn to a broker that restarted fails the next POST at once (the
+			// transport won't replay a body), and only dial retries ENOENT and ECONNREFUSED inside f.Retry
+			DisableKeepAlives: true,
 		},
 		FlushInterval: -1, // streamed LLM replies and git packs pass through as they arrive
 		ModifyResponse: func(resp *http.Response) error {
