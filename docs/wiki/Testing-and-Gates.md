@@ -647,7 +647,7 @@ On a fresh `none`-mode install, arm64 UEFI, Secure Boot on, with four VMs at onc
 
 | Suite | Result | Tested at |
 |---|---|---|
-| `m4-attach` | Passed: 24 PASS (the install and 23 checks), 0 FAIL, with Claude Code 2.1.330 | `c701e78` |
+| `m4-attach` | Passed: 27 PASS (the install and 26 checks), 0 FAIL, with Claude Code 2.1.330 | `f7226cf` |
 | `go vet ./...` and `go test ./...` | Passed on the Mac; the Linux-only attach tests passed on linux/arm64 | `c701e78` |
 
 ## Troubleshooting
