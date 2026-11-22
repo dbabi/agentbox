@@ -39,6 +39,7 @@ const usage = `usage:
   agentbox audit send --socket /run/agentbox-audit/<producer>.sock [--timeout 10s] JSON...   (a test producer)
   agentbox rootd [--element-timeout 10m] [--refill-interval 5m]   (agentbox-rootd.service, on the box)
   agentbox sockets check [--root /]   (the live box against the §2.1 socket inventory)
+  agentbox attach --agent A [--cli claude|codex|bash] [-- ARGS...] | status | rescan --agent A   (admin, on the box)
   agentbox egress list | refill | allow|remove --svc keys|git|proxy --entry HOST:PORT   (admin, on the box)
   agentbox agent list | add --name N [--disk-bytes B] | remove --name N   (admin, on the box)
   agentbox accounts apply   (agentbox-accounts.service: rootd's ids table onto /etc, on the box)
@@ -112,6 +113,8 @@ func run(args []string) error {
 		return cmdAudit(args[1:])
 	case "rootd":
 		return cmdRootd(args[1:])
+	case "attach":
+		return cmdAttach(args[1:])
 	case "egress":
 		return cmdEgress(args[1:])
 	case "sockets":

@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"agentbox/internal/fw"
+	"agentbox/internal/ntfy"
 	"agentbox/internal/rootd"
 	"agentbox/internal/rootd/accounts"
+	"agentbox/internal/rootd/attach"
 	"agentbox/internal/rootd/resolve"
 )
 
@@ -40,6 +42,10 @@ func cmdRootd(args []string) error {
 	}
 	cfg.Effects, cfg.RawAudit = testEffects()
 	cfg.Tasks = rootd.DefaultTaskConfig()
+	cfg.Attach = attach.Systemd{}
+	cfg.Alert = func(title, msg string) error {
+		return ntfy.Publish(ntfy.Socket, ntfy.TokenPath, ntfy.AlertTopic, title, msg)
+	}
 	return rootd.Run(cfg)
 }
 
