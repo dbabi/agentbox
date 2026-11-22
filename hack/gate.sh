@@ -301,6 +301,8 @@ EOF
 n=$(probes)
 vm_check "the guest reaches release-serve at 10.0.2.2:$RPORT and no other host loopback port (TCP/UDP $LPORT)" <<EOF
 curl -fsS -o /dev/null "http://10.0.2.2:$RPORT/agentbox-$V.tgz.minisig" || exit 1
+# the box takes no SLAAC address, so without one fec0::2 would fail in the guest and prove nothing
+d=\$(ip -o -4 route show default | awk '{print \$5}') && ip -6 addr add fec0::15/64 dev "\$d" nodad || exit 1
 python3 - <<'PY'
 import socket as S
 for f, a in ((S.AF_INET, "10.0.2.1"), (S.AF_INET, "10.0.2.2"), (S.AF_INET, "255.255.255.255"), (S.AF_INET6, "fec0::2")):
@@ -313,7 +315,7 @@ for f, a in ((S.AF_INET, "10.0.2.1"), (S.AF_INET, "10.0.2.2"), (S.AF_INET, "255.
     except OSError as e: print(a, t, e)
     s.close()
 PY
-sleep 2
+sleep 2; ip -6 addr del fec0::15/64 dev "\$d"
 EOF
 if [ "$(probes)" = "$n" ]; then echo "PASS the host's loopback probe saw nothing from the guest"
 else echo "FAIL the guest reached the host's loopback probe on $LPORT:"; tail -n +$((n + 1)) "$REL/probe.log"; fi | tee -a "$OUT"
