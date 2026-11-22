@@ -393,10 +393,17 @@ A release is made in two halves. CI builds it, and the owner signs it. The minis
 
 1. Push a tag: `git tag v<ver> && git push origin v<ver>`.
 2. `.github/workflows/release.yml` runs the tests and builds `agentbox-<ver>.tgz` with `go run ./hack/release -unsigned`. It records the commit and the Go version in `BUILDINFO`, writes `SHA256SUMS`, adds a GitHub build-provenance attestation, and drafts the release.
-3. The owner runs `hack/sign-release.sh v<ver>`. It downloads the draft's tarball, checks `SHA256SUMS` and the provenance with `gh attestation verify`, and rebuilds the same commit with the same Go version. It signs only if the two tarballs are byte-identical. Then it uploads `agentbox-<ver>.tgz.minisig` and publishes the release.
+3. The owner runs `hack/sign-release.sh v<ver>` from a clone of `main`. It publishes only if every check below passes, and stops before any upload at the first one that fails:
+   - The draft's tarball matches `SHA256SUMS`.
+   - `gh attestation verify` shows the tarball was built by `release.yml` from the tag's commit.
+   - The `ci` and `release` workflows both have a successful push run on that commit. Wait for `ci`, including its BIOS gates, to finish before you sign.
+   - A rebuild of that commit with the same Go version, run with `-unsigned`, is byte-identical to CI's tarball. The tagged code is not given the secret key's path, but it runs as you and can read your files.
+   - The script then signs CI's tarball with `minisign`. The signature must have the key ID of `keys/release-minisign.pub`, verify with that key and carry the trusted comment `agentbox <ver>`. The key comes from the clone you run the script from, not from the tagged commit.
+
+   Then it uploads `agentbox-<ver>.tgz.minisig` and publishes the release.
 4. The script prints the seed flags: `--release-url https://github.com/dbabi/agentbox/releases/download/v<ver>/agentbox-<ver>.tgz --release-sha256 <sum>`.
 
-`MINISIGN_KEY` defaults to `~/agentbox-keys/minisign.key`, with its public key next to it as `minisign.pub`. A draft stays unsigned, and a seed refuses it, until step 3 runs.
+`MINISIGN_KEY` defaults to `~/agentbox-keys/minisign.key`. It must be the secret half of `keys/release-minisign.pub`. A draft stays unsigned, and a seed refuses it, until step 3 runs.
 
 ## The release key
 
