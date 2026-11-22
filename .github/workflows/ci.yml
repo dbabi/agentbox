@@ -82,7 +82,7 @@ jobs:
         with: {persist-credentials: false}
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with: {go-version-file: go.mod, cache: false}
-      - run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils swtpm xorriso minisign libslirp-dev pkgconf # libslirp-dev: hack/vmnet
+      - run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils swtpm xorriso minisign libslirp-dev libglib2.0-dev pkgconf # hack/vmnet
       # vm.sh falls back to TCG with only a warning; without KVM this job must fail, not run a 70-min TCG gate
       - run: sudo chmod 666 /dev/kvm && test -w /dev/kvm
       # .vm grows to about 12 GB (stock ISO, zero-touch ISO, VM disk). It stays in the checkout: swtpm's AppArmor profile

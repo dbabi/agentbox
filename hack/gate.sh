@@ -295,14 +295,15 @@ l() { [ "\$(readlink \$A/current)" = "releases/\$1" ] && [ "\$(readlink \$A/prev
 echo '# changed' >> "\$x/$V/systemd/agentbox-reconcile.service"
 ! "\$x/$V/install.sh" --from-firstboot && l $V $V0 && [ "\$(ls -A \$A/releases | tr '\n' ' ')" = "$V0 $V " ] && [ -z "\$(ls -A \$A | grep '^\.' | grep -v '^\.firstboot-done\$')" ]
 EOF
-# The guest tries the probe port on every address slirp maps to the host's loopback, TCP and UDP. A failed connect is
-# expected; a line in probe.log is the failure. It must still reach release-serve, so the check can't pass on no network.
+# The guest tries the probe port, TCP and UDP, on the gateway, on 10.0.2.2 and on the other addresses QEMU's slirp maps
+# to the host's loopback (255.255.255.255, fec0::2). A failed connect is expected; a line in probe.log is the failure.
+# The guest must still reach release-serve, so the check can't pass on a dead network.
 n=$(probes)
 vm_check "the guest reaches release-serve at 10.0.2.2:$RPORT and no other host loopback port (TCP/UDP $LPORT)" <<EOF
 curl -fsS -o /dev/null "http://10.0.2.2:$RPORT/agentbox-$V.tgz.minisig" || exit 1
 python3 - <<'PY'
 import socket as S
-for f, a in ((S.AF_INET, "10.0.2.2"), (S.AF_INET, "255.255.255.255"), (S.AF_INET6, "fec0::2")):
+for f, a in ((S.AF_INET, "10.0.2.1"), (S.AF_INET, "10.0.2.2"), (S.AF_INET, "255.255.255.255"), (S.AF_INET6, "fec0::2")):
   for t in (S.SOCK_STREAM, S.SOCK_DGRAM):
     s = S.socket(f, t); s.settimeout(5)
     if f == S.AF_INET: s.setsockopt(S.SOL_SOCKET, S.SO_BROADCAST, 1)

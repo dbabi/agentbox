@@ -1,10 +1,13 @@
-// vmnet: the test VM's network. It is QEMU's user network (libslirp, the same 10.0.2.0/24 and fec0::/64 layout), with
-// one change: the guest can't reach the host's loopback. QEMU's own -netdev user can't set libslirp's
-// disable_host_loopback, and restrict=on would also cut the internet that the install and the gates need.
+// vmnet: the test VM's network. It is QEMU's user network (libslirp, 10.0.2.0/24 and fec0::/64, DHCP from 10.0.2.15, DNS
+// on 10.0.2.3), with the host's loopback cut off. QEMU's own -netdev user can't set libslirp's disable_host_loopback,
+// and restrict=on would also cut the internet that the install and the gates need. The gateway is 10.0.2.1, not QEMU's
+// 10.0.2.2: older libslirp (Ubuntu 26.04's 4.9.1) ignores a guestfwd on the gateway's address, and the forwards keep
+// 10.0.2.2.
 //   vmnet SSH_PORT FWD_PORT... -- QEMU ARGS...
 //     forwards 127.0.0.1:SSH_PORT to the guest's port 22, and each 10.0.2.2:FWD_PORT in the guest to 127.0.0.1:FWD_PORT
-//     on the host. Every other port on 10.0.2.2 and fec0::2 is refused. It then execs QEMU, which must take the
-//     network as `-netdev stream,id=ID,addr.type=fd,addr.str=3`. A child process runs the network until QEMU exits.
+//     on the host. The gateway 10.0.2.1, 255.255.255.255 and fec0::/64 never reach the host's loopback; any other
+//     10.0.2.2 port is an outside address like any other. It then execs QEMU, which must take the network as
+//     `-netdev stream,id=ID,addr.type=fd,addr.str=3`. A child process runs the network until QEMU exits.
 //   vmnet relay PORT
 //     internal: libslirp runs this for each guest connection to a FWD_PORT, with the connection on stdin and stdout.
 // Build: cc -O2 -Wall -o vmnet vmnet.c $(pkg-config --cflags --libs slirp) (hack/vm.sh does it).
@@ -21,7 +24,7 @@
 #include <time.h>
 #include <unistd.h>
 
-static void die(const char *m) { fprintf(stderr, "vmnet: %s: %s\n", m, strerror(errno)); exit(1); }
+static _Noreturn void die(const char *m) { fprintf(stderr, "vmnet: %s: %s\n", m, strerror(errno)); exit(1); }
 
 static int port(const char *s) {
   char *e;
@@ -116,7 +119,7 @@ static int get_revents(int i, void *o) {
          (r & POLLERR ? SLIRP_POLL_ERR : 0) | (r & POLLHUP ? SLIRP_POLL_HUP : 0);
 }
 
-static void run(Slirp *s) {
+static _Noreturn void run(Slirp *s) {
   static char b[2 * 70000];
   size_t have = 0;
   for (;;) {
@@ -162,7 +165,7 @@ int main(int argc, char **argv) {
   SlirpConfig c = {.version = 6, .in_enabled = true, .in6_enabled = true, .vprefix_len = 64, .disable_host_loopback = true};
   inet_pton(AF_INET, "10.0.2.0", &c.vnetwork);
   inet_pton(AF_INET, "255.255.255.0", &c.vnetmask);
-  inet_pton(AF_INET, "10.0.2.2", &c.vhost);
+  inet_pton(AF_INET, "10.0.2.1", &c.vhost);
   inet_pton(AF_INET, "10.0.2.15", &c.vdhcp_start);
   inet_pton(AF_INET, "10.0.2.3", &c.vnameserver);
   inet_pton(AF_INET6, "fec0::", &c.vprefix_addr6);
@@ -173,12 +176,13 @@ int main(int argc, char **argv) {
                              .register_poll_socket = nop_socket, .unregister_poll_socket = nop_socket};
   Slirp *s = slirp_new(&c, &cb, NULL);
   if (!s) { fprintf(stderr, "vmnet: slirp_new failed\n"); return 1; }
-  struct in_addr lo = {htonl(INADDR_LOOPBACK)}, any = {0}, host = c.vhost;
+  struct in_addr lo = {htonl(INADDR_LOOPBACK)}, any = {0}, fwd;
+  inet_pton(AF_INET, "10.0.2.2", &fwd);
   if (slirp_add_hostfwd(s, 0, lo, port(argv[1]), any, 22) < 0) die("forward 127.0.0.1:SSH_PORT (port in use?)");
   char *self = g_shell_quote(argv[0]);
   for (int i = 2; i < sep; i++) {
     char *cmd = g_strdup_printf("%s relay %d", self, port(argv[i]));
-    if (slirp_add_exec(s, cmd, &host, port(argv[i])) < 0) { fprintf(stderr, "vmnet: forward %s twice\n", argv[i]); return 2; }
+    if (slirp_add_exec(s, cmd, &fwd, port(argv[i])) < 0) { fprintf(stderr, "vmnet: forward %s twice\n", argv[i]); return 2; }
     g_free(cmd);
   }
 

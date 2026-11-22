@@ -61,7 +61,7 @@ fw() {
 # vmnet: build .vm/vmnet from hack/vmnet/vmnet.c when it is missing or older
 vmnet() {
   [ "$VM/vmnet" -nt "$ROOT/hack/vmnet/vmnet.c" ] && return 0
-  f=$(pkg-config --cflags --libs slirp) || die "libslirp not found (brew install libslirp pkg-config; apt install libslirp-dev pkgconf)"
+  f=$(pkg-config --cflags --libs slirp) || die "libslirp not found (brew install libslirp pkg-config; apt install libslirp-dev libglib2.0-dev pkgconf)"
   # shellcheck disable=SC2086 # $f is pkg-config's flag list
   cc -O2 -Wall -o "$VM/vmnet" "$ROOT/hack/vmnet/vmnet.c" $f || die "could not build hack/vmnet/vmnet.c"
 }
