@@ -123,6 +123,7 @@ func TestDropIns(t *testing.T) {
 	a := Agent{N: 1, Name: "claude", Active: true}
 	want := "Environment=XDG_CONFIG_HOME=/var/lib/agentbox/control/xdg/claude/config XDG_DATA_HOME=/var/lib/agentbox/control/xdg/claude/data\n"
 	if d := a.UserDropIn(); !strings.Contains(d, want) || !strings.Contains(d, "ExecStartPre=+/var/lib/agentbox/current/bin/agentbox fwcheck\n") ||
+		!strings.Contains(d, "\nEnvironment=CONTAINERS_STORAGE_CONF=/var/lib/agentbox/control/xdg/claude/config/containers/storage.conf\nUnsetEnvironment=CONTAINERS_STORAGE_CONF_OVERRIDE\n") ||
 		a.userDropIn() != "/etc/systemd/system/user@70001.service.d/50-agentbox.conf" {
 		t.Errorf("user@ drop-in:\n%s", d)
 	}

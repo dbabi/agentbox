@@ -19,11 +19,12 @@ Restart=on-failure
 RestartSec=2s
 UMask=0077
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
-ProtectHome=yes
+# ProtectHome=yes without /run/user: rootd checks and removes each agent's stale podman pause.pid there (§4.2)
+InaccessiblePaths=/home /root
 ProtectKernelModules=yes
 ProtectSystem=strict
 # per-task socket dirs (§2.1); tasks launch through systemd-run, so their processes don't inherit this sandbox
-ReadWritePaths=/var/lib/agentbox /run/agentbox-gate /run/agentbox-proxy /run/agentbox-keys /run/agentbox-git /run/agentbox-witness
+ReadWritePaths=/var/lib/agentbox /run/agentbox-gate /run/agentbox-proxy /run/agentbox-keys /run/agentbox-git /run/agentbox-witness /run/user
 PrivateTmp=yes
 NoNewPrivileges=yes
 MemoryDenyWriteExecute=yes

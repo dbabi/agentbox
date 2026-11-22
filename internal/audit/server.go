@@ -488,7 +488,7 @@ type opView struct {
 // subjects, clears, restores, and reads op state.
 var (
 	bestEffort = map[string]bool{"DENY": true, "DENY_FLOOD": true, "WITNESS": true, "GATE_MISMATCH": true,
-		"PAD_OVERRUN": true, "QUOTE": true, "ALERT": true, "CACHE": true}
+		"PAD_OVERRUN": true, "QUOTE": true, "ALERT": true, "CACHE": true, "PAUSE_PID_STALE": true}
 	rootdOnly   = map[string]bool{"WRITER_ADD": true, "WRITER_DEL": true, "SUBJECT_ADD": true, "op.get": true}
 	rootdOnlyOp = map[string]bool{"taint.clear": true, "workspace.restore": true}
 	queryFrom   = map[string]bool{rootdProducer: true, "agentboxd": true} // taint.get

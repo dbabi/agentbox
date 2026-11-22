@@ -28,7 +28,12 @@
 #          - a btrfs ioctl from a task fails with EOPNOTSUPP, also with high cmd bits set (#14);
 #          - a task opens only AF_UNIX, AF_INET, AF_INET6 and NETLINK_ROUTE sockets, on the low 32 bits of the family,
 #            and AF_UNIX socketpairs; it can't make namespaces with clone, unshare or setns, and clone3 gets ENOSYS
-#            (#155).
+#            (#155);
+#          - the agent's podman reads only its root-owned storage.conf, also with storage.conf.d drop-ins planted (#124);
+#          - after its user manager restarts under a running rootd, the next 3 tasks start and stop cleanly with the
+#            pause process in the user manager (#149);
+#          - a dead pause process whose PID an agent-uid process took (the podman 5.7 bug) doesn't stop the next task,
+#            and rootd audits PAUSE_PID_STALE (#125).
 # PASS/FAIL lines go to .vm/tasks-gate.txt, command output to .vm/tasks-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -89,7 +94,11 @@ field() { $B task list | python3 -c 'import json,sys; t=[x for x in json.load(sy
 print(v if isinstance(v,str) else json.dumps(v,separators=(",",":")))' "$1" "$2"; }
 wait_end() { i=0; while [ -z "$(field "$1" end_reason)" ]; do i=$((i+1)); [ $i -lt $(( $2 * 5 )) ] || return 1; sleep 0.2; done; }
 wait_file() { i=0; while [ ! -e "$1" ]; do i=$((i+1)); [ $i -lt $(( $2 * 5 )) ] || return 1; sleep 0.2; done; }
-pod() { runuser -u ag-gt -- env HOME=$H XDG_RUNTIME_DIR=/run/user/$U XDG_CONFIG_HOME=$X/config XDG_DATA_HOME=$X/data podman "$@"; }
+pod() { runuser -u ag-gt -- env HOME=$H XDG_RUNTIME_DIR=/run/user/$U XDG_CONFIG_HOME=$X/config XDG_DATA_HOME=$X/data CONTAINERS_STORAGE_CONF=$X/config/containers/storage.conf podman "$@"; }
+# upod ARGS: podman as the agent through its user manager, with that manager's environment, as rootd's setup call runs
+upod() { systemd-run --user -M ag-gt@ --wait --pipe --quiet --collect podman "$@" </dev/null; }
+# pause_ok: the pause process pause.pid names is alive, in the agent's user manager, and in no task unit
+pause_ok() { p=$(cat /run/user/$U/libpod/tmp/pause.pid) && kill -0 $p && grep -q "^0::/user.slice/user-$U.slice/user@$U.service/" /proc/$p/cgroup && ! grep -q agentbox-task- /proc/$p/cgroup; }
 cg() { echo /sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service; }
 # clean ID: the unit cgroup has no process (or is gone), and nothing named libpod-* is left under user@<uid>.service
 clean() { u=$(cg)/app.slice/agentbox-task-$1.service; { [ ! -e $u/cgroup.events ] || grep -qx 'populated 0' $u/cgroup.events; } &&
@@ -216,8 +225,8 @@ check "as the agent uid on the host: no user unit, containers.conf, storage.conf
   ! runuser -u ag-gt -- sh -c "echo x >> $X/config/containers/storage.conf" && ! runuser -u ag-gt -- mkdir $H/.config &&
   ! runuser -u ag-gt -- touch /etc/containers/containers.conf && ! runuser -u ag-gt -- mkdir -p /etc/systemd/user/x &&
   [ -z "$(ls -A $H)" ]'
-check "  ... the user manager reads only the root-owned XDG dirs, with no CONTAINERS_* override" '
-  ! tr "\0" "\n" < /proc/$(systemctl show -P MainPID user@$U.service)/environ | grep -q "^CONTAINERS_" &&
+check "  ... the user manager reads only the root-owned XDG dirs; its one CONTAINERS_* variable pins the root-owned storage.conf" '
+  [ "$(tr "\0" "\n" < /proc/$(systemctl show -P MainPID user@$U.service)/environ | grep "^CONTAINERS_")" = "CONTAINERS_STORAGE_CONF=$X/config/containers/storage.conf" ] &&
   [ -z "$(find $X /var/lib/agentbox/control/exports/gt ! -user root)" ]'
 
 # --- #13: SIGTERM-trapping forkers ---
@@ -331,6 +340,37 @@ check "  ... each under 300 ms over the user bus" 'for t in $(cat /tmp/tg-20); d
 check "  ... each opened exactly one login session for ag-gt" '[ "$(journalctl --since "$since" -o cat | grep -c "^pam_unix(login:session): session opened for user ag-gt(")" = 20 ]'
 check "  ... and none ran update-motd.d" '[ ! -e /run/tg-motd-ran ]'
 rm -f /etc/update-motd.d/00-tg-marker /run/tg-motd-ran
+
+# --- #124: one storage.conf, whatever drop-ins exist ---
+S="/var/lib/agentbox/data/agents/gt/storage /run/user/$U/containers overlay"
+check "as the agent, through its user manager, podman info reports the GraphRoot, RunRoot and driver of the root-owned storage.conf" '
+  [ "$(upod info --format "{{.Store.GraphRoot}} {{.Store.RunRoot}} {{.Store.GraphDriverName}}")" = "$S" ]'
+DI="/etc/containers/storage.conf.d /etc/containers/storage.rootless.conf.d /etc/containers/storage.rootless.conf.d/$U /usr/share/containers/storage.conf.d /usr/share/containers/storage.rootless.conf.d/$U"
+for d in $DI; do mkdir -p $d && printf '[storage]\ndriver = "vfs"\ngraphroot = "/var/tmp/tg-evil"\nrunroot = "/var/tmp/tg-evil-run"\n' > $d/99-tg.conf; done
+check "  ... the same with storage.conf.d drop-ins planted in /etc and /usr/share, the per-UID paths too" '
+  [ "$(upod info --format "{{.Store.GraphRoot}} {{.Store.RunRoot}} {{.Store.GraphDriverName}}")" = "$S" ] && [ ! -e /var/tmp/tg-evil ]'
+for d in $DI; do rm -f $d/99-tg.conf; rmdir $d 2>/dev/null || :; done
+
+# --- #149: the podman setup check runs before every launch ---
+echo 'echo done > /workspace/tp.done' > /tmp/tg-p
+check "#149: user@$U restarted while rootd runs; the next 3 tasks all start and stop cleanly, and no pause process is in a task unit" '
+  r=$(systemctl show -P MainPID agentbox-rootd) && systemctl restart user@$U.service && systemctl is-active -q user@$U.service &&
+  for i in 1 2 3; do rm -f $W/tp.done; t=$(new 2m < /tmp/tg-p) && wait_end $t 60 && [ "$(field $t end_reason)" = completed ] && [ -f $W/tp.done ] &&
+    within 20 $t && pause_ok || exit 1; done && [ "$(systemctl show -P MainPID agentbox-rootd)" = $r ]'
+
+# --- #125: a reused pause PID ---
+PP=/run/user/$U/libpod/tmp/pause.pid
+# kill the pause process, then start an agent-uid process with no user namespace at its PID (ns_last_pid = PID-1)
+check "#125: pause process killed, and an agent-uid process outside its user namespace takes the PID" 'P=$(cat $PP) && kill -9 $P &&
+  while kill -0 $P 2>/dev/null; do sleep 0.1; done && i=0 && while [ $i -lt 500 ]; do echo $((P-1)) > /proc/sys/kernel/ns_last_pid
+    setpriv --reuid=$U --regid=$U --clear-groups sleep 600 </dev/null >/dev/null 2>&1 & q=$!; [ $q = $P ] && break; kill $q; i=$((i+1)); done &&
+  [ "$(cat $PP)" = $P ] && [ "$(stat -c %u /proc/$P)" = $U ] && echo $P > /tmp/tg-reused'
+check "  ... control: the agent's podman then fails with cannot set user namespace (the upstream bug)" '! pod info >/tmp/tg-userns 2>&1 && cat /tmp/tg-userns &&
+  grep -q "cannot set user namespace" /tmp/tg-userns'
+check "  ... the next task still starts and completes; rootd removed the stale pause.pid and audited PAUSE_PID_STALE" 'rm -f $W/tp.done; t=$(new 2m < /tmp/tg-p) &&
+  wait_end $t 60 && [ "$(field $t end_reason)" = completed ] && [ -f $W/tp.done ] && pause_ok && [ "$(cat $PP)" != "$(cat /tmp/tg-reused)" ] &&
+  cat /var/lib/agentbox/audit/seg-*.jsonl | grep "\"PAUSE_PID_STALE\"" | grep "\"agent\":\"gt\"" | grep -q "\"reason\":\"wrong_userns\""'
+kill "$(cat /tmp/tg-reused 2>/dev/null)" 2>/dev/null || :
 
 # --- the box afterwards ---
 check "sockets check: the live per-task dirs and sockets match the inventory" '$B sockets check'

@@ -208,10 +208,10 @@ func Run(cfg Config) error {
 		t := s.tasks.cfg
 		s.cfg.Attach = attach.Podman{Seccomp: t.Seccomp, Image: t.Image, HostUsr: t.HostUsr, Ensure: func(agent string) error {
 			a, err := t.Accounts.Lookup(agent)
-			if err != nil || t.EnsureImage == nil {
+			if err != nil {
 				return err
 			}
-			return t.EnsureImage(a)
+			return s.tasks.ensurePodman(a)
 		}}
 	}
 	for name, ln := range lns {

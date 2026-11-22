@@ -40,6 +40,7 @@ func (a Agent) sliceDropIn() string {
 
 // UserDropIn is Appendix C's user@<uid> drop-in: the user manager starts only behind the firewall, reconcile and rootd,
 // passes fwcheck, and reads its config (systemd user units included) only from the root-owned XDG dirs.
+// CONTAINERS_STORAGE_CONF makes podman read only the root-owned storage.conf, no storage.conf.d drop-in (podman 6).
 func (a Agent) UserDropIn() string {
 	return `# Written by agentbox from rootd's ids table (ARCHITECTURE.md §4.1, Appendix C).
 [Unit]
@@ -47,6 +48,8 @@ Requires=agentbox-firewall.service agentbox-reconcile.service agentbox-rootd.ser
 After=agentbox-firewall.service agentbox-reconcile.service agentbox-rootd.service
 [Service]
 Environment=XDG_CONFIG_HOME=` + a.XDG() + `/config XDG_DATA_HOME=` + a.XDG() + `/data
+Environment=CONTAINERS_STORAGE_CONF=` + a.XDG() + `/config/containers/storage.conf
+UnsetEnvironment=CONTAINERS_STORAGE_CONF_OVERRIDE
 ExecStartPre=+` + agentboxBin + ` fwcheck
 `
 }

@@ -48,10 +48,11 @@ func cmdRootd(args []string) error {
 	// podman, instead of the stub skeleton and the host's /usr. Test VMs only.
 	if img := os.Getenv("AGENTBOX_TEST_TASK_IMAGE"); img != "" {
 		cfg.Tasks.Image, cfg.Tasks.HostUsr = img, nil
-		// one podman call through the agent's user manager before each launch, as rootd's ensureImage makes: podman's
-		// pause process then gets its own scope there, not the task's unit, which task.stop kills (and a rootd restart
-		// stops user@, so the scope goes too)
-		cfg.Tasks.EnsureImage = func(a rootd.Account) error {
+		// the gate loads the image; rootd's setup call through the agent's user manager is all that is left
+		cfg.Tasks.EnsureImage = func(a rootd.Account, setup bool) error {
+			if !setup {
+				return nil
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			return exec.CommandContext(ctx, "systemd-run", "--user", "-M", "ag-"+a.Name+"@", "--wait", "--quiet", "--collect",

@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS task_requests(id TEXT PRIMARY KEY, human TEXT NOT NUL
 type Account struct {
 	Name      string // the agent; the user is ag-<name>
 	UID, GID  uint32
+	SubID     uint32 // the first of its 65536 sub-ids
 	Workspace string // data/workspaces/<name>, mounted rw at /workspace
 	Home, XDG string // the root-owned home and XDG base dirs its podman runs with
 }
@@ -70,18 +71,22 @@ func (i idsAccounts) Lookup(agent string) (Account, error) {
 	if err != nil {
 		return Account{}, err
 	}
-	return Account{Name: a.Name, UID: uint32(a.UID()), GID: uint32(a.UID()), Workspace: a.Workspace(), Home: a.Home(), XDG: a.XDG()}, nil
+	return Account{Name: a.Name, UID: uint32(a.UID()), GID: uint32(a.UID()), SubID: uint32(a.SubID()), Workspace: a.Workspace(), Home: a.Home(), XDG: a.XDG()}, nil
 }
 
 func (a Account) podmanEnv() []string {
-	return []string{"HOME=" + a.Home, "XDG_RUNTIME_DIR=/run/user/" + strconv.Itoa(int(a.UID)), "XDG_CONFIG_HOME=" + a.XDG + "/config", "XDG_DATA_HOME=" + a.XDG + "/data"}
+	return []string{"HOME=" + a.Home, "XDG_RUNTIME_DIR=/run/user/" + strconv.Itoa(int(a.UID)), "XDG_CONFIG_HOME=" + a.XDG + "/config", "XDG_DATA_HOME=" + a.XDG + "/data",
+		"CONTAINERS_STORAGE_CONF=" + a.XDG + "/config/containers/storage.conf"}
 }
 
 // TaskConfig is what task.start and task.stop act through; tests replace every function.
 type TaskConfig struct {
 	Accounts Accounts // nil: rootd's ids table
-	// EnsureImage makes sure the agent's podman has the task image, before its first launch; nil skips it.
-	EnsureImage func(Account) error
+	// Pause is checkPause before every launch and attach; nil skips it.
+	Pause func(Account) (string, error)
+	// EnsureImage makes sure the agent's podman has the task image; setup says its pause process is not live in its
+	// user manager, so a podman call must run there first. nil skips it.
+	EnsureImage func(a Account, setup bool) error
 	// Launch runs the task's one systemd-run (task.Argv) and returns when the unit has started.
 	Launch func(argv []string) error
 	// RunAs runs a command as uid outside the bridge (the task.stop podman rm backup).
@@ -190,7 +195,11 @@ func (t *tasks) start(id, agent, origin string) reply {
 	if err != nil {
 		log.Printf("task.start %s: %v; stopping it", id, err)
 		t.stop(id, "failed")
-		return reply{"ok": false, "reason": "launch_failed", "error": err.Error()}
+		reason := "launch_failed"
+		if strings.Contains(err.Error(), "cannot set user namespace") {
+			reason = "podman_userns" // podman joined a process that is not its pause process (#125)
+		}
+		return reply{"ok": false, "reason": reason, "error": err.Error()}
 	}
 	return reply{"ok": true, "task": id, "unit": task.Unit(id), "chain": si.chain, "trace": si.trace, "tainted": tainted}
 }
@@ -329,10 +338,8 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 	if err := task.WriteExports(filepath.Join(t.cfg.Exports, acct.Name)); err != nil {
 		return false, fmt.Errorf("exports: %v", err)
 	}
-	if t.cfg.EnsureImage != nil {
-		if err := t.cfg.EnsureImage(acct); err != nil {
-			return false, fmt.Errorf("task image: %v", err)
-		}
+	if err := t.ensurePodman(acct); err != nil {
+		return false, err
 	}
 	dl := time.UnixMilli(si.deadline)
 	argv := task.Argv(task.Spec{Task: id, Agent: acct.Name, Runtime: dl.Sub(t.cfg.Now()), Deadline: dl, Workspace: acct.Workspace,
@@ -554,6 +561,7 @@ func (t *tasks) watchTask(id string, uid uint32, deadline int64) {
 // DefaultTaskConfig is the box's: systemd-run, the svc-<svc>.sock sockets, cgroup2 at /sys/fs/cgroup.
 func DefaultTaskConfig() TaskConfig {
 	return TaskConfig{
+		Pause:       func(a Account) (string, error) { return checkPause("/run/user", "/proc", a) },
 		EnsureImage: ensureImage,
 		Launch:      func(argv []string) error { return runFor(30*time.Second, argv...) },
 		RunAs: func(uid uint32, env []string, argv ...string) error {
@@ -610,12 +618,38 @@ func svcCall(svc string, req map[string]any) (map[string]any, error) {
 	return rep, json.Unmarshal(line, &rep)
 }
 
+// ensurePodman runs before every launch and attach: a stale pause.pid is removed and audited, and unless the pause
+// process is live in the agent's user manager, a podman call there makes one (§4.2).
+func (t *tasks) ensurePodman(a Account) error {
+	setup := false
+	if t.cfg.Pause != nil {
+		why, err := t.cfg.Pause(a)
+		if err != nil {
+			return err
+		}
+		if why != "" && why != PauseAbsent {
+			log.Printf("agent %s: stale pause.pid (%s) removed", a.Name, why)
+			if err := t.audit(map[string]any{"type": "PAUSE_PID_STALE", "agent": a.Name, "reason": why}); err != nil {
+				log.Printf("agent %s: PAUSE_PID_STALE not audited: %v", a.Name, err)
+			}
+		}
+		setup = why != ""
+	}
+	if t.cfg.EnsureImage == nil {
+		return nil
+	}
+	if err := t.cfg.EnsureImage(a, setup); err != nil {
+		return fmt.Errorf("task image: %v", err)
+	}
+	return nil
+}
+
 var imported sync.Map // uid: the agent's podman has task.Image()
 
 // ensureImage imports the stub task image into the agent's podman once per uid, through its user manager so podman's
-// pause process lands there (§4.2).
-func ensureImage(a Account) error {
-	if _, ok := imported.Load(a.UID); ok {
+// pause process lands there (§4.2); with setup, it calls podman there again even if the image is in.
+func ensureImage(a Account, setup bool) error {
+	if _, ok := imported.Load(a.UID); ok && !setup {
 		return nil
 	}
 	sk := task.Skeleton()
