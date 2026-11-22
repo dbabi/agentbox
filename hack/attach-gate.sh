@@ -132,7 +132,10 @@ b64=Z2F0ZV9vc2M1Mg # base64 of gate_osc52, sent in two halves so the echoed comm
 cat > /tmp/gate-in2 <<IN
 cd /workspace
 touch $M/m-probe; echo planted >> AGENTS.md
-git st; git log -1 --oneline; echo a > f.txt && git add f.txt && git rm -q --cached f.txt; rm -f f.txt
+# git log pages through less (core.pager), which may stop at "Press RETURN": the empty line after it answers that
+git st; git log -1 --oneline
+
+echo a > f.txt && git add f.txt && git rm -q --cached f.txt; rm -f f.txt
 echo "net=\$(ls /sys/class/net)"; grep -E "^(Seccomp|NoNewPrivs|CapEff):" /proc/self/status | tr -d "[:blank:]"
 git -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m attach; echo "commit=\$?"
 claude -p hi --dangerously-skip-permissions </dev/null 2>&1 | grep -c "Not logged in" | sed "s/^/handclaude=/"
