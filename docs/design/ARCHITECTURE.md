@@ -409,6 +409,9 @@ Its phases:
   - The masks cover only bits 8–15, so setting the high 32 bits (which the kernel truncates) can't move a call to another rule.
   - `FICLONE` is in the `0x94` family too. `EOPNOTSUPP` is what it returns on ext4, so `cp --reflink=auto` falls back to a plain copy.
   - A unit test checks that there is no unconditional `ioctl` rule, and that every 16-bit cmd, with and without high bits set, matches exactly one rule.
+- **Only the sockets and processes tasks need.** The same profile starts from a pinned upstream copy (container-libs commit `dadba8b` or later, checked by sha256), never the distro's file:
+  - `socket` is allowed only for `AF_UNIX`, `AF_INET`, `AF_INET6`, and `AF_NETLINK` with `NETLINK_ROUTE`; `socketpair` only for `AF_UNIX`. Every rule compares the low 32 bits (`MASKED_EQ` with `0xffffffff`), so high bits can't move a call off its rule. Any other family, `AF_ALG` and `AF_VSOCK` included, gets the default `ENOSYS`.
+  - `clone` is allowed only with every `CLONE_NEW*` bit clear, and `unshare` the same (with `CLONE_NEWTIME`); a `CLONE_NEW*` bit gets `EPERM`. `setns` gets `EPERM`. `clone3` gets `ENOSYS`, so glibc and Go fall back to `clone`.
 - **Workspace control files can't steer later tasks.**
   - Git runs with command-line-precedence config from the environment (`GIT_CONFIG_COUNT`/`KEY`/`VALUE`): `core.hooksPath=/opt/agentbox/exports/nohooks`, `core.fsmonitor=false`. Repo-local `.git/config` can't re-enable hooks.
   - Claude ignores project settings and MCP config (flags above), and Codex runs with a generated `CODEX_HOME` in the tmpfs HOME.
@@ -1062,7 +1065,6 @@ Human CLI replies (`approval_stale`, `CACHE_PURGE_FAILED`) are not agent codes; 
 - A compromised auditd can forge ACKs and mask taint until off-box verification catches it. v2: rootd keeps its own append-only taint record and refuses on regression.
 - Attach session-home is persistent and agent-writable. Hooks, MCP servers, shell startup files and git config stay off, and Claude's settings are read-only, but instructions a session leaves there (`~/.claude/CLAUDE.md`, skills, rules, agents) load into later attaches without review. Fix: baseline and ack them like workspace control paths (#153).
 - The post-attach token scan polls the credential files and doesn't unpack git packfiles: a token version that lives less than one poll, or one committed and then packed by `git gc`, is missed. Fix: inotify on the credential files; scan packed objects (#154).
-- The task seccomp profile is podman's default minus btrfs ioctls: it allows every socket family but audit netlink, and clone, clone3, setns and unshare with no conditions. Fix: a socket family allowlist and conditional namespace syscalls (#155).
 - Root can always remove confinement. After a root-level flush, brokers are unconfined for up to 60 s, until the next `fwcheck` (§6.1).
 - One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late.
 - Jev egress when enabled.

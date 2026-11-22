@@ -295,6 +295,8 @@ Each service runs as its own Linux user, with only the access it needs.
   The workspace is the only writable mount that outlives the task.
 - A seccomp profile blocks btrfs ioctls.
   So a task can't create a subvolume that escapes its quota or the workspace snapshots.
+- The same profile allows only Unix, IPv4, IPv6 and routing netlink sockets, and blocks new namespaces.
+  It starts from a pinned copy of podman's upstream default profile, not the one the distro ships.
 - An admin starts a task with `agentbox task new --agent <name>`, with the prompt on stdin.
 - A top-level task has a 2-hour deadline by default.
   The design caps its output at 50 MB; today the result keeps the last 16 KiB.
