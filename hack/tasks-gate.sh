@@ -254,7 +254,7 @@ echo 'true' > /tmp/tg-p
 : > /tmp/tg-20
 check "20 consecutive launches" 'for i in $(seq 20); do t=$(new 2m < /tmp/tg-p) && echo $t >> /tmp/tg-20 && wait_end $t 60 || exit 1; done; [ "$(wc -l < /tmp/tg-20)" = 20 ]'
 check "  ... each under 300 ms over the user bus" 'for t in $(cat /tmp/tg-20); do
-    ms=$(journalctl -b -u agentbox-rootd -o cat | sed -n "s/^task $t (agent gt): launch \([0-9]*\) ms over the user bus: <nil>$/\1/p")
+    ms=$(journalctl -b -u agentbox-rootd -o cat | sed -n "s/^.* task $t (agent gt): launch \([0-9]*\) ms over the user bus: <nil>$/\1/p")
     echo "$t $ms ms"; [ -n "$ms" ] && [ "$ms" -lt 300 ] || exit 1; done'
 check "  ... each opened exactly one login session for ag-gt" '[ "$(journalctl --since "$since" -o cat | grep -c "^pam_unix(login:session): session opened for user ag-gt(")" = 20 ]'
 check "  ... and none ran update-motd.d" '[ ! -e /run/tg-motd-ran ]'
