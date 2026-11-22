@@ -185,7 +185,14 @@ func EnsureStore(a Agent, limit uint64) error {
 			return fmt.Errorf("accounts: %s belongs to uid %d, not %s (%d)", p, u, a.User(), a.UID())
 		}
 	}
-	for _, d := range []string{quota.Data + "/workspaces", quota.Data + "/agents", a.Dir(), a.Home(), a.XDG(), a.XDG() + "/config/containers", a.XDG() + "/data"} {
+	// the agent's user manager reads its XDG dirs, so control/ and control/xdg/ are traverse-only for it
+	for _, d := range []string{Control, Control + "/xdg"} {
+		if err := mkdirRoot(d, 0o711); err != nil {
+			return err
+		}
+	}
+	for _, d := range []string{quota.Data + "/workspaces", quota.Data + "/agents", a.Dir(), a.Home(), a.XDG(), a.XDG() + "/config",
+		a.XDG() + "/config/containers", a.XDG() + "/data"} {
 		if err := mkdirRoot(d, 0o755); err != nil {
 			return err
 		}

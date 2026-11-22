@@ -70,9 +70,10 @@ NA=$(f n); UA=$((70000 + NA)); BA=$((0x70000000 + NA * 65536))
 check "ag-$QA: uid and gid 70000+N ($UA), nologin" '[ "$(getent passwd ag-$QA | cut -d: -f3,4,7)" = "$UA:$UA:/usr/sbin/nologin" ] && [ "$(getent group ag-$QA | cut -d: -f3)" = $UA ]'
 check "  ... its home is root-owned, 0755 and empty" 'h=$(getent passwd ag-$QA | cut -d: -f6) && [ "$h" = $D/agents/$QA/account ] && [ "$(stat -c "%U %a" $h)" = "root 755" ] && [ -z "$(ls -A $h)" ]'
 check "  ... sub-ids: one 65536-wide block at 0x70000000+N*65536 in /etc/subuid and /etc/subgid" '[ "$(st ag-$QA)" = "ag-$QA:$BA:65536" ] && [ "$(sg ag-$QA)" = "ag-$QA:$BA:65536" ]'
-check "  ... root-owned XDG_CONFIG_HOME and XDG_DATA_HOME, storage.conf with graphroot in data/agents" 'x=$M/control/xdg/$QA &&
+check "  ... root-owned XDG_CONFIG_HOME and XDG_DATA_HOME the agent can read, storage.conf with graphroot in data/agents" 'x=$M/control/xdg/$QA &&
   [ "$(stat -c "%U %a" $x/config $x/config/containers $x/data)" = "$(printf "root 755\nroot 755\nroot 755")" ] && [ "$(stat -c "%U %a" $x/config/containers/storage.conf)" = "root 644" ] &&
-  grep -qx "graphroot = \"$D/agents/$QA/storage\"" $x/config/containers/storage.conf && grep -qx "runroot = \"/run/user/$UA/containers\"" $x/config/containers/storage.conf'
+  grep -qx "graphroot = \"$D/agents/$QA/storage\"" $x/config/containers/storage.conf && grep -qx "runroot = \"/run/user/$UA/containers\"" $x/config/containers/storage.conf &&
+  [ "$(stat -c "%U %a" $M/control $M/control/xdg)" = "$(printf "root 711\nroot 711")" ] && runuser -u ag-$QA -- cat $x/config/containers/storage.conf >/dev/null'
 check "  ... user@$UA: Requires= and After= firewall, reconcile and rootd; the XDG env; ExecStartPre=+fwcheck" 'u=user@$UA.service &&
   for p in Requires After; do for d in agentbox-firewall agentbox-reconcile agentbox-rootd; do systemctl show -P $p $u | grep -qw $d.service || exit 1; done; done &&
   systemctl show -P Environment $u | grep -q "XDG_CONFIG_HOME=$M/control/xdg/$QA/config" && systemctl show -P ExecStartPre $u | grep -q "agentbox fwcheck"'
