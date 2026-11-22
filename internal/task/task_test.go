@@ -73,7 +73,8 @@ func TestCLIArgv(t *testing.T) {
 }
 
 func TestSkeletonStable(t *testing.T) {
-	if string(Skeleton()) != string(Skeleton()) || !strings.HasPrefix(Image(), "localhost/agentbox-task:") {
+	a, b := Skeleton(), Skeleton()
+	if string(a) != string(b) || !strings.HasPrefix(Image(), "localhost/agentbox-task:") {
 		t.Fatal("the skeleton tar must be the same bytes every time")
 	}
 }
