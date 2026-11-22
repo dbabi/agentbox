@@ -39,6 +39,8 @@ const usage = `usage:
   agentbox rootd [--element-timeout 10m] [--refill-interval 5m]   (agentbox-rootd.service, on the box)
   agentbox sockets check [--root /]   (the live box against the §2.1 socket inventory)
   agentbox egress list | refill | allow|remove --svc keys|git|proxy --entry HOST:PORT   (admin, on the box)
+  agentbox agent list | add --name N [--disk-bytes B] | remove --name N   (admin, on the box)
+  agentbox accounts apply   (agentbox-accounts.service: rootd's ids table onto /etc, on the box)
   agentbox agentboxd [--gen-dir DIR]   (agentboxd.service: the task gate, on the box)
   agentbox gate register --task T --agent A [--chain T1,T2] | revoke --task T | list   (as root: rootd's task registration)
   agentbox gate call --socket /run/agentbox-gate/t/<task>/gate.sock JSON-RPC...   (a task-side test client)
@@ -112,6 +114,10 @@ func run(args []string) error {
 		return cmdAgentboxd(args[1:])
 	case "gate":
 		return cmdGate(args[1:])
+	case "agent":
+		return cmdAgent(args[1:])
+	case "accounts":
+		return cmdAccounts(args[1:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
@@ -174,12 +180,16 @@ func cmdSeed(args []string) error {
 }
 
 // cmdReconcile is agentbox-reconcile.service (ARCHITECTURE.md §3.2): it re-applies the persistent control store to
-// whichever generation booted, before every agentbox unit: the disk reserve (§4.1) and packaged ntfy (§2).
+// whichever generation booted, before every agentbox unit: the disk reserve (§4.1), the agent accounts from rootd's
+// ids table (§4.1) and packaged ntfy (§2).
 func cmdReconcile(args []string) error {
 	if err := parse(flag.NewFlagSet("reconcile", flag.ContinueOnError), args); err != nil {
 		return err
 	}
 	if err := quota.Ensure(); err != nil {
+		return err
+	}
+	if err := applyAccounts(false); err != nil {
 		return err
 	}
 	return ntfy.Setup()

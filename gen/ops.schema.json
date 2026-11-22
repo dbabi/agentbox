@@ -5,6 +5,10 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
+        "diskBytes": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
         "name": {
           "type": "string",
           "x-agentbox-audit": "keep"

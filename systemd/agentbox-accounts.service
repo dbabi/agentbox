@@ -1,0 +1,12 @@
+# Applies rootd's ids table to the running box (ARCHITECTURE.md §3.2, §4.1): the agent users and groups, /etc/subuid
+# and /etc/subgid, the user@ and slice drop-ins, linger, and for retired agents the teardown and archive. rootd starts
+# it after every agent.add and agent.remove, because rootd's own ProtectSystem=strict keeps /etc read-only to it.
+# agentbox-reconcile runs the same code at boot. No [Install]: nothing starts it but rootd.
+[Unit]
+Description=agentbox accounts
+Requires=agentbox-reconcile.service
+After=agentbox-reconcile.service
+
+[Service]
+Type=oneshot
+ExecStart=/var/lib/agentbox/current/bin/agentbox accounts apply

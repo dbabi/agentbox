@@ -311,3 +311,87 @@ func parseMode(s string) (string, error) {
 	}
 	return "", fmt.Errorf("quota: unexpected quota status %q", s)
 }
+
+// Run runs a btrfs (or other) command with LC_ALL=C and returns its stdout; the error carries its stderr.
+func Run(name string, args ...string) ([]byte, error) { return run(name, args...) }
+
+// EnsureSubvol creates p as a subvolume, or checks that it is one.
+func EnsureSubvol(p string) error { return ensureSubvol(p) }
+
+// AgentMax is an agent's default 1/N exclusive limit: a quarter of the pool. 2/0 still caps all agents together.
+// shortcut: budgets.toml isn't read yet; budget.set re-applies a per-agent value once it lands.
+func AgentMax(size uint64) uint64 { return size / 4 }
+
+// AgentQgroup is agent N's level-1 qgroup.
+func AgentQgroup(n int) string { return "1/" + strconv.Itoa(n) }
+
+// EnsureAgent puts agent n's subvolumes in its own qgroup 1/N under 2/0 (§4.1), idempotently. limit 0 keeps the
+// limit 1/N already has, or sets AgentMax on a new one. Call it before the subvolumes hold data.
+func EnsureAgent(n int, limit uint64, subvols ...string) error {
+	q := AgentQgroup(n)
+	qs, err := Show()
+	if err != nil {
+		return err
+	}
+	if _, ok := qs[q]; !ok {
+		if _, err := run("btrfs", "qgroup", "create", q, Agentbox); err != nil {
+			return err
+		}
+	}
+	rescan := false
+	if !qs[q].hasParent(Parent) {
+		if _, err := run("btrfs", "qgroup", "assign", q, Parent, Agentbox); err != nil {
+			return err
+		}
+		rescan = true
+	}
+	for _, p := range subvols {
+		id, err := rootID(p)
+		if err != nil {
+			return err
+		}
+		if !qs[id].hasParent(q) {
+			if _, err := run("btrfs", "qgroup", "assign", id, q, Agentbox); err != nil {
+				return err
+			}
+			rescan = true
+		}
+	}
+	if limit == 0 {
+		if limit = qs[q].MaxExcl; limit == 0 {
+			size, err := fsSize(Agentbox)
+			if err != nil {
+				return err
+			}
+			limit = AgentMax(size)
+		}
+	}
+	if qs[q].MaxExcl != limit {
+		if _, err := run("btrfs", "qgroup", "limit", "-e", strconv.FormatUint(limit, 10), q, Agentbox); err != nil {
+			return err
+		}
+	}
+	if rescan {
+		_, err = run("btrfs", "quota", "rescan", "-W", Agentbox)
+	}
+	return err
+}
+
+// Nested lists the subvolumes below subvolume p (`btrfs subvolume list -o`): §4.1 refuses NESTED_SUBVOLUME on any.
+func Nested(p string) ([]string, error) {
+	out, err := run("btrfs", "subvolume", "list", "-o", p)
+	if err != nil {
+		return nil, err
+	}
+	return parseNested(string(out)), nil
+}
+
+func parseNested(s string) []string {
+	var paths []string
+	for _, l := range strings.Split(s, "\n") {
+		if _, p, ok := strings.Cut(l, " path "); ok {
+			paths = append(paths, p)
+		}
+	}
+	return paths
+}

@@ -60,3 +60,13 @@ func TestParseMode(t *testing.T) {
 		t.Error("enabled with no mode accepted")
 	}
 }
+
+func TestParseNested(t *testing.T) {
+	out := "ID 260 gen 12 top level 259 path @var_lib_agentbox_data/workspaces/a/x\nID 261 gen 13 top level 259 path @var_lib_agentbox_data/workspaces/a/y z\n"
+	if got := parseNested(out); len(got) != 2 || got[1] != "@var_lib_agentbox_data/workspaces/a/y z" {
+		t.Errorf("parseNested: %q", got)
+	}
+	if got := parseNested(""); len(got) != 0 {
+		t.Errorf("empty list: %q", got)
+	}
+}

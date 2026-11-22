@@ -13,6 +13,7 @@ import (
 
 	"agentbox/internal/fw"
 	"agentbox/internal/rootd"
+	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/resolve"
 )
 
@@ -82,12 +83,17 @@ func cmdEgress(args []string) error {
 	default:
 		return fmt.Errorf("egress: unknown subcommand %q", args[0])
 	}
+	return adminCall(req, "egress")
+}
+
+// adminCall sends one request on rootd-admin.sock, prints the reply line, and fails unless it says ok.
+func adminCall(req map[string]any, what string) error {
 	c, err := net.Dial("unix", AdminSocket)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	c.SetDeadline(time.Now().Add(60 * time.Second))
+	c.SetDeadline(time.Now().Add(5 * time.Minute)) // agent.add and agent.remove wait for agentbox-accounts.service
 	b, _ := json.Marshal(req)
 	if _, err := c.Write(append(b, '\n')); err != nil {
 		return err
@@ -101,7 +107,60 @@ func cmdEgress(args []string) error {
 		OK bool `json:"ok"`
 	}
 	if json.Unmarshal(line, &rep) != nil || !rep.OK {
-		return errors.New("egress: refused")
+		return errors.New(what + ": refused")
 	}
 	return nil
+}
+
+// cmdAgent is the admin CLI for agent accounts (§4.1), over rootd-admin.sock.
+func cmdAgent(args []string) error {
+	if len(args) == 0 {
+		return errors.New("agent: expected list, add or remove")
+	}
+	fs := flag.NewFlagSet("agent "+args[0], flag.ContinueOnError)
+	switch args[0] {
+	case "add", "remove":
+		name := fs.String("name", "", "agent name: [a-z][a-z0-9-]{0,28}; the user is ag-<name>")
+		var disk *uint64
+		if args[0] == "add" {
+			disk = fs.Uint64("disk-bytes", 0, "the agent's qgroup 1/N exclusive limit (default: a quarter of the pool)")
+		}
+		if err := parse(fs, args[1:]); err != nil {
+			return err
+		}
+		if *name == "" {
+			return fmt.Errorf("agent %s: --name is required", args[0])
+		}
+		a := map[string]any{"name": *name}
+		if disk != nil && *disk != 0 {
+			a["diskBytes"] = *disk
+		}
+		return adminCall(map[string]any{"op": "agent." + args[0], "args": a}, "agent "+args[0])
+	case "list":
+		if err := parse(fs, args[1:]); err != nil {
+			return err
+		}
+		return adminCall(map[string]any{"op": "agent.list"}, "agent list")
+	}
+	return fmt.Errorf("agent: unknown subcommand %q", args[0])
+}
+
+// cmdAccounts is agentbox-accounts.service, which rootd starts after agent.add and agent.remove.
+func cmdAccounts(args []string) error {
+	if len(args) == 0 || args[0] != "apply" {
+		return errors.New("accounts: expected apply")
+	}
+	if err := parse(flag.NewFlagSet("accounts apply", flag.ContinueOnError), args[1:]); err != nil {
+		return err
+	}
+	return applyAccounts(true)
+}
+
+func applyAccounts(live bool) error {
+	db, err := rootd.OpenDB(fw.RootdDB)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return accounts.Reconcile(db, live)
 }

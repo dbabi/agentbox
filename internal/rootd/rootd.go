@@ -20,13 +20,16 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
 	"agentbox/internal/audit"
 	"agentbox/internal/fw"
 	"agentbox/internal/ops"
+	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/nl"
+	"agentbox/internal/rootd/quota"
 	"agentbox/internal/rootd/resolve"
 
 	_ "modernc.org/sqlite"
@@ -76,9 +79,11 @@ func OpenDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("rootd.db: journal_mode=%s synchronous=%d, need wal and FULL (2)", mode, syncv)
 	}
-	if _, err := db.Exec(resolve.Schema); err != nil {
-		db.Close()
-		return nil, err
+	for _, schema := range []string{resolve.Schema, accounts.Schema} {
+		if _, err := db.Exec(schema); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return db, nil
 }
@@ -171,7 +176,9 @@ func Run(cfg Config) error {
 		return errors.New("no agentbox-audit user or group (sysusers.d/agentbox.conf)")
 	}
 	s := &server{cfg: cfg, db: db, svc: svc, seal: &audit.Files{Dir: cfg.AuditDir, UID: int(auid), GID: int(agid), Crash: cfg.SealCrash},
-		audit: func(r map[string]any) error { return auditSend(cfg.AuditSocket, r) }}
+		audit: func(r map[string]any) error { return auditSend(cfg.AuditSocket, r) },
+		store: accounts.EnsureStore, nested: nestedIn,
+		applyOS: func() error { _, err := quota.Run("systemctl", "start", accounts.Unit); return err }}
 	for name, ln := range lns {
 		go s.accept(name, ln)
 	}
@@ -214,6 +221,12 @@ type server struct {
 	seal audit.Sealer
 	// audit sends one record to auditd's rootd producer socket and returns nil only on its ACK (auditSend)
 	audit func(map[string]any) error
+
+	agentMu sync.Mutex // one agent.add or agent.remove at a time
+	store   func(accounts.Agent, uint64) error
+	nested  func(subvol string) ([]string, error)
+	// applyOS runs accounts.Reconcile in agentbox-accounts.service: rootd's ProtectSystem=strict keeps /etc read-only here
+	applyOS func() error
 }
 
 // refresh re-resolves ntfy.sh:443 into ntfy_dst (§6.1). A failure only logs: ntfy is down until the next try.
@@ -365,6 +378,14 @@ func (s *server) admin(r request) reply {
 			rep["ok"], rep["error"] = false, "the list changed, but its audit RESULT was not ACKed: "+aerr.Error()
 		}
 		return rep
+	case "agent.add", "agent.remove":
+		return s.agentOp(r)
+	case "agent.list":
+		all, err := accounts.List(s.db)
+		if err != nil {
+			return reply{"ok": false, "error": err.Error()}
+		}
+		return reply{"ok": true, "agents": all}
 	case "sets.refill":
 		return s.refill(r)
 	case "egress.list":

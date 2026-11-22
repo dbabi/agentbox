@@ -144,7 +144,7 @@ func taints(o Op, out ...Field) Op { o.TaintsOutput, o.Out = true, out; return o
 
 // Registry is every op in §5.3, sorted by name for review; generation sorts again.
 var Registry = withAskFields([]Op{
-	admin("agent.add", SigNone, str("name")),
+	admin("agent.add", SigNone, str("name"), num("diskBytes").opt()),
 	admin("agent.attach", SigNone, str("name"), str("workspace")),
 	admin("agent.remove", SigNone, str("name")),
 	admin("agent.skills.set", SigNone, str("agent"), list("skills")),
