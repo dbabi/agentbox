@@ -534,6 +534,8 @@ The `lint` job (gofmt, `go vet`, staticcheck, shellcheck, govulncheck) also runs
 
 CI cannot run the arm64 UEFI gates as written, because they need HVF on macOS. That includes the milestone 2 and 3 gates. `hack/powercut.sh` also assumes a podman machine.
 
+The `ubuntu-26.04-arm` runner has no `/dev/kvm`. The probe step in `unit` printed `ls: cannot access '/dev/kvm': No such file or directory` on 2026-11-22, in ci run 44975721818. So arm64 VM gates cannot run there under KVM either.
+
 The `unit` job runs as an unprivileged user, so the `internal/audit` tests that need `chattr +a` skip in its first `go test` run. The root step after it runs them. They also run on macOS, where `chattr` is a no-op, and on the box through `hack/audit-gate.sh`.
 
 ## Results at the time of writing
