@@ -78,11 +78,12 @@ check "image/task builds on the box (ubuntu:26.04, apt tools, mise with the pinn
 # the image sets what taskrun must unset, so the env checks see them removed, not merely absent
 printf 'FROM %s\nENV GOFLAGS=-mod=mod GONOSUMDB=corp.example GONOPROXY=corp.example GOINSECURE=corp.example HTTP_PROXY=http://10.9.9.9:3128 http_proxy=http://10.9.9.9:3128 ALL_PROXY=socks5://10.9.9.9:1080 all_proxy=socks5://10.9.9.9:1080\n' $IMG > $G/Containerfile
 podman build -q -t $IMG-env -f $G/Containerfile $G </dev/null >/dev/null && podman save -o $G/image.tar $IMG-env && chmod 0644 $G/image.tar
+# podman load runs through the agent's user manager, as rootd's ensureImage does, so podman's pause process gets its
+# own scope there, not a root session's
 for a in ga gb; do
   check "agent add $a (rootd's agent.add), and the task image in its podman" '{ $B agent add --name $a || $B agent list | grep -q "\"name\":\"$a\""; } && u=$(id -u ag-$a) &&
     i=0; until systemctl is-active -q user@$u.service; do i=$((i+1)); [ $i -lt 50 ] || exit 1; sleep 0.2; done &&
-    runuser -u ag-$a -- env HOME=/var/lib/agentbox/data/agents/$a/account XDG_RUNTIME_DIR=/run/user/$u XDG_CONFIG_HOME=/var/lib/agentbox/control/xdg/$a/config \
-      XDG_DATA_HOME=/var/lib/agentbox/control/xdg/$a/data podman load -q -i $G/image.tar </dev/null'
+    systemd-run --user -M ag-$a@ --wait --quiet --collect /usr/bin/podman load -q -i $G/image.tar </dev/null'
   find $WS/$a -mindepth 1 -delete 2>/dev/null || : # a rerun on the same box starts from an empty workspace
 done
 mkdir -p $E && printf '# gate: the human-added deputy host for ga\nproxy.golang.org:443\n' > $E/ga.list
