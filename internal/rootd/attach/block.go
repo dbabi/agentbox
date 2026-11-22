@@ -12,7 +12,7 @@ import (
 // same way (TaskNotEmpty, session holds the task id).
 const Schema = `
 CREATE TABLE IF NOT EXISTS task_block(agent TEXT PRIMARY KEY, session TEXT NOT NULL, reason TEXT NOT NULL,
-  started_ms INTEGER NOT NULL, detail TEXT NOT NULL DEFAULT '');
+  started_ms INTEGER NOT NULL, detail TEXT NOT NULL DEFAULT '') STRICT;
 `
 
 // Block reasons.
