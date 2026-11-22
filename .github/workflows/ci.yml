@@ -11,8 +11,12 @@ on:
 permissions:
   contents: read
 jobs:
-  test:
-    runs-on: ubuntu-26.04
+  unit:
+    # the release ships linux/arm64 and linux/amd64 binaries, so the unit tests run on both
+    strategy:
+      fail-fast: false
+      matrix: {os: [ubuntu-26.04, ubuntu-26.04-arm]}
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
@@ -27,6 +31,18 @@ jobs:
           sudo env "PATH=$PATH" "GOTOOLCHAIN=$GOTOOLCHAIN" go test -count=1 -v ./internal/audit/... > audit-root.log 2>&1 || { cat audit-root.log; exit 1; }
           cat audit-root.log
           if grep -- '--- SKIP' audit-root.log; then echo 'privileged audit run skipped tests' >&2; exit 1; fi
+      # a later change can run arm64 VM gates here if the arm runner has KVM
+      - name: probe /dev/kvm
+        if: matrix.os == 'ubuntu-26.04-arm'
+        run: ls -l /dev/kvm || echo 'no /dev/kvm on this runner'
+  # the ruleset requires a check named test; this one passes only if every unit leg passed
+  test:
+    needs: unit
+    if: always()
+    runs-on: ubuntu-26.04
+    steps:
+      - run: test "$RESULT" = success
+        env: {RESULT: '${{ needs.unit.result }}'}
   lint:
     runs-on: ubuntu-26.04
     steps:
