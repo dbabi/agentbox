@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -403,5 +404,73 @@ func TestHomeControls(t *testing.T) {
 	os.Remove(filepath.Join(h, ".claude", "CLAUDE.md"))
 	if c := changes(); !slices.Equal(c, []string{"/home/agent/.claude/CLAUDE.md", "/home/agent/.claude/skills/x/SKILL.md"}) {
 		t.Fatalf("changed and removed: %q", c)
+	}
+}
+
+// #154: a token committed and then packed by git gc is still found, as a whole object and as the bytes a delta
+// inserts; a long token is cut into 127-byte inserts there. A pack with no token, or a corrupt one, is no hit.
+func TestScanPack(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	tok := "gate-oauth-at-packed-" + strings.Repeat("P", 300)
+	git := func(dir string, args ...string) {
+		t.Helper()
+		c := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "gc.auto=0"}, args...)...)
+		c.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	packs := func(ws string) []string {
+		start := time.Now().Add(-time.Hour)
+		hits, err := Scan(ws, start, []string{tok})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, h := range hits {
+			out = append(out, h.Path)
+		}
+		return out
+	}
+	body := strings.Repeat("line of ordinary source text\n", 400)
+	for _, tc := range []struct {
+		name     string
+		versions []string // committed in order; the last is in the work tree, then removed
+	}{
+		{"whole object", []string{"x := `" + tok + "`\n"}},
+		// git keeps the larger version whole and the smaller as a delta against it: the token is a delta insert
+		{"delta", []string{body[:len(body)/2] + tok + "\n" + body[len(body)/2:], body + strings.Repeat("more\n", 200)}},
+	} {
+		ws := t.TempDir()
+		git(ws, "init", "-q")
+		for i, v := range tc.versions {
+			os.WriteFile(filepath.Join(ws, "f.go"), []byte(v), 0o644)
+			git(ws, "add", "f.go")
+			git(ws, "commit", "-qm", fmt.Sprint(i))
+		}
+		git(ws, "rm", "-q", "f.go")
+		git(ws, "commit", "-qm", "gone")
+		git(ws, "gc", "-q", "--prune=now")
+		if loose, _ := filepath.Glob(filepath.Join(ws, ".git", "objects", "??", "*")); len(loose) != 0 {
+			t.Fatalf("%s: gc left loose objects %q", tc.name, loose)
+		}
+		got := packs(ws)
+		if len(got) != 1 || !packRe.MatchString(filepath.Base(got[0])) {
+			t.Fatalf("%s: hits %q, want the pack", tc.name, got)
+		}
+		p := filepath.Join(ws, got[0])
+		if tc.name == "delta" {
+			if out, _ := exec.Command("git", "-C", ws, "verify-pack", "-v", p).Output(); !bytes.Contains(out, []byte(" 1 ")) {
+				t.Fatalf("no delta in the pack:\n%s", out)
+			}
+		}
+		b, _ := os.ReadFile(p)
+		os.Chmod(p, 0o644)
+		os.WriteFile(p, b[:40], 0o644) // cut inside the first object: no hit, and no error
+		if got := packs(ws); len(got) != 0 {
+			t.Fatalf("%s: a truncated pack: %q", tc.name, got)
+		}
 	}
 }
