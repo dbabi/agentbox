@@ -49,7 +49,7 @@ The arm64 UEFI gates use macOS's hypervisor (HVF), so they run only on a Mac.
 1. Install the tools:
 
    ```sh
-   brew install go qemu swtpm xorriso podman minisign uv openssl
+   brew install go qemu swtpm xorriso podman minisign uv pkg-config openssl
    ```
 
 2. Start the podman machine. The `tpm2+tang` gates and the power-cut replays need it.
@@ -375,7 +375,7 @@ When you are done, copy the results out first. Then `git worktree remove ../agen
 
 ### Keep the VM safe
 
-- The VM can reach every service on your Mac's `127.0.0.1` through `10.0.2.2`. Do not run untrusted code in it.
+- The VM reaches the internet, and the Mac's `127.0.0.1` only on the Tang and release-serve ports. It can still reach your LAN and any Mac service that listens on a LAN address.
 - Gate seeds use the admin password `x`. Their recovery and release-signing keys live in `.vm/keys`. Never use them for a real box.
 
 ### Test containers

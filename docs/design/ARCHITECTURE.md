@@ -1072,7 +1072,7 @@ Human CLI replies (`approval_stale`, `CACHE_PURGE_FAILED`) are not agent codes; 
 - QEMU 11.1's NVMe controller ignores FUA. In an NVMe power-cut log, FUA writes are never flush marks, so the replay at the last flush can be the disk just before the final journal commit. Use `DISKBUS=virtio` for exact durability points.
 - blklogwrites once left a 15.7 MiB hole in a 9.9 GB virtio install log; the root cause is unknown. `replay-log`, `check` and `boot` fail loudly at a hole.
 - Power-cut replay needs a plain btrfs partition, so encrypted disks are not replayed. `vm.sh cut` (a QMP reset) models only a disk with no volatile write cache. Power-cut suites run in `tpm2` mode only.
-- QEMU's user network (slirp) lets the guest reach every Mac service on `127.0.0.1` through `10.0.2.2`; the gates use that path for Tang and release-serve. It must be restricted before agents run in the VM (PLAN, before weeks 5–6).
+- The VM's network is `hack/vmnet`: libslirp with the host loopback cut off. The guest reaches the Mac's `127.0.0.1` only on Tang's and release-serve's ports, forwarded as `10.0.2.2`; `gate.sh` checks that a loopback listener with no forward sees nothing. The guest still reaches the Mac's LAN.
 - The arm64 VM tests softdog only; the i6300esb path runs on amd64. x86 watchdog detection is unit-tested only.
 - HVF guests stop while the Mac sleeps, and their clocks fall behind. Long gates need AC power and an open lid. `vm.sh` no longer counts sleep against the install timeout.
 

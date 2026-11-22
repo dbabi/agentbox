@@ -63,7 +63,7 @@ These steps follow part 1 of [Getting started][gs]. You need [Homebrew](https://
 
 1. Install the tools and get the code.
    ```sh
-   brew install go qemu xorriso minisign uv
+   brew install go qemu xorriso minisign uv pkg-config
    git clone https://github.com/dbabi/agentbox.git
    cd agentbox
    ```

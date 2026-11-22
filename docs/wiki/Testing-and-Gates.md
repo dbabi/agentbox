@@ -115,7 +115,7 @@ The `fuzz` workflow in CI runs each fuzz test for 5 hours, every night, in its o
 [Getting Started](Getting-Started.md) walks through the full setup. In short, you need:
 
 1. An Apple Silicon Mac. The UEFI VM uses Apple's Hypervisor framework (HVF), which only macOS has.
-2. The tools from [Getting Started, step 1](Getting-Started.md#step-1-install-the-tools), including `swtpm` and `podman`: `brew install go qemu xorriso minisign uv swtpm podman`. You also need `git` and `make`. The Xcode Command Line Tools provide both.
+2. The tools from [Getting Started, step 1](Getting-Started.md#step-1-install-the-tools), including `swtpm` and `podman`: `brew install go qemu xorriso minisign uv pkg-config swtpm podman`. You also need `git` and `make`. The Xcode Command Line Tools provide both.
 3. A podman machine for `tpm2+tang` gates and power-cut replays: `podman machine init && podman machine start`.
 4. The pinned Ubuntu Server 26.04.1 ISOs in `.vm/`, under their exact file names.
 5. Internet access and a Mac that stays awake on AC power.
@@ -141,7 +141,7 @@ Keep these in mind:
 
 - Gate VMs are throwaway test boxes. Gate seeds use the admin password `x`. Their recovery key and release-signing key live in `.vm/keys`. Never use any of them for a real box.
 - Before it installs, a gate runs `hack/vm.sh reset`. That deletes this checkout's VM disk, UEFI vars and TPM state.
-- The VM can reach every service on the Mac's `127.0.0.1` through `10.0.2.2`. Do not run untrusted code in it.
+- The VM reaches the internet, and the Mac's `127.0.0.1` only on the Tang and release-serve ports. It can still reach your LAN and any Mac service that listens on a LAN address.
 - Each VM gets 4 vCPUs and 4 GiB of RAM.
 - `hack/apply-gate.sh` runs `caffeinate -i` to stop idle sleep. `hack/gate.sh` does not, so start it as `caffeinate -i hack/gate.sh none`. Closing the lid on battery still puts the Mac to sleep and freezes the VM.
 
@@ -173,6 +173,7 @@ What the checks cover, in plain words:
 - **Logs and secrets.** The installer logs persist. The test password hash appears nowhere under `/var/log`. The installer's copy of the seed is gone. The seed refuses every other user and group name on the box as `--admin`.
 - **Encrypted modes.** Root is on LUKS2, unlocked by clevis in the initramfs. `recovery.bin` exists, and the installer's key file was shredded. On the Mac, the gate decrypts `recovery.bin` with the test recovery key. The key is 48 digits, and it opens LUKS. The key appears in no file under `/var/log`, `/etc`, `/bootpart` or `/boot`. In `tpm2+tang` mode, the clevis binding names both the TPM and this VM's Tang.
 - **Release and firstboot.** Firstboot refuses a tampered tarball, an older release with a valid signature, and a signature by another key. Each time it installs nothing. Then it installs the good release during a real boot. Reconcile runs. `install.sh` switches the `current` and `previous` links by rename, reruns cleanly, and refuses changed content. Firstboot does not run again. No unit failed, and nothing rewrote grubenv during the boot.
+- **VM network.** The VM reaches release-serve at `10.0.2.2`. A probe on the Mac's `127.0.0.1` and `::1`, on a port with no forward, gets no TCP connection or UDP datagram from the VM.
 - **Boot mode.** UEFI: `mokutil` reports Secure Boot on (or off, with `SECUREBOOT=0`), and shim's `is-not-revoked` check passes for every installed kernel. BIOS: the box booted with no EFI.
 
 ### Tang-down boots (`tpm2+tang` only)
@@ -453,7 +454,8 @@ caffeinate -i hack/sockets-gate.sh
 |---|---|
 | SSH | `127.0.0.1:2222+ID` |
 | Tang container | `agentbox-tang-<ID>` on `127.0.0.1:7500+ID`. The VM reaches it as `http://10.0.2.2:7500+ID`. |
-| Test release server | `127.0.0.1:7600+ID` |
+| Test release server | `127.0.0.1:7600+ID`. The VM reaches it as `http://10.0.2.2:7600+ID`. |
+| Loopback probe | `127.0.0.1:7700+ID` and `[::1]:7700+ID`. The VM must not reach it. |
 | Power-cut work directory | `$TMPDIR/agentbox-powercut-<ID>` |
 
 Everything else lives in the checkout's `.vm/`. So each VM also needs its own checkout. Use one git worktree per VM. `AGENTBOX_ISO_DIR` points every worktree at one copy of the ISOs.

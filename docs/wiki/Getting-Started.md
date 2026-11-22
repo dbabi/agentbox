@@ -17,7 +17,7 @@ A *gate* is a test script. It installs agentbox in a VM, boots it, and checks th
 ### Step 1: install the tools
 
 ```sh
-brew install go qemu xorriso minisign uv
+brew install go qemu xorriso minisign uv pkg-config
 ```
 
 | Tool | What it is for |
@@ -27,6 +27,7 @@ brew install go qemu xorriso minisign uv
 | `xorriso` | the seed ISO and the zero-touch install ISO |
 | `minisign` | signing the test releases |
 | `uv` | running `hack/verify-seed.py` in step 5 |
+| `pkg-config` | building the VM's network helper, `hack/vmnet`, against the `libslirp` that `qemu` installs. The Xcode Command Line Tools provide the C compiler. |
 
 The `none` gate needs nothing else from Homebrew. The encrypted gates also need `swtpm`, which emulates a TPM. The Tang test server and the power-cut replays need `podman`. Install both now if you plan to run those gates later:
 
@@ -157,7 +158,7 @@ Run one gate at a time in one checkout. To run several VMs at once, see [Testing
 Two safety notes:
 
 - The gate uses test secrets: the admin password `x` and the keys in `.vm/keys`. Never use them for a real box.
-- The VM can reach every service on your Mac's `127.0.0.1` through `10.0.2.2`. Do not run untrusted code in the VM.
+- The VM reaches the internet, and the Mac's `127.0.0.1` only on the Tang and release-serve ports. It can still reach your LAN and any Mac service that listens on a LAN address.
 
 ### Step 7: read the results
 
