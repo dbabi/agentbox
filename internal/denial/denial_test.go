@@ -17,7 +17,8 @@ func TestNewIsValidAndLeaksNothing(t *testing.T) {
 				if !Valid(b) {
 					t.Fatalf("%s: not valid: %s", code, b)
 				}
-				if strings.Contains(string(b), "sk-live") || strings.Contains(string(b), "evil") || strings.Contains(string(b), "AAAA") {
+				s := strings.Replace(string(b), d.ID, "", 1) // the random id can hold AAAA on its own
+				if strings.Contains(s, "sk-live") || strings.Contains(s, "evil") || strings.Contains(s, "AAAA") {
 					t.Fatalf("%s: echoes input: %s", code, b)
 				}
 			}
