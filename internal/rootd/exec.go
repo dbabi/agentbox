@@ -32,8 +32,9 @@ func deny(code denial.Code, rule, op, field, expect string) reply {
 // trusts agentboxd's check), then INTENT with the audit classes applied, auditd's ACK, the effect, RESULT. Nothing runs
 // without the ACK.
 //
-// shortcut: no task registry, chain check, binding, floor or pending P yet (weeks 5-8); rootd takes agentboxd's task,
-// agent and chain as given (the §5.2 compromise bound) and runs only ops that have an Effect.
+// shortcut: no chain check, binding, floor or pending P yet, and the op is not checked against task_registry; rootd
+// takes agentboxd's task, agent and chain as given (the §5.2 compromise bound) and runs only ops that have an Effect.
+// Check the task's live row here once every gate registration comes from task.start (`agentbox gate register` skips it).
 func (s *server) taskOp(r request) reply {
 	o, ok := ops.Lookup(r.Name)
 	if !ok || !o.AgentCallable() || !o.Rootd {
