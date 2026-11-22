@@ -21,7 +21,7 @@ import (
 // agent.attach while control paths changed since the last reviewed state). No row is the empty workspace.
 // shortcut: a manifest in rootd.db, not a reviewed snapshot; use the snapshot pair once workspace snapshots land.
 const BaselineSchema = `
-CREATE TABLE IF NOT EXISTS attach_baseline(agent TEXT PRIMARY KEY, manifest TEXT NOT NULL CHECK(json_valid(manifest)));
+CREATE TABLE IF NOT EXISTS attach_baseline(agent TEXT PRIMARY KEY, manifest TEXT NOT NULL CHECK(json_valid(manifest))) STRICT;
 `
 
 // gitInert is what under a .git dir can't steer git or a CLI: objects, history and refs. Everything else there

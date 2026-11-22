@@ -3,7 +3,9 @@ package rootd
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,42 @@ import (
 	"agentbox/internal/rootd/resolve"
 	"agentbox/internal/taskenv"
 )
+
+// App. E: rootd.db is 0600 even when opened under umask 0022 (agentbox reconcile opens it first), and every table is
+// STRICT.
+func TestOpenDBModeAndStrict(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rootd.db")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("rootd.db mode %v, %v: want 0600", fi.Mode().Perm(), err)
+	}
+	rows, err := db.Query(`SELECT name, sql FROM sqlite_master WHERE type='table'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var name, sql string
+		if err := rows.Scan(&name, &sql); err != nil {
+			t.Fatal(err)
+		}
+		n++
+		if !strings.HasSuffix(strings.TrimSpace(sql), "STRICT") {
+			t.Errorf("table %s is not STRICT", name)
+		}
+	}
+	if err := rows.Err(); err != nil || n == 0 {
+		t.Fatalf("%d tables, %v", n, err)
+	}
+}
 
 // §9: an allowlist edit is INTENT, ACK, effect, RESULT. With auditd down the INTENT gets no ACK and the list stays.
 func TestEgressEditIsAudited(t *testing.T) {

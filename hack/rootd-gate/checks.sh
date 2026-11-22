@@ -90,7 +90,7 @@ main)
   check "sockets bound by PID 1 with the §2.1 owner and mode" '[ "$(stat -c %U:%G:%a $R/rootd-admin.sock)" = root:agentbox-admin:660 ] && [ "$(stat -c %U:%G:%a $R/audit-seal.sock)" = root:agentbox-audit:660 ] && for s in proxy keys git; do [ "$(stat -c %U:%G:%a $R/resolve-$s.sock)" = root:agentbox-$s:660 ] || exit 1; done'
   check "rootd holds no IP socket and listens on nothing but its unix sockets" 'p=$(systemctl show -P MainPID agentbox-rootd.service); [ "$p" -gt 0 ] && [ -z "$(ss -tuwanpH | grep "pid=$p,")" ]'
   check "rootd.db: root 0600, WAL" '[ "$(stat -c %U:%a /var/lib/agentbox/rootd.db)" = root:600 ] && [ "$(python3 -c "import sqlite3; print(sqlite3.connect(\"file:/var/lib/agentbox/rootd.db?mode=ro\", uri=True).execute(\"PRAGMA journal_mode\").fetchone()[0])")" = wal ]'
-  check "rootd.db tables are STRICT" '[ "$(python3 -c "import sqlite3; c=sqlite3.connect(\"file:/var/lib/agentbox/rootd.db?mode=ro\", uri=True); print(sum(1 for r in c.execute(\"select sql from sqlite_master where type=\x27table\x27\") if \"STRICT\" in r[0]))")" = 3 ]'
+  check "every rootd.db table is STRICT" '[ "$(python3 -c "import sqlite3; c=sqlite3.connect(\"file:/var/lib/agentbox/rootd.db?mode=ro\", uri=True); t=[r[0] for r in c.execute(\"select sql from sqlite_master where type=\x27table\x27\")]; print(len(t) > 0 and all(\"STRICT\" in x for x in t))")" = True ]'
 
   echo "== peer checks (§2.1)"
   useradd -r -M -s /usr/sbin/nologin -G agentbox-admin rg-admin 2>/dev/null; useradd -r -M -s /usr/sbin/nologin -G agentbox-keys rg-keysgrp 2>/dev/null
