@@ -150,6 +150,10 @@ func (s *server) serve(name string, c *net.UnixConn) {
 			if i < 0 {
 				break
 			}
+			if r, ok := attachRequest(buf[:i]); ok && name == sockAdmin {
+				s.attach(c, r, buf[i+1:])
+				return
+			}
 			if _, err := c.Write(s.lineFrom(name, p, buf[:i])); err != nil {
 				return
 			}

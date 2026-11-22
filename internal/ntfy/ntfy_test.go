@@ -1,6 +1,11 @@
 package ntfy
 
 import (
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -51,5 +56,33 @@ func TestSettleUID(t *testing.T) {
 	}
 	if err := settleUID(func() (string, error) { return root, nil }, "972", 10, 0); err == nil {
 		t.Error("a process that stays root passed")
+	}
+}
+
+func TestPublish(t *testing.T) {
+	dir := t.TempDir()
+	sock, tok := filepath.Join(dir, "ntfy.sock"), filepath.Join(dir, "token")
+	os.WriteFile(tok, []byte("tk_test\n"), 0o600)
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan string, 1)
+	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got <- r.Method + " " + r.URL.Path + " " + r.Header.Get("Authorization") + " " + r.Header.Get("Title") + " " + string(b)
+		if r.URL.Path == "/denied" {
+			w.WriteHeader(http.StatusForbidden)
+		}
+	}))
+	defer ln.Close()
+	if err := Publish(sock, tok, AlertTopic, "t", "m"); err != nil {
+		t.Fatal(err)
+	}
+	if g := <-got; g != "POST /agentbox-alerts Bearer tk_test t m" {
+		t.Fatalf("request: %q", g)
+	}
+	if err := Publish(sock, tok, "denied", "t", "m"); err == nil {
+		t.Fatal("a 403 must fail")
 	}
 }

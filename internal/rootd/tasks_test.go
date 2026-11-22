@@ -12,6 +12,7 @@ import (
 
 	"agentbox/internal/ids"
 	"agentbox/internal/rootd/accounts"
+	"agentbox/internal/rootd/attach"
 	"agentbox/internal/task"
 )
 
@@ -213,6 +214,23 @@ func TestTaskStartNeedsAudit(t *testing.T) {
 	r.db.QueryRow(`SELECT end_reason FROM task_registry WHERE task=?`, id).Scan(&why)
 	if why != "failed" {
 		t.Fatalf("end_reason %q", why)
+	}
+}
+
+// §4.2: an attach blocks tasks on its workspace from its start until a clean token scan.
+func TestTaskStartAttachBlock(t *testing.T) {
+	r := newRig(t)
+	if err := attach.Begin(r.db, "claude", "ses_1", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if rep := r.t.start(ids.New(ids.Task), "claude", "daemon"); rep["reason"] != "attach_blocked" || len(r.launch) != 0 {
+		t.Fatalf("started during an attach: %v", rep)
+	}
+	if err := attach.End(r.db, "claude", "ses_1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if rep := r.t.start(ids.New(ids.Task), "claude", "daemon"); rep["ok"] != true {
+		t.Fatalf("a clean scan still blocks: %v", rep)
 	}
 }
 

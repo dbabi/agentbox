@@ -5,8 +5,12 @@ package ntfy
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
@@ -278,4 +282,37 @@ func checkStatusUID(status, uid string) error {
 		}
 	}
 	return errors.New("fwcheck: no Uid line in ntfy's /proc status")
+}
+
+// AlertTopic is where box alerts go (§4.2's token-scan hit, and later alerts).
+const AlertTopic = "agentbox-alerts"
+
+// Publish posts one message to topic on ntfy's Unix socket with NotifyUser's token. The caller must reach the socket
+// (root, or the agentbox-notify group).
+func Publish(sock, tokenPath, topic, title, msg string) error {
+	tok, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return err
+	}
+	c := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+		}}}
+	req, err := http.NewRequest(http.MethodPost, "http://ntfy/"+topic, strings.NewReader(msg))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tok)))
+	req.Header.Set("Title", title)
+	req.Header.Set("Priority", "high")
+	resp, err := c.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("ntfy publish: %s: %s", resp.Status, bytes.TrimSpace(b))
+	}
+	return nil
 }

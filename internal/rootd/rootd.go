@@ -29,6 +29,7 @@ import (
 	"agentbox/internal/fw"
 	"agentbox/internal/ops"
 	"agentbox/internal/rootd/accounts"
+	"agentbox/internal/rootd/attach"
 	"agentbox/internal/rootd/nl"
 	"agentbox/internal/rootd/quota"
 	"agentbox/internal/rootd/resolve"
@@ -49,6 +50,9 @@ type Config struct {
 	Effects        map[string]Effect // the agent ops rootd can execute, by name
 	RawAudit       bool              // AGENTBOX_TEST_AUDIT_RAW: INTENT args without their audit classes (test VMs only)
 	Tasks          TaskConfig        // task.start and task.stop (§4.2)
+	Attach         attach.Runner     // runs agent.attach sessions; nil: attach.Podman with the task image
+	AttachRoot     string            // /var/lib/agentbox (attach.Root) unless a test sets it
+	Alert          func(title, msg string) error
 }
 
 // Socket names: each .socket unit sets FileDescriptorName= to one of these.
@@ -81,7 +85,7 @@ func OpenDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("rootd.db: journal_mode=%s synchronous=%d, need wal and FULL (2)", mode, syncv)
 	}
-	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema} {
+	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, attach.Schema} {
 		if _, err := db.Exec(schema); err != nil {
 			db.Close()
 			return nil, err
@@ -186,6 +190,16 @@ func Run(cfg Config) error {
 	}
 	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
 	s.tasks.resume()
+	if s.cfg.Attach == nil {
+		t := s.tasks.cfg
+		s.cfg.Attach = attach.Podman{Seccomp: t.Seccomp, Image: t.Image, HostUsr: t.HostUsr, Ensure: func(agent string) error {
+			a, err := t.Accounts.Lookup(agent)
+			if err != nil || t.EnsureImage == nil {
+				return err
+			}
+			return t.EnsureImage(a)
+		}}
+	}
 	for name, ln := range lns {
 		go s.accept(name, ln)
 	}
@@ -235,6 +249,9 @@ type server struct {
 	nested  func(subvol string) ([]string, error)
 	// applyOS runs accounts.Reconcile in agentbox-accounts.service: rootd's ProtectSystem=strict keeps /etc read-only here
 	applyOS func() error
+
+	live sync.Map // agent -> session id of each running attach
+	seen sync.Map // agent -> *attach.Seen: every session-home token version since rootd started, in memory only
 }
 
 // refresh re-resolves ntfy.sh:443 into ntfy_dst (§6.1). A failure only logs: ntfy is down until the next try.
@@ -328,13 +345,19 @@ type request struct {
 	Args  json.RawMessage `json:"args,omitempty"`
 	Agent string          `json:"agent,omitempty"`
 	Chain []string        `json:"chain,omitempty"`
-	// task.start, task.stop and task.new (§4.2)
+	// task.start, task.stop and task.new (§4.2); agent.attach takes cli too
 	Origin   string `json:"origin,omitempty"`
 	Reason   string `json:"reason,omitempty"`
 	Prompt   string `json:"prompt,omitempty"`
 	CLI      string `json:"cli,omitempty"`
 	Asks     *int   `json:"asks,omitempty"`
 	Deadline string `json:"deadline,omitempty"` // a Go duration, at most 2h
+	// rootd-admin.sock agent.attach (§4.2): name is the agent; the CLI's extra arguments, the terminal
+	Workspace string   `json:"workspace,omitempty"`
+	Argv      []string `json:"argv,omitempty"`
+	Rows      int      `json:"rows,omitempty"`
+	Cols      int      `json:"cols,omitempty"`
+	Term      string   `json:"term,omitempty"`
 }
 
 // peer is a connection's SO_PEERCRED uid and SO_PEERGROUPS groups.
@@ -441,6 +464,14 @@ func (s *server) admin(r request, p peer) reply {
 		return reply{"ok": true, "agents": all}
 	case "sets.refill":
 		return s.refill(r)
+	case "attach.status":
+		l, err := attach.List(s.db)
+		if err != nil {
+			return reply{"ok": false, "error": err.Error()}
+		}
+		return reply{"ok": true, "blocks": l}
+	case "attach.rescan":
+		return s.rescan(r.Name)
 	case "egress.list":
 		l, err := resolve.LoadLists(s.cfg.EgressDir)
 		if err != nil {
