@@ -207,9 +207,9 @@ check "  ... after a rootd restart a clean rescan keeps the block: the rotated-a
 check "  ... and --ack-restart lifts it once the token is gone from files and objects" '$B attach rescan --agent at --ack-restart | grep -q "\"blocked\":false" &&
   $B attach status | grep -qF "\"blocks\":[]"'
 check "the agent can't use rootd-admin.sock" 'grep -q "status-as-agent=1" /tmp/gate-a3'
-check "audit: each attach is an INTENT, a tainted session writer of workspace:at, a WRITER_DEL and a RESULT" '
+check "audit: each attach is an INTENT, a tainted session writer of workspace:at#<N>, a WRITER_DEL and a RESULT" '
   cat /var/lib/agentbox/audit/seg-*.jsonl > /tmp/gate-audit && [ "$(grep -c "\"name\":\"agent.attach\"" /tmp/gate-audit)" -ge 3 ] &&
-  [ "$(grep WRITER_ADD /tmp/gate-audit | grep "session:ses_" | grep -c "workspace:at")" -ge 3 ] &&
+  [ "$(grep WRITER_ADD /tmp/gate-audit | grep "session:ses_" | grep -c "\"workspace\":\"workspace:at#$((U - 70000))\"")" -ge 3 ] &&
   [ "$(grep "\"type\":\"TAINT\"" /tmp/gate-audit | grep "session:ses_" | grep -c "\"source\":\"attach\"")" -ge 3 ] &&
   [ "$(grep WRITER_DEL /tmp/gate-audit | grep -c "session:ses_")" -ge 3 ]'
 check "the audit chain verifies" '$B audit verify'

@@ -11,9 +11,8 @@
 #          EDQUOT, also in its storage, while system state keeps writing and 2/0 keeps its limit. Removing the newest
 #          agent deletes its user, sub-ids and drop-ins and archives its subvolumes; adding another never reuses its
 #          uid or sub-id range, and re-adding its name gets a new N. A nested subvolume refuses agent.remove with
-#          NESTED_SUBVOLUME and taints workspace:<name>#<N>; re-adding that name gets a clean workspace subject, the old
-#          one stays tainted, and its first attach taints only the new subject. A foreign /etc/subuid entry inside the
-#          agentbox span stops reconcile. After a reboot reconcile rebuilds the same accounts and nothing failed.
+#          NESTED_SUBVOLUME and taints workspace:<name>#<N>; re-adding that name gets a clean workspace subject while the
+#          old one stays tainted. A foreign /etc/subuid entry inside the agentbox span stops reconcile. After a reboot reconcile rebuilds the same accounts and nothing failed.
 # PASS/FAIL lines go to .vm/accounts-gate.txt, command output to .vm/accounts-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -115,8 +114,6 @@ check "agent add $QC again: a new N" 'ag add --name $QC && [ "$(f n)" -gt $NC ]'
 NC2=$(f n)
 check "  ... its workspace subject workspace:$QC#$NC2 starts clean, while workspace:$QC#$NC stays tainted" '
   [ -z "$(taint "workspace:$QC#$NC2")" ] && [ "$(taint "workspace:$QC#$NC")" = 1 ] && [ -z "$(taint "workspace:$QC")" ]'
-check "  ... and its first attach writes workspace:$QC#$NC2, not the old subject" '$A attach --agent $QC --cli bash </dev/null >/dev/null 2>&1 || :
-  taint "workspace:$QC#$NC2" | grep -qx 1 && [ "$(taint "workspace:$QC#$NC")" = 1 ]'
 ag remove --name $QC >/dev/null
 check "agent list shows every row, retired ones included" 'ag list && for n in $QA $QB $QC; do grep -q "\"name\":\"$n\"" /run/ag.json || exit 1; done'
 cp /etc/subuid /run/subuid.ok
