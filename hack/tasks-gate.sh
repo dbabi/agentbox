@@ -218,15 +218,15 @@ check "a running task's processes are all in its unit's cgroup (--cgroups=split)
 T4=$(cat /tmp/tg-t4 2>/dev/null || :)
 check "agent.attach is refused while a task of the agent runs, and leaves no block" '! $B attach --agent gt --cli bash </dev/null >/tmp/tg-at 2>&1 &&
   cat /tmp/tg-at && grep -q "a task of this agent is running" /tmp/tg-at && $B attach status | grep -qF "\"blocks\":[]"'
-check "a running task, tainted mid-run (a TAINT for task:<id>), taints its workspace" '
+check "a running task, tainted mid-run (a TAINT for task:<id>), taints its workspace (workspace:gt#N)" '
   $B audit send --socket /run/agentbox-audit/rootd.sock "{\"type\":\"TAINT\",\"subject\":\"task:$T4\",\"source\":\"gate:mid-run\"}" &&
-  $B audit send --socket /run/agentbox-audit/rootd.sock "{\"type\":\"taint.get\",\"holder\":\"task:$T4\"}" | grep -q "\"subject\":\"workspace:gt\",\"tainted\":true"'
+  $B audit send --socket /run/agentbox-audit/rootd.sock "{\"type\":\"taint.get\",\"holder\":\"task:$T4\"}" | grep -q "\"subject\":\"workspace:gt#$((U - 70000))\",\"tainted\":true"'
 touch $W/t4.go
 check "  ... and it ends normally" 'wait_end $T4 90 && [ "$(field $T4 end_reason)" = completed ]'
 echo 'touch /workspace/t5.up; i=0; while [ ! -e /workspace/t5.go ] && [ $i -lt 100 ]; do sleep 0.5; i=$((i+1)); done' > /tmp/tg-p
 check "  ... the next task starts tainted: rootd reports it, and auditd's view of the running task holds the tainted workspace" 'T5=$(new 2m < /tmp/tg-p) &&
   grep -q "\"tainted\":true" /tmp/tg-new && wait_file $W/t5.up 60 &&
-  $B audit send --socket /run/agentbox-audit/rootd.sock "{\"type\":\"taint.get\",\"holder\":\"task:$T5\"}" | grep -q "\"subject\":\"workspace:gt\",\"tainted\":true"'
+  $B audit send --socket /run/agentbox-audit/rootd.sock "{\"type\":\"taint.get\",\"holder\":\"task:$T5\"}" | grep -q "\"subject\":\"workspace:gt#$((U - 70000))\",\"tainted\":true"'
 touch $W/t5.go
 
 # --- #13: user-unit and container-config escapes ---

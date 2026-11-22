@@ -234,61 +234,65 @@ func TestNewBootRotates(t *testing.T) {
 
 func TestTaintWriteRules(t *testing.T) {
 	b := newBox(t)
-	b.ok("proxy", `{"type":"TAINT","subject":"workspace:alice","source":"connect:x"}`)
-	if r := b.taint("workspace:alice"); !r.Tainted || r.Epoch != 1 {
+	b.ok("proxy", `{"type":"TAINT","subject":"workspace:alice#1","source":"connect:x"}`)
+	if r := b.taint("workspace:alice#1"); !r.Tainted || r.Epoch != 1 {
 		t.Fatalf("want tainted at epoch 1, got %+v", r)
 	}
-	b.ok("keys", `{"type":"TAINT","subject":"workspace:alice","source":"other","tainted":1}`) // re-taint: no epoch move
-	if r := b.taint("workspace:alice"); r.Epoch != 1 {
+	b.ok("keys", `{"type":"TAINT","subject":"workspace:alice#1","source":"other","tainted":1}`) // re-taint: no epoch move
+	if r := b.taint("workspace:alice#1"); r.Epoch != 1 {
 		t.Fatalf("re-taint moved the epoch: %+v", r)
 	}
 	for _, p := range []string{"agentboxd", "proxy", "keys", "git"} {
 		for _, rec := range []string{
-			`{"type":"TAINT","subject":"workspace:alice","source":"x","tainted":0}`,
-			`{"type":"TAINT","subject":"workspace:alice","source":"x","tainted":false}`,
-			`{"type":"TAINT","subject":"workspace:alice","source":"x","epoch":7}`,
-			`{"type":"INTENT","opId":"op-` + p + `","name":"taint.clear","origin":"admin","args":{"subject":"workspace:alice","contentId":"S1"},"taintEpochs":{"workspace:alice":1}}`,
+			`{"type":"TAINT","subject":"workspace:alice#1","source":"x","tainted":0}`,
+			`{"type":"TAINT","subject":"workspace:alice#1","source":"x","tainted":false}`,
+			`{"type":"TAINT","subject":"workspace:alice#1","source":"x","epoch":7}`,
+			`{"type":"INTENT","opId":"op-` + p + `","name":"taint.clear","origin":"admin","args":{"subject":"workspace:alice#1","contentId":"S1"},"taintEpochs":{"workspace:alice#1":1}}`,
 			`{"type":"RESULT","opId":"op-` + p + `","name":"taint.clear","status":"executed"}`,
 			`{"type":"WRITER_DEL","holder":"task:T1"}`,
 		} {
 			b.nack(p, rec, CodeViolation)
 		}
 	}
-	if r := b.taint("workspace:alice"); !r.Tainted || r.Epoch != 1 {
+	if r := b.taint("workspace:alice#1"); !r.Tainted || r.Epoch != 1 {
 		t.Fatalf("a clear from a non-rootd socket changed the subject: %+v", r)
 	}
-	b.nack(rootdProducer, `{"type":"TAINT","subject":"workspace:alice","source":"x","tainted":0}`, CodeBadRecord)
-	clr := `{"type":"INTENT","opId":"op-1","name":"taint.clear","origin":"admin","signer":"boxadmin:ssh","args":{"subject":"workspace:alice","contentId":"S1"},"taintEpochs":{"workspace:alice":%d}}`
+	b.nack(rootdProducer, `{"type":"TAINT","subject":"workspace:alice#1","source":"x","tainted":0}`, CodeBadRecord)
+	clr := `{"type":"INTENT","opId":"op-1","name":"taint.clear","origin":"admin","signer":"boxadmin:ssh","args":{"subject":"workspace:alice#1","contentId":"S1"},"taintEpochs":{"workspace:alice#1":%d}}`
 	r := b.nack(rootdProducer, strings.Replace(clr, "%d", "0", 1), CodeStale)
-	if r.Moved["workspace:alice"] != 1 {
+	if r.Moved["workspace:alice#1"] != 1 {
 		t.Fatalf("STALE must name the current epoch: %+v", r)
 	}
 	b.nack(rootdProducer, `{"type":"RESULT","opId":"op-1","status":"executed"}`, CodeUnknownOp) // no INTENT yet
 	b.ok(rootdProducer, strings.Replace(clr, "%d", "1", 1))
 	b.nack(rootdProducer, strings.Replace(clr, "%d", "1", 1), CodeDuplicate)
 	b.nack("agentboxd", `{"type":"RESULT","opId":"op-1","status":"executed"}`, CodeUnknownOp) // op-1 is rootd's
-	if r := b.taint("workspace:alice"); !r.Tainted {
+	if r := b.taint("workspace:alice#1"); !r.Tainted {
 		t.Fatal("INTENT alone cleared")
 	}
 	if rep := b.ok(rootdProducer, `{"type":"RESULT","opId":"op-1","status":"executed"}`); rep.Applied == nil || !*rep.Applied {
 		t.Fatalf("clear not applied: %+v", rep)
 	}
-	if r := b.taint("workspace:alice"); r.Tainted || r.Epoch != 2 {
+	if r := b.taint("workspace:alice#1"); r.Tainted || r.Epoch != 2 {
 		t.Fatalf("want the row kept, clean at epoch 2, got %+v", r)
 	}
-	b.ok("proxy", `{"type":"TAINT","subject":"workspace:alice","source":"again"}`)
-	if r := b.taint("workspace:alice"); !r.Tainted || r.Epoch != 3 {
+	b.ok("proxy", `{"type":"TAINT","subject":"workspace:alice#1","source":"again"}`)
+	if r := b.taint("workspace:alice#1"); !r.Tainted || r.Epoch != 3 {
 		t.Fatalf("re-taint after a clear: want epoch 3, got %+v", r)
 	}
 	// a clear whose epoch moved between INTENT and RESULT doesn't apply
 	b.ok(rootdProducer, strings.Replace(strings.Replace(clr, "op-1", "op-2", 1), "%d", "3", 1))
-	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-3","name":"workspace.restore","origin":"admin","signer":"boxadmin:ssh","agent":"alice","args":{"id":"S9"}}`)
+	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-3","name":"workspace.restore","origin":"admin","signer":"boxadmin:ssh","agent":"alice","workspace":"workspace:alice#1","args":{"id":"S9"}}`)
 	if rep := b.ok(rootdProducer, `{"type":"RESULT","opId":"op-2","status":"executed"}`); rep.Applied == nil || *rep.Applied {
 		t.Fatalf("a clear applied after its epoch moved: %+v", rep)
 	}
-	if r := b.taint("workspace:alice"); !r.Tainted || r.Epoch != 4 {
+	if r := b.taint("workspace:alice#1"); !r.Tainted || r.Epoch != 4 {
 		t.Fatalf("restore: want max(tainted, clean)=tainted at epoch 4, got %+v", r)
 	}
+	for _, ws := range []string{`"workspace:bob#2"`, `"workspace:alice"`, `"workspace:alice#x"`, `"workspace:alice#1#2"`, `""`} {
+		b.nack(rootdProducer, `{"type":"INTENT","opId":"op-r","name":"workspace.restore","origin":"admin","signer":"boxadmin:ssh","agent":"alice","workspace":`+ws+`,"args":{"id":"S9"}}`, CodeBadRecord)
+	}
+	b.nack(rootdProducer, `{"type":"INTENT","opId":"op-w","name":"app.deploy","workspace":"workspace:alice#1"}`, CodeBadRecord)
 	b.nack(rootdProducer, `{"type":"INTENT","opId":"op-4","name":"taint.clear","origin":"admin","args":{"subject":"task:T1","contentId":"x"},"taintEpochs":{"task:T1":0}}`, CodeBadRecord)
 	if _, err := b.s.db.Exec("DELETE FROM taint"); err == nil {
 		t.Fatal("taint rows must never be deleted")
@@ -298,12 +302,12 @@ func TestTaintWriteRules(t *testing.T) {
 
 func TestWritersAndTaintGet(t *testing.T) {
 	b := newBox(t)
-	b.ok(rootdProducer, `{"type":"WRITER_ADD","holder":"task:T1","workspace":"workspace:alice"}`)
+	b.ok(rootdProducer, `{"type":"WRITER_ADD","holder":"task:T1","workspace":"workspace:alice#1"}`)
 	b.ok(rootdProducer, `{"type":"WRITER_ADD","holder":"session:S1","workspace":"workspace:bob"}`)
 	b.ok(rootdProducer, `{"type":"SUBJECT_ADD","task":"task:T1","subject":"task:P0"}`)
-	b.nack("agentboxd", `{"type":"WRITER_ADD","holder":"task:T9","workspace":"workspace:alice"}`, CodeViolation)
+	b.nack("agentboxd", `{"type":"WRITER_ADD","holder":"task:T9","workspace":"workspace:alice#1"}`, CodeViolation)
 	b.ok("keys", `{"type":"TAINT","subject":"task:T1","source":"llm"}`)
-	if r := b.taint("workspace:alice"); !r.Tainted || r.Epoch != 1 {
+	if r := b.taint("workspace:alice#1"); !r.Tainted || r.Epoch != 1 {
 		t.Fatalf("tainting a writer must taint its workspace in the same commit: %+v", r)
 	}
 	b.ok(rootdProducer, `{"type":"TAINT","subject":"session:S1","source":"attach"}`)
@@ -320,7 +324,7 @@ func TestWritersAndTaintGet(t *testing.T) {
 	for _, s := range rep.View.Subjects {
 		got[s.Subject] = s
 	}
-	if !got["task:T1"].Tainted || !got["workspace:alice"].Tainted || got["task:P0"].Tainted || len(got) != 3 {
+	if !got["task:T1"].Tainted || !got["workspace:alice#1"].Tainted || got["task:P0"].Tainted || len(got) != 3 {
 		t.Fatalf("taint.get subjects: %+v", rep.View.Subjects)
 	}
 	b.nack("proxy", `{"type":"taint.get","holder":"task:T1"}`, CodeNotAllowed)
@@ -348,7 +352,7 @@ func TestDiskFull(t *testing.T) {
 	if fi, err := os.Stat(res); err != nil || fi.Size() != 1<<20 {
 		t.Fatalf("reserve missing at start: %v", err)
 	}
-	b.ok("proxy", `{"type":"TAINT","subject":"workspace:alice","source":"x"}`)
+	b.ok("proxy", `{"type":"TAINT","subject":"workspace:alice#1","source":"x"}`)
 	b.avail = 1000 // below the reserve
 	b.nack("proxy", `{"type":"TAINT","subject":"task:T1","source":"x"}`, CodeDiskFull)
 	b.nack(rootdProducer, `{"type":"INTENT","opId":"op-a","name":"app.deploy","taintEpochs":{}}`, CodeDiskFull)
@@ -356,11 +360,11 @@ func TestDiskFull(t *testing.T) {
 	if _, err := os.Stat(res); !os.IsNotExist(err) {
 		t.Fatal("disk-full mode keeps the reserve")
 	}
-	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-c","name":"taint.clear","origin":"admin","signer":"boxadmin:ssh","args":{"subject":"workspace:alice","contentId":"S1"},"taintEpochs":{"workspace:alice":1}}`)
+	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-c","name":"taint.clear","origin":"admin","signer":"boxadmin:ssh","args":{"subject":"workspace:alice#1","contentId":"S1"},"taintEpochs":{"workspace:alice#1":1}}`)
 	b.ok(rootdProducer, `{"type":"RESULT","opId":"op-c","status":"executed"}`)
 	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-r","name":"agent.remove","origin":"admin","signer":"boxadmin:ssh","args":{"name":"bob"}}`)
 	b.ok(rootdProducer, `{"type":"RESULT","opId":"op-r","status":"executed"}`)
-	if r := b.taint("workspace:alice"); r.Tainted {
+	if r := b.taint("workspace:alice#1"); r.Tainted {
 		t.Fatal("taint.clear did not run in disk-full mode")
 	}
 	b.avail = 1<<20 + 1<<30 - 1 // not yet above reserve + 1 GiB
@@ -816,7 +820,7 @@ func TestSinkCheck(t *testing.T) {
 		{`{"type":"INTENT","opId":"s10","name":"file.write","args":{"path":"/srv/a/x","content":` + h + `},"value":"sk-live-top"}`, "/value: not an INTENT field"},
 		{`{"type":"INTENT","opId":"s11","name":"secret.sett","args":{"value":"sk-live-unreg"}}`, "/name: not a registry op"},
 		{`{"type":"INTENT","opId":"s12","args":{"value":"sk-live-noname"}}`, "/name: not a registry op"},
-		{`{"type":"TAINT","subject":"workspace:alice","source":"` + big + `"}`, "/source: keep-class string over"},
+		{`{"type":"TAINT","subject":"workspace:alice#1","source":"` + big + `"}`, "/source: keep-class string over"},
 		{`{"type":"ALERT","Subject":"sk-live-alert"}`, `/Subject: a case variant of "subject"`},
 	} {
 		if r := b.nack(rootdProducer, c.rec, CodeBadRecord); !strings.Contains(r.Detail, c.why) || strings.Contains(r.Detail, "sk-live") {
@@ -837,5 +841,62 @@ func TestSinkCheck(t *testing.T) {
 		if strings.Contains(string(data), "sk-live") || strings.Contains(string(data), `"hello"`) {
 			t.Fatalf("%s holds a NACKed value", SegName(r.Seg))
 		}
+	}
+}
+
+// #95: name-keyed workspace rows from earlier releases move to the agent that holds the name now; a name with no agent
+// keeps its row, and the move runs once.
+func TestRekeyWorkspaces(t *testing.T) {
+	db, err := openTaintDB(filepath.Join(t.TempDir(), "taint.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, q := range []string{
+		`INSERT INTO taint(subject, tainted, epoch, source) VALUES('workspace:alice', 1, 3, 'x'), ('workspace:gone', 1, 1, 'x'),
+			('workspace:bob#2', 0, 2, 'x'), ('task:T1', 1, 1, 'x')`,
+		`INSERT INTO writers VALUES('task:T1', 'workspace:alice'), ('session:S1', 'workspace:gone')`,
+		`INSERT INTO task_subjects VALUES('task:T1', 'workspace:alice')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := 0
+	uid := func(name string) (int, error) {
+		calls++
+		if name == "alice" {
+			return 70007, nil
+		}
+		return 0, errors.New("no such user")
+	}
+	dump := func() string {
+		var out []string
+		for _, q := range []string{"SELECT subject || ' ' || tainted || ' ' || epoch FROM taint", "SELECT holder || ' ' || workspace FROM writers",
+			"SELECT task || ' ' || subject FROM task_subjects"} {
+			rows, err := db.Query(q + " ORDER BY 1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+				var s string
+				rows.Scan(&s)
+				out = append(out, s)
+			}
+			rows.Close()
+		}
+		return strings.Join(out, "; ")
+	}
+	want := "task:T1 1 1; workspace:alice#7 1 3; workspace:bob#2 0 2; workspace:gone 1 1; session:S1 workspace:gone; task:T1 workspace:alice#7; task:T1 workspace:alice#7"
+	for i := 0; i < 2; i++ {
+		if err := rekeyWorkspaces(db, uid); err != nil {
+			t.Fatal(err)
+		}
+		if got := dump(); got != want {
+			t.Fatalf("run %d:\n got %s\nwant %s", i, got, want)
+		}
+	}
+	if calls != 3 { // alice and gone, then gone again: rows already keyed by N are never looked up
+		t.Fatalf("uid lookups: %d", calls)
 	}
 }

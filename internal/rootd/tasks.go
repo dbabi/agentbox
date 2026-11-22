@@ -301,7 +301,7 @@ func (t *tasks) provenance(id, agent, origin string) (startInfo, string) {
 // and has each service bind there, then the one launch over the agent's user bus. It reports whether the task starts
 // tainted: by its origin, or by live workspace taint (a tainted workspace taints every task that mounts it, §5.2).
 func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
-	if err := t.audit(map[string]any{"type": "WRITER_ADD", "holder": "task:" + id, "workspace": "workspace:" + acct.Name}); err != nil {
+	if err := t.audit(map[string]any{"type": "WRITER_ADD", "holder": "task:" + id, "workspace": accounts.WorkspaceSubject(acct.Name, int(acct.UID))}); err != nil {
 		return false, fmt.Errorf("auditd WRITER_ADD: %v", err)
 	}
 	if si.taint {

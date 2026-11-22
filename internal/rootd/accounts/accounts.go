@@ -61,7 +61,13 @@ type Agent struct {
 	Active bool   `json:"active"`
 }
 
-func (a Agent) UID() int        { return UIDBase + a.N }
+func (a Agent) UID() int { return UIDBase + a.N }
+
+// WorkspaceSubject is the workspace's taint.db subject, keyed by N as well as the name: a name comes back after
+// agent.remove, N never does, so a new agent of an old name starts with a clean workspace (#95).
+func WorkspaceSubject(name string, uid int) string {
+	return "workspace:" + name + "#" + strconv.Itoa(uid-UIDBase)
+}
 func (a Agent) User() string    { return "ag-" + a.Name }
 func (a Agent) SubID() int      { return SubBase + a.N*SubSize }
 func (a Agent) Dir() string     { return quota.Data + "/agents/" + a.Name }
