@@ -93,7 +93,7 @@ sum0=$(sha256sum < $H/.claude/settings.json)
 
 # the control: outside attach every plant runs
 T=$(mktemp -d) && chown ag-at $T
-as sh -c "cd $W && HOME=$T timeout 60 claude -p hi --setting-sources user,project --dangerously-skip-permissions" </dev/null >/tmp/gate-ctl 2>&1 || :
+as sh -c "cd $W && HOME=$T timeout 60 claude -p hi --setting-sources user,project,local --dangerously-skip-permissions" </dev/null >/tmp/gate-ctl 2>&1 || :
 as sh -c "cd $W && HOME=$H timeout 60 claude -p hi --setting-sources user" </dev/null >>/tmp/gate-ctl 2>&1 || :
 as git -C $W -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m control || :
 check "control: outside attach the project and local hooks, the .mcp.json server, the user hook and pre-commit all run" \
@@ -101,8 +101,8 @@ check "control: outside attach the project and local hooks, the .mcp.json server
 rm -rf $T; rm -f $M/*
 check "  ... and session-home settings as planted" '[ "$(sha256sum < $H/.claude/settings.json)" = "$sum0" ]'
 
-check "attach 1: claude with its attach flags runs and ends, token scan clean" 'attach --cli claude -- -p hi </dev/null >/tmp/gate-a1 2>&1; cat /tmp/gate-a1;
-  grep -qF "[agentbox] session ended; token scan: clean, tasks may start" /tmp/gate-a1'
+check "attach 1: claude with its attach flags starts (and stops at login), the token scan is clean" 'attach --cli claude -- -p hi </dev/null >/tmp/gate-a1 2>&1; cat /tmp/gate-a1;
+  grep -qF "[agentbox] session ended; token scan: clean, tasks may start" /tmp/gate-a1 && grep -q "Not logged in" /tmp/gate-a1'
 check "  ... and runs no SessionStart hook (project, local or user) and no .mcp.json server" 'sleep 2; none || { markers; false; }'
 check "  ... rootd ran it as cli claude in a session unit; none is left" 'journalctl -b -u agentbox-rootd -o cat | grep -q "agent.attach at: session ses_[0-9A-Z]* on /dev/pts/[0-9]*, cli claude" &&
   [ -z "$(systemctl list-units --all --no-legend "agentbox-attach-*")" ]'
@@ -111,7 +111,7 @@ b64=Z2F0ZV9vc2M1Mg # base64 of gate_osc52, sent in two halves so the echoed comm
 cat > /tmp/gate-in2 <<IN
 cd /workspace
 git -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m attach; echo "commit=\$?"
-claude -p hi --dangerously-skip-permissions </dev/null >/dev/null 2>&1; echo "handclaude=\$?"
+claude -p hi --dangerously-skip-permissions </dev/null 2>&1 | grep -c "Not logged in" | sed "s/^/handclaude=/"
 echo '{"hooks":{}}' >> ~/.claude/settings.json; echo "write=\$?"
 rm -f ~/.claude/settings.json; echo "rm=\$?"
 mv ~/.claude ~/.claude-moved; echo "mv=\$?"
@@ -122,7 +122,7 @@ IN
 check "attach 2: a bash session, input relayed, token scan clean" 'attach --cli bash </tmp/gate-in2 >/tmp/gate-a2 2>&1; cat -v /tmp/gate-a2;
   grep -qF "[agentbox] session ended; token scan: clean" /tmp/gate-a2 && grep -q "commit=0" /tmp/gate-a2'
 check "  ... git commit in the attach shell ran no pre-commit hook" '! [ -e $M/m-precommit ]'
-check "  ... claude started by hand without the flags ran no hook and no .mcp.json server (managed settings)" 'grep -q "handclaude=" /tmp/gate-a2 && none || { markers; false; }'
+check "  ... claude started by hand without the flags ran no hook and no .mcp.json server (managed settings)" 'grep -q "handclaude=1" /tmp/gate-a2 && none || { markers; false; }'
 check "  ... the session could not write, remove or move ~/.claude/settings.json or ~/.claude" \
   'grep -q "write=1" /tmp/gate-a2 && grep -q "rm=1" /tmp/gate-a2 && grep -q "mv=1" /tmp/gate-a2 && grep -q "mvhome=1" /tmp/gate-a2'
 check "session-home settings are unchanged, byte for byte" '[ -d $H/.claude ] && [ ! -e $H/.claude-moved ] && [ "$(sha256sum < $H/.claude/settings.json)" = "$sum0" ]'
@@ -171,6 +171,7 @@ check "audit: each attach is an INTENT, a tainted session writer of workspace:at
 check "the audit chain verifies" '$B audit verify'
 check "no session unit is left and no unit failed" '[ -z "$(systemctl list-units --all --no-legend "agentbox-attach-*")" ] && [ -z "$(systemctl --failed --no-legend --plain)" ]'
 journalctl -b -u agentbox-rootd -o short-precise --no-pager | grep -i attach | tail -40
+tail -c 20000 /tmp/gate-check.log
 rm -rf $M /tmp/gate-* /usr/local/bin/claude $H $W /var/lib/agentbox/control/exports/at; userdel ag-at 2>/dev/null || :
 echo "fails=$fails"
 EOF

@@ -5,10 +5,12 @@ import (
 	"compress/zlib"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -136,6 +138,7 @@ func TestBlock(t *testing.T) {
 }
 
 func TestPrepare(t *testing.T) {
+	defer syscall.Umask(syscall.Umask(0o077)) // rootd's UMask=0077
 	root := t.TempDir()
 	uid, gid := os.Getuid(), os.Getgid()
 	p := AgentPaths(root, "at", "ses_1")
@@ -165,11 +168,14 @@ func TestPrepare(t *testing.T) {
 	}
 	var set map[string]any
 	b, _ := os.ReadFile(filepath.Join(p.Exports, SettingsFile))
-	if json.Unmarshal(b, &set) != nil || set["disableAllHooks"] != true || set["autoMemoryEnabled"] != false {
+	if json.Unmarshal(b, &set) != nil || set["disableAllHooks"] != true || set["autoMemoryEnabled"] != false || fmt.Sprint(set["allowedMcpServers"]) != "[]" {
 		t.Fatalf("attach settings %s", b)
 	}
-	if fi, err := os.Stat(filepath.Join(p.Exports, NoHooks)); err != nil || !fi.IsDir() {
-		t.Fatal("no nohooks dir")
+	for _, f := range []string{p.Exports, filepath.Join(p.Exports, NoHooks), filepath.Join(p.Exports, SettingsFile),
+		filepath.Join(p.Codex, "config.toml")} {
+		if fi, err := os.Stat(f); err != nil || fi.Mode().Perm()&0o004 == 0 {
+			t.Errorf("%s: the session uid can't read it: %v %v", f, fi, err)
+		}
 	}
 	if l, _ := os.Readlink(filepath.Join(p.Codex, "auth.json")); l != Home+"/.codex/auth.json" {
 		t.Fatalf("codex auth link %q", l)
