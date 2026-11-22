@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -47,6 +48,7 @@ type Config struct {
 	SealCrash      func(string)      // audit.Files' crash-mid-seal test hook (AGENTBOX_TEST_CRASH); nil in production
 	Effects        map[string]Effect // the agent ops rootd can execute, by name
 	RawAudit       bool              // AGENTBOX_TEST_AUDIT_RAW: INTENT args without their audit classes (test VMs only)
+	Tasks          TaskConfig        // task.start and task.stop (§4.2)
 }
 
 // Socket names: each .socket unit sets FileDescriptorName= to one of these.
@@ -79,7 +81,7 @@ func OpenDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("rootd.db: journal_mode=%s synchronous=%d, need wal and FULL (2)", mode, syncv)
 	}
-	for _, schema := range []string{resolve.Schema, accounts.Schema} {
+	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema} {
 		if _, err := db.Exec(schema); err != nil {
 			db.Close()
 			return nil, err
@@ -179,6 +181,11 @@ func Run(cfg Config) error {
 		audit: func(r map[string]any) error { return auditSend(cfg.AuditSocket, r) },
 		store: accounts.EnsureStore, nested: nestedIn,
 		applyOS: func() error { _, err := quota.Run("systemctl", "start", accounts.Unit); return err }}
+	if cfg.Tasks.Accounts == nil {
+		cfg.Tasks.Accounts = idsAccounts{db}
+	}
+	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
+	s.tasks.resume()
 	for name, ln := range lns {
 		go s.accept(name, ln)
 	}
@@ -215,10 +222,11 @@ func refill(db *sql.DB, svc *resolve.Service) (resolve.RefillResult, error) {
 }
 
 type server struct {
-	cfg  Config
-	db   *sql.DB
-	svc  *resolve.Service
-	seal audit.Sealer
+	cfg   Config
+	tasks *tasks // nil: no task ops (tests)
+	db    *sql.DB
+	svc   *resolve.Service
+	seal  audit.Sealer
 	// audit sends one record to auditd's rootd producer socket and returns nil only on its ACK (auditSend)
 	audit func(map[string]any) error
 
@@ -234,6 +242,26 @@ func (s *server) refresh(ctx context.Context) {
 	if _, _, err := s.svc.Resolve(ctx, "ntfy", "", resolve.NtfyEntry); err != nil {
 		log.Printf("ntfy_dst refresh: %v", err)
 	}
+}
+
+// auditQuery sends a taint.get and returns auditd's reply.
+func auditQuery(sock string, rec map[string]any) (*auditReply, error) {
+	c, err := net.DialTimeout("unix", sock, 2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	b, _ := json.Marshal(rec)
+	if _, err := c.Write(append(b, '\n')); err != nil {
+		return nil, err
+	}
+	line, err := bufio.NewReader(c).ReadBytes('\n')
+	if err != nil {
+		return nil, err
+	}
+	var rep auditReply
+	return &rep, json.Unmarshal(line, &rep)
 }
 
 // auditSend writes one record on auditd's rootd producer socket and waits for the reply: nil only on an ACK.
@@ -300,13 +328,26 @@ type request struct {
 	Args  json.RawMessage `json:"args,omitempty"`
 	Agent string          `json:"agent,omitempty"`
 	Chain []string        `json:"chain,omitempty"`
+	// task.start, task.stop and task.new (§4.2)
+	Origin   string `json:"origin,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Prompt   string `json:"prompt,omitempty"`
+	CLI      string `json:"cli,omitempty"`
+	Asks     *int   `json:"asks,omitempty"`
+	Deadline string `json:"deadline,omitempty"` // a Go duration, at most 2h
+}
+
+// peer is a connection's SO_PEERCRED uid and SO_PEERGROUPS groups.
+type peer struct {
+	uid    uint32
+	groups []uint32
 }
 
 type reply map[string]any
 
 func fail(reason string) reply { return reply{"ok": false, "reason": reason} }
 
-func (s *server) handle(sock string, r request) reply {
+func (s *server) handle(sock string, p peer, r request) reply {
 	switch {
 	case sock == sockSeal:
 		err := fmt.Errorf("unknown call %q", r.Call)
@@ -322,9 +363,16 @@ func (s *server) handle(sock string, r request) reply {
 		}
 		return reply{"ok": true}
 	case sock == sockAdmin:
-		return s.admin(r)
+		return s.admin(r, p)
 	case sock == sockGate && r.Op == "task.op":
 		return s.taskOp(r)
+	case s.tasks == nil:
+	case sock == sockGate && r.Op == "task.start":
+		return s.tasks.start(r.Task, r.Agent, r.Origin)
+	case sock == sockGate && r.Op == "task.stop":
+		return s.tasks.stop(r.Task, r.Reason)
+	case (sock == sockGate || strings.HasPrefix(sock, "resolve-")) && r.Op == "task.list_live":
+		return s.tasks.listLive()
 	case len(sock) > 8 && sock[:8] == "resolve-" && r.Op == "resolve":
 		svc := sock[8:]
 		e, err := resolve.ParseEntry(r.Host + ":" + strconv.Itoa(r.Port))
@@ -348,8 +396,13 @@ func (s *server) handle(sock string, r request) reply {
 	return fail("bad_request")
 }
 
-func (s *server) admin(r request) reply {
+func (s *server) admin(r request, p peer) reply {
 	switch r.Op {
+	case "task.new", "task.stop", "task.list":
+		if s.tasks == nil {
+			return fail("bad_request")
+		}
+		return s.taskAdmin(r, p)
 	case "egress.allow", "egress.remove":
 		e, err := resolve.ParseEntry(r.Entry)
 		if err != nil {
@@ -413,15 +466,56 @@ func (s *server) refill(r request) reply {
 }
 
 // line answers one request line from socket name with one reply line.
-func (s *server) line(name string, b []byte) []byte {
+func (s *server) line(name string, b []byte) []byte { return s.lineFrom(name, peer{}, b) }
+
+func (s *server) lineFrom(name string, p peer, b []byte) []byte {
 	var r request
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	rep := fail("bad_request")
 	if dec.Decode(&r) == nil {
-		rep = s.handle(name, r)
+		rep = s.handle(name, p, r)
 	}
 	return encode(rep)
+}
+
+// taskAdmin is the human side (§4.2): `agentbox task new` records a request and passes it to agentboxd, which starts
+// it through task.start; `agentbox task stop` is task.stop with reason canceled.
+func (s *server) taskAdmin(r request, p peer) reply {
+	switch r.Op {
+	case "task.list":
+		return s.tasks.list()
+	case "task.stop":
+		if r.Reason == "" {
+			r.Reason = "canceled"
+		}
+		return s.tasks.stop(r.Task, r.Reason)
+	}
+	human := "root"
+	if u, err := user.LookupId(strconv.Itoa(int(p.uid))); err == nil {
+		human = u.Username
+	}
+	asks, dl := DefaultAsks, DefaultDeadline
+	if r.Asks != nil {
+		asks = *r.Asks
+	}
+	if r.Deadline != "" {
+		d, err := time.ParseDuration(r.Deadline)
+		if err != nil {
+			return reply{"ok": false, "error": "--deadline: " + err.Error()}
+		}
+		dl = d
+	}
+	req, err := s.tasks.newRequest(human, r.Agent, asks, dl)
+	if err != nil {
+		return reply{"ok": false, "error": err.Error()}
+	}
+	rep, err := s.tasks.cfg.Svc("gate", map[string]any{"call": "dispatch", "request": req, "agent": r.Agent, "cli": r.CLI, "prompt": r.Prompt})
+	if err != nil {
+		return reply{"ok": false, "request": req, "error": "agentboxd: " + err.Error()}
+	}
+	rep["request"] = req
+	return reply(rep)
 }
 
 func encode(r reply) []byte { b, _ := json.Marshal(r); return append(b, '\n') }

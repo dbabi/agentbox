@@ -21,12 +21,13 @@ R=$A/releases
 N=$R/.$VER.new
 mkdir -p "$R"
 rm -rf "$N"
-mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d" "$N/tmpfiles.d" "$N/gen"
+mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d" "$N/tmpfiles.d" "$N/gen" "$N/seccomp"
 install -m 0755 "$BIN" "$N/bin/agentbox"
 install -m 0644 "$S"/systemd/* "$N/systemd/"
 install -m 0644 "$S"/sysusers.d/* "$N/sysusers.d/"
 install -m 0644 "$S"/tmpfiles.d/* "$N/tmpfiles.d/"
 install -m 0644 "$S"/gen/* "$N/gen/" # rootd refuses to start unless these match its op registry
+install -m 0644 "$S"/seccomp/* "$N/seccomp/"
 if [ -d "$R/$VER" ]; then
   diff -r "$N" "$R/$VER" >/dev/null || { rm -rf "$N"; die "release $VER is already installed with different content"; }
   rm -rf "$N"
@@ -47,14 +48,24 @@ install -m 0644 "$R/$VER/sysusers.d/agentbox.conf" "$L/sysusers.d/agentbox.conf"
 systemd-sysusers "$L/sysusers.d/agentbox.conf"
 install -m 0644 "$R/$VER/tmpfiles.d/agentbox.conf" "$L/tmpfiles.d/agentbox.conf"
 systemd-tmpfiles --create "$L/tmpfiles.d/agentbox.conf"
+# The task seccomp profile (§4.2): every task launch names this path.
+install -d -m 0711 "$A/control"
+install -m 0644 "$R/$VER/seccomp/seccomp-task.json" "$A/control/.seccomp-task.json.new"
+mv -f "$A/control/.seccomp-task.json.new" "$A/control/seccomp-task.json"
 # Packaged ntfy (§2): agentbox-reconcile then writes its config, tmpfiles, ACLs and firewall drop-in, and enables it.
+# Rootless podman runs the tasks (§4.2); uidmap brings newuidmap, dbus-user-session the user bus rootd launches over.
 # policy-rc.d keeps the postinst from starting ntfy on its default config (HTTP on :80, every interface).
-if ! dpkg -s ntfy 2>/dev/null | grep -qx 'Status: install ok installed'; then
+need=
+for p in ntfy podman uidmap dbus-user-session; do
+  dpkg -s "$p" 2>/dev/null | grep -qx 'Status: install ok installed' || need="$need $p"
+done
+if [ -n "$need" ]; then
   [ ! -e /usr/sbin/policy-rc.d ] || die "/usr/sbin/policy-rc.d exists; remove it and rerun"
   printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod 0755 /usr/sbin/policy-rc.d
   trap 'rm -f /usr/sbin/policy-rc.d' EXIT
   apt() { DEBIAN_FRONTEND=noninteractive apt-get -q -y -o DPkg::Lock::Timeout=300 --no-install-recommends "$@"; }
-  apt install ntfy || { apt update && apt install ntfy; } || die "apt-get install ntfy failed"
+  # shellcheck disable=SC2086 # one package name per word
+  apt install $need || { apt update && apt install $need; } || die "apt-get install$need failed"
   rm -f /usr/sbin/policy-rc.d; trap - EXIT
 fi
 getent passwd _ntfy >/dev/null || die "the ntfy package made no _ntfy user"

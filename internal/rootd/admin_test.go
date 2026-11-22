@@ -35,11 +35,11 @@ func TestEgressEditIsAudited(t *testing.T) {
 			return nil
 		}}
 	req := request{Op: "egress.allow", Svc: "keys", Entry: "evil.example:443"}
-	if rep := s.admin(req); rep["ok"] != false || listed() {
+	if rep := s.admin(req, peer{}); rep["ok"] != false || listed() {
 		t.Fatalf("auditd down: %v, listed %v", rep, listed())
 	}
 	down = false
-	s.admin(req) // the refill after it needs nft; the edit and its records are what count here
+	s.admin(req, peer{}) // the refill after it needs nft; the edit and its records are what count here
 	if !listed() || len(recs) != 2 || recs[0]["type"] != "INTENT" || recs[0]["origin"] != "admin" || recs[0]["listed"] != false ||
 		recs[1]["type"] != "RESULT" || recs[1]["opId"] != recs[0]["opId"] || recs[1]["status"] != "executed" || recs[1]["listed"] != true {
 		t.Fatalf("records %v, listed %v", recs, listed())
@@ -61,7 +61,7 @@ func TestAgentOps(t *testing.T) {
 		store:   func(a accounts.Agent, l uint64) error { limits = append(limits, l); return nil },
 		nested:  func(p string) ([]string, error) { return nested[p], nil },
 		applyOS: func() error { applied++; return nil }}
-	call := func(op, args string) reply { return s.admin(request{Op: op, Args: json.RawMessage(args)}) }
+	call := func(op, args string) reply { return s.admin(request{Op: op, Args: json.RawMessage(args)}, peer{}) }
 	if rep := call("agent.add", `{"name":"a","diskBytes":67108864}`); rep["ok"] != true || limits[0] != 64<<20 {
 		t.Fatalf("add a: %v %v", rep, limits)
 	}

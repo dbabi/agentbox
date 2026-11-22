@@ -84,6 +84,7 @@ func TestBuild(t *testing.T) {
 	for _, g := range ops.Shipped { // exactly these, whatever else sits in gen/
 		units = append(units, "gen/"+g)
 	}
+	units = append(units, "seccomp/seccomp-task.json")
 	all := strings.Fields(want)
 	for _, u := range units {
 		mode[u] = 0o644

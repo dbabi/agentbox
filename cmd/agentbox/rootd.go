@@ -39,6 +39,7 @@ func cmdRootd(args []string) error {
 		return errors.New("rootd: need 10s <= --element-timeout <= 10m and 5s <= --refill-interval < --element-timeout (ntfy_dst must refresh before it expires)")
 	}
 	cfg.Effects, cfg.RawAudit = testEffects()
+	cfg.Tasks = rootd.DefaultTaskConfig()
 	return rootd.Run(cfg)
 }
 

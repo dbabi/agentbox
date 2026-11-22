@@ -1,7 +1,7 @@
 // Command agentbox is the single binary for every agentbox service and CLI (ARCHITECTURE.md §2, §14).
 // Week 1 ships the operator-side commands (seed, recovery) and, on the box, the os.apply pipeline (os); week 3 adds
 // the firewall (fw, fwcheck), agentbox-auditd and `audit verify`, and agentbox-rootd with its egress CLI; week 4 adds
-// agentboxd's task gate.
+// agentboxd's task gate; weeks 5-6 add tasks: one container each (task, taskrun).
 package main
 
 import (
@@ -16,6 +16,7 @@ import (
 	"agentbox/internal/recovery"
 	"agentbox/internal/rootd/quota"
 	"agentbox/internal/seed"
+	"agentbox/internal/task"
 )
 
 var version = "dev"
@@ -44,6 +45,11 @@ const usage = `usage:
   agentbox agentboxd [--gen-dir DIR]   (agentboxd.service: the task gate, on the box)
   agentbox gate register --task T --agent A [--chain T1,T2] | revoke --task T | list   (as root: rootd's task registration)
   agentbox gate call --socket /run/agentbox-gate/t/<task>/gate.sock JSON-RPC...   (a task-side test client)
+  agentbox task new --agent A [--cli claude|codex|opencode] [--asks N] [--deadline 2h] < prompt   (admin, on the box)
+  agentbox task stop --task T | list   (admin, on the box)
+  agentbox agent add --name A   (as root: the accounts stand-in until rootd's agent.add)
+  agentbox taskrun   (the task container's PID 1)
+  agentbox broker-stub --svc proxy|keys|git   (test boxes: a broker stand-in for the restart gate)
 `
 
 type multi []string
@@ -118,6 +124,12 @@ func run(args []string) error {
 		return cmdAgent(args[1:])
 	case "accounts":
 		return cmdAccounts(args[1:])
+	case "task":
+		return cmdTask(args[1:])
+	case "taskrun":
+		return cmdTaskrun(args[1:])
+	case "broker-stub":
+		return cmdBrokerStub(args[1:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
@@ -181,7 +193,8 @@ func cmdSeed(args []string) error {
 
 // cmdReconcile is agentbox-reconcile.service (ARCHITECTURE.md §3.2): it re-applies the persistent control store to
 // whichever generation booted, before every agentbox unit: the disk reserve (§4.1), the agent accounts from rootd's
-// ids table (§4.1) and packaged ntfy (§2).
+// ids table (§4.1), the PAM login line that keeps task launches from running update-motd.d (Appendix C) and packaged
+// ntfy (§2).
 func cmdReconcile(args []string) error {
 	if err := parse(flag.NewFlagSet("reconcile", flag.ContinueOnError), args); err != nil {
 		return err
@@ -191,6 +204,9 @@ func cmdReconcile(args []string) error {
 	}
 	if err := applyAccounts(false); err != nil {
 		return err
+	}
+	if err := task.EnsureSkipMotd(task.PAMLogin); err != nil {
+		return fmt.Errorf("%s: %v", task.PAMLogin, err)
 	}
 	return ntfy.Setup()
 }

@@ -28,6 +28,7 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | agentboxd gate (milestone 3) | `hack/agentboxd-gate.sh [install\|checks ...]` | Apple Silicon Mac | about 10 min, with the `none` install |
 | Sockets gate (milestone 3) | `hack/sockets-gate.sh [install] [check]` | Apple Silicon Mac | not timed separately |
 | Accounts gate (milestone 4) | `hack/accounts-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
+| Tasks gate (milestone 4) | `hack/tasks-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
 | Fuzz tests | `hack/fuzz-all.sh [DURATION]` | macOS or Linux | 24 h by default |
 
 The times come from one Apple Silicon Mac. The milestone 2 and 3 times come from runs with four VMs at once.
@@ -52,6 +53,7 @@ What they check:
 | `internal/rootd`, `internal/rootd/resolve`, `internal/rootd/quota`, `internal/rootd/nl` | rootd: audited egress edits, the fixed port pairs, throttled denial records, and the broker units that will hide systemd-resolved; the resolver's refusal rules (private, special-purpose and NAT64-wrapped answers, the route check); the quota limits and `btrfs qgroup show` parsing; the netlink messages for sets and conntrack. |
 | `internal/ops` | The operation registry: every operation's fields, the generated files in `gen/` and the startup check against them, the denial codes table and its append-only golden list, the denial constructor, the argument and audit-class checks, and the reply checks a task will run on denials. |
 | `internal/gate`, `internal/denial`, `internal/ids` | agentboxd's task gate: per-task sockets, caller identity from the socket, schema checks and typed denials. The denial encoder and its check. The `<kind>_<ULID>` ids. |
+| `internal/task`, `internal/seccomp` | The task container's launch command, its generated CLI configs, the PAM line that skips motd for agent users, and how the task's PID 1 retries the gate. The task seccomp profile: no unconditional `ioctl` rule, and every 16-bit command, with and without high bits set, gets `EOPNOTSUPP` for btrfs and is allowed otherwise. |
 | `internal/sockets` | The socket inventory, the tmpfiles.d and `.socket` units generated from it, and `agentbox sockets check` against a live tree. |
 | `internal/ntfy` | ntfy's `server.yml`, and the check that the running unit's uid is `_ntfy`. |
 | `cmd/agentbox` | Flag parsing, help text, `os` arguments. `recovery decrypt` refuses an existing output file. |
@@ -455,16 +457,25 @@ Each milestone 4 gate script starts with `install`, like the milestone 3 ones. T
 caffeinate -i hack/accounts-gate.sh
 ```
 
+The tasks gate's `install` is `hack/gate.sh none`, so podman, the units, the seccomp profile and the PAM line reach the box by the real path. It writes `PASS` and `FAIL` lines to `.vm/tasks-gate.txt` and command output to `.vm/tasks-gate.log`, and exits 1 on any `FAIL`.
+
+```sh
+caffeinate -i hack/tasks-gate.sh
+```
+
 ### What the milestone 4 gates prove
 
 | Suite | Script | What it proves |
 |---|---|---|
 | `w5-accounts` | `hack/accounts-gate.sh` | `agentbox agent add` makes one Unix account per agent: uid and gid 70000+N, no login shell, a root-owned empty home, a 65536-wide sub-id block, root-owned config dirs the agent can read, a user manager that starts only behind the firewall, and workspace and storage subvolumes in the agent's own quota group under the shared disk reserve. An agent at its quota gets `EDQUOT`, also in its storage, while system state keeps writing. Removing the newest agent deletes its account and archives its data. Adding another agent never reuses its uid or sub-id range. A nested subvolume refuses the removal with `NESTED_SUBVOLUME` and taints the workspace. A foreign sub-id entry inside the agentbox range stops reconcile. After a reboot, reconcile brings back the same accounts. |
+| `w5-tasks` | `hack/tasks-gate.sh` | A human's `agentbox task new` runs as one rootless podman container with no network, no capabilities, a read-only root, the task seccomp profile and a fresh tmpfs HOME, inside its own systemd unit. rootd sets the provenance. Hooks, settings and MCP config that one task plants in HOME or the workspace, and a skill's frontmatter hook, don't reach the next task. A task tainted mid-run makes the next task start tainted. The agent can't write a user unit or podman config. A task that ignores SIGTERM and forks `sleep infinity` is gone within 20 s of its timeout or of `cgroup.kill`, and writes nothing after. Canceling a task removes its container and sockets within 5 s, also with auditd stopped. A task keeps working across restarts of the gate and of stand-in brokers. 20 launches each take under 300 ms, open one login session and run no `update-motd.d`. btrfs ioctls from a task fail with `EOPNOTSUPP`, also with high command bits set. |
 
 ### What they do not prove
 
 - They ran in `none` mode on arm64 UEFI only.
-- No task runs in an agent's account yet, so nothing here starts a container with the sub-id block.
+- No Claude, Codex or opencode binary is in the task image yet. The gate checks the settings, flags and fresh HOME that keep planted hooks and MCP servers from running. It does not run a real CLI against them.
+- The brokers are not built yet. The restart check uses `agentbox broker-stub`, a stand-in that binds the same per-task sockets.
+- The task image is a small root file system with the host's `/usr` mounted read-only.
 
 ## Several VMs at once
 

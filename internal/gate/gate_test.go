@@ -163,3 +163,55 @@ func TestRegisterChecksDir(t *testing.T) {
 		}
 	}
 }
+
+// dispatch keeps the prompt for the task id it picked and asks rootd for task.start with origin admin:<request>;
+// task.fetch serves it to that task only, and task.result ends the task through rootd's task.stop.
+func TestDispatchFetchResult(t *testing.T) {
+	var sent []map[string]any
+	s, _ := newServer(t, func(r map[string]any) ([]byte, error) {
+		sent = append(sent, r)
+		return []byte(`{"ok":true}`), nil
+	})
+	s.CLIs = []string{"claude"}
+	if rep := s.Control([]byte(`{"call":"dispatch","request":"req_1","agent":"claude","cli":"sh","prompt":"x"}`)); rep["ok"] != false || len(sent) != 0 {
+		t.Fatalf("a CLI outside CLIs must be refused before rootd: %v", rep)
+	}
+	if rep := s.Control([]byte(`{"call":"dispatch","request":"req_1","agent":"claude","cli":"claude","prompt":"do it"}`)); rep["ok"] != true {
+		t.Fatalf("dispatch: %v", rep)
+	}
+	id, _ := sent[0]["task"].(string)
+	if sent[0]["op"] != "task.start" || sent[0]["origin"] != "admin:req_1" || !strings.HasPrefix(id, "task_") {
+		t.Fatalf("task.start: %v", sent[0])
+	}
+	// the job is served on the socket of the task rootd registered under that id, and nowhere else
+	s.jobs["T1"] = s.jobs[id]
+	tk := s.tasks["T1"]
+	r := call(t, s, tk, `{"jsonrpc":"2.0","id":1,"method":"task.fetch","params":{}}`)
+	if r.Error != nil || r.Result["prompt"] != "do it" || r.Result["cli"] != "claude" || r.Result["task"] != "T1" {
+		t.Fatalf("fetch: %+v", r)
+	}
+	if r := call(t, s, tk, `{"jsonrpc":"2.0","id":2,"method":"task.result","params":{"exit":3,"output":"o","outputLen":1,"task":"T9"}}`); r.Error == nil {
+		t.Fatal("task.result takes no task field")
+	}
+	if r := call(t, s, tk, `{"jsonrpc":"2.0","id":3,"method":"task.result","params":{"exit":3,"output":"o","outputLen":1}}`); r.Error != nil || r.Result["stopped"] != "failed" {
+		t.Fatalf("result: %+v", r)
+	}
+	if last := sent[len(sent)-1]; last["op"] != "task.stop" || last["task"] != "T1" || last["reason"] != "failed" {
+		t.Fatalf("task.stop: %v", last)
+	}
+}
+
+// After a restart, every live task rootd lists gets its socket back, provenance chain included.
+func TestRebind(t *testing.T) {
+	s, _ := newServer(t, nil)
+	s.revoke("T1")
+	if err := s.Rebind([]byte(`{"ok":true,"tasks":[{"task":"T1","agent":"claude","chain":["human:boxadmin","agent:claude"]}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if tk := s.tasks["T1"]; tk == nil || len(tk.chain) != 2 {
+		t.Fatalf("not rebound: %+v", s.tasks)
+	}
+	if s.Rebind([]byte(`{"ok":false}`)) == nil {
+		t.Fatal("a refused list must be an error")
+	}
+}
