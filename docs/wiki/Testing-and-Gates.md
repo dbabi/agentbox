@@ -641,6 +641,15 @@ All VM gates on a fresh `none`-mode install, arm64 UEFI, Secure Boot on, with fo
 | `go vet ./...` and `go test ./...` | Passed on the Mac | `ac68bc8` |
 | Milestone 3 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
 
+### Milestone 4
+
+On a fresh `none`-mode install, arm64 UEFI, Secure Boot on, with four VMs at once.
+
+| Suite | Result | Tested at |
+|---|---|---|
+| `m4-attach` | Passed: 24 PASS (the install and 23 checks), 0 FAIL, with Claude Code 2.1.330 | `c701e78` |
+| `go vet ./...` and `go test ./...` | Passed on the Mac; the Linux-only attach tests passed on linux/arm64 | `c701e78` |
+
 ## Troubleshooting
 
 - **`vm.sh: install failed or timed out; see .../.vm/install.log`.** Search `install.log` for `An error occurred`. Failures seen so far: package downloads from the Ubuntu archive failed, or the Mac went to sleep during the install. The `os.apply` gates need the archive too, because `os plan` downloads packages.
