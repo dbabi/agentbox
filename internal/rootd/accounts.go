@@ -80,7 +80,9 @@ func StubAdd(agent string) error {
 	}{{task.ControlDir, 0o711, false}, {filepath.Dir(HomeDir(agent)), 0o711, false}, {HomeDir(agent), 0o755, false},
 		{filepath.Dir(x), 0o711, false}, {x, 0o755, false}, {x + "/config/containers", 0o755, false}, {x + "/data", 0o755, false},
 		{filepath.Dir(WorkspaceDir(agent)), 0o711, false}, {WorkspaceDir(agent), 0o700, true},
-		{filepath.Dir(filepath.Dir(StorageDir(agent))), 0o711, false}, {filepath.Dir(StorageDir(agent)), 0o711, false}, {StorageDir(agent), 0o700, true}} {
+		{filepath.Dir(filepath.Dir(StorageDir(agent))), 0o711, false}, {filepath.Dir(StorageDir(agent)), 0o711, false},
+		// 0711: with --userns=keep-id, crun opens the layers as the container root, an unmapped sub-id, which must traverse it
+		{StorageDir(agent), 0o711, true}} {
 		if err := os.MkdirAll(d.p, d.mode); err != nil {
 			return err
 		}

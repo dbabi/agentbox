@@ -102,6 +102,11 @@ func WriteExports(dir string) error {
 	if err := os.MkdirAll(filepath.Join(dir, "nohooks"), 0o755); err != nil {
 		return err
 	}
+	for _, d := range []string{filepath.Dir(dir), dir, filepath.Join(dir, "nohooks")} {
+		if err := os.Chmod(d, 0o755); err != nil { // rootd runs with umask 0077, and the agent uid must read these
+			return err
+		}
+	}
 	for n, c := range Exports {
 		if b, err := os.ReadFile(filepath.Join(dir, n)); err == nil && string(b) == c {
 			continue

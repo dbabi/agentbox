@@ -30,6 +30,7 @@ type rig struct {
 	calls   []string
 	launch  [][]string
 	auditUp bool
+	wsTaint bool // auditd's view: workspace:claude is tainted
 }
 
 func newRig(t *testing.T) *rig {
@@ -71,7 +72,7 @@ func newRig(t *testing.T) *rig {
 			rep.View.Subjects = append(rep.View.Subjects, struct {
 				Subject string `json:"subject"`
 				Tainted bool   `json:"tainted"`
-			}{"workspace:claude", true})
+			}{"workspace:claude", r.wsTaint})
 			return rep, nil
 		}}
 	return r
@@ -130,6 +131,7 @@ func TestTaskStartAdmin(t *testing.T) {
 // A daemon task starts tainted; a child of a live parent inherits its effective taint, and needs a delegation.
 func TestTaskStartTaint(t *testing.T) {
 	r := newRig(t)
+	r.wsTaint = true
 	d := ids.New(ids.Task)
 	if rep := r.t.start(d, "claude", "daemon"); rep["ok"] != true || rep["tainted"] != true {
 		t.Fatalf("daemon: %v", rep)
@@ -148,6 +150,11 @@ func TestTaskStartTaint(t *testing.T) {
 	}
 	if rep := r.t.start(ids.New(ids.Task), "claude", "parent:task_01JD000000000000000000000Z"); rep["reason"] != "no_parent" {
 		t.Fatalf("missing parent: %v", rep)
+	}
+	// live workspace taint: a human's task on a tainted workspace starts tainted
+	req, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
+	if rep := r.t.start(ids.New(ids.Task), "claude", "admin:"+req); rep["ok"] != true || rep["tainted"] != true {
+		t.Fatalf("admin task on a tainted workspace: %v", rep)
 	}
 }
 

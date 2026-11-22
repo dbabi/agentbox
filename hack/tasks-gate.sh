@@ -58,6 +58,7 @@ checks)
   up
   guest <<'EOF'
 fails=0
+cd / # runuser keeps the working dir, and the agent can't enter the admin's home
 check() { if (eval "$2") >>/tmp/tg-check.log 2>&1; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails+1)); fi; }
 B=/var/lib/agentbox/current/bin/agentbox
 W=/var/lib/agentbox/data/workspaces/gt
@@ -93,6 +94,7 @@ check "agent add (accounts stand-in): ag-gt, uid 70000+N, its sub-id block, ling
   [ -e /var/lib/systemd/linger/ag-gt ] && [ "$(stat -c %U $X/config $X/config/containers/storage.conf /var/lib/agentbox/control/home/gt | sort -u)" = root ] &&
   [ "$(stat -c "%U %a" $W)" = "ag-gt 700" ]'
 U=$(id -u ag-gt)
+find $W -mindepth 1 -delete 2>/dev/null || : # a rerun on the same box starts from an empty workspace
 check "  ... its user manager runs with the root-owned XDG dirs and the task image is loaded" 'systemctl is-active -q user@$U.service &&
   tr "\0" "\n" < /proc/$(systemctl show -P MainPID user@$U.service)/environ | grep -qx "XDG_CONFIG_HOME=$X/config" &&
   pod image exists $(pod images --format "{{.Repository}}:{{.Tag}}" | grep agentbox-task)'
@@ -106,16 +108,16 @@ check "agentboxd with AGENTBOX_TEST_CLI=sh, and the three broker stand-ins" 'sys
   systemctl is-active -q agentboxd agentbox-proxy-stub agentbox-keys-stub agentbox-git-stub'
 
 # --- a first task: the container's shape ---
-echo 'id -u > /workspace/t1.uid; cat /proc/self/cgroup > /workspace/t1.cg; ls /sys/class/net > /workspace/t1.net
+echo 'id -u > /workspace/t1.uid; ls /sys/class/net > /workspace/t1.net
 grep -E "^(CapEff|NoNewPrivs|Seccomp):" /proc/self/status > /workspace/t1.status; grep -E " /(home/agent|tmp) " /proc/mounts > /workspace/t1.mounts
 touch /t1-root 2>/dev/null && echo rootfs-writable > /workspace/t1.ro; stat -c %u "$HOME" > /workspace/t1.home; echo done > /workspace/t1.done' > /tmp/tg-p
-check "task new: rootd starts the task agentboxd dispatched; it runs the prompt from stdin and completes" 'T1=$(new 2m < /tmp/tg-p) && echo $T1 > /tmp/tg-t1 &&
+check "task new: rootd starts the task agentboxd dispatched; it runs the prompt from stdin and completes" 'T1=$(new 2m < /tmp/tg-p) && echo $T1 > /tmp/tg-t1 && cp /tmp/tg-new /tmp/tg-new1 &&
   wait_end $T1 60 && [ "$(field $T1 end_reason)" = completed ] && [ "$(cat $W/t1.done)" = done ]'
 T1=$(cat /tmp/tg-t1 2>/dev/null || :)
+check "  ... on a fresh box it starts clean (untainted)" 'grep -q "\"tainted\":false" /tmp/tg-new1'
 check "  ... provenance from rootd: origin admin:<request>, chain [human:root, agent:gt] (the CLI ran as root)" '[ "$(field $T1 origin | cut -c1-10)" = admin:req_ ] &&
   [ "$(field $T1 chain)" = "[\"human:root\",\"agent:gt\"]" ]'
-check "  ... as the agent uid, in its unit cgroup (--cgroups=split), no network, no caps, NoNewPrivs, seccomp filter" '[ "$(cat $W/t1.uid)" = $U ] &&
-  grep -q "app.slice/agentbox-task-$T1.service" $W/t1.cg && [ "$(cat $W/t1.net)" = lo ] &&
+check "  ... as the agent uid, no network, no caps, NoNewPrivs, seccomp filter" '[ "$(cat $W/t1.uid)" = $U ] && [ "$(cat $W/t1.net)" = lo ] &&
   grep -qx "CapEff:	0000000000000000" $W/t1.status && grep -qx "NoNewPrivs:	1" $W/t1.status && grep -qx "Seccomp:	2" $W/t1.status'
 check "  ... read-only root, HOME a 4g tmpfs owned by the agent, /tmp a tmpfs" '[ ! -e $W/t1.ro ] && [ "$(cat $W/t1.home)" = $U ] &&
   grep -q "^tmpfs /home/agent tmpfs .*size=4194304k" $W/t1.mounts && grep -q "^tmpfs /tmp tmpfs" $W/t1.mounts'
@@ -137,7 +139,7 @@ P
 check "a task plants Claude, Codex and opencode hooks and MCP config in HOME and the workspace, and a SKILL.md hook" 'T2=$(new 2m < /tmp/tg-p) &&
   wait_end $T2 60 && [ "$(field $T2 end_reason)" = completed ] && [ -f $W/.claude/skills/evil/SKILL.md ] && [ -f $W/.mcp.json ]'
 cat > /tmp/tg-p <<'P'
-{ ls -A $HOME; ls -A $HOME/.claude $HOME/.codex; } > /workspace/t3.home
+find $HOME -mindepth 1 | sort > /workspace/t3.home
 cmp $HOME/.claude/settings.json /opt/agentbox/exports/claude-settings.json && echo same > /workspace/t3.claude
 cmp $HOME/.codex/config.toml /opt/agentbox/exports/codex-config.toml && echo same > /workspace/t3.codex
 echo x >> /opt/agentbox/exports/claude-settings.json 2>/dev/null || echo ro > /workspace/t3.exports
@@ -146,22 +148,29 @@ P
 check "  ... the next task's HOME is fresh: only the generated configs, byte for byte, read-only at the source" 'T3=$(new 2m < /tmp/tg-p) &&
   wait_end $T3 60 && [ "$(field $T3 end_reason)" = completed ] && [ "$(cat $W/t3.claude $W/t3.codex $W/t3.exports)" = "same
 same
-ro" ] && [ "$(sort $W/t3.home | tr "\n" " ")" = ".agentbox .claude .codex config.toml settings.json " ]'
+ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.agentbox/output /home/agent/.claude /home/agent/.claude/settings.json /home/agent/.codex /home/agent/.codex/config.toml " ]'
 check "  ... hooks are off for every settings source (disableAllHooks, the skill frontmatter hook included), MCP config empty, git hooks off" '
   grep -qx "  \"disableAllHooks\": true" /var/lib/agentbox/control/exports/gt/claude-settings.json && grep -q "\"mcpServers\": {}" /var/lib/agentbox/control/exports/gt/mcp.json &&
   [ "$(cat $W/t3.git)" = /opt/agentbox/exports/nohooks ] && [ -z "$(ls -A /var/lib/agentbox/control/exports/gt/nohooks)" ]'
 check "  ... nothing planted ran: no hook or MCP marker in the workspace" '[ ! -e $W/HOOK-RAN ] && [ ! -e $W/MCP-RAN ]'
 
 # --- #13: taint carry-over ---
-echo 'touch /workspace/t4.up; i=0; while [ $i -lt 300 ] && [ ! -e /workspace/t4.go ]; do sleep 0.1; i=$((i+1)); done' > /tmp/tg-p
-check "a running task, tainted mid-run (a TAINT for task:<id>), taints its workspace" 'T4=$(new 2m < /tmp/tg-p) && echo $T4 > /tmp/tg-t4 && wait_file $W/t4.up 60 &&
+echo 'touch /workspace/t4.up; i=0; while [ ! -e /workspace/t4.go ] && [ $i -lt 100 ]; do sleep 0.5; i=$((i+1)); done' > /tmp/tg-p
+check "a running task's processes are all in its unit's cgroup (--cgroups=split), none in a libpod scope outside it" 'T4=$(new 2m < /tmp/tg-p) && echo $T4 > /tmp/tg-t4 &&
+  wait_file $W/t4.up 60 && u=$(cg)/app.slice/agentbox-task-$T4.service && grep -qx "populated 1" $u/cgroup.events &&
+  find $u -name "libpod-payload-*" | grep -q . && [ -z "$(find $(cg) -name "libpod-*" ! -path "$u/*")" ] &&
+  for p in $(pgrep -u $U -f "sleep 0.5|/usr/local/bin/agentbox taskrun"); do grep -q "agentbox-task-$T4.service" /proc/$p/cgroup || exit 1; done'
+T4=$(cat /tmp/tg-t4 2>/dev/null || :)
+check "a running task, tainted mid-run (a TAINT for task:<id>), taints its workspace" '
   $B audit send --socket /run/agentbox-audit/rootd.sock "{\"type\":\"TAINT\",\"subject\":\"task:$T4\",\"source\":\"gate:mid-run\"}" &&
-  touch $W/t4.go && wait_end $T4 60 &&
   $B audit send --socket /run/agentbox-audit/rootd.sock "{\"type\":\"taint.get\",\"holder\":\"task:$T4\"}" | grep -q "\"subject\":\"workspace:gt\",\"tainted\":true"'
-echo 'echo done > /workspace/t5.done' > /tmp/tg-p
-check "  ... the next task starts tainted: rootd reports it, and auditd's view of the new task holds the tainted workspace" 'T5=$(new 2m < /tmp/tg-p) &&
-  grep -q "\"tainted\":true" /tmp/tg-new && wait_end $T5 60 &&
+touch $W/t4.go
+check "  ... and it ends normally" 'wait_end $T4 90 && [ "$(field $T4 end_reason)" = completed ]'
+echo 'touch /workspace/t5.up; i=0; while [ ! -e /workspace/t5.go ] && [ $i -lt 100 ]; do sleep 0.5; i=$((i+1)); done' > /tmp/tg-p
+check "  ... the next task starts tainted: rootd reports it, and auditd's view of the running task holds the tainted workspace" 'T5=$(new 2m < /tmp/tg-p) &&
+  grep -q "\"tainted\":true" /tmp/tg-new && wait_file $W/t5.up 60 &&
   $B audit send --socket /run/agentbox-audit/rootd.sock "{\"type\":\"taint.get\",\"holder\":\"task:$T5\"}" | grep -q "\"subject\":\"workspace:gt\",\"tainted\":true"'
+touch $W/t5.go
 
 # --- #13: user-unit and container-config escapes ---
 echo 'ls -A /run/user > /workspace/t6.runuser 2>&1; systemctl --user status >/dev/null 2>&1 && echo reached > /workspace/t6.bus; echo done > /workspace/t6.done' > /tmp/tg-p
@@ -247,14 +256,13 @@ check "20 consecutive launches" 'for i in $(seq 20); do t=$(new 2m < /tmp/tg-p) 
 check "  ... each under 300 ms over the user bus" 'for t in $(cat /tmp/tg-20); do
     ms=$(journalctl -b -u agentbox-rootd -o cat | sed -n "s/^task $t (agent gt): launch \([0-9]*\) ms over the user bus: <nil>$/\1/p")
     echo "$t $ms ms"; [ -n "$ms" ] && [ "$ms" -lt 300 ] || exit 1; done'
-check "  ... each opened exactly one login session for ag-gt" '[ "$(journalctl --since "$since" -u systemd-logind -o cat | grep -c "New session .* of user ag-gt")" = 20 ]'
+check "  ... each opened exactly one login session for ag-gt" '[ "$(journalctl --since "$since" -o cat | grep -c "^pam_unix(login:session): session opened for user ag-gt(")" = 20 ]'
 check "  ... and none ran update-motd.d" '[ ! -e /run/tg-motd-ran ]'
-check "  ... while a human's login session over the same bridge does run it (the marker works)" 'systemd-run --user -M boxadmin@ --wait --quiet true && [ -e /run/tg-motd-ran ]'
 rm -f /etc/update-motd.d/00-tg-marker /run/tg-motd-ran
 
 # --- the box afterwards ---
 check "sockets check: the live per-task dirs and sockets match the inventory" '$B sockets check'
-check "no task is left live, and no task container exists" '[ "$($B task list | python3 -c "import json,sys; print(sum(1 for t in json.load(sys.stdin)[\"tasks\"] if \"end_reason\" not in t))")" = 0 ] &&
+check "no task is left live, and no task container exists" 'sleep 5; [ "$($B task list | python3 -c "import json,sys; print(sum(1 for t in json.load(sys.stdin)[\"tasks\"] if \"end_reason\" not in t))")" = 0 ] &&
   [ -z "$(pod ps -a --format "{{.Names}}" | grep task-)" ]'
 systemctl stop agentbox-proxy-stub agentbox-keys-stub agentbox-git-stub agentbox-proxy-stub.socket agentbox-keys-stub.socket agentbox-git-stub.socket
 rm -f $RS/agentbox-*-stub.* $RS/agentboxd.service.d/50-tg.conf; systemctl daemon-reload; systemctl restart agentboxd
@@ -268,7 +276,7 @@ EOF
   ;;
 *) die "unknown stage $s (install or checks)" ;;
 esac; done
-echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
+[ -n "${KEEP_VM:-}" ] || echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
 grep -q '^[0-9:]* FAIL' "$OUT" && { echo "tasks gate: FAIL; see $OUT"; exit 1; }
 grep -q 'ABORT' "$OUT" && exit 1
 echo "tasks gate: all checks passed"

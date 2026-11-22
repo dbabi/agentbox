@@ -188,12 +188,13 @@ func (t *tasks) start(id, agent, origin string) reply {
 		log.Printf("task.start %s: registry: %v", id, err)
 		return fail("registry")
 	}
-	if err := t.launch(id, acct, si); err != nil {
+	tainted, err := t.launch(id, acct, si)
+	if err != nil {
 		log.Printf("task.start %s: %v; stopping it", id, err)
 		t.stop(id, "failed")
 		return reply{"ok": false, "reason": "launch_failed", "error": err.Error()}
 	}
-	return reply{"ok": true, "task": id, "unit": task.Unit(id), "chain": si.chain, "trace": si.trace, "tainted": si.taint}
+	return reply{"ok": true, "task": id, "unit": task.Unit(id), "chain": si.chain, "trace": si.trace, "tainted": tainted}
 }
 
 // provenance checks origin and derives chain, trace, deadline, ask budget and taint (§4.2). A non-empty string refuses.
@@ -257,19 +258,26 @@ func (t *tasks) provenance(id, agent, origin string) (startInfo, string) {
 }
 
 // launch is §4.2 Dispatch steps 1-3: auditd learns the writer and any start taint (ACKed), rootd makes the socket dirs
-// and has each service bind there, then the one launch over the agent's user bus.
-func (t *tasks) launch(id string, acct Account, si startInfo) error {
+// and has each service bind there, then the one launch over the agent's user bus. It reports whether the task starts
+// tainted: by its origin, or by live workspace taint (a tainted workspace taints every task that mounts it, §5.2).
+func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 	if err := t.audit(map[string]any{"type": "WRITER_ADD", "holder": "task:" + id, "workspace": "workspace:" + acct.Name}); err != nil {
-		return fmt.Errorf("auditd WRITER_ADD: %v", err)
+		return false, fmt.Errorf("auditd WRITER_ADD: %v", err)
 	}
 	if si.taint {
 		if err := t.audit(map[string]any{"type": "TAINT", "subject": "task:" + id, "source": si.source}); err != nil {
-			return fmt.Errorf("auditd TAINT: %v", err)
+			return false, fmt.Errorf("auditd TAINT: %v", err)
+		}
+	}
+	tainted := si.taint
+	if rep, err := t.query(map[string]any{"type": "taint.get", "holder": "task:" + id}); err == nil && rep.OK && rep.View != nil {
+		for _, s := range rep.View.Subjects {
+			tainted = tainted || s.Tainted
 		}
 	}
 	for _, v := range task.Svcs {
 		if err := t.cfg.MakeDir(task.SockDir(v.Name, id), task.SvcUser[v.Name], acct.GID); err != nil {
-			return fmt.Errorf("%s: %v", task.SockDir(v.Name, id), err)
+			return false, fmt.Errorf("%s: %v", task.SockDir(v.Name, id), err)
 		}
 		rep, err := t.cfg.Svc(v.Name, map[string]any{"call": "register", "task": id, "agent": acct.Name, "chain": si.chain})
 		if errors.Is(err, ErrNoSvc) && v.Name != "gate" {
@@ -279,11 +287,11 @@ func (t *tasks) launch(id string, acct Account, si startInfo) error {
 			err = fmt.Errorf("refused: %v", rep["error"])
 		}
 		if err != nil {
-			return fmt.Errorf("%s register: %v", v.Name, err)
+			return false, fmt.Errorf("%s register: %v", v.Name, err)
 		}
 	}
 	if err := task.WriteExports(filepath.Join(t.cfg.Exports, acct.Name)); err != nil {
-		return fmt.Errorf("exports: %v", err)
+		return false, fmt.Errorf("exports: %v", err)
 	}
 	dl := time.UnixMilli(si.deadline)
 	argv := task.Argv(task.Spec{Task: id, Agent: acct.Name, Runtime: dl.Sub(t.cfg.Now()), Deadline: dl, Workspace: acct.Workspace,
@@ -292,10 +300,10 @@ func (t *tasks) launch(id string, acct Account, si startInfo) error {
 	err := t.cfg.Launch(argv)
 	log.Printf("task %s (agent %s): launch %d ms over the user bus: %v", id, acct.Name, time.Since(t0).Milliseconds(), err)
 	if err != nil {
-		return fmt.Errorf("systemd-run: %v", err)
+		return false, fmt.Errorf("systemd-run: %v", err)
 	}
 	t.watchTask(id, acct.UID, si.deadline)
-	return nil
+	return tainted, nil
 }
 
 // stop is task.stop{task, reason} (§4.2), each step idempotent and none waiting for auditd.
