@@ -114,7 +114,17 @@ func TestBlock(t *testing.T) {
 	}
 	defer db.Close()
 	db.Exec(Schema)
+	db.Exec(`CREATE TABLE task_registry(task TEXT, agent TEXT, ended_at INTEGER)`) // rootd's, the columns Begin reads
 	now := time.Now()
+	// a live task of the agent refuses the attach: it would see what the session writes into the workspace
+	db.Exec(`INSERT INTO task_registry VALUES('t1','a',NULL)`)
+	if err := Begin(db, "a", "ses_0", now); err != ErrTaskLive {
+		t.Fatalf("attach with a live task: %v", err)
+	}
+	if _, ok, _ := Blocked(db, "a"); ok {
+		t.Fatal("a refused attach left a block")
+	}
+	db.Exec(`UPDATE task_registry SET ended_at=1`)
 	if err := Begin(db, "a", "ses_1", now); err != nil {
 		t.Fatal(err)
 	}

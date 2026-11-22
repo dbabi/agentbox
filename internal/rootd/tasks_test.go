@@ -234,6 +234,95 @@ func TestTaskStartAttachBlock(t *testing.T) {
 	}
 }
 
+// §4.2: an attach and a task of the same agent never overlap. Attach refuses while a task is live, and a block taken
+// after task.start's checks but before its registry row stops the start, with the request not used up.
+func TestTaskAttachExclusion(t *testing.T) {
+	r := newRig(t)
+	id := ids.New(ids.Task)
+	if rep := r.t.start(id, "claude", "daemon"); rep["ok"] != true {
+		t.Fatalf("start: %v", rep)
+	}
+	if err := attach.Begin(r.db, "claude", "ses_1", time.Now()); err != attach.ErrTaskLive {
+		t.Fatalf("attach with a live task: %v", err)
+	}
+	r.t.stop(id, "completed")
+	req, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
+	// the attach begins between provenance and the registry insert
+	si, why := r.t.provenance(ids.New(ids.Task), "claude", "admin:"+req)
+	if why != "" {
+		t.Fatal(why)
+	}
+	if err := attach.Begin(r.db, "claude", "ses_2", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	acct, _ := r.t.cfg.Accounts.Lookup("claude")
+	if why := r.t.register(ids.New(ids.Task), acct, si); why != "attach_blocked" {
+		t.Fatalf("register during an attach: %q", why)
+	}
+	attach.End(r.db, "claude", "ses_2", nil)
+	if rep := r.t.start(ids.New(ids.Task), "claude", "admin:"+req); rep["ok"] != true {
+		t.Fatalf("the refused start used up the request: %v", rep)
+	}
+}
+
+// A refusal after the request check (here deadline_passed) leaves the request unused.
+func TestTaskStartKeepsRequest(t *testing.T) {
+	r := newRig(t)
+	req, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
+	now := r.t.cfg.Now()
+	r.t.cfg.Now = func() time.Time { return now.Add(2 * time.Hour) }
+	if rep := r.t.start(ids.New(ids.Task), "claude", "admin:"+req); rep["reason"] != "deadline_passed" {
+		t.Fatalf("past the deadline: %v", rep)
+	}
+	var used sql.NullString
+	r.db.QueryRow(`SELECT task FROM task_requests WHERE id=?`, req).Scan(&used)
+	if used.Valid {
+		t.Fatalf("a refused start used up the request for %s", used.String)
+	}
+}
+
+// §4.2 Stop step 2: a cgroup still populated after cgroup.kill blocks the agent in rootd.db and alerts on ntfy. A
+// restarted rootd (a new tasks struct on the same db) still refuses, and rescan lifts it only once the cgroup is empty.
+func TestTaskNotEmptyBlock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits 10 s for the cgroup")
+	}
+	r := newRig(t)
+	alerts := make(chan string, 1)
+	r.t.alert = func(_, m string) error { alerts <- m; return nil }
+	id := ids.New(ids.Task)
+	r.t.start(id, "claude", "daemon")
+	cg := filepath.Join(r.t.cfg.Cgroup, task.CgroupDir(70001, id))
+	os.MkdirAll(cg, 0o755)
+	os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 1\n"), 0o644)
+	if rep := r.t.stop(id, "canceled"); rep["empty"] != false {
+		t.Fatalf("stop: %v", rep)
+	}
+	select {
+	case m := <-alerts:
+		if !strings.Contains(m, "gets no more tasks") {
+			t.Fatalf("alert %q", m)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no ntfy alert")
+	}
+	restarted := &tasks{cfg: r.t.cfg, db: r.db, audit: r.t.audit, query: r.t.query, noWatch: true}
+	if rep := restarted.start(ids.New(ids.Task), "claude", "daemon"); rep["reason"] != "agent_blocked" {
+		t.Fatalf("after a restart: %v", rep)
+	}
+	s := &server{db: r.db, tasks: restarted}
+	if rep := s.rescan("claude"); rep["blocked"] != true {
+		t.Fatalf("rescan with the cgroup still populated: %v", rep)
+	}
+	os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 0\n"), 0o644)
+	if rep := s.rescan("claude"); rep["blocked"] != false {
+		t.Fatalf("rescan with the cgroup empty: %v", rep)
+	}
+	if rep := restarted.start(ids.New(ids.Task), "claude", "daemon"); rep["ok"] != true {
+		t.Fatalf("after the block lifted: %v", rep)
+	}
+}
+
 // A task's account is the active ids row: a retired agent is gone, and its name comes back with the new N's uid.
 func TestIdsAccounts(t *testing.T) {
 	db, err := OpenDB(filepath.Join(t.TempDir(), "rootd.db"))

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"agentbox/internal/rootd/accounts"
+	"agentbox/internal/rootd/attach"
 	"agentbox/internal/rootd/resolve"
 )
 
@@ -91,8 +93,13 @@ func TestAgentOps(t *testing.T) {
 	if rep := call("agent.remove", `{"name":"nope"}`); rep["ok"] != false || len(recs) != 0 {
 		t.Fatalf("removing an unknown agent: %v %v", rep, recs)
 	}
+	attach.BlockTask(db, "b", "task_x", time.Now()) // a block of the old b must not reach a new agent named b
+	s.agentSeen("b").Add([]string{"old-b-token-AAAAAAAAAAAAAAAAAAAA"})
 	if rep := call("agent.remove", `{"name":"b"}`); rep["ok"] != true || rep["agent"].(map[string]any)["active"] != false || applied != 3 {
 		t.Fatalf("remove b: %v, applied %d", rep, applied)
+	}
+	if _, on, _ := attach.Blocked(db, "b"); on || len(s.agentSeen("b").All()) != 0 {
+		t.Fatal("removing b left its task block or token versions")
 	}
 	c := call("agent.add", `{"name":"c"}`)["agent"].(map[string]any)
 	if c["n"] != 3 || c["uid"] != 70003 {

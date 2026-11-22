@@ -188,7 +188,7 @@ func Run(cfg Config) error {
 	if cfg.Tasks.Accounts == nil {
 		cfg.Tasks.Accounts = idsAccounts{db}
 	}
-	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
+	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, alert: cfg.Alert, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
 	s.tasks.resume()
 	if s.cfg.Attach == nil {
 		t := s.tasks.cfg

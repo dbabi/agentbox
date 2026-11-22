@@ -10,6 +10,7 @@ import (
 
 	"agentbox/internal/ops"
 	"agentbox/internal/rootd/accounts"
+	"agentbox/internal/rootd/attach"
 	"agentbox/internal/rootd/quota"
 )
 
@@ -59,6 +60,7 @@ func (s *server) agentOp(r request) reply {
 			}
 		}
 	} else if a, err = accounts.Retire(s.db, name, time.Now()); err == nil {
+		s.forget(name)
 		err = s.applyOS()
 	}
 	status, detail := "executed", ""
@@ -76,6 +78,18 @@ func (s *server) agentOp(r request) reply {
 		rep["ok"], rep["error"] = false, "the op ran, but its audit RESULT was not ACKed: "+aerr2.Error()
 	}
 	return rep
+}
+
+// forget drops rootd's name-keyed state of a retired agent, so a new agent of the same name (a new N, a fresh
+// workspace) doesn't inherit its task block or token versions. A live attach keeps its block until its scan.
+func (s *server) forget(name string) {
+	if _, live := s.live.Load(name); live {
+		return
+	}
+	if err := attach.Clear(s.db, name); err != nil {
+		log.Printf("agent.remove %s: task block: %v", name, err)
+	}
+	s.seen.Delete(name)
 }
 
 // refuseNested is §4.1's check before removal: a subvolume nested in an agent subvolume would be missing from its
