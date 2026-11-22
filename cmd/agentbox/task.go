@@ -123,7 +123,9 @@ func cmdBrokerStub(args []string) error {
 	}
 	pid := strconv.Itoa(os.Getpid())
 	s := &gate.Server{Dir: "/run/agentbox-" + *svc, Name: *svc, AgentIDs: func(a string) (uint32, uint32, error) { return uidOf("ag-" + a) },
-		Handle: func(t string, _ []byte) []byte { return []byte(`{"ok":true,"svc":"` + *svc + `","task":"` + t + `","pid":` + pid + `}`) }}
+		Handle: func(t string, _ []byte) []byte {
+			return []byte(`{"ok":true,"svc":"` + *svc + `","task":"` + t + `","pid":` + pid + `}`)
+		}}
 	if l, err := lineCall("/run/agentbox-rootd/resolve-"+*svc+".sock", map[string]any{"op": "task.list_live"}, 10*time.Second); err != nil {
 		log.Printf("task.list_live: %v", err)
 	} else if err := s.Rebind(l); err != nil {
