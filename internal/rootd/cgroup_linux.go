@@ -2,6 +2,7 @@ package rootd
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"unsafe"
 
@@ -49,6 +50,9 @@ func makeTaskDir(path, owner string, gid uint32) error {
 	uid, ok := lookupUID(owner)
 	if !ok {
 		return fmt.Errorf("no user %s", owner)
+	}
+	if uid > math.MaxInt32 || gid > math.MaxInt32 { // Fchownat takes ints; -1 there would mean "unchanged"
+		return fmt.Errorf("uid %d or gid %d out of range", uid, gid)
 	}
 	dir, name := filepath.Split(path)
 	pfd, err := unix.Open(dir, unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_PATH, 0)
