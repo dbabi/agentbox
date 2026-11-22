@@ -262,6 +262,12 @@ func TestPrepare(t *testing.T) {
 	if !slices.Contains(s.Mounts, Mount{Src: filepath.Join(p.Exports, SettingsFile), Dst: Home + "/.claude/settings.json", RO: true}) {
 		t.Fatalf("no read-only settings bind: %+v", s.Mounts)
 	}
+	for _, g := range GitConfigs { // an empty read-only git config over session-home's, with a regular file to bind over
+		if fi, err := os.Lstat(filepath.Join(p.SessionHome, g)); err != nil || !fi.Mode().IsRegular() ||
+			!slices.Contains(s.Mounts, Mount{Src: filepath.Join(p.Exports, EmptyGitConfig), Dst: Home + "/" + g, RO: true}) {
+			t.Fatalf("~/%s: %v %v %+v", g, fi, err, s.Mounts)
+		}
+	}
 	for _, e := range append(append(GitEnv, sessionEnv...), "TERM=screen", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "CODEX_HOME="+CodexHome) {
 		if !slices.Contains(s.Env, e) {
 			t.Errorf("env lacks %s", e)
@@ -286,6 +292,16 @@ func TestPrepare(t *testing.T) {
 	}
 	RemoveRun(p)
 	// a planted symlink in session-home makes rootd refuse, not follow it
+	os.RemoveAll(filepath.Join(p.SessionHome, ".config"))
+	cfg := t.TempDir()
+	os.Symlink(cfg, filepath.Join(p.SessionHome, ".config"))
+	if _, err := Prepare(root, "ses_3", "at", "claude", nil, uid, gid, "/dev/pts/9", ""); err == nil {
+		t.Fatal("~/.config as a symlink: must refuse")
+	}
+	if ents, _ := os.ReadDir(cfg); len(ents) != 0 {
+		t.Fatal("rootd wrote through the ~/.config symlink")
+	}
+	os.Remove(filepath.Join(p.SessionHome, ".config"))
 	os.RemoveAll(filepath.Join(p.SessionHome, ".claude"))
 	target := t.TempDir()
 	os.Symlink(target, filepath.Join(p.SessionHome, ".claude"))

@@ -14,7 +14,8 @@
 #          file the session touches there shows on the host (the positive control inside attach). Outside attach each
 #          plant runs (the control). attach is refused, naming the changed control paths, until --ack-control-changes;
 #          then claude with its attach flags, claude started by hand in a bash attach, the bash shell itself and git
-#          commit, log, add and the alias run none of them, and the next attach needs no flag.
+#          commit, log, add and the alias run none of them. A control path the session changes needs an ack in the
+#          next attach, and only that one is listed.
 #          The session can't write, remove or move session-home's settings, which stay byte-for-byte unchanged. The
 #          output filter drops OSC 52, DCS and CSI report requests and keeps SGR. Tasks are blocked while an attach is
 #          live, and task.start refuses. A session that copies its token into the workspace (and into a git object) and then rotates it leaves
@@ -94,7 +95,7 @@ hook m-project-hook > $W/.claude/settings.json
 hook m-local-hook > $W/.claude/settings.local.json
 printf '{"mcpServers":{"planted":{"command":"sh","args":["-c","touch %s/m-mcp; sleep 30"]}}}\n' $M > $W/.mcp.json
 printf '#!/bin/sh\ntouch %s/m-precommit\n' $M > $W/.git/hooks/pre-commit && chmod 0755 $W/.git/hooks/pre-commit
-git -C $W config core.pager "touch $M/m-repopager; cat"
+as git -C $W config core.pager "touch $M/m-repopager; cat"
 mkdir -p $H/.claude && hook m-user-hook > $H/.claude/settings.json
 printf '{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true,"hasCompletedProjectOnboarding":true,"enabledMcpjsonServers":["planted"]}}}\n' > $H/.claude.json
 for f in .profile .bashrc .bash_profile; do printf 'touch %s/m-dot%s\n' $M "$f" > $H/$f; done
@@ -111,10 +112,10 @@ as git -C $W -c user.name=t -c user.email=t@example.com commit -q --allow-empty 
 check "control: outside attach the project and local hooks, the .mcp.json server, the user hook and pre-commit all run" \
   '[ "$(markers)" = "m-local-hook m-mcp m-precommit m-project-hook m-user-hook " ] || { markers; cat /tmp/gate-ctl; false; }'
 rm -rf $T; rm -f $M/*
-as sh -c "cd $W && HOME=$H bash -l -c true && HOME=$H bash -i -c true && HOME=$H git st && echo a > c.txt && HOME=$H git add c.txt && git rm -q --cached c.txt && rm c.txt" </dev/null >/tmp/gate-ctl2 2>&1 || :
+as sh -c "cd $W && HOME=$H bash -l -c true && HOME=$H bash -i -c true && HOME=$H git st && echo a > c.txt && HOME=$H git add c.txt" </dev/null >/tmp/gate-ctl2 2>&1 || :
 check "  ... and session-home's ~/.profile, ~/.bashrc, ~/.bash_profile and ~/.gitconfig alias and filter run in a plain shell" \
   '[ "$(markers)" = "m-alias m-dot.bash_profile m-dot.bashrc m-filter " ] || { markers; cat /tmp/gate-ctl2; false; }'
-rm -f $M/*
+rm -f $M/* # c.txt stays staged: a git status or add in an attach would run the gx filter if any config it reads defines it
 check "  ... and session-home settings as planted" '[ "$(sha256sum < $H/.claude/settings.json)" = "$sum0" ]'
 
 check "attach is refused while workspace control paths changed, naming them; no block is left" '! attach --cli bash </dev/null >/tmp/gate-a0 2>&1; cat /tmp/gate-a0;
@@ -130,7 +131,7 @@ check "  ... rootd ran it as cli claude in a session unit of ag-at's user manage
 b64=Z2F0ZV9vc2M1Mg # base64 of gate_osc52, sent in two halves so the echoed command line never holds it whole
 cat > /tmp/gate-in2 <<IN
 cd /workspace
-touch $M/m-probe
+touch $M/m-probe; echo planted >> AGENTS.md
 git st; git log -1 --oneline; echo a > f.txt && git add f.txt && git rm -q --cached f.txt; rm -f f.txt
 echo "net=\$(ls /sys/class/net)"; grep -E "^(Seccomp|NoNewPrivs|CapEff):" /proc/self/status | tr -d "[:blank:]"
 git -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m attach; echo "commit=\$?"
@@ -142,9 +143,11 @@ mv ~ /tmp/x 2>/dev/null; echo "mvhome=\$?"
 h=${b64%??????}; printf '\033]52;c;%s%s\007\033P1\$r\033\\\\\033[6n\033[c\033[>c\033[14t\033[1mGATEBOLD\033[0m\n' "\$h" "${b64#????????}"
 sleep 1; exit
 IN
-check "attach 2: a bash session, input relayed, token scan clean" 'typed /tmp/gate-in2 | attach --cli bash >/tmp/gate-a2 2>&1; cat -v /tmp/gate-a2;
+check "attach 2: a bash session, input relayed, token scan clean (with --ack-control-changes: the claude session wrote its own)" 'typed /tmp/gate-in2 | attach --cli bash --ack-control-changes >/tmp/gate-a2 2>&1; cat -v /tmp/gate-a2;
   grep -qF "[agentbox] session ended; token scan: clean" /tmp/gate-a2 && grep -q "commit=0" /tmp/gate-a2'
-check "  ... the next attach needed no flag; the file it touched in the marker dir shows on the host (markers are live)" '[ -e $M/m-probe ] && rm $M/m-probe'
+check "  ... the file it touched in the marker dir shows on the host (markers are live)" '[ -e $M/m-probe ] && rm $M/m-probe'
+check "  ... the next attach is refused naming only AGENTS.md, which the session changed: the ack saved the rest" '! attach --cli bash </dev/null >/tmp/gate-a2b 2>&1;
+  cat /tmp/gate-a2b; grep -q "changed since the last accepted state: AGENTS.md;" /tmp/gate-a2b'
 check "  ... bash read no startup file; git used no ~/.gitconfig pager, alias or filter and no repo-local pager" 'none || { markers; false; }'
 check "  ... in a container: loopback only, the seccomp filter, no_new_privs and no capabilities" 'grep -q "^net=lo.\$" /tmp/gate-a2 &&
   grep -q "^Seccomp:2" /tmp/gate-a2 && grep -q "^NoNewPrivs:1" /tmp/gate-a2 && grep -q "^CapEff:0000000000000000" /tmp/gate-a2'
@@ -171,7 +174,7 @@ IN
 cat > /tmp/gate-blocked.sh <<'SH'
 $B attach status > /tmp/gate-st; cat /tmp/gate-st; grep -q "\"reason\":\"$1\"" /tmp/gate-st
 SH
-check "attach 3: tasks are blocked while it is live" '( typed /tmp/gate-in3 | attach --cli bash >/tmp/gate-a3 2>&1 & ); sleep 2;
+check "attach 3: tasks are blocked while it is live" '( typed /tmp/gate-in3 | attach --cli bash --ack-control-changes >/tmp/gate-a3 2>&1 & ); sleep 2;
   B=$B sh /tmp/gate-blocked.sh attach_live'
 check "  ... and task.start refuses a task for its workspace" '! $B task new --agent at --cli claude </dev/null >/tmp/gate-tn 2>&1; cat /tmp/gate-tn; grep -q attach_blocked /tmp/gate-tn'
 check "  ... a second attach of the same agent is refused while it runs" '! attach --cli bash </dev/null >/tmp/gate-a3b 2>&1 && grep -q "an attach is live" /tmp/gate-a3b'
