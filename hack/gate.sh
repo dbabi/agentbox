@@ -11,6 +11,8 @@
 # boots with Tang down: no unlock and a reboot after the LUKS prompt times out, a typed recovery key unlocks, and the box
 # unlocks by itself once Tang is back.
 # hack/release-serve serves the test releases on 127.0.0.1:7600+ID; the --dev seed fetches from 10.0.2.2:7600+ID.
+# vm.sh forwards only those two ports to the host's loopback: a listener on 127.0.0.1 and ::1 port 7700+ID, which has no
+# forward, must see nothing from the guest.
 # AGENTBOX_VM_ID, AGENTBOX_ISO_DIR and DISKBUS (nvme, sata or virtio) pass through to vm.sh: gates that run at once need
 # distinct IDs and separate checkouts.
 # Test seeds only: the admin password is "x"; the recovery and release-signing keys live in .vm/keys. Never use them for a real box.
@@ -26,7 +28,7 @@ ENC=$MODE; [ "$MODE" = dup-serial ] && ENC=none
 die() { echo "gate.sh: $*" >&2; exit 1; }
 case ${AGENTBOX_VM_ID:-0} in [0-9]) ;; *) die "AGENTBOX_VM_ID must be 0-9" ;; esac
 TANG_URL=http://10.0.2.2:$((7500 + ${AGENTBOX_VM_ID:-0})) # vm.sh tang up serves this instance on 127.0.0.1:7500+ID
-RPORT=$((7600 + ${AGENTBOX_VM_ID:-0})) REL="$VM/release" V=0.0.1-gate V0=0.0.0-gate
+RPORT=$((7600 + ${AGENTBOX_VM_ID:-0})) LPORT=$((7700 + ${AGENTBOX_VM_ID:-0})) REL="$VM/release" V=0.0.1-gate V0=0.0.0-gate
 command -v minisign >/dev/null || die "minisign not installed (brew install minisign)"
 # vm.sh's default disk per boot mode, the factor for the waits below, and the watchdog the seed must find: vm.sh gives
 # only the amd64 VM an i6300esb, so the arm64 one boots the softdog fallback
@@ -81,15 +83,34 @@ sha() { shasum -a 256 "$1" | cut -d ' ' -f 1; }
 # serve <tgz> <minisig>: what the VM gets at the seed's release URL
 serve() { cp "$1" "$REL/www/.t" && cp "$2" "$REL/www/.m" && mv "$REL/www/.t" "$REL/www/agentbox-$V.tgz" && mv "$REL/www/.m" "$REL/www/agentbox-$V.tgz.minisig"; }
 serve "$REL/tampered.tgz" "$REL/agentbox-$V.tgz.minisig" # firstboot's first attempt at boot gets the tampered tarball
-SRV=
+SRV='' LSN=''
 cleanup() {
   [ -z "$SRV" ] || kill "$SRV" 2>/dev/null || :
+  [ -z "$LSN" ] || kill "$LSN" 2>/dev/null || :
   [ "$ENC" != tpm2+tang ] || hack/vm.sh tang down >/dev/null 2>&1 || :
 }
 trap cleanup EXIT
 bin/release-serve -dir "$REL/www" -port "$RPORT" 2>"$REL/serve.log" &
 SRV=$!
 i=0; until curl -sf -o /dev/null "http://127.0.0.1:$RPORT/agentbox-$V.tgz.minisig"; do i=$((i+1)); [ $i -lt 20 ] || die "release-serve not answering on 127.0.0.1:$RPORT; see $REL/serve.log"; sleep 0.5; done
+# the loopback probe: one log line per TCP connection or UDP datagram on 127.0.0.1 or ::1 port LPORT
+probes() { echo $(($(wc -l < "$REL/probe.log"))); }
+: > "$REL/probe.log"
+python3 -c 'import select, socket as S, sys
+p, log = int(sys.argv[1]), open(sys.argv[2], "a", buffering=1)
+ss = []
+for f, a in ((S.AF_INET, "127.0.0.1"), (S.AF_INET6, "::1")):
+  for t in (S.SOCK_STREAM, S.SOCK_DGRAM):
+    s = S.socket(f, t); s.setsockopt(S.SOL_SOCKET, S.SO_REUSEADDR, 1); s.bind((a, p)); t == S.SOCK_STREAM and s.listen(); ss.append(s)
+while True:
+  for s in select.select(ss, [], [])[0]:
+    if s.type == S.SOCK_STREAM: c, a = s.accept(); c.close()
+    else: a = s.recvfrom(512)[1]
+    log.write("%s %s\n" % (s.type, a[0]))' "$LPORT" "$REL/probe.log" 2>"$REL/probe.err" &
+LSN=$!
+i=0; until [ "$(probes)" -ge 2 ]; do
+  curl -s -m 1 -o /dev/null "http://127.0.0.1:$LPORT/" "http://[::1]:$LPORT/" || :
+  i=$((i+1)); [ $i -lt 20 ] || die "loopback probe not answering on 127.0.0.1 and ::1 port $LPORT; see $REL/probe.err"; sleep 0.5; done
 
 SEED="$VM/gate-seed-$TAG"
 [ -d "$SEED" ] && rm -r "$SEED"
@@ -274,6 +295,30 @@ l() { [ "\$(readlink \$A/current)" = "releases/\$1" ] && [ "\$(readlink \$A/prev
 echo '# changed' >> "\$x/$V/systemd/agentbox-reconcile.service"
 ! "\$x/$V/install.sh" --from-firstboot && l $V $V0 && [ "\$(ls -A \$A/releases | tr '\n' ' ')" = "$V0 $V " ] && [ -z "\$(ls -A \$A | grep '^\.' | grep -v '^\.firstboot-done\$')" ]
 EOF
+# The guest tries the probe port, TCP and UDP, on the gateway, on 10.0.2.2 and on the other addresses QEMU's slirp maps
+# to the host's loopback (255.255.255.255, fec0::2). A failed connect is expected; a line in probe.log is the failure.
+# The guest must still reach release-serve, so the check can't pass on a dead network.
+n=$(probes)
+vm_check "the guest reaches release-serve at 10.0.2.2:$RPORT and no other host loopback port (TCP/UDP $LPORT)" <<EOF
+curl -fsS -o /dev/null "http://10.0.2.2:$RPORT/agentbox-$V.tgz.minisig" || exit 1
+# the box takes no SLAAC address, so without one fec0::2 would fail in the guest and prove nothing
+d=\$(ip -o -4 route show default | awk '{print \$5}') && ip -6 addr add fec0::15/64 dev "\$d" nodad || exit 1
+python3 - <<'PY'
+import socket as S
+for f, a in ((S.AF_INET, "10.0.2.1"), (S.AF_INET, "10.0.2.2"), (S.AF_INET, "255.255.255.255"), (S.AF_INET6, "fec0::2")):
+  for t in (S.SOCK_STREAM, S.SOCK_DGRAM):
+    s = S.socket(f, t); s.settimeout(5)
+    if f == S.AF_INET: s.setsockopt(S.SOL_SOCKET, S.SO_BROADCAST, 1)
+    try:
+      if t == S.SOCK_STREAM: s.connect((a, $LPORT)); s.sendall(b"x")
+      else: s.sendto(b"x", (a, $LPORT))
+    except OSError as e: print(a, t, e)
+    s.close()
+PY
+sleep 2; ip -6 addr del fec0::15/64 dev "\$d"
+EOF
+if [ "$(probes)" = "$n" ]; then echo "PASS the host's loopback probe saw nothing from the guest"
+else echo "FAIL the guest reached the host's loopback probe on $LPORT:"; tail -n +$((n + 1)) "$REL/probe.log"; fi | tee -a "$OUT"
 reboot_vm
 vm_check "next boot finishes, reconcile started by multi-user.target, no failed units" <<EOF
 [ "\$(timeout $((600 * SLOW)) systemctl is-system-running --wait)" = running ] && [ "\$(systemctl is-active agentbox-reconcile.service)" = active ]

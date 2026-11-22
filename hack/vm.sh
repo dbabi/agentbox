@@ -21,14 +21,16 @@
 # ISO against hack/SHA256SUMS, with or without DIRECT_KERNEL.
 # AGENTBOX_BLKLOG=<file>: QEMU logs every guest disk write and flush to <file>, dm-log-writes format (hack/powercut.sh).
 # A TPM is attached in both phases whenever the seed is encrypted. Logs go to .vm/<phase>*.log (serial console).
-# Host ports listen on 127.0.0.1 only, but the guest can reach every Mac service on 127.0.0.1 through 10.0.2.2.
+# The network is hack/vmnet: QEMU's user network with the host loopback cut off. The guest reaches the internet, and the
+# host's 127.0.0.1 only on Tang's port 7500+ID and release-serve's 7600+ID, both as 10.0.2.2. Host ports listen on
+# 127.0.0.1 only.
 set -eu
 die() { echo "vm.sh: $*" >&2; exit 1; }
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 VM="$ROOT/.vm"
 ID=${AGENTBOX_VM_ID:-0}
 case $ID in [0-9]) ;; *) die "AGENTBOX_VM_ID must be 0-9" ;; esac
-SSH_PORT=$((2222 + ID)) TANG_PORT=$((7500 + ID)) TANG=agentbox-tang-$ID
+SSH_PORT=$((2222 + ID)) TANG_PORT=$((7500 + ID)) REL_PORT=$((7600 + ID)) TANG=agentbox-tang-$ID
 DISK="$VM/disk.qcow2"
 SERIAL=QM00001
 FWDEB=qemu-efi-aarch64_2025.11-3ubuntu7.3_all.deb # resolute-updates
@@ -56,6 +58,14 @@ fw() {
   rm -rf "$t"
 }
 
+# vmnet: build .vm/vmnet from hack/vmnet/vmnet.c when it is missing or older
+vmnet() {
+  [ "$VM/vmnet" -nt "$ROOT/hack/vmnet/vmnet.c" ] && return 0
+  f=$(pkg-config --cflags --libs slirp) || die "libslirp not found (brew install libslirp pkg-config; apt install libslirp-dev libglib2.0-dev pkgconf)"
+  # shellcheck disable=SC2086 # $f is pkg-config's flag list
+  cc -O2 -Wall -o "$VM/vmnet" "$ROOT/hack/vmnet/vmnet.c" $f || die "could not build hack/vmnet/vmnet.c"
+}
+
 tpm_start() {
   [ -f "$VM/tpm.on" ] || return 0
   command -v swtpm >/dev/null || die "swtpm not installed (brew install swtpm)"
@@ -67,8 +77,8 @@ tpm_start() {
   (cd "$VM/tpm" && swtpm socket --tpm2 --tpmstate dir=. --ctrl type=unixio,path=sock,terminate --pid file=pid --daemon)
 }
 
-# run_qemu <phase args>: QEMU for $ARCH with this instance's firmware, disk, network and TPM. It execs, so after
-# `run_qemu ... &`, $! is QEMU.
+# run_qemu <phase args>: QEMU for $ARCH with this instance's firmware, disk, network and TPM. It execs vmnet, which
+# execs QEMU, so after `run_qemu ... &`, $! is QEMU.
 run_qemu() {
   case "$DISKBUS" in nvme) dev=nvme ;; sata) dev=ide-hd,bus=ide.0 ;; virtio) dev=virtio-blk-pci ;; *) die "DISKBUS must be nvme, sata or virtio" ;; esac
   if [ -f "$VM/tpm.on" ]; then
@@ -92,19 +102,20 @@ run_qemu() {
     disk="driver=blklogwrites,file.driver=qcow2,file.file.filename=$(qopt "$DISK"),log.driver=file,log.filename=$(qopt "$AGENTBOX_BLKLOG")"
   set -- -smp 4 -m 4096 -display none \
     -drive "if=none,id=d0,$disk" -device "$dev,drive=d0,serial=$SERIAL" \
-    -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" -device virtio-net-pci,netdev=n0 \
+    -netdev stream,id=n0,addr.type=fd,addr.str=3 -device virtio-net-pci,netdev=n0 \
     -device virtio-rng-pci -pidfile "$VM/qemu.pid" -qmp "unix:$(qopt "$VM/qmp.sock"),server=on,wait=off" "$@"
   case $ARCH in
   # virt-11.0: from 11.1 on, virt under HVF uses the in-kernel GICv3, where resolute's AAVMF hangs before its boot
   # manager runs. 11.0 keeps QEMU's emulated GICv2.
-  arm64) exec qemu-system-aarch64 -machine virt-11.0 -accel hvf -cpu host \
+  arm64) set -- qemu-system-aarch64 -machine virt-11.0 -accel hvf -cpu host \
     -drive "if=pflash,format=raw,readonly=on,file=$(qopt "$VM/fw/AAVMF_CODE.ms.fd")" \
     -drive "if=pflash,format=raw,file=$(qopt "$VM/vars.fd")" "$@" ;;
   # SeaBIOS is QEMU's default x86 firmware. KVM where the host has it (Linux CI), else TCG. The i6300esb is amd64's
   # only: arm64 virt has no watchdog device, so that VM boots the seed's softdog fallback (ARCHITECTURE §3.3)
-  amd64) exec qemu-system-x86_64 -machine q35 -accel kvm -accel tcg -cpu max -device i6300esb "$@" ;;
+  amd64) set -- qemu-system-x86_64 -machine q35 -accel kvm -accel tcg -cpu max -device i6300esb "$@" ;;
   *) die "unknown VM arch $ARCH" ;;
   esac
+  exec "$VM/vmnet" "$SSH_PORT" "$TANG_PORT" "$REL_PORT" -- "$@"
 }
 
 cmd=${1:-}; [ $# -gt 0 ] && shift
@@ -153,6 +164,7 @@ install)
   fi
   echo "$ARCH" > "$VM/arch"
   echo "$DISKBUS" > "$VM/diskbus"
+  vmnet
   tpm_start
   qemu-img create -q -f qcow2 "$DISK" 40G
   [ "${DUP_DISK:-0}" = 1 ] && qemu-img create -q -f qcow2 "$VM/disk2.qcow2" 40G
@@ -184,6 +196,7 @@ boot)
   running && die "a VM is running"
   [ -f "$VM/arch" ] || die "no $VM/arch: this disk predates the pinned firmware; run 'vm.sh reset' and install again"
   ARCH=$(cat "$VM/arch") DISKBUS=$(cat "$VM/diskbus")
+  vmnet
   tpm_start
   # the console log is also a socket, so a gate can type at the boot prompts (the recovery key at the LUKS prompt)
   run_qemu -chardev "socket,id=con,path=$(qopt "$VM/console.sock"),server=on,wait=off,logfile=$(qopt "$VM/boot-$(date +%Y%m%dT%H%M%S).log")" \

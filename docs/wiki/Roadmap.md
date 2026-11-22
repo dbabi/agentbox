@@ -95,7 +95,6 @@ Every milestone 3 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 |---|---|
 | The host firewall filters outbound traffic from agentbox's service users only. It has no inbound rules, so SSH and any other listener are open to the LAN. | Not in the plan yet. Keep the box on a network you trust. |
 | No agent support. The design targets Claude Code, Codex and opencode as agent CLIs. | Milestones 4-5 |
-| The test VM can reach services on the host's loopback through `10.0.2.2`. | Before milestone 4: a restricted VM network |
 | No signed approvals. Today an admin approves an OS change by passing the plan's SHA-256 to `os apply` as root. | Milestone 6 |
 | No automatic OS updates. apt's daily timers are masked. Updates happen only when an admin runs `os plan` and `os apply`. | Milestone 7: nightly updates |
 | No command to boot or pin an older generation. Fallback after a failed update is automatic. | Milestone 7: a signed rollback operation |

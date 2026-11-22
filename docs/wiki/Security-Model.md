@@ -243,7 +243,7 @@ These are the known risks. They are listed so you can decide where agentbox fits
 - agentbox has run only in QEMU VMs. The encrypted modes used a software TPM (swtpm). No real hardware has run agentbox.
 - amd64 UEFI has not run anywhere. Secure Boot has run only in an arm64 VM.
 - No external review has happened. An external review of the threat model is planned for milestone 9.
-- The QEMU test VM can reach every service on the host's `127.0.0.1`, through `10.0.2.2`. Do not run untrusted code in it.
+- The QEMU test VM reaches the host's `127.0.0.1` only on the Tang and release-serve ports. It can still reach the host's LAN.
 - `--dev` seeds are for the QEMU VM only. They also accept a plain `http://10.0.2.2:PORT` release URL. Firstboot still checks the pin and the signature.
 - The gates use a throwaway admin password (`x`) and throwaway keys in `.vm/keys` and `.vm/id_vm`. Never use them for a real box.
 

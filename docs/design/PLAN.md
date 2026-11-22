@@ -154,7 +154,7 @@ The week-2 extras also passed: `secureboot-off-direct-kernel-none` and `zero-tou
 3. **GitHub CI.** Check that the first `bios` job finds `/dev/kvm` and enough disk.
 
 ## Before weeks 5–6
-- Switch the VM to vmnet-shared or `-netdev user,restrict=on` before agents run in it: slirp lets the guest reach the Mac's `127.0.0.1` through `10.0.2.2`. The gates use that path today for release-serve and Tang, so they will then need `guestfwd` rules or vmnet.
+- Done (#40): the VM runs on `hack/vmnet`, libslirp with `disable_host_loopback`, so the guest no longer reaches the Mac's `127.0.0.1` through `10.0.2.2`. Only Tang's and release-serve's ports are forwarded. `restrict=on` was not used: it also cuts the internet that the install and the egress gates need.
 
 ## Round-5 findings by build week
 Every architecture finding is resolved in ARCHITECTURE.md (§17 Round 5) and lands in code at the week below. Code findings left open are listed with their week too. `LEDGER.md` has the one-line state of each. The rows for weeks 1, 2 and 3 have landed (LEDGER end state `built`), except the halves noted there (week 3 left the workspace half of A-arch-bus-memory-audit-02 and the route check of A-arch-runtime-network-08). Week 4 landed A-arch-bus-memory-audit-14 and the week-4 halves of -09 (audit classes; pending rows follow in weeks 9–10) and A-arch-runtime-network-07 (the tmpfiles and socket inventory; per-task dirs follow in weeks 5–6).

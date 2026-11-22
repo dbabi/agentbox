@@ -323,7 +323,7 @@ Designed, not built: reconcile will also rebuild agent accounts and the rest of 
 `agentbox seed --dev` is for QEMU test VMs only.
 
 - With `--dev`, the seed also accepts a plain-HTTP release URL of the form `http://10.0.2.2:PORT/path`. The port is required.
-- A QEMU guest on user networking reaches the host's loopback interface at `10.0.2.2`.
+- The test VM reaches the host's `127.0.0.1:7600+ID` as `10.0.2.2:7600+ID`. `hack/vm.sh` forwards only that port and Tang's.
 - Even with `--dev`, the seed refuses every other plain-HTTP address.
 - `--dev` changes nothing else in the seed. Firstboot runs the same code and still checks the SHA-256 pin and the signature.
 
@@ -353,7 +353,7 @@ hack/gate.sh none
 
 At the time of writing, this takes about 9-17 minutes. The results go to `.vm/gate-none.txt`.
 
-`hack/release-serve` listens on `127.0.0.1` only. The VM can still reach every service on the Mac's loopback interface through `10.0.2.2`. Do not run untrusted code in the VM.
+`hack/release-serve` listens on `127.0.0.1` only. The VM reaches it through a forward. It reaches no other port on the Mac's loopback interface.
 
 ## Not built yet
 
