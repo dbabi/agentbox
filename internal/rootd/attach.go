@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"log"
+	"path/filepath"
 	"time"
 
 	"agentbox/internal/rootd/attach"
+	"agentbox/internal/task"
 )
 
 // attachRequest reports whether line is an agent.attach on the admin socket: that connection turns into the session's
@@ -49,6 +51,9 @@ func (s *server) rescan(agent string) reply {
 	if err != nil || !ok {
 		return reply{"ok": err == nil, "blocked": false}
 	}
+	if b.Reason == attach.TaskNotEmpty {
+		return s.rescanTask(b)
+	}
 	if b.Reason == attach.Live {
 		s.cfg.Attach.Stop(agent, b.Session) // rootd stopped mid-attach: its session must not outlive the scan
 	}
@@ -64,6 +69,22 @@ func (s *server) rescan(agent string) reply {
 	}
 	log.Printf("attach.rescan %s: %d hit(s)", agent, len(hits))
 	return reply{"ok": true, "blocked": len(hits) > 0, "hits": hits}
+}
+
+// rescanTask lifts a TaskNotEmpty block only once the old task's unit cgroup is gone or empty (§4.2 Stop step 2).
+func (s *server) rescanTask(b attach.BlockRow) reply {
+	var uid uint32
+	if s.tasks == nil || s.db.QueryRow(`SELECT uid FROM task_registry WHERE task=?`, b.Session).Scan(&uid) != nil {
+		return reply{"ok": false, "blocked": true, "error": "no registry row for task " + b.Session}
+	}
+	if populated(filepath.Join(s.tasks.cfg.Cgroup, task.CgroupDir(uid, b.Session))) {
+		return reply{"ok": true, "blocked": true, "error": "task " + b.Session + " still has processes in its unit cgroup"}
+	}
+	if err := attach.Clear(s.db, b.Agent); err != nil {
+		return reply{"ok": false, "error": err.Error()}
+	}
+	log.Printf("attach.rescan %s: task %s left no process: block lifted", b.Agent, b.Session)
+	return reply{"ok": true, "blocked": false}
 }
 
 func (s *server) attachRoot() string {

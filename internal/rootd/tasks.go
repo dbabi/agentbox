@@ -102,9 +102,9 @@ type tasks struct {
 	db      *sql.DB
 	audit   func(map[string]any) error // waits for the ACK
 	query   func(map[string]any) (*auditReply, error)
+	alert   func(title, msg string) error // ntfy (Config.Alert); nil: none
 	mu      sync.Mutex
 	stops   map[string]*sync.Mutex // one task.stop at a time per task
-	block   map[string]bool        // agents whose last stop left processes (§4.2: fail closed)
 	watch   map[string]bool
 	noWatch bool // tests: no cgroup to watch
 }
@@ -158,6 +158,7 @@ type startInfo struct {
 	asks           int
 	taint          bool
 	source, origin string
+	request        string // admin:<request>: used up in the transaction that registers the task
 }
 
 // start is task.start{task, agent, origin} from agentboxd (§4.2): rootd derives the provenance, registers the task, makes
@@ -171,28 +172,13 @@ func (t *tasks) start(id, agent, origin string) reply {
 		log.Printf("task.start %s: agent %s: %v", id, agent, err)
 		return fail("no_agent")
 	}
-	t.mu.Lock()
-	blocked := t.block[agent]
-	t.mu.Unlock()
-	if blocked {
-		return fail("agent_blocked")
-	}
-	// an attach holds the workspace until its token scan is clean (§4.2); an unreadable block refuses too
-	if b, on, err := attach.Blocked(t.db, agent); on || err != nil {
-		log.Printf("task.start %s: agent %s: attach block %s %v", id, agent, b.Reason, err)
-		return fail("attach_blocked")
-	}
 	si, why := t.provenance(id, agent, origin)
+	if why == "" {
+		why = t.register(id, acct, si)
+	}
 	if why != "" {
 		log.Printf("task.start %s: %s", id, why)
 		return fail(why)
-	}
-	chain, _ := json.Marshal(si.chain)
-	now := t.now()
-	if _, err := t.db.Exec(`INSERT INTO task_registry(task, parent, agent, uid, chain, origin, trace, deadline, started_at, asks_budget)
-		VALUES(?,?,?,?,?,?,?,?,?,?)`, id, si.parent, agent, acct.UID, string(chain), si.origin, si.trace, si.deadline, now, si.asks); err != nil {
-		log.Printf("task.start %s: registry: %v", id, err)
-		return fail("registry")
 	}
 	tainted, err := t.launch(id, acct, si)
 	if err != nil {
@@ -201,6 +187,40 @@ func (t *tasks) start(id, agent, origin string) reply {
 		return reply{"ok": false, "reason": "launch_failed", "error": err.Error()}
 	}
 	return reply{"ok": true, "task": id, "unit": task.Unit(id), "chain": si.chain, "trace": si.trace, "tainted": tainted}
+}
+
+// register is one transaction: the agent's task block (an attach holds the workspace until its token scan is clean, and
+// a task that left processes holds it until they are gone, §4.2; an unreadable block refuses too), the human request
+// used up, and the registry row. attach.Begin refuses while that row is live, so an attach and a task never overlap.
+func (t *tasks) register(id string, acct Account, si startInfo) string {
+	tx, err := t.db.Begin()
+	if err != nil {
+		return "registry"
+	}
+	defer tx.Rollback()
+	if b, on, err := attach.Blocked(tx, acct.Name); on || err != nil {
+		log.Printf("task.start %s: agent %s: block %s %v", id, acct.Name, b.Reason, err)
+		if b.Reason == attach.TaskNotEmpty {
+			return "agent_blocked"
+		}
+		return "attach_blocked"
+	}
+	if si.request != "" {
+		res, err := tx.Exec(`UPDATE task_requests SET task=? WHERE id=? AND task IS NULL`, id, si.request)
+		if n, _ := res.RowsAffected(); err != nil || n != 1 {
+			return "no_unused_request"
+		}
+	}
+	chain, _ := json.Marshal(si.chain)
+	if _, err := tx.Exec(`INSERT INTO task_registry(task, parent, agent, uid, chain, origin, trace, deadline, started_at, asks_budget)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`, id, si.parent, acct.Name, acct.UID, string(chain), si.origin, si.trace, si.deadline, t.now(), si.asks); err != nil {
+		log.Printf("task.start %s: registry: %v", id, err)
+		return "registry"
+	}
+	if err := tx.Commit(); err != nil {
+		return "registry"
+	}
+	return ""
 }
 
 // provenance checks origin and derives chain, trace, deadline, ask budget and taint (§4.2). A non-empty string refuses.
@@ -221,10 +241,7 @@ func (t *tasks) provenance(id, agent, origin string) (startInfo, string) {
 		if err != nil || ragent != agent {
 			return si, "no_unused_request"
 		}
-		res, err := t.db.Exec(`UPDATE task_requests SET task=? WHERE id=? AND task IS NULL`, id, req)
-		if n, _ := res.RowsAffected(); err != nil || n != 1 {
-			return si, "no_unused_request"
-		}
+		si.request = req
 		si.chain, si.trace, si.deadline, si.asks = []string{"human:" + human, "agent:" + agent}, denial.NewID("trace"), dl, asks
 	case strings.HasPrefix(origin, "parent:"):
 		p := origin[7:]
@@ -353,14 +370,20 @@ func (t *tasks) stop(id, reason string) reply {
 		}
 	}
 	if !empty {
-		t.mu.Lock()
-		if t.block == nil {
-			t.block = map[string]bool{}
+		// in rootd.db, so a restart keeps it; attach.rescan lifts it once this cgroup is empty
+		if err := attach.BlockTask(t.db, agent, id, t.cfg.Now()); err != nil {
+			log.Printf("task %s: block agent %s: %v", id, agent, err)
 		}
-		t.block[agent] = true
-		t.mu.Unlock()
-		log.Printf("ALERT task %s: its cgroup is not empty 10 s after cgroup.kill: agent %s gets no more tasks", id, agent)
+		msg := fmt.Sprintf("task %s: its cgroup is not empty 10 s after cgroup.kill: agent %s gets no more tasks (agentbox attach status)", id, agent)
+		log.Printf("ALERT %s", msg)
 		go t.audit(map[string]any{"type": "ALERT", "reason": "task_not_empty", "task": id})
+		if t.alert != nil {
+			go func() {
+				if err := t.alert("agentbox: task "+agent, msg); err != nil {
+					log.Printf("alert not sent: %v", err)
+				}
+			}()
+		}
 	}
 	// 3: the unit's ExecStopPost already removes the container; this is its backup, outside the user bus
 	acct, err := t.cfg.Accounts.Lookup(agent)

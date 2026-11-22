@@ -8,8 +8,12 @@
 #          rootd-admin.sock, dispatched by agentboxd, launched by rootd; prompts reach the task on stdin and run as sh
 #          scripts (AGENTBOX_TEST_CLI=sh on agentboxd). Each gate item of #13 and #14:
 #          - a task plants Claude, Codex and opencode hooks, settings and MCP config, in HOME and in the workspace,
-#            and a SKILL.md frontmatter hook: the next task's HOME holds only the generated configs, hooks are off
-#            and nothing planted ran;
+#            and a SKILL.md frontmatter hook: the next task's HOME holds only the generated configs and hooks are off.
+#            The real Claude Code CLI (linux-arm64, pinned in hack/SHA256SUMS, as in attach-gate.sh) run without the
+#            task flags in a task runs the workspace SessionStart hook and .mcp.json server (the control); run as
+#            `--cli claude` it runs neither. A skill's frontmatter hook needs a model turn, so only the shared
+#            disableAllHooks switch is checked for it;
+#          - agent.attach is refused while a task of the agent runs;
 #          - a task tainted mid-run makes the next task start tainted;
 #          - user-unit and container-config escapes fail;
 #          - a task that traps SIGTERM and forks `sleep infinity` leaves no process in its unit cgroup and no libpod-*
@@ -30,6 +34,7 @@ cd "$ROOT"
 VM="$ROOT/.vm"
 [ $# -gt 0 ] || set -- install checks
 OUT="$VM/tasks-gate.txt" LOG="$VM/tasks-gate.log"
+CC=anthropic-ai-claude-code-linux-arm64-2.1.330.tgz
 mkdir -p "$VM"
 : > "$OUT"
 ! command -v caffeinate >/dev/null || { caffeinate -i -w $$ & }
@@ -49,13 +54,22 @@ guest() {
   while IFS= read -r l; do case $l in PASS*|FAIL*) log "$l" ;; *) echo "$l" >>"$LOG" ;; esac; done <"$VM/guest.out"
   grep -q '^fails=' "$VM/guest.out" || log "FAIL the check block on the VM did not finish (see $LOG)"
 }
+pinned() { [ -f "$1" ] && [ "$(shasum -a 256 < "$1" | cut -d' ' -f1)" = "$(awk -v f="${1##*/}" '$2 == f {print $1}' hack/SHA256SUMS)" ]; }
+claude_pkg() {
+  pinned "$VM/claude/$CC" && return 0
+  mkdir -p "$VM/claude" && (cd "$VM/claude" && npm pack --silent "@anthropic-ai/claude-code-linux-arm64@2.1.330") >>"$LOG" 2>&1 ||
+    die "npm pack of the Claude Code CLI failed"
+  pinned "$VM/claude/$CC" || die "$CC does not match hack/SHA256SUMS"
+}
 
 for s; do case $s in
 install)
   hack/gate.sh none >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-none.txt"
   log "PASS install: hack/gate.sh none (install, release pipeline, firstboot, no failed units)" ;;
 checks)
+  claude_pkg
   up
+  hack/vm.sh ssh 'cat > /tmp/claude.tgz' < "$VM/claude/$CC" || die "copying the CLI to the VM failed"
   guest <<'EOF'
 fails=0
 cd / # runuser keeps the working dir, and the agent can't enter the admin's home
@@ -66,7 +80,8 @@ X=/var/lib/agentbox/control/xdg/gt
 H=/var/lib/agentbox/data/agents/gt/account
 RS=/run/systemd/system
 # new DEADLINE < script: start a task as the human, print its id
-new() { $B task new --agent gt --cli sh --deadline "$1" > /tmp/tg-new && sed -n 's/.*"task":"\(task_[0-9A-Z]*\)".*/\1/p' /tmp/tg-new; }
+new() { newc sh "$1"; }
+newc() { $B task new --agent gt --cli "$1" --deadline "$2" > /tmp/tg-new && sed -n 's/.*"task":"\(task_[0-9A-Z]*\)".*/\1/p' /tmp/tg-new; }
 field() { $B task list | python3 -c 'import json,sys; t=[x for x in json.load(sys.stdin)["tasks"] if x["task"]==sys.argv[1]]; v=t[0].get(sys.argv[2],"") if t else ""
 print(v if isinstance(v,str) else json.dumps(v,separators=(",",":")))' "$1" "$2"; }
 wait_end() { i=0; while [ -z "$(field "$1" end_reason)" ]; do i=$((i+1)); [ $i -lt $(( $2 * 5 )) ] || return 1; sleep 0.2; done; }
@@ -154,7 +169,20 @@ ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.a
 check "  ... hooks are off for every settings source (disableAllHooks, the skill frontmatter hook included), MCP config empty, git hooks off" '
   grep -qx "  \"disableAllHooks\": true" /var/lib/agentbox/control/exports/gt/claude-settings.json && grep -q "\"mcpServers\": {}" /var/lib/agentbox/control/exports/gt/mcp.json &&
   [ "$(cat $W/t3.git)" = /opt/agentbox/exports/nohooks ] && [ -z "$(ls -A /var/lib/agentbox/control/exports/gt/nohooks)" ]'
-check "  ... nothing planted ran: no hook or MCP marker in the workspace" '[ ! -e $W/HOOK-RAN ] && [ ! -e $W/MCP-RAN ]'
+# in /usr/bin, which the stub task image mounts from the host
+mkdir -p /tmp/cc && tar -xzf /tmp/claude.tgz -C /tmp/cc package/claude && install -m 0755 /tmp/cc/package/claude /usr/bin/claude
+rm -rf /tmp/cc /tmp/claude.tgz
+cat > /tmp/tg-p <<'P'
+export HOME=$(mktemp -d) # not the task HOME: its generated user settings turn hooks off
+echo '{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true,"enabledMcpjsonServers":["evil"]}}}' > $HOME/.claude.json
+cd /workspace && timeout 60 claude -p hi --setting-sources user,project,local --dangerously-skip-permissions </dev/null > /workspace/tc.out 2>&1
+sleep 2; echo done > /workspace/tc.done
+P
+check "  ... control: claude without the task flags, in a task, runs the planted SessionStart hook and .mcp.json server" 'Tc=$(new 2m < /tmp/tg-p) &&
+  wait_end $Tc 90 && [ -f $W/tc.done ] && [ -e $W/HOOK-RAN ] && [ -e $W/MCP-RAN ] || { ls -A $W; cat $W/tc.out; false; }'
+rm -f $W/HOOK-RAN $W/MCP-RAN $W/tc.*
+check "  ... a --cli claude task (the real CLI with the task flags) runs neither" 'echo hi > /tmp/tg-p && T3c=$(newc claude 2m < /tmp/tg-p) &&
+  wait_end $T3c 90 && sleep 2 && [ ! -e $W/HOOK-RAN ] && [ ! -e $W/MCP-RAN ] || { ls -A $W; false; }'
 
 # --- #13: taint carry-over ---
 echo 'touch /workspace/t4.up; i=0; while [ ! -e /workspace/t4.go ] && [ $i -lt 100 ]; do sleep 0.5; i=$((i+1)); done' > /tmp/tg-p
@@ -163,6 +191,8 @@ check "a running task's processes are all in its unit's cgroup (--cgroups=split)
   find $u -name "libpod-payload-*" | grep -q . && [ -z "$(find $(cg) -name "libpod-*" ! -path "$u/*")" ] &&
   for p in $(pgrep -u $U -f "sleep 0.5|/usr/local/bin/agentbox taskrun"); do grep -q "agentbox-task-$T4.service" /proc/$p/cgroup || exit 1; done'
 T4=$(cat /tmp/tg-t4 2>/dev/null || :)
+check "agent.attach is refused while a task of the agent runs, and leaves no block" '! $B attach --agent gt --cli bash </dev/null >/tmp/tg-at 2>&1 &&
+  cat /tmp/tg-at && grep -q "a task of this agent is running" /tmp/tg-at && $B attach status | grep -qF "\"blocks\":[]"'
 check "a running task, tainted mid-run (a TAINT for task:<id>), taints its workspace" '
   $B audit send --socket /run/agentbox-audit/rootd.sock "{\"type\":\"TAINT\",\"subject\":\"task:$T4\",\"source\":\"gate:mid-run\"}" &&
   $B audit send --socket /run/agentbox-audit/rootd.sock "{\"type\":\"taint.get\",\"holder\":\"task:$T4\"}" | grep -q "\"subject\":\"workspace:gt\",\"tainted\":true"'
@@ -268,7 +298,7 @@ check "sockets check: the live per-task dirs and sockets match the inventory" '$
 check "no task is left live, and no task container exists" 'sleep 5; [ "$($B task list | python3 -c "import json,sys; print(sum(1 for t in json.load(sys.stdin)[\"tasks\"] if \"end_reason\" not in t))")" = 0 ] &&
   [ -z "$(pod ps -a --format "{{.Names}}" | grep task-)" ]'
 systemctl stop agentbox-proxy-stub agentbox-keys-stub agentbox-git-stub agentbox-proxy-stub.socket agentbox-keys-stub.socket agentbox-git-stub.socket
-rm -f $RS/agentbox-*-stub.* $RS/agentboxd.service.d/50-tg.conf; systemctl daemon-reload; systemctl restart agentboxd
+rm -f $RS/agentbox-*-stub.* $RS/agentboxd.service.d/50-tg.conf /usr/bin/claude; systemctl daemon-reload; systemctl restart agentboxd
 check "the audit chain verifies" '$B audit verify'
 check "no failed units" 'sleep 3; [ -z "$(systemctl --failed --no-legend --plain)" ]'
 journalctl -b -u agentbox-rootd -o short-precise --no-pager | grep -E "task|ALERT" | tail -80
