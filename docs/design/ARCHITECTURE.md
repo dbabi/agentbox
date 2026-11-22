@@ -1060,6 +1060,9 @@ Human CLI replies (`approval_stale`, `CACHE_PURGE_FAILED`) are not agent codes; 
 - Denials: run, ask and refuse stay observable as in v5.2, and codes add only the coarse reason. `BUSY` still shows one box-wide bit (the OS lock, the box's 3 CAS-binding slots, the daemon-ask pool). Task code can forge its own in-task log.
 - Ask budget: one batch signature can cover up to 4 effects, so a human may review up to 40 ops per agent per 24 h (v5.2: 20). Within the quote caps, a small low-volume probe raises no alert. Several tasks together, or one task with the maximum budget of 10 sending 4-member batches, can use up a shared per-agent cap and deny a sibling's asks (availability only, and noisy: every ask is an ntfy push).
 - A compromised auditd can forge ACKs and mask taint until off-box verification catches it. v2: rootd keeps its own append-only taint record and refuses on regression.
+- Attach session-home is persistent and agent-writable. Hooks, MCP servers, shell startup files and git config stay off, and Claude's settings are read-only, but instructions a session leaves there (`~/.claude/CLAUDE.md`, skills, rules, agents) load into later attaches without review. Fix: baseline and ack them like workspace control paths (#153).
+- The post-attach token scan polls the credential files and doesn't unpack git packfiles: a token version that lives less than one poll, or one committed and then packed by `git gc`, is missed. Fix: inotify on the credential files; scan packed objects (#154).
+- The task seccomp profile is podman's default minus btrfs ioctls: it allows every socket family but audit netlink, and clone, clone3, setns and unshare with no conditions. Fix: a socket family allowlist and conditional namespace syscalls (#155).
 - Root can always remove confinement. After a root-level flush, brokers are unconfined for up to 60 s, until the next `fwcheck` (§6.1).
 - One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late.
 - Jev egress when enabled.
@@ -1072,6 +1075,7 @@ Human CLI replies (`approval_stale`, `CACHE_PURGE_FAILED`) are not agent codes; 
 - QEMU 11.1's NVMe controller ignores FUA. In an NVMe power-cut log, FUA writes are never flush marks, so the replay at the last flush can be the disk just before the final journal commit. Use `DISKBUS=virtio` for exact durability points.
 - blklogwrites once left a 15.7 MiB hole in a 9.9 GB virtio install log; the root cause is unknown. `replay-log`, `check` and `boot` fail loudly at a hole.
 - Power-cut replay needs a plain btrfs partition, so encrypted disks are not replayed. `vm.sh cut` (a QMP reset) models only a disk with no volatile write cache. Power-cut suites run in `tpm2` mode only.
+- The milestone 4 (weeks 5–6) gates use stand-in brokers: restart, outage and retry checks run against stubs that bind the same per-task sockets. A skill's frontmatter hook needs a model reply to fire, so the tasks gate checks only `disableAllHooks`.
 - The VM's network is `hack/vmnet`: libslirp with the host loopback cut off. The guest reaches the Mac's `127.0.0.1` only on Tang's and release-serve's ports, forwarded as `10.0.2.2`; `gate.sh` checks that a loopback listener with no forward sees nothing. The guest still reaches the Mac's LAN.
 - The arm64 VM tests softdog only; the i6300esb path runs on amd64. x86 watchdog detection is unit-tested only.
 - HVF guests stop while the Mac sleeps, and their clocks fall behind. Long gates need AC power and an open lid. `vm.sh` no longer counts sleep against the install timeout.

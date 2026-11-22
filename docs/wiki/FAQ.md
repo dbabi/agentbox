@@ -10,8 +10,8 @@ No. It is early alpha. Do not use it for production, or for data you cannot affo
 
 At the time of writing:
 
-- Milestones 1 and 2 of 9 are built: the installer, the OS layer, and the first host services (a firewall, an audit daemon and a root daemon skeleton).
-- No AI agent can run on it yet.
+- Milestones 1, 2 and 4 of 9 are built: the installer, the OS layer, the first host services (a firewall, an audit daemon and a root daemon skeleton), agent accounts and task containers. Milestone 3, the request checks, waits for its 24-hour fuzz run.
+- No AI agent can do useful work on it yet: no task can reach a model.
 - It has run only in QEMU virtual machines. No real hardware has run it.
 - The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules, so anything that listens is open to your LAN.
 - There are no automatic security updates: apt's daily timers are masked. Packages do not change on their own. To change them, an admin runs `agentbox os plan`, then `agentbox os apply`, as root on the box. The binary is not on `PATH`, so give its full path, for example `sudo /var/lib/agentbox/current/bin/agentbox os plan --install <pkg>`.
@@ -19,15 +19,15 @@ At the time of writing:
 
 ### Which agents run in it?
 
-None yet. The agent runtime is designed, but not built.
+None yet. Tasks can start an agent CLI, but no task can reach a model until the brokers are built.
 
 The design names three agent CLIs: Claude Code, Codex and opencode. The plan for running them:
 
-- Each task runs in its own disposable podman container. The container has no network and a temporary home directory.
+- Each task runs in its own disposable podman container. The container has no network and a temporary home directory. This part is built.
 - No credential exists inside a task. Broker services outside the container hold the LLM API keys and the GitHub token.
 - Every action that touches the host, secrets, the network, other agents or shared memory is a typed operation. Policy checks it, and the audit log records it. Risky operations wait for your approval.
 
-The current plan builds these pieces in milestones 3 to 8 (see [Roadmap](Roadmap.md)). Milestone 2 built the host services they rely on: the firewall, the audit daemon and the root daemon's resolver.
+The rest comes in milestones 5 to 8 (see [Roadmap](Roadmap.md)). Milestones 2 to 4 built what it relies on: the firewall, the audit daemon, the root daemon's resolver, the request checks and the task containers.
 
 ### How is it different from a dev container?
 

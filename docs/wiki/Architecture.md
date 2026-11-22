@@ -1,6 +1,6 @@
 # Architecture
 
-> **Early alpha. Not for production use.** No AI agent can run on agentbox yet. Milestones 1 and 2 of 9 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon and a skeleton of the root daemon). Milestone 3, the operation registry and the request checks, is built; its 24-hour fuzz run is pending. The rest of the agent runtime on this page is designed, not built.
+> **Early alpha. Not for production use.** No AI agent can do useful work on agentbox yet: tasks can't reach a model. Milestones 1, 2 and 4 of 9 are built: the installer, the OS layer, the first host services (the firewall, the audit daemon and a skeleton of the root daemon), agent accounts, task containers and interactive sessions. Milestone 3, the operation registry and the request checks, is built; its 24-hour fuzz run is pending. The rest of the agent runtime on this page is designed, not built.
 
 This page explains the target design of agentbox for newcomers.
 The full design is in [`docs/design/`](../design/).
@@ -23,7 +23,7 @@ Milestone numbers refer to the ordered list on the [Roadmap](Roadmap.md). The pl
 | Zero-touch install ISO, QEMU test harness, power-cut tests | Built | 1 |
 | Firewall, disk quotas, audit daemon, rootd skeleton and resolver, ntfy | Built | 2 |
 | Operation registry, the agentboxd request gate, denial codes, the socket layout as code | Built (24-hour fuzz run pending) | 3 |
-| Agent accounts, task containers, interactive sessions | Designed | 4 |
+| Agent accounts, task containers, interactive sessions | Built | 4 |
 | Brokers: proxy, keys, git | Designed | 5 |
 | Cedar policy, rootd floor, signed approvals | Designed | 6 |
 | Apps, file writes, workspace ops, OS ops for agents, nightly updates, decide | Designed | 7 |
@@ -87,7 +87,7 @@ These eight rules shape the whole design.
    Task containers have no network at all.
    Traffic leaves only through the task's own Unix sockets, to the brokers.
    Brokers may connect only to addresses that rootd resolved for allowlisted names.
-   *Built in part (milestone 2): the firewall and rootd's resolver, which hold each broker uid to rootd's answers. The containers and brokers are designed (milestones 4-5).*
+   *Built in part: the firewall and rootd's resolver (milestone 2), and task containers with no network (milestone 4). The brokers are designed (milestone 5).*
 4. **The executor owns the floor.**
    `agentbox-rootd` stores every pending operation, bound to its exact inputs, such as commit IDs and package hashes.
    When an operation needs approval, rootd runs only the stored copy that a human signed.
@@ -100,12 +100,12 @@ These eight rules shape the whole design.
 6. **Tasks are disposable.**
    Each task gets its own container, home directory and sockets.
    Nothing the task writes outside its workspace survives the task.
-   *Designed (milestone 4).*
+   *Built (milestone 4).*
 7. **Taint is sticky.**
    Content from an untrusted source marks, or taints, the task that reads it.
    The mark spreads to what the task touches.
    Only a human can clear it.
-   *Built in part (milestone 2): auditd's taint ledger, where only rootd's admin path clears a subject. What sets and spreads taint is designed (milestones 3-8).*
+   *Built in part: auditd's taint ledger, where only rootd's admin path clears a subject (milestone 2), and taint that spreads from a task to its workspace and the next task (milestone 4). What sets taint is designed (milestones 5-8).*
 8. **Honest guarantees.**
    The design states what each operation's rollback covers.
    It states the limits of disk encryption and of phone approvals.
@@ -219,11 +219,13 @@ More: [Release Pipeline](Release-Pipeline.md).
 |---|---|---|
 | `agentbox-firstboot.service` | the seed | Installs the signed release once. Retries every 60 s until it succeeds. |
 | `agentbox-boot-deadline.service` | the seed | Reboots an uncommitted generation after 900 s. |
-| `agentbox-reconcile.service` | the release | Re-applies agentbox's control state to the booted generation: the quota groups, and ntfy's config, ACLs and unit drop-in. |
+| `agentbox-reconcile.service` | the release | Re-applies agentbox's control state to the booted generation: the quota groups, the agent accounts, and ntfy's config, ACLs and unit drop-in. |
+| `agentbox-accounts.service` | the release | Writes the agent accounts from rootd's `ids` table into `/etc`: users, groups, sub-id lines and the systemd drop-ins. |
 | `agentbox-firewall.service` | the release | Loads the `inet agentbox` nftables table. Every agentbox unit `Requires=` it. |
 | `agentbox-health.service`, `agentbox-health.timer` | the release | Every 50 s: `agentbox fwcheck --repair`, then `agentbox os health`. |
 | `agentbox-auditd.service` and its sockets | the release | The audit daemon. Socket-activated: one socket per producer (agentboxd, rootd, proxy, keys, git). |
-| `agentbox-rootd.service` and its sockets | the release | The root daemon skeleton: the resolver sockets for the three brokers, the admin socket, and the seal socket auditd calls. |
+| `agentbox-rootd.service` and its sockets | the release | The root daemon: agent accounts, task start and stop, attach sessions, the resolver sockets for the three brokers, the admin socket, and the seal socket auditd calls. |
+| `agentboxd.service` and its socket | the release | The task gate: one socket per task, with no network. |
 | `ntfy.service` | the Ubuntu `ntfy` package | Notifications, as `_ntfy`, on a Unix socket only. `install.sh` installs the package; reconcile configures and enables it. |
 | `agentbox-agent-stub.service` | the release | A stand-in for an agent unit, for the gates. Not enabled. |
 
@@ -244,7 +246,7 @@ Each service runs as its own Linux user, with only the access it needs.
 
 | Service | Runs as | Job | Status |
 |---|---|---|---|
-| `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Skeleton built (milestone 2): the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing. Its generation code is built. The rest is designed (milestones 4-7). |
+| `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Built in part: the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing (milestone 2); agent accounts, task start and stop, and attach sessions (milestone 4). Its generation code is built. Pending operations and OS operations for agents are designed (milestones 6-7). |
 | `agentboxd` | `agentbox` | The front door for agents: the task gate, Cedar policy, the agent bus, memory and decide. Has no network. | Task gate built (milestone 3): one socket per task, argument and caller checks, typed denials. Policy, the agent bus, memory and decide are designed (milestones 6-8). |
 | `agentbox-auditd` | `agentbox-audit` | Writes the hash-chained audit log and the taint ledger. Has no network. | Built (milestones 2 and 3), including the per-field audit classes. |
 | `agentbox-proxy` | `agentbox-proxy` | Tunnels task traffic to allowlisted hosts. Holds no secrets. | Designed (milestone 5) |
@@ -273,14 +275,16 @@ Each service runs as its own Linux user, with only the access it needs.
 
 ## Task containers
 
-**Status:** Designed (milestone 4). The seed already installs podman and crun, but agentbox does not use them yet.
+**Status:** Built (milestone 4), except where a bullet says otherwise. The brokers behind the task sockets are designed (milestone 5), so no task can reach a model or the internet yet.
 
 ### Accounts
 
-- Each agent is a Linux user `ag-<name>` with uid `70000+N`.
-  Each app is a user `app-<name>` with uid `71000+M`.
-- rootd allocates N and M, and it never reuses them.
-- Each agent gets its own sub-uid range, its own disk quota (a btrfs qgroup) and its own CPU, memory and IO limits.
+- `agentbox agent add --name <name>` makes a Linux user `ag-<name>` with uid `70000+N`.
+  In the design, each app is a user `app-<name>` with uid `71000+M` (milestone 7).
+- rootd allocates N from its `ids` table and never reuses it, so a removed agent's uid and sub-id range never come back.
+- Each agent gets its own 65536-wide sub-uid range, its own disk quota (a btrfs qgroup) and its own CPU, memory and IO limits.
+- Its workspace, its podman storage and its session-home are subvolumes inside that quota.
+- `agentbox agent remove` deletes the account and moves its data to an archive. It refuses while the workspace holds a nested subvolume.
 
 ### One container per task
 
@@ -291,7 +295,9 @@ Each service runs as its own Linux user, with only the access it needs.
   The workspace is the only writable mount that outlives the task.
 - A seccomp profile blocks btrfs ioctls.
   So a task can't create a subvolume that escapes its quota or the workspace snapshots.
-- A top-level task has a 2-hour deadline and a 50 MB output cap.
+- An admin starts a task with `agentbox task new --agent <name>`, with the prompt on stdin.
+- A top-level task has a 2-hour deadline by default.
+  The design caps its output at 50 MB; today the result keeps the last 16 KiB.
   A child task never outlives its parent's deadline.
 
 ### Inside the container
@@ -299,11 +305,16 @@ Each service runs as its own Linux user, with only the access it needs.
 - `agentbox taskrun` runs as PID 1.
   It copies generated CLI configs into the home directory, starts local forwarders, and runs the agent CLI with the prompt on stdin.
 - The design names three agent CLIs: Claude Code, Codex and opencode.
-  None of that integration exists yet.
+  Their configs and flags are built.
+  The CLIs are not in the task image yet, and only Claude Code has run in a test.
 - The forwarders listen on `127.0.0.1:8080` for egress, `:8081` for LLM APIs and `:8082` for git.
 - The forwarders lead to the task's own Unix sockets for the proxy, keys and git.
   A fourth socket reaches the gate in agentboxd.
   rootd creates these sockets for this task only, and revokes them when the task ends.
+- If a broker restarts, the forwarders retry for up to 5 s, then answer `503 BROKER_UNAVAILABLE`.
+- The task has no DNS: its `resolv.conf` names only `127.0.0.1`, so a direct lookup fails in under 1 s.
+- Go's settings follow the agent's allowlist. npm and pip skip their update checks, and npm skips its audit.
+- `agentbox why`, run inside the task, explains a recent denial and what would unblock it.
 
 ### Nothing carries over to the next task
 
@@ -314,21 +325,33 @@ Each service runs as its own Linux user, with only the access it needs.
   Taint covers that case: any task that mounts a tainted workspace is tainted too.
 - Tasks share no package caches.
   Tools are baked into the task image.
+  Today the default image is a small root file system with the host's `/usr` mounted read-only.
+  The pinned image with Go, `image/task`, is built only in a test so far. The box builds it from milestone 7.
 
 ### Stopping a task
 
-- `task.stop` kills the task's whole cgroup, removes the container and revokes the task's sockets.
+- `agentbox task stop` kills the task's whole cgroup, removes the container and revokes the task's sockets.
+  The task's processes are gone within 20 s, and its container and sockets within 5 s.
 - It also stops every child task.
 - It never waits for the audit service, because it only removes capability.
+- If processes survive the stop, rootd blocks new tasks for that agent and sends an alert.
+  The block survives a rootd restart. `agentbox attach rescan --agent <name>` lifts it once the processes are gone.
 
 ### Interactive sessions
 
-- An admin can attach to an agent and work with it interactively.
+- `agentbox attach --agent <name>` opens an interactive Claude Code, Codex or bash session.
+  It runs in the agent's rootless podman with a task's hardening, but with loopback only instead of the brokers.
 - The session uses a persistent `session-home`, which may hold subscription logins.
   `session-home` is never mounted into automated tasks.
-- Workspace hooks and workspace MCP servers don't run in a session.
+- Hooks, MCP servers, git hooks and shell startup files don't run in a session.
+  The session can't change its own Claude settings.
+- An attach is refused while the workspace's control files changed since the last attach, until you pass `--ack-control-changes`.
+- An attach and a task of the same agent never run at once.
 - rootd relays the session output through a filter.
   The filter drops terminal escape sequences that could write to your clipboard or inject input.
+- When the session ends, rootd scans the workspace for every login token the session held.
+  Tasks stay blocked until the scan is clean, and a hit sends an alert.
+- A session has no network yet, so a real login can't reach its servers (issue #90).
 
 ### Apps
 
@@ -678,9 +701,11 @@ When `os health` runs from its timer, those alerts land in the journal.
 - Prompt injection is the most likely attack.
   Others are a compromised agent CLI or dependency, a thief, someone on your LAN or tailnet, and bugs in agentbox's own services.
 - The threat model lists seven non-negotiables that tests must prove.
-  Three have built parts today:
+  Five have built parts today:
+  - "Tasks have no network": task containers are built. The brokers are not.
   - "Agents never mutate the running OS": the generation mechanism is built. Agents are not.
-  - "Taint is sticky": auditd's taint ledger is built. Nothing sets taint yet.
+  - "Taint is sticky": auditd's taint ledger, and the spread from a task to its workspace, are built. What sets taint is not.
+  - "Nothing persists between tasks": built for task containers.
   - "The seed and logs contain no plaintext secrets": built. The seed still holds the admin password hash, so keep it private.
 - The threat model also lists accepted risks, many with a path for v2.
   Examples: shared-kernel exploits (v2: microVM tasks), and an admin account that is root-equivalent.
@@ -691,7 +716,7 @@ Read [Security Model](Security-Model.md) and the one-page threat model in the re
 
 | Path | What it holds | Status |
 |---|---|---|
-| `cmd/agentbox` | The CLI: `seed`, `recovery`, `os`, `reconcile`, `fw`, `fwcheck`, `auditd`, `audit`, `rootd`, `egress`, `sockets`, `agentboxd`, `gate` and `version` | Built |
+| `cmd/agentbox` | The CLI: `seed`, `recovery`, `os`, `reconcile`, `fw`, `fwcheck`, `auditd`, `audit`, `rootd`, `egress`, `sockets`, `agentboxd`, `gate`, `agent`, `accounts`, `task`, `taskrun`, `attach`, `why`, `goprivate` and `version` | Built |
 | `internal/seed` | Seed validation and the autoinstall template | Built |
 | `internal/recovery` | Recovery key generation and decryption | Built |
 | `internal/rootd/gens` | A/B generations: plan, build, initrd checks, commit, fallback, retention | Built |
@@ -702,10 +727,12 @@ Read [Security Model](Security-Model.md) and the one-page threat model in the re
 | `internal/ops`, `gen/` | The operation registry, the denial codes table, and the files generated from them: the Cedar schema, the JSON schemas and the MCP tool list | Built (milestone 3) |
 | `internal/gate`, `internal/denial`, `internal/ids` | agentboxd's task gate, the denial encoder, and the `<kind>_<ULID>` ids | Built (milestone 3) |
 | `internal/sockets` | The socket inventory, the generated tmpfiles.d and `.socket` units, and `agentbox sockets check` | Built (milestone 3) |
+| `internal/rootd/accounts`, `internal/task`, `internal/seccomp`, `internal/rootd/attach`, `internal/controlpaths` | Agent accounts, the task container and its seccomp profile, interactive sessions, and the workspace control-file list | Built (milestone 4) |
+| `internal/taskenv`, `internal/taskrun`, `internal/rootd/witness` | The task environment, the in-task forwarders and `agentbox why`, and the witness pipe rootd reads | Built (milestone 4) |
 | `sysusers.d/`, `tmpfiles.d/` | The service users and the runtime directories | Built (milestones 2 and 3) |
 | `install/`, `systemd/` | The release's `install.sh` and its systemd units | Built |
 | `hack/` | The release builder, the ISO remaster script, the QEMU harness and the test gates | Built |
-| `internal/{policy,bus,memory,decide,dispatch,approvald,webauthn,proxy,keys,gitsvc,taskrun,reconcile}`, the rest of `internal/rootd` | The rest of the agent runtime | Designed |
+| `internal/{policy,bus,memory,decide,dispatch,approvald,webauthn,proxy,keys,gitsvc,reconcile}`, the rest of `internal/rootd` | The rest of the agent runtime | Designed |
 
 Today the code uses the Go standard library plus two modules: `golang.org/x/sys` and the pure-Go SQLite driver `modernc.org/sqlite` (for auditd's taint database and `rootd.db`).
 The design adds more later, such as cedar-go, the MCP Go SDK and a WebAuthn library.

@@ -11,9 +11,9 @@ In the design, each task runs in a disposable container with no network and no c
 Anything that touches the host, secrets, the network, other agents or shared memory goes through typed operations.
 Policy checks each operation, and an audit log records it.
 Risky operations wait for a human to sign them.
-The agent layer is not built yet. Its first host services are built: the firewall, the audit log, the root daemon's resolver and the checks for agent requests.
+Part of the agent layer is built: the firewall, the audit log, the root daemon's resolver, the checks for agent requests, agent accounts and the task containers. The brokers, policy and approvals are not built yet.
 
-Today agentbox is an installer, an OS layer and those host services. No agent can send a request yet, because task containers are not built.
+Today agentbox is an installer, an OS layer, those host services and sealed task containers. No task can reach a model yet, because the brokers are not built.
 It installs Ubuntu unattended. Disk encryption is on by default, and `--encryption none` turns it off.
 It keeps the OS in btrfs A/B generations.
 A package change that fails to boot, or fails its health check, falls back on its own.
@@ -34,7 +34,7 @@ Two words mark the state of each part:
 
 ## Status
 
-At the time of writing (2026-11-21), milestones 1 and 2 of 9 are built. Milestone 3, the checks for agent requests, is built and its VM tests passed. Its 24-hour fuzz run is still pending.
+At the time of writing (2026-11-22), milestones 1, 2 and 4 of 9 are built. Milestone 3, the checks for agent requests, is built and its VM tests passed. Its 24-hour fuzz run is still pending.
 The real-hardware test has not run yet.
 
 Built:
@@ -52,10 +52,13 @@ Built:
 - An operation registry (milestone 3). One list declares every operation an agent may request. The policy schema, the JSON schemas and the MCP tool list are generated from it, and the root daemon refuses to start if they differ.
 - Request checks in `agentboxd` (milestone 3). Each task gets its own socket. A request with bad arguments, a forged caller or an operation no agent may call is refused with a stable denial code. The audit log refuses a record that holds a secret or an unhashed body, and then nothing runs.
 - The socket layout as code (milestone 3). `agentbox sockets check` compares every socket and directory on the box with it.
+- Agent accounts (milestone 4). `agentbox agent add` makes one Linux account per agent, with its own uid, sub-id range, disk quota and limits.
+- Task containers (milestone 4). `agentbox task new` runs each task in a disposable rootless podman container with no network, no capabilities, a seccomp profile and a fresh home. Nothing but the workspace reaches the next task.
+- Interactive sessions (milestone 4). `agentbox attach` opens a session with a separate, persistent home. Planted hooks don't run in it, and its output is filtered.
 
 Not built yet:
 
-- The agent runtime: task containers, brokers, policy, approvals, the agent bus and shared memory. No AI agent can run on agentbox yet.
+- Brokers, policy, approvals, the agent bus and shared memory. Until the brokers land, no task can reach a model or the internet.
 - Inbound filtering. The host firewall has an output chain only, so SSH and any other listener are open to the LAN.
 - Automatic security updates. Today an admin runs `os plan` and `os apply` by hand.
 - Updating agentbox itself on an installed box. This is out of scope for the first release. A new release means a reinstall.
@@ -77,10 +80,10 @@ No real machine has run agentbox yet.
 | [Encryption and Recovery](Encryption-and-Recovery.md) | The three encryption modes, what each protects against, the recovery key, and what happens when Tang is down. | Built |
 | [Generations and Updates](Generations-and-Updates.md) | btrfs A/B generations, `os plan` and `os apply`, trial boots, health commits, fallback and retention. | Built |
 | [Release Pipeline](Release-Pipeline.md) | `make release`, the signed tarball, the SHA-256 pin in the seed, and firstboot. | Built |
-| [Architecture](Architecture.md) | The target design: the services, task containers, approvals, network and secrets, the agent bus, memory and audit. | Mostly designed; the OS layer, firewall, audit, rootd skeleton and request checks are built |
+| [Architecture](Architecture.md) | The target design: the services, task containers, approvals, network and secrets, the agent bus, memory and audit. | Mostly designed; the OS layer, firewall, audit, rootd skeleton, request checks and task containers are built |
 | [Security Model](Security-Model.md) | The threat model: what agentbox defends against, trust boundaries, accepted risks, and how to report a vulnerability. | Mostly designed |
-| [Roadmap](Roadmap.md) | The milestones in order, with the state of each. | Milestones 1 and 2 built; milestone 3 in progress |
-| [Testing and Gates](Testing-and-Gates.md) | Unit tests, fuzz tests, the VM gates (milestones 1-3), power-cut tests, what each gate proves, and the results. | Built |
+| [Roadmap](Roadmap.md) | The milestones in order, with the state of each. | Milestones 1, 2 and 4 built; milestone 3 in progress |
+| [Testing and Gates](Testing-and-Gates.md) | Unit tests, fuzz tests, the VM gates (milestones 1-4), power-cut tests, what each gate proves, and the results. | Built |
 | [Contributing](Contributing.md) | Dev setup, repo layout, code style, tests and commit style. | n/a |
 
 ## Where to start
