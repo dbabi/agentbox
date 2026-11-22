@@ -16,8 +16,9 @@ import (
 const (
 	denyWindow = time.Minute // one record per (broker, code, entry) per window; repeats reuse its id
 	denyCap    = 500         // records per broker per denyPeriod; past it, only a DENY_FLOOD count
-	// shortcut: rootd has no task registry yet (weeks 4-6), so the cap runs per broker per hour and DENY_FLOOD goes at
-	// the hour's end; key it by task, and send DENY_FLOOD when the task ends, once tasks exist.
+	// shortcut: only the proxy's resolve names a task (keys and git requests carry none), so the cap runs per broker
+	// per hour and DENY_FLOOD goes at the hour's end; key it by task, with DENY_FLOOD at task.stop, once every broker
+	// names its task.
 	denyPeriod = time.Hour
 	denyQueue  = 256 // refusals waiting for the one sender; more are dropped (the journal line stays)
 )
