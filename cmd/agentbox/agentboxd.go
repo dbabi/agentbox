@@ -54,7 +54,7 @@ func cmdAgentboxd(args []string) error {
 		return errors.New("agentboxd: want exactly the svc-gate socket from systemd")
 	}
 	s := &gate.Server{Dir: gateDir, Forward: func(req map[string]any) ([]byte, error) { return lineCall(*rootdSock, req, 60*time.Second) },
-		AgentIDs: func(agent string) (uint32, uint32, error) { return uidOf("ag-" + agent) }, CLIs: []string{"claude", "codex", "opencode"}}
+		AgentIDs: func(agent string) (uint32, uint32, error) { return uidOf("ag-" + agent) }, CLIs: []string{"claude", "codex"}}
 	if os.Getenv("AGENTBOX_TEST_CLI") == "sh" {
 		s.CLIs = append(s.CLIs, "sh") // test boxes only: the prompt runs as a shell script in the task
 	}

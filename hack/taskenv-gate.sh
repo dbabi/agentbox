@@ -205,7 +205,7 @@ check "A-G1 go version is the image's pinned Go ($(sed -n "s/^go = \"\(.*\)\"/\1
   task ga "go version" | grep -qx "go version go$(sed -n "s/^go = \"\(.*\)\"/\1/p" /tmp/gate-image/task/mise.toml) linux/arm64"'
 check "A-G1 a task writes \$GOCACHE, ~/go/pkg/mod and ~/.npm; the next task sees none of it, only taskrun's own HOME files" '
   task ga "for d in \$(go env GOCACHE) \$(go env GOMODCACHE) ~/.npm; do mkdir -p \$d && touch \$d/gate-mark; done; ls \$(go env GOCACHE)/gate-mark ~/go/pkg/mod/gate-mark ~/.npm/gate-mark" &&
-  task ga "[ \"\$(ls -A ~ | sort | tr \"\n\" \" \")\" = \".agentbox .claude .codex .config \" ] && ! ls \$(go env GOCACHE)/gate-mark ~/go/pkg/mod/gate-mark ~/.npm/gate-mark 2>/dev/null || { ls -la ~; false; }"'
+  task ga "[ \"\$(ls -A ~ | sort | tr \"\n\" \" \")\" = \".agentbox .claude .codex \" ] && ! ls \$(go env GOCACHE)/gate-mark ~/go/pkg/mod/gate-mark ~/.npm/gate-mark 2>/dev/null || { ls -la ~; false; }"'
 mkdir -p $WS/ga/js/node_modules/left-pad
 printf '{"name":"fx","version":"1.0.0","scripts":{"test":"node -e \\"process.exit(0)\\""}}\n' > $WS/ga/js/package.json
 echo 'module.exports = s => s' > $WS/ga/js/node_modules/left-pad/index.js
@@ -251,9 +251,9 @@ check "  ... and the next task starts with no log" 'task ga "[ ! -e ~/.agentbox/
 check "C-G2 task.start gives ga and gb the same CLAUDE.md and AGENTS.md" 'cmp $X/ga/CLAUDE.md $X/gb/CLAUDE.md && cmp $X/ga/AGENTS.md $X/gb/AGENTS.md'
 check "  ... each carries exactly the eight fixed lines of §8, verbatim" '[ "$(wc -l < /tmp/gate-fixed)" = 8 ] && tail -8 $X/ga/AGENTS.md | cmp - /tmp/gate-fixed && tail -8 $X/ga/CLAUDE.md | cmp - /tmp/gate-fixed &&
   [ "$(grep -cxFf /tmp/gate-fixed $X/ga/AGENTS.md)" = 8 ] && [ "$(grep -cxFf /tmp/gate-fixed $X/ga/CLAUDE.md)" = 8 ]'
-check "  ... and taskrun puts them where Claude, Codex and opencode read them" '
-  task ga "cat ~/.claude/CLAUDE.md; echo ===; cat ~/.codex/AGENTS.md ~/.config/opencode/AGENTS.md" > $G/home-md &&
-  sed "/^===\$/,\$d" $G/home-md | cmp - $X/ga/CLAUDE.md && cat $X/ga/AGENTS.md $X/ga/AGENTS.md > $G/aa && sed "1,/^===\$/d" $G/home-md | cmp - $G/aa'
+check "  ... and taskrun puts them where Claude and Codex read them" '
+  task ga "cat ~/.claude/CLAUDE.md; echo ===; cat ~/.codex/AGENTS.md" > $G/home-md &&
+  sed "/^===\$/,\$d" $G/home-md | cmp - $X/ga/CLAUDE.md && sed "1,/^===\$/d" $G/home-md | cmp - $X/ga/AGENTS.md'
 
 # --- C-G2: the witness, from task.start to task.stop; brokers down for good ---
 rm -f $WS/ga/wready $WS/ga/wgo $G/last

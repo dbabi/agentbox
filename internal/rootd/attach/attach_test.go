@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -269,14 +270,15 @@ func TestPrepare(t *testing.T) {
 			t.Fatalf("~/%s: %v %v %+v", g, fi, err, s.Mounts)
 		}
 	}
-	for _, e := range append(append(GitEnv, sessionEnv...), "TERM=screen", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "CODEX_HOME="+CodexHome) {
+	for _, e := range append(append(GitEnv, sessionEnv...), "TERM=screen", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "CODEX_HOME="+CodexHome, "DISABLE_UPDATES=1") {
 		if !slices.Contains(s.Env, e) {
 			t.Errorf("env lacks %s", e)
 		}
 	}
 	var set map[string]any
 	b, _ := os.ReadFile(filepath.Join(p.Exports, SettingsFile))
-	if json.Unmarshal(b, &set) != nil || set["disableAllHooks"] != true || set["autoMemoryEnabled"] != false || fmt.Sprint(set["allowedMcpServers"]) != "[]" {
+	if json.Unmarshal(b, &set) != nil || set["disableAllHooks"] != true || set["autoMemoryEnabled"] != false || fmt.Sprint(set["allowedMcpServers"]) != "[]" ||
+		set["allowManagedMcpServersOnly"] != true || set["allowManagedHooksOnly"] != true {
 		t.Fatalf("attach settings %s", b)
 	}
 	for _, f := range []string{p.Exports, filepath.Join(p.Exports, NoHooks), filepath.Join(p.Exports, SettingsFile),
@@ -288,10 +290,15 @@ func TestPrepare(t *testing.T) {
 	if l, _ := os.Readlink(filepath.Join(p.Codex, "auth.json")); l != Home+"/.codex/auth.json" {
 		t.Fatalf("codex auth link %q", l)
 	}
-	if c, _ := os.ReadFile(filepath.Join(p.Codex, "config.toml")); strings.Contains(string(c), "[projects") {
-		t.Fatal("codex config trusts a project")
+	if c, _ := os.ReadFile(filepath.Join(p.Codex, "config.toml")); strings.Contains(string(c), "[projects") || !strings.Contains(string(c), "\nweb_search = \"disabled\"\n") {
+		t.Fatalf("codex config %s", c)
 	}
 	RemoveRun(p)
+	for _, bad := range []string{"--dangerously-bypass-hook-trust", "--trust", "--trust=yes"} {
+		if _, err := Prepare(root, "ses_2", "at", "codex", []string{"exec", bad}, uid, gid, "/dev/pts/9", ""); err == nil {
+			t.Fatalf("codex %s: must refuse", bad)
+		}
+	}
 	// a planted symlink in session-home makes rootd refuse, not follow it
 	os.RemoveAll(filepath.Join(p.SessionHome, ".config"))
 	cfg := t.TempDir()
@@ -472,5 +479,24 @@ func TestScanPack(t *testing.T) {
 		if got := packs(ws); len(got) != 0 {
 			t.Fatalf("%s: a truncated pack: %q", tc.name, got)
 		}
+	}
+}
+
+// #123: an IDE task file, a nested repo, a gitdir file and the git dir it names, and a venv not named .venv each
+// need an ack; the venv's modules and the git dir's objects don't.
+func TestManifestRoots(t *testing.T) {
+	ws := t.TempDir()
+	for f, b := range map[string]string{".vscode/tasks.json": `{"tasks":[{"runOptions":{"runOn":"folderOpen"}}]}`, "sub/.git/config": "", "sub/.git/objects/ab": "o",
+		"wt/.git": "gitdir: ../meta\n", "meta/hooks/pre-commit": "", "meta/objects/cd": "o", "env/pyvenv.cfg": "", "env/bin/python": "", "env/lib/m.py": ""} {
+		os.MkdirAll(filepath.Join(ws, filepath.Dir(f)), 0o755)
+		os.WriteFile(filepath.Join(ws, f), []byte(b), 0o644)
+	}
+	m, err := Manifest(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := slices.Sorted(maps.Keys(m))
+	if want := []string{".vscode/tasks.json", "env/bin/python", "env/pyvenv.cfg", "meta/hooks/pre-commit", "sub/.git/config", "wt/.git"}; !slices.Equal(got, want) {
+		t.Fatalf("manifest %q, want %q", got, want)
 	}
 }

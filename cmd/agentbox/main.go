@@ -47,7 +47,7 @@ const usage = `usage:
   agentbox agentboxd [--gen-dir DIR]   (agentboxd.service: the task gate, on the box)
   agentbox gate register --task T --agent A [--chain T1,T2] | revoke --task T | list   (as root: rootd's task registration)
   agentbox gate call --socket /run/agentbox-gate/t/<task>/gate.sock JSON-RPC...   (a task-side test client)
-  agentbox task new --agent A [--cli claude|codex|opencode] [--asks N] [--deadline 2h] < prompt   (admin, on the box)
+  agentbox task new --agent A [--cli claude|codex] [--asks N] [--deadline 2h] < prompt   (admin, on the box)
   agentbox task stop --task T | list   (admin, on the box)
   agentbox taskrun   (the task container's PID 1)
   agentbox broker-stub --svc proxy|keys|git   (test boxes: a broker stand-in for the restart gate)

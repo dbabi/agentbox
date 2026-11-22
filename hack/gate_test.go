@@ -108,3 +108,34 @@ func TestGateUnwritten(t *testing.T) {
 		}
 	}
 }
+
+// TestCLIPins: every gate that runs a real agent CLI pins the same tarball, by name and npm spec, and SHA256SUMS holds
+// it. cli-gate.sh checks the instructions canary and the tool list against that pin (#120), so a Claude Code bump that
+// skips it fails here.
+func TestCLIPins(t *testing.T) {
+	sums, err := os.ReadFile("SHA256SUMS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := regexp.MustCompile(`(?m)^CC=(anthropic-ai-claude-code-linux-arm64-([0-9.]+)\.tgz)`)
+	cli, _ := os.ReadFile("cli-gate.sh")
+	want := pin.FindSubmatch(cli)
+	if want == nil || !strings.Contains(string(cli), "@anthropic-ai/claude-code-linux-arm64@"+string(want[2])) {
+		t.Fatal("cli-gate.sh: no Claude Code pin")
+	}
+	for _, g := range []string{"cli-gate.sh", "tasks-gate.sh", "attach-gate.sh"} {
+		src, _ := os.ReadFile(g)
+		if m := pin.FindSubmatch(src); m == nil || string(m[1]) != string(want[1]) || !strings.Contains(string(src), "@"+string(want[2])) {
+			t.Errorf("%s pins another Claude Code than cli-gate.sh (%s)", g, want[1])
+		}
+	}
+	cx := regexp.MustCompile(`CX=(openai-codex-([0-9.]+)-linux-arm64\.tgz)`).FindSubmatch(cli)
+	if cx == nil || !strings.Contains(string(cli), "@openai/codex@"+string(cx[2])+"-linux-arm64") {
+		t.Fatal("cli-gate.sh: no Codex pin")
+	}
+	for _, f := range [][]byte{want[1], cx[1]} {
+		if !regexp.MustCompile(`(?m)^[0-9a-f]{64}  ` + regexp.QuoteMeta(string(f)) + `$`).Match(sums) {
+			t.Errorf("SHA256SUMS has no %s", f)
+		}
+	}
+}

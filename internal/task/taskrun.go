@@ -129,9 +129,6 @@ func (r *Runner) Setup() error {
 			return err
 		}
 	}
-	if err := cp("AGENTS.md", filepath.Join(r.Home, ".config", "opencode", "AGENTS.md")); err != nil {
-		return err
-	}
 	return os.MkdirAll(filepath.Join(r.Home, ".agentbox"), 0o700)
 }
 
