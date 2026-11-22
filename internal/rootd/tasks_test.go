@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agentbox/internal/ids"
+	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/task"
 )
 
@@ -212,5 +213,40 @@ func TestTaskStartNeedsAudit(t *testing.T) {
 	r.db.QueryRow(`SELECT end_reason FROM task_registry WHERE task=?`, id).Scan(&why)
 	if why != "failed" {
 		t.Fatalf("end_reason %q", why)
+	}
+}
+
+// A task's account is the active ids row: a retired agent is gone, and its name comes back with the new N's uid.
+func TestIdsAccounts(t *testing.T) {
+	db, err := OpenDB(filepath.Join(t.TempDir(), "rootd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ia := idsAccounts{db}
+	if _, err := ia.Lookup("gt"); err == nil {
+		t.Fatal("an agent with no ids row has an account")
+	}
+	now := time.Now()
+	if _, err := accounts.Add(db, "gt", now); err != nil {
+		t.Fatal(err)
+	}
+	a, err := ia.Lookup("gt")
+	if err != nil || a.UID != 70001 || a.GID != 70001 || a.Workspace != "/var/lib/agentbox/data/workspaces/gt" ||
+		a.XDG != "/var/lib/agentbox/control/xdg/gt" || !slices.Contains(a.podmanEnv(), "XDG_RUNTIME_DIR=/run/user/70001") {
+		t.Fatalf("Lookup(gt) = %+v, %v", a, err)
+	}
+	if _, err := accounts.Retire(db, "gt", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ia.Lookup("gt"); err == nil {
+		t.Fatal("a retired agent still has an account")
+	}
+	accounts.Add(db, "gt", now)
+	if a, err := ia.Lookup("gt"); err != nil || a.UID != 70002 {
+		t.Fatalf("re-added gt = %+v, %v; want uid 70002", a, err)
+	}
+	if _, err := ia.Lookup("../x"); err == nil {
+		t.Fatal("a bad name has an account")
 	}
 }

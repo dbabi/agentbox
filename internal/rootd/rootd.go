@@ -181,6 +181,9 @@ func Run(cfg Config) error {
 		audit: func(r map[string]any) error { return auditSend(cfg.AuditSocket, r) },
 		store: accounts.EnsureStore, nested: nestedIn,
 		applyOS: func() error { _, err := quota.Run("systemctl", "start", accounts.Unit); return err }}
+	if cfg.Tasks.Accounts == nil {
+		cfg.Tasks.Accounts = idsAccounts{db}
+	}
 	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
 	s.tasks.resume()
 	for name, ln := range lns {

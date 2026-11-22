@@ -61,7 +61,7 @@ func TestAgentOps(t *testing.T) {
 		store:   func(a accounts.Agent, l uint64) error { limits = append(limits, l); return nil },
 		nested:  func(p string) ([]string, error) { return nested[p], nil },
 		applyOS: func() error { applied++; return nil }}
-	call := func(op, args string) reply { return s.admin(request{Op: op, Args: json.RawMessage(args)}) }
+	call := func(op, args string) reply { return s.admin(request{Op: op, Args: json.RawMessage(args)}, peer{}) }
 	if rep := call("agent.add", `{"name":"a","diskBytes":67108864}`); rep["ok"] != true || limits[0] != 64<<20 {
 		t.Fatalf("add a: %v %v", rep, limits)
 	}

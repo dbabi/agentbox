@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -53,43 +52,7 @@ func cmdTask(args []string) error {
 	default:
 		return fmt.Errorf("task: unknown subcommand %q", args[0])
 	}
-	return adminCall(req)
-}
-
-// adminCall sends one request on rootd-admin.sock and prints the reply.
-func adminCall(req map[string]any) error {
-	line, err := lineCall(AdminSocket, req, 90*time.Second)
-	if err != nil {
-		return err
-	}
-	os.Stdout.Write(line)
-	var rep struct {
-		OK bool `json:"ok"`
-	}
-	if json.Unmarshal(line, &rep) != nil || !rep.OK {
-		return errors.New("refused")
-	}
-	return nil
-}
-
-// cmdAgent is the accounts stand-in: `agentbox agent add` as root, until the accounts area's rootd agent.add.
-func cmdAgent(args []string) error {
-	if len(args) == 0 || args[0] != "add" {
-		return errors.New("agent: expected add")
-	}
-	fs := flag.NewFlagSet("agent add", flag.ContinueOnError)
-	name := fs.String("name", "", "agent name: the user is ag-<name>")
-	if err := parse(fs, args[1:]); err != nil {
-		return err
-	}
-	if os.Getuid() != 0 {
-		return errors.New("agent add: run as root")
-	}
-	if err := rootd.StubAdd(*name); err != nil {
-		return err
-	}
-	fmt.Printf("agent %s: ag-%s ready\n", *name, *name)
-	return nil
+	return adminCall(req, "task "+args[0])
 }
 
 // cmdTaskrun is the task container's PID 1.

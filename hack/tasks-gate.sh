@@ -4,7 +4,7 @@
 #   hack/tasks-gate.sh [install|checks ...]   default: both, in order
 # install  hack/gate.sh none: the unattended install and the release pipeline, so podman, the units, the seccomp
 #          profile and the PAM line arrive the real way.
-# checks   An agent (the accounts stand-in, `agentbox agent add`) runs tasks started with `agentbox task new` on
+# checks   An agent (`agentbox agent add`, rootd's agent.add) runs tasks started with `agentbox task new` on
 #          rootd-admin.sock, dispatched by agentboxd, launched by rootd; prompts reach the task on stdin and run as sh
 #          scripts (AGENTBOX_TEST_CLI=sh on agentboxd). Each gate item of #13 and #14:
 #          - a task plants Claude, Codex and opencode hooks, settings and MCP config, in HOME and in the workspace,
@@ -63,6 +63,7 @@ check() { if (eval "$2") >>/tmp/tg-check.log 2>&1; then echo "PASS $1"; else ech
 B=/var/lib/agentbox/current/bin/agentbox
 W=/var/lib/agentbox/data/workspaces/gt
 X=/var/lib/agentbox/control/xdg/gt
+H=/var/lib/agentbox/data/agents/gt/account
 RS=/run/systemd/system
 # new DEADLINE < script: start a task as the human, print its id
 new() { $B task new --agent gt --cli sh --deadline "$1" > /tmp/tg-new && sed -n 's/.*"task":"\(task_[0-9A-Z]*\)".*/\1/p' /tmp/tg-new; }
@@ -70,7 +71,7 @@ field() { $B task list | python3 -c 'import json,sys; t=[x for x in json.load(sy
 print(v if isinstance(v,str) else json.dumps(v,separators=(",",":")))' "$1" "$2"; }
 wait_end() { i=0; while [ -z "$(field "$1" end_reason)" ]; do i=$((i+1)); [ $i -lt $(( $2 * 5 )) ] || return 1; sleep 0.2; done; }
 wait_file() { i=0; while [ ! -e "$1" ]; do i=$((i+1)); [ $i -lt $(( $2 * 5 )) ] || return 1; sleep 0.2; done; }
-pod() { runuser -u ag-gt -- env HOME=/var/lib/agentbox/control/home/gt XDG_RUNTIME_DIR=/run/user/$U XDG_CONFIG_HOME=$X/config XDG_DATA_HOME=$X/data podman "$@"; }
+pod() { runuser -u ag-gt -- env HOME=$H XDG_RUNTIME_DIR=/run/user/$U XDG_CONFIG_HOME=$X/config XDG_DATA_HOME=$X/data podman "$@"; }
 cg() { echo /sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service; }
 # clean ID: the unit cgroup has no process (or is gone), and nothing named libpod-* is left under user@<uid>.service
 clean() { u=$(cg)/app.slice/agentbox-task-$1.service; { [ ! -e $u/cgroup.events ] || grep -qx 'populated 0' $u/cgroup.events; } &&
@@ -89,15 +90,14 @@ check "the task seccomp profile is installed, root-owned, from the release" '[ "
   cmp /var/lib/agentbox/control/seccomp-task.json /var/lib/agentbox/current/seccomp/seccomp-task.json && grep -q EOPNOTSUPP /var/lib/agentbox/control/seccomp-task.json'
 check "podman is installed, and PAM login skips pam_motd for ag-* users right before the motd lines" 'podman --version &&
   grep -B1 -m1 "pam_motd.so" /etc/pam.d/login | head -1 | grep -qx "session \[success=2 default=ignore\] pam_succeed_if.so quiet user =~ ag-\*"'
-check "agent add (accounts stand-in): ag-gt, uid 70000+N, its sub-id block, linger, root-owned XDG and HOME" '$B agent add --name gt &&
+check "agent add: ag-gt, uid 70000+N, its sub-id block, linger, root-owned XDG and HOME" '$B agent add --name gt &&
   U=$(id -u ag-gt) && [ $U -gt 70000 ] && N=$((U-70000)) && grep -qx "ag-gt:$((0x70000000 + N*65536)):65536" /etc/subuid &&
-  [ -e /var/lib/systemd/linger/ag-gt ] && [ "$(stat -c %U $X/config $X/config/containers/storage.conf /var/lib/agentbox/control/home/gt | sort -u)" = root ] &&
+  [ -e /var/lib/systemd/linger/ag-gt ] && [ "$(stat -c %U $X/config $X/config/containers/storage.conf $H | sort -u)" = root ] &&
   [ "$(stat -c "%U %a" $W)" = "ag-gt 700" ]'
 U=$(id -u ag-gt)
 find $W -mindepth 1 -delete 2>/dev/null || : # a rerun on the same box starts from an empty workspace
-check "  ... its user manager runs with the root-owned XDG dirs and the task image is loaded" 'systemctl is-active -q user@$U.service &&
-  tr "\0" "\n" < /proc/$(systemctl show -P MainPID user@$U.service)/environ | grep -qx "XDG_CONFIG_HOME=$X/config" &&
-  pod image exists $(pod images --format "{{.Repository}}:{{.Tag}}" | grep agentbox-task)'
+check "  ... its user manager runs with the root-owned XDG dirs" 'systemctl is-active -q user@$U.service &&
+  tr "\0" "\n" < /proc/$(systemctl show -P MainPID user@$U.service)/environ | grep -qx "XDG_CONFIG_HOME=$X/config"'
 mkdir -p $RS/agentboxd.service.d && printf '[Service]\nEnvironment=AGENTBOX_TEST_CLI=sh\n' > $RS/agentboxd.service.d/50-tg.conf
 for v in proxy keys git; do
   printf '[Socket]\nListenStream=/run/agentbox-rootd/svc-%s.sock\nSocketUser=agentbox-%s\nSocketGroup=root\nSocketMode=0600\nFileDescriptorName=svc-%s\nService=agentbox-%s-stub.service\nRemoveOnStop=yes\n' $v $v $v $v > $RS/agentbox-$v-stub.socket
@@ -114,6 +114,7 @@ touch /t1-root 2>/dev/null && echo rootfs-writable > /workspace/t1.ro; stat -c %
 check "task new: rootd starts the task agentboxd dispatched; it runs the prompt from stdin and completes" 'T1=$(new 2m < /tmp/tg-p) && echo $T1 > /tmp/tg-t1 && cp /tmp/tg-new /tmp/tg-new1 &&
   wait_end $T1 60 && [ "$(field $T1 end_reason)" = completed ] && [ "$(cat $W/t1.done)" = done ]'
 T1=$(cat /tmp/tg-t1 2>/dev/null || :)
+check "  ... rootd loaded the task image into the agent's podman before the launch" 'pod image exists $(pod images --format "{{.Repository}}:{{.Tag}}" | grep agentbox-task)'
 check "  ... on a fresh box it starts clean (untainted)" 'grep -q "\"tainted\":false" /tmp/tg-new1'
 check "  ... provenance from rootd: origin admin:<request>, chain [human:root, agent:gt] (the CLI ran as root)" '[ "$(field $T1 origin | cut -c1-10)" = admin:req_ ] &&
   [ "$(field $T1 chain)" = "[\"human:root\",\"agent:gt\"]" ]'
@@ -178,9 +179,9 @@ check "from a task: no user bus and no /run/user, so no way to reach the user ma
   [ -f $W/t6.done ] && [ ! -e $W/t6.bus ] && { [ ! -s $W/t6.runuser ] || grep -q "No such file" $W/t6.runuser; }'
 check "as the agent uid on the host: no user unit, containers.conf, storage.conf or HOME config can be written" '
   ! runuser -u ag-gt -- mkdir -p $X/config/systemd/user && ! runuser -u ag-gt -- touch $X/config/containers/containers.conf &&
-  ! runuser -u ag-gt -- sh -c "echo x >> $X/config/containers/storage.conf" && ! runuser -u ag-gt -- mkdir /var/lib/agentbox/control/home/gt/.config &&
+  ! runuser -u ag-gt -- sh -c "echo x >> $X/config/containers/storage.conf" && ! runuser -u ag-gt -- mkdir $H/.config &&
   ! runuser -u ag-gt -- touch /etc/containers/containers.conf && ! runuser -u ag-gt -- mkdir -p /etc/systemd/user/x &&
-  [ -z "$(ls -A /var/lib/agentbox/control/home/gt)" ]'
+  [ -z "$(ls -A $H)" ]'
 check "  ... the user manager reads only the root-owned XDG dirs, with no CONTAINERS_* override" '
   ! tr "\0" "\n" < /proc/$(systemctl show -P MainPID user@$U.service)/environ | grep -q "^CONTAINERS_" &&
   [ -z "$(find $X /var/lib/agentbox/control/exports/gt ! -user root)" ]'

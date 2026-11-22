@@ -12,7 +12,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -21,6 +20,7 @@ import (
 
 	"agentbox/internal/denial"
 	"agentbox/internal/ids"
+	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/seccomp"
 	"agentbox/internal/task"
 )
@@ -48,37 +48,37 @@ type Account struct {
 	Name      string // the agent; the user is ag-<name>
 	UID, GID  uint32
 	Workspace string // data/workspaces/<name>, mounted rw at /workspace
+	Home, XDG string // the root-owned home and XDG base dirs its podman runs with
 }
 
-// Accounts resolves an agent to its account. The accounts area (#12) implements it from rootd's ids table.
+// Accounts resolves an agent to its account.
 type Accounts interface {
 	Lookup(agent string) (Account, error)
 }
 
-// PasswdAccounts is the stand-in until rootd's ids table lands: ag-<name> from the passwd database, uid 70001-70999.
-//
-// shortcut: no ids table, so nothing here stops uid reuse; `agentbox agent add` (StubAdd) makes the accounts.
-type PasswdAccounts struct{}
+// idsAccounts is the active agents in rootd's ids table (§4.1).
+type idsAccounts struct{ db *sql.DB }
 
-func (PasswdAccounts) Lookup(agent string) (Account, error) {
-	if !agentRe.MatchString(agent) {
+func (i idsAccounts) Lookup(agent string) (Account, error) {
+	if !accounts.ValidName(agent) {
 		return Account{}, errors.New("bad agent name")
 	}
-	u, err := user.Lookup("ag-" + agent)
+	a, err := accounts.Lookup(i.db, agent)
 	if err != nil {
 		return Account{}, err
 	}
-	uid, err1 := strconv.ParseUint(u.Uid, 10, 32)
-	gid, err2 := strconv.ParseUint(u.Gid, 10, 32)
-	if err1 != nil || err2 != nil || uid <= AgentUIDBase || uid > AgentUIDBase+999 {
-		return Account{}, fmt.Errorf("ag-%s: uid %s is not an agent uid (70001-70999)", agent, u.Uid)
-	}
-	return Account{Name: agent, UID: uint32(uid), GID: uint32(gid), Workspace: WorkspaceDir(agent)}, nil
+	return Account{Name: a.Name, UID: uint32(a.UID()), GID: uint32(a.UID()), Workspace: a.Workspace(), Home: a.Home(), XDG: a.XDG()}, nil
+}
+
+func (a Account) podmanEnv() []string {
+	return []string{"HOME=" + a.Home, "XDG_RUNTIME_DIR=/run/user/" + strconv.Itoa(int(a.UID)), "XDG_CONFIG_HOME=" + a.XDG + "/config", "XDG_DATA_HOME=" + a.XDG + "/data"}
 }
 
 // TaskConfig is what task.start and task.stop act through; tests replace every function.
 type TaskConfig struct {
-	Accounts Accounts
+	Accounts Accounts // nil: rootd's ids table
+	// EnsureImage makes sure the agent's podman has the task image, before its first launch; nil skips it.
+	EnsureImage func(Account) error
 	// Launch runs the task's one systemd-run (task.Argv) and returns when the unit has started.
 	Launch func(argv []string) error
 	// RunAs runs a command as uid outside the bridge (the task.stop podman rm backup).
@@ -293,6 +293,11 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 	if err := task.WriteExports(filepath.Join(t.cfg.Exports, acct.Name)); err != nil {
 		return false, fmt.Errorf("exports: %v", err)
 	}
+	if t.cfg.EnsureImage != nil {
+		if err := t.cfg.EnsureImage(acct); err != nil {
+			return false, fmt.Errorf("task image: %v", err)
+		}
+	}
 	dl := time.UnixMilli(si.deadline)
 	argv := task.Argv(task.Spec{Task: id, Agent: acct.Name, Runtime: dl.Sub(t.cfg.Now()), Deadline: dl, Workspace: acct.Workspace,
 		Seccomp: t.cfg.Seccomp, Image: t.cfg.Image, HostUsr: t.cfg.HostUsr})
@@ -354,9 +359,7 @@ func (t *tasks) stop(id, reason string) reply {
 	// 3: the unit's ExecStopPost already removes the container; this is its backup, outside the user bus
 	acct, err := t.cfg.Accounts.Lookup(agent)
 	if err == nil {
-		x := XDG(agent)
-		env := []string{"HOME=" + HomeDir(agent), "XDG_RUNTIME_DIR=/run/user/" + strconv.Itoa(int(acct.UID)), "XDG_CONFIG_HOME=" + x + "/config", "XDG_DATA_HOME=" + x + "/data"}
-		if err := t.cfg.RunAs(acct.UID, env, task.Podman, "rm", "-f", "-i", "-t", "0", task.Container(id)); err != nil {
+		if err := t.cfg.RunAs(acct.UID, acct.podmanEnv(), task.Podman, "rm", "-f", "-i", "-t", "0", task.Container(id)); err != nil {
 			log.Printf("task %s: podman rm: %v", id, err)
 		}
 	}
@@ -507,8 +510,8 @@ func (t *tasks) watchTask(id string, uid uint32, deadline int64) {
 // DefaultTaskConfig is the box's: systemd-run, the svc-<svc>.sock sockets, cgroup2 at /sys/fs/cgroup.
 func DefaultTaskConfig() TaskConfig {
 	return TaskConfig{
-		Accounts: PasswdAccounts{},
-		Launch:   func(argv []string) error { return runFor(30*time.Second, argv...) },
+		EnsureImage: ensureImage,
+		Launch:      func(argv []string) error { return runFor(30*time.Second, argv...) },
 		RunAs: func(uid uint32, env []string, argv ...string) error {
 			// a system unit as the agent uid: no login session, and podman's pause process ends with the unit
 			a := []string{"systemd-run", "--uid=" + strconv.Itoa(int(uid)), "--wait", "--collect", "--quiet", "-p", "TimeoutStartSec=4"}
@@ -560,4 +563,31 @@ func svcCall(svc string, req map[string]any) (map[string]any, error) {
 	}
 	var rep map[string]any
 	return rep, json.Unmarshal(line, &rep)
+}
+
+var imported sync.Map // uid: the agent's podman has task.Image()
+
+// ensureImage imports the stub task image into the agent's podman once per uid, through its user manager so podman's
+// pause process lands there (§4.2).
+func ensureImage(a Account) error {
+	if _, ok := imported.Load(a.UID); ok {
+		return nil
+	}
+	sk := task.Skeleton()
+	if b, err := os.ReadFile(task.ImageTar); err != nil || !bytes.Equal(b, sk) {
+		if err := os.WriteFile(task.ImageTar, sk, 0o644); err != nil {
+			return err
+		}
+	}
+	if err := os.Chmod(task.ImageTar, 0o644); err != nil { // rootd's UMask=0077; the agent's podman reads it
+		return err
+	}
+	user := []string{"systemd-run", "--user", "-M", "ag-" + a.Name + "@", "--wait", "--quiet", "--collect", task.Podman}
+	if runFor(30*time.Second, append(user, "image", "exists", task.Image())...) != nil {
+		if err := runFor(60*time.Second, append(user, "import", task.ImageTar, task.Image())...); err != nil {
+			return err
+		}
+	}
+	imported.Store(a.UID, true)
+	return nil
 }
