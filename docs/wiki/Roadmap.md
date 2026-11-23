@@ -64,7 +64,7 @@ Every milestone 2 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 
 | Item | State |
 |---|---|
-| The milestone 2 gates in `tpm2`, `tpm2+tang` and on amd64 BIOS | Not run. The milestone 2 code doesn't touch unlock or boot, and the milestone 1 smoke suites still pass in `tpm2` and `tpm2+tang`. |
+| The milestone 2 gates in `tpm2` and `tpm2+tang` | Not run. The milestone 2 code doesn't touch unlock or boot, and the milestone 1 smoke suites still pass in `tpm2` and `tpm2+tang`. On amd64 BIOS they pass in a weekly CI job. |
 | Hiding systemd-resolved's Unix interfaces from the broker users | Not built: the broker units don't exist yet. A residual in the threat model until they land (milestone 5). |
 | The resolver's `unavailable` reason when systemd-resolved is down | No gate check. |
 
@@ -85,7 +85,7 @@ Every milestone 3 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 |---|---|
 | 24 hours of fuzzing with no crash | Pending. Each fuzz test has run for at least 12 minutes so far. The nightly fuzz job, or one `hack/fuzz-all.sh` run, will cover it. |
 | Fuzzing on Linux | Not run yet. The short runs were on macOS, so Linux-only code waits for the nightly job. |
-| The milestone 3 gates in `tpm2`, `tpm2+tang` and on amd64 BIOS | Not run. The milestone 3 code doesn't touch unlock or boot. |
+| The milestone 3 gates in `tpm2` and `tpm2+tang` | Not run. The milestone 3 code doesn't touch unlock or boot. On amd64 BIOS they pass in a weekly CI job. |
 | The `agentbox mcp` command for agent CLIs | Not built. The error mapping it will use is built and tested. |
 
 ## Milestone 4: what passed

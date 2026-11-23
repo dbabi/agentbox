@@ -440,7 +440,7 @@ The firewall, rootd and quota gates enable `agentbox-agent-stub.service`, a stan
 
 ### What they do not prove
 
-- They ran in `none` mode on arm64 UEFI only. `tpm2`, `tpm2+tang` and amd64 BIOS were not run for them. The milestone 2 code does not touch unlock or boot.
+- They ran in `none` mode only, on arm64 UEFI and, in CI, on amd64 BIOS. `tpm2` and `tpm2+tang` were not run for them. The milestone 2 code does not touch unlock or boot.
 - No broker exists yet. The gates write the answers a broker would get, or use a stand-in uid. Hiding systemd-resolved's Unix interfaces from the broker users waits for the broker units.
 - The resolver's `unavailable` reason, for a systemd-resolved that is down, has no gate check.
 - The QEMU VM reaches the internet through slirp. The rootd flow check needs a public HTTP server (`FLOW=host:port`, default `example.com:80`).
@@ -638,7 +638,8 @@ All on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. Before the revie
 | `w3-rootd` | Passed: 104 PASS, 0 FAIL | `fb89de4` |
 | `w3-quota-ntfy` | Passed: 54 PASS, 0 FAIL, in a second run. The first run at `fb89de4` was cut off mid-install by the harness clock, with no verdict. | `fb89de4` |
 | Milestone 1 smoke: `gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso` | Passed | `fb89de4` |
-| Milestone 2 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
+| Milestone 2 gates on amd64 BIOS, in CI under KVM (`host-gates`), all on one `none`-mode install | Passed: `w3-firewall` 53, `w3-auditd` 61, `w3-rootd` 104 and `w3-quota-ntfy` 53 PASS, 0 FAIL each. The counts leave out the install, which the sockets gate ran. | the branch of pull request #178, before it merged |
+| Milestone 2 gates in `tpm2`, `tpm2+tang` | Not run | |
 | `go vet ./...` and `go test ./...` | Passed on the Mac | `fb89de4` |
 
 ### Milestone 3
@@ -656,7 +657,8 @@ All VM gates on a fresh `none`-mode install, arm64 UEFI, Secure Boot on, with fo
 | Fuzz tests, 24 hours | Not run yet. A 24-hour local run stopped when the host restarted, with no result. The first nightly `fuzz` run: 41 of 46 fuzz tests ran 5 hours each with no crash, and 5 were still running. | `a6897c0` |
 | CI: `internal/audit` as root | Passed: 28 PASS, 0 SKIP | `3b4c438` |
 | `go vet ./...` and `go test ./...` | Passed on the Mac | `ac68bc8` |
-| Milestone 3 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
+| Milestone 3 gates on amd64 BIOS, in CI under KVM (`host-gates`), on the same install | Passed: `w4-registry` 11, `w4-agentboxd` 29 and `w4-sockets` 38 PASS, 0 FAIL each | the branch of pull request #178, before it merged |
+| Milestone 3 gates in `tpm2`, `tpm2+tang` | Not run | |
 
 ### Milestone 4
 
