@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"agentbox/internal/controlpaths"
 	"agentbox/internal/task"
 
 	"golang.org/x/sys/unix"
@@ -26,8 +27,8 @@ import (
 
 // Paths inside the session (Appendix C's container layout).
 const (
-	Home      = "/home/agent"
-	Workspace = "/workspace"
+	Home      = controlpaths.Home
+	Workspace = controlpaths.Workspace
 	Exports   = "/opt/agentbox/exports"
 	CodexHome = "/run/agentbox-attach/codex" // a fresh dir per session: Codex keeps no state in session-home but auth.json
 )
@@ -61,17 +62,19 @@ const ManagedDir = "/etc/claude-code"
 const NoHooks = "nohooks"
 
 // GitEnv is the command-line-precedence git config of attach sessions (§4.2, Appendix C; task.Argv sets the first two
-// for tasks, whose HOME holds no login): repo-local
-// .git/config can't re-enable hooks or fsmonitor, or name its own pager, editor or ssh command. Filters, aliases and
-// diff drivers can't be pinned this way; the control-path gate covers them (.git/ is a control path).
+// and the last for tasks, whose HOME holds no login): repo-local
+// .git/config can't re-enable hooks or fsmonitor, or name its own pager, editor or ssh command, and git finds no bare
+// repo by itself. Filters, aliases and diff drivers can't be pinned this way; the control-path gate covers them (.git/
+// and every git dir are control paths).
 var GitEnv = []string{
-	"GIT_CONFIG_COUNT=6",
+	"GIT_CONFIG_COUNT=7",
 	"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=" + Exports + "/" + NoHooks,
 	"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
 	"GIT_CONFIG_KEY_2=core.pager", "GIT_CONFIG_VALUE_2=less",
 	"GIT_CONFIG_KEY_3=core.editor", "GIT_CONFIG_VALUE_3=vi",
 	"GIT_CONFIG_KEY_4=sequence.editor", "GIT_CONFIG_VALUE_4=vi",
 	"GIT_CONFIG_KEY_5=core.sshCommand", "GIT_CONFIG_VALUE_5=ssh",
+	"GIT_CONFIG_KEY_6=safe.bareRepository", "GIT_CONFIG_VALUE_6=explicit",
 }
 
 // GitConfigs are git's per-user config files in session-home; EmptyGitConfig, in the exports, is bound read-only over
