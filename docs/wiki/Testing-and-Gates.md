@@ -651,7 +651,7 @@ The regression after the review fixes. Every VM gate ran on a fresh `none`-mode 
 | `m4-tasks` | Passed: 43 PASS, 0 FAIL | `deb0ef9` |
 | `m4-attach` | Passed: 34 PASS, 0 FAIL, with Claude Code 2.1.330 | `deb0ef9` |
 | `m4-taskenv` | Passed: 40 PASS, 0 FAIL. Its first two runs could not start, because the gate script was not on `main` yet. | `8b2a87c` |
-| Agent CLI lockdown (issues #77, #120, #121, #123) | `m4-cli` 25 PASS, 0 FAIL, with Claude Code 2.1.330 and Codex 0.171.0. On the same branch `m4-tasks` 44, `m4-attach` 34 and `m4-taskenv` 40 PASS, 0 FAIL. | `4ab60c6` |
+| Agent CLI lockdown (issues #77, #120, #121, #123) | `m4-cli` 25 PASS, 0 FAIL, with Claude Code 2.1.330 and Codex 0.171.0. `m4-tasks` 55 PASS, 0 FAIL (a first run failed only the pause PID takeover check, which no attempt won on a busy host; issue #169). Before the rebase onto `74a8ecc`, `m4-attach` 34 and `m4-taskenv` 40 PASS, 0 FAIL. | `fb8c1af` |
 | Milestone 3 suites | Passed again: `w4-registry` 12, `w4-agentboxd` 30 and `w4-sockets` 38 PASS, 0 FAIL each | `7394cd9` |
 | Milestone 2 suites | `w3-firewall` 54, `w3-auditd` 114 and `w3-quota-ntfy` 54 PASS, 0 FAIL each. `w3-rootd` failed 2 checks at `7394cd9`: `rootd.db` was world-readable, because reconcile now creates it first, and two new tables were not STRICT (issue #150). After the fix: 104 PASS, 0 FAIL. | `7394cd9`; `w3-rootd` at `8b2a87c` |
 | Milestone 1 smoke: `gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso` | Passed | `deb0ef9` |
