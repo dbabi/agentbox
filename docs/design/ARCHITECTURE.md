@@ -788,7 +788,8 @@ Human CLI replies (`approval_stale`, `CACHE_PURGE_FAILED`) are not agent codes; 
   - `/etc/sysctl.d/60-agentbox.conf` sets `net.ipv4.ip_local_reserved_ports = 43000-45999` (covers IPv6 too). The kernel then never picks an ephemeral client port in the range, so replies to loopback clients never land on it.
   - `fwcheck` asserts that `/proc/sys/net/ipv4/ip_local_reserved_ports` contains `43000-45999`.
 - **Stateful.** After the confined drop, established packets in the original direction are accepted. Port and destination rules judge only new connections. Reply-direction packets get no such accept, so a broker still can't answer an inbound connection (brokers have no listeners).
-- **Firewall load.** `agentbox-firewall.service` runs `agentbox fw load`, one `nft -f` transaction (Appendix B). It adds the table, sets and chain if missing, flushes only the `output` chain, then writes the rules. There is no `destroy`, so a reload keeps every set's elements.
+- **Inbound.** The `input` chain drops by default. It accepts loopback, established and related traffic, `tailscale0`, Tailscale's direct UDP 41641, IPv6 neighbor discovery, DHCP replies, and SSH from `ssh_from4`/`ssh_from6`. Those two sets hold `/etc/agentbox/ssh-from`, which the seed's `--ssh-from` writes; with no file, the private LAN ranges, `100.64.0.0/10` and `fe80::/10`. fwcheck compares them to the file like the static sets. A `ufw` that is enabled later can only drop more: a packet must pass every input hook. Rootful Docker is unsupported: its published ports go through the forward hook, which agentbox does not filter.
+- **Firewall load.** `agentbox-firewall.service` runs `agentbox fw load`, one `nft -f` transaction (Appendix B). It adds the table, sets and chains if missing, flushes only the `output` and `input` chains, then writes the rules. There is no `destroy`, so a reload keeps every set's elements.
 - **rootd fills the sets.** rootd writes each element's row to rootd.db before it adds the element. On start it makes the sets match rootd.db (`port_allow` and the unexpired resolution answers, with their remaining timeout). Only then does it send READY=1. User managers, brokers and ntfy order after it.
 - **Firewall verification.** `agentbox-firewall.service` and `fwcheck` hash the **normalized stateless JSON** (`nft -j -s list table inet agentbox`, set elements excluded). fwcheck then compares each set's elements to the expected state, read read-only from rootd.db. Static sets must match exactly. Dynamic `*_dst` sets must be subsets of rootd's recorded answers, so an empty set passes.
 - **Runtime check.** `agentbox-health.timer` runs `fwcheck` every 60 s. On a mismatch it alerts and runs `systemctl restart agentbox-firewall.service`. `Requires=` then restarts rootd, the brokers and the agent user managers, so a flushed or edited table is restored within about 60 s.
@@ -1589,6 +1590,8 @@ Accepted leftovers are in `LEDGER.md`.
 add table inet agentbox
 add chain inet agentbox output { type filter hook output priority filter; policy accept; }
 flush chain inet agentbox output
+add chain inet agentbox input { type filter hook input priority filter; policy drop; }
+flush chain inet agentbox input
 table inet agentbox {                    # declarative block = add: creates missing sets, merges static elements, appends rules
   set confined   { typeof meta skuid; flags interval; elements = { 70001-70999, 71001-71999, 1879048192-2013265919 } } # static: every agent and app sub-id block (§4.1)
   set port_allow { typeof meta skuid . tcp dport; }                      # rootd: 0 . 43100, 0 . 43200, 0 . 45001, <admin> . 45001
@@ -1606,6 +1609,8 @@ table inet agentbox {                    # declarative block = add: creates miss
                    3fff::/20, 5f00::/16, fc00::/7, fe80::/10, fec0::/10, ff00::/8 } }
   set allow_private4 { typeof meta skuid . ip daddr . tcp dport; }      # approved allow_private tuples, filled ONLY by rootd
   set allow_private6 { typeof meta skuid . ip6 daddr . tcp dport; }
+  set ssh_from4  { typeof ip saddr; flags interval; elements = { 10.0.0.0/8, 100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16 } }  # /etc/agentbox/ssh-from, or these defaults
+  set ssh_from6  { typeof ip6 saddr; flags interval; elements = { fc00::/7, fe80::/10 } }
   chain output {
     type filter hook output priority filter; policy accept;
     meta skuid @confined counter drop
@@ -1633,6 +1638,18 @@ table inet agentbox {                    # declarative block = add: creates miss
     meta skuid "agentbox-git" counter drop
     meta skuid { "agentbox", "agentbox-audit", "agentbox-approve", "agentbox-llm", "agentbox-llm-decide", "agentbox-ingress" } oif "lo" accept
     meta skuid { "agentbox", "agentbox-audit", "agentbox-approve", "agentbox-llm", "agentbox-llm-decide", "agentbox-ingress" } counter drop
+  }
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iif "lo" accept
+    ct state established,related accept
+    iifname "tailscale0" accept
+    udp dport 41641 accept                                               # Tailscale direct connections
+    icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, mld-listener-query } accept
+    udp sport 67 udp dport 68 accept
+    ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept
+    tcp dport 22 ip saddr @ssh_from4 accept
+    tcp dport 22 ip6 saddr @ssh_from6 accept
   }
 }
 ```

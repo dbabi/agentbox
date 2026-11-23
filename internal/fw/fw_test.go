@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,7 +14,8 @@ import (
 )
 
 // testdata/table.json is `nft -j -s list table inet agentbox` from nftables 1.1.6 after `agentbox fw load` and three
-// rootd-style adds: port_allow 0 . 43100, proxy_dst4 1.2.3.4 . 443 and git_dst6 2001:db8::1 . 443 (timeout 10m).
+// rootd-style adds: port_allow 0 . 43100, proxy_dst4 1.2.3.4 . 443 and git_dst6 2001:db8::1 . 443 (timeout 10m). Its
+// ssh-from is fixtureSSH.
 func fixture(t *testing.T) []byte {
 	b, err := os.ReadFile("testdata/table.json")
 	if err != nil {
@@ -22,19 +24,56 @@ func fixture(t *testing.T) []byte {
 	return b
 }
 
+func defaultSSH(t *testing.T) []netip.Prefix {
+	ps, err := ParseSSHFrom([]byte(strings.Join(DefaultSSHFrom, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ps
+}
+
+func fixtureSSH(t *testing.T) []netip.Prefix {
+	ps, err := ParseSSHFrom([]byte("# the fw gate's seed\n10.0.2.2/32\n\n192.0.2.0/25\nfd00:ab::/112\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ps
+}
+
+func TestParseSSHFrom(t *testing.T) {
+	for in, want := range map[string]string{"10.1.2.3/8": "10.0.0.0/8", " fd00::1/128 ": "fd00::1/128", "0.0.0.0/0\n::/0": "0.0.0.0/0 ::/0"} {
+		ps, err := ParseSSHFrom([]byte(in))
+		var got []string
+		for _, p := range ps {
+			got = append(got, p.String())
+		}
+		if err != nil || strings.Join(got, " ") != want {
+			t.Errorf("%q: got %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "# none\n", "10.0.0.1", "fe80::/10%eth0", "::ffff:10.0.0.0/104", "10.0.0.0/8\n10.1.0.0/16",
+		"10.0.0.0/8 ; flush ruleset", "example.com/8"} {
+		if _, err := ParseSSHFrom([]byte(in)); err == nil {
+			t.Errorf("%q: accepted", in)
+		}
+	}
+}
+
 func TestRender(t *testing.T) {
-	r := string(Render())
+	r := string(Render(defaultSSH(t)))
 	if strings.Contains(r, "{{") {
 		t.Fatal("unfilled placeholder in the ruleset")
 	}
 	for _, w := range []string{"tcp dport 43000-45999 ct state new meta skuid . tcp dport @port_allow accept",
-		"ct direction original ct state established accept", "1879048192-2013265919", "::ffff:0:0/96, 64:ff9b:1::/48"} {
+		"ct direction original ct state established accept", "1879048192-2013265919", "::ffff:0:0/96, 64:ff9b:1::/48",
+		"type filter hook input priority filter; policy drop;", "tcp dport 22 ip saddr @ssh_from4 accept",
+		"set ssh_from6  { typeof ip6 saddr; flags interval; elements = { fc00::/7, fe80::/10 } }"} {
 		if !strings.Contains(r, w) {
 			t.Errorf("ruleset lacks %q", w)
 		}
 	}
-	// add-only: no destroy or delete, and only the output chain and the three static sets are flushed, so every set
-	// rootd fills keeps its elements
+	// add-only: no destroy or delete, and only the two chains, the three static sets and the SSH sources are flushed,
+	// so every set rootd fills keeps its elements
 	for _, l := range strings.Split(r, "\n") {
 		if l = strings.TrimSpace(l); strings.HasPrefix(l, "#") {
 			continue
@@ -42,8 +81,9 @@ func TestRender(t *testing.T) {
 		if strings.Contains(l, "destroy") || strings.Contains(l, "delete") {
 			t.Errorf("not add-only: %q", l)
 		}
-		if strings.Contains(l, "flush") && !slices.Contains([]string{"flush chain inet agentbox output",
-			"flush set inet agentbox confined", "flush set inet agentbox private4", "flush set inet agentbox private6"}, l) {
+		if strings.Contains(l, "flush") && !slices.Contains([]string{"flush chain inet agentbox output", "flush chain inet agentbox input",
+			"flush set inet agentbox confined", "flush set inet agentbox private4", "flush set inet agentbox private6",
+			"flush set inet agentbox ssh_from4", "flush set inet agentbox ssh_from6"}, l) {
 			t.Errorf("unexpected flush: %q", l)
 		}
 		// §6.1 (v5.3): no ruleset change for denials; a drop stays silent and nft logs nothing anyone could read
@@ -61,7 +101,7 @@ func TestParseTableStatic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bad := Static(tb.Elems); len(bad) > 0 {
+	if bad := Static(tb.Elems, fixtureSSH(t)); len(bad) > 0 {
 		t.Fatalf("static sets differ from the constants: %v", bad)
 	}
 	for s, w := range map[string][]string{"port_allow": {"0 . 43100"}, "proxy_dst4": {"1.2.3.4 . 443"},
@@ -224,8 +264,19 @@ func TestCompare(t *testing.T) {
 	if bad := Compare(map[string][]string{}, rows[1:], now); len(bad) > 0 {
 		t.Errorf("empty dst sets: %v", bad)
 	}
-	if bad := Static(map[string][]string{"confined": append(slices.Clone(Confined), "1000"), "private4": Private4[1:]}); len(bad) != 2+len(Private6) {
+	if bad := Static(map[string][]string{"confined": append(slices.Clone(Confined), "1000"), "private4": Private4[1:]}, nil); len(bad) != 2+len(Private6) {
 		t.Errorf("static: %q", bad)
+	}
+	// the SSH sources come from ssh-from: a prefix added in nft, or one missing, is a problem
+	tb, err := ParseTable(fixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb.Elems["ssh_from4"] = []string{"10.0.2.2", "0.0.0.0/0"}
+	delete(tb.Elems, "ssh_from6")
+	if bad := Static(tb.Elems, fixtureSSH(t)); !slices.Equal(bad, []string{"set ssh_from4: missing element 192.0.2.0/25",
+		"set ssh_from4: unexpected element 0.0.0.0/0", "set ssh_from6: missing element fd00:ab::/112"}) {
+		t.Errorf("ssh sets: %q", bad)
 	}
 }
 

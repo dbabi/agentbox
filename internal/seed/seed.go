@@ -30,6 +30,7 @@ import (
 	"text/template"
 	"time"
 
+	"agentbox/internal/fw"
 	"agentbox/internal/recovery"
 )
 
@@ -49,6 +50,7 @@ type Config struct {
 	AdminUser         string
 	AdminPasswordHash string   // yescrypt ($y$...) or sha512-crypt with rounds >= 100000, e.g. from `mkpasswd -m yescrypt`
 	SSHKeys           []string // OpenSSH public keys
+	SSHFrom           []string // prefixes the firewall takes SSH from; none means fw.DefaultSSHFrom
 	DiskSerial        string   // udev ID_SERIAL: `udevadm info --query=property --property=ID_SERIAL --value /dev/DISK`
 	Boot              string   // "uefi" | "bios"
 	Encryption        string   // EncTPM2Tang | EncTPM2 | EncNone
@@ -99,6 +101,11 @@ func (c *Config) Validate() error {
 	for _, k := range c.SSHKeys {
 		if !reSSHKey.MatchString(k) || !sshKeyOK(k) {
 			bad("ssh key %.40q…: not a valid OpenSSH public key line (or the comment has unsupported characters)", k)
+		}
+	}
+	if len(c.SSHFrom) > 0 {
+		if _, err := fw.ParseSSHFrom([]byte(strings.Join(c.SSHFrom, "\n"))); err != nil {
+			bad("--ssh-from: %v", err)
 		}
 	}
 	if !reSerial.MatchString(c.DiskSerial) {
@@ -202,6 +209,7 @@ type view struct {
 	ClevisConfig   string
 	RecoveryPubCmd string
 	DiskGuardCmd   string
+	SSHFromCmd     string // writes fw.SSHFromPath on the target when --ssh-from is given
 	DracutModules  string // forced into every initrd, so a rebuild that sees no disks still unlocks and mounts root
 	InitrdFiles    string // checked in every kernel's initrd at install
 }
@@ -224,6 +232,17 @@ func (c *Config) view() (view, error) {
 		`for l in /dev/disk/by-id/*"$S"*; do [ -e "$l" ] || continue; r=$(readlink -f "$l"); r=${r##*/}; ` +
 		`[ -e "/sys/class/block/$r/partition" ] && r=$(basename "$(dirname "$(readlink -f "/sys/class/block/$r")")"); ` +
 		`[ "$r" = "$D" ] || { echo "agentbox: $l also contains $S (curtin matches by-id substrings)" >&2; exit 1; }; done`
+	if len(c.SSHFrom) > 0 {
+		ps, err := fw.ParseSSHFrom([]byte(strings.Join(c.SSHFrom, "\n")))
+		if err != nil {
+			return v, err
+		}
+		q := make([]string, len(ps)) // the parsed prefixes, never the operator's bytes
+		for i, p := range ps {
+			q[i] = "'" + p.String() + "'"
+		}
+		v.SSHFromCmd = "mkdir -p /mnt/new" + filepath.Dir(fw.SSHFromPath) + " && printf '%s\\n' " + strings.Join(q, " ") + " > /mnt/new" + fw.SSHFromPath
+	}
 	if v.Encrypted {
 		pkgs = append(pkgs, "cryptsetup", "clevis", "clevis-luks", "clevis-tpm2", "clevis-dracut", "tpm2-tools")
 		rk, err := recovery.ParsePublic(c.RecoveryPubPEM)

@@ -59,7 +59,6 @@ Built:
 Not built yet:
 
 - Brokers, policy, approvals, the agent bus and shared memory. Until the brokers land, no task can reach a model or the internet.
-- Inbound filtering. The host firewall has an output chain only, so SSH and any other listener are open to the LAN.
 - Automatic security updates. Today an admin runs `os plan` and `os apply` by hand.
 - Updating agentbox itself on an installed box. This is out of scope for the first release. A new release means a reinstall.
 
@@ -112,7 +111,7 @@ They run only on an installed box, as root.
 
 Try it in a VM first.
 
-1. Read [Status](#status) above. No agents run yet. The firewall has no inbound rules, and there are no automatic updates.
+1. Read [Status](#status) above. No agents run yet, and there are no automatic updates.
 2. [Getting Started](Getting-Started.md): install agentbox in a QEMU VM on an Apple Silicon Mac.
 3. [Encryption and Recovery](Encryption-and-Recovery.md): choose `tpm2+tang`, `tpm2` or `none`. For an encrypted mode, make the recovery key pair before you install.
 4. [Installing on Real Hardware](Installing-on-Real-Hardware.md): the zero-touch USB install. It has not run on real hardware yet.

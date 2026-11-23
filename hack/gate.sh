@@ -15,6 +15,7 @@
 # forward, must see nothing from the guest.
 # AGENTBOX_VM_ID, AGENTBOX_ISO_DIR and DISKBUS (nvme, sata or virtio) pass through to vm.sh: gates that run at once need
 # distinct IDs and separate checkouts.
+# SEED_SSH_FROM: space-separated prefixes for the seed's --ssh-from (hack/fw-gate.sh); unset, the box takes fw's default.
 # Test seeds only: the admin password is "x"; the recovery and release-signing keys live in .vm/keys. Never use them for a real box.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -118,6 +119,7 @@ set -- --disk-serial "$SER" --boot "$BOOT" --ssh-key "$(cat "$VM/id_vm.pub")" \
   --password-hash "$PW" --minisign-pubkey "$(sed -n 2p "$VM/keys/minisign.pub")" \
   --dev --release-url "http://10.0.2.2:$RPORT/agentbox-$V.tgz" --release-sha256 "$SHA" --encryption "$ENC" --out "$SEED"
 [ "$ENC" = none ] || set -- "$@" --recovery-pub "$VM/keys/recovery.pub"
+for p in ${SEED_SSH_FROM:-}; do set -- "$@" --ssh-from "$p"; done
 if [ "$ENC" = tpm2+tang ]; then
   hack/vm.sh tang up
   THP=$(hack/vm.sh tang thp)

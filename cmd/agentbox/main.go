@@ -26,7 +26,7 @@ const usage = `usage:
   agentbox seed --disk-serial S --ssh-key KEY --password-hash H --minisign-pubkey K --release-url URL --release-sha256 HEX --out DIR
                 --encryption tpm2+tang --tang-url U --tang-thp T --recovery-pub recovery.pub   (default mode)
                 --encryption tpm2 --recovery-pub recovery.pub | --encryption none
-                [--boot uefi|bios] [--hostname agentbox] [--admin boxadmin] [--iso seed.iso] [--dev]
+                [--boot uefi|bios] [--hostname agentbox] [--admin boxadmin] [--ssh-from CIDR ...] [--iso seed.iso] [--dev]
   agentbox recovery keygen --out DIR
   agentbox recovery decrypt --key recovery.key --in recovery.bin --out luks.key
   agentbox os plan --install PKG[=VER] [--install ...] [--remove PKG] [--reinstall]   (on the box, as root)
@@ -156,12 +156,13 @@ func run(args []string) error {
 func cmdSeed(args []string) error {
 	fs := flag.NewFlagSet("seed", flag.ContinueOnError)
 	var c seed.Config
-	var keys multi
+	var keys, sshFrom multi
 	var recPub, out, iso string
 	fs.StringVar(&c.Hostname, "hostname", "agentbox", "box hostname")
 	fs.StringVar(&c.AdminUser, "admin", "boxadmin", "admin user name (installer-reserved names such as admin are refused)")
 	fs.StringVar(&c.AdminPasswordHash, "password-hash", "", "yescrypt hash (mkpasswd -m yescrypt), or sha512-crypt with rounds=100000 or more; console and sudo only")
 	fs.Var(&keys, "ssh-key", "admin OpenSSH public key line (repeatable)")
+	fs.Var(&sshFrom, "ssh-from", "prefix the firewall accepts SSH from, e.g. 192.168.1.0/24 (repeatable; default: the private LAN ranges, 100.64.0.0/10 and link-local)")
 	fs.StringVar(&c.DiskSerial, "disk-serial", "", "install disk udev ID_SERIAL; on the target run: udevadm info --query=property --property=ID_SERIAL --value /dev/DISK (lsblk SERIAL is the short form and never matches)")
 	fs.StringVar(&c.Boot, "boot", "uefi", "uefi or bios")
 	fs.StringVar(&c.Encryption, "encryption", seed.EncTPM2Tang, "tpm2+tang (recommended), tpm2 (disk-removal only), none")
@@ -180,7 +181,7 @@ func cmdSeed(args []string) error {
 	if out == "" {
 		return errors.New("seed: --out is required")
 	}
-	c.SSHKeys = keys
+	c.SSHKeys, c.SSHFrom = keys, sshFrom
 	if recPub != "" {
 		b, err := os.ReadFile(recPub)
 		if err != nil {

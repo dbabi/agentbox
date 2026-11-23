@@ -3,10 +3,12 @@ package fw
 import (
 	"os"
 	"slices"
+	"strings"
 	"testing"
 )
 
-// Fuzz targets for fwcheck's inputs: nft's JSON listing, rootd.db's element text and the reserved-ports sysctl (issue #10).
+// Fuzz targets for fwcheck's inputs: nft's JSON listing, rootd.db's element text, the reserved-ports sysctl (issue #10)
+// and the ssh-from file, whose prefixes land in the nft script.
 
 func FuzzParseTable(f *testing.F) {
 	b, err := os.ReadFile("testdata/table.json")
@@ -51,4 +53,21 @@ func FuzzReservedOK(f *testing.F) {
 	f.Add("70000-79999")
 	f.Add(" 1,2-3,,-,99999999999999999999 \n")
 	f.Fuzz(func(t *testing.T, s string) { ReservedOK(s) })
+}
+
+func FuzzParseSSHFrom(f *testing.F) {
+	f.Add([]byte("# lan\n192.168.1.0/24\nfd00::/8\n"))
+	f.Add([]byte("10.0.0.0/8\n10.0.0.0/9\n::ffff:1.2.3.4/128\nfe80::/10%x } accept\n"))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		ps, err := ParseSSHFrom(b)
+		if err != nil {
+			return
+		}
+		v4, v6 := sshSets(ps)
+		for _, e := range append(v4, v6...) {
+			if c, err := Canon(e); err != nil || c != e || strings.ContainsAny(e, " ;{}\"\n") {
+				t.Fatalf("element %q (Canon %q, %v) is not a plain prefix", e, c, err)
+			}
+		}
+	})
 }

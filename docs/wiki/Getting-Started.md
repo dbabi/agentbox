@@ -265,7 +265,7 @@ rm -rf .vm bin
 
 Know this before you install on real hardware:
 
-- The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules. Put the box on a network you trust.
+- The host firewall drops inbound traffic except SSH from the address ranges in the seed (`--ssh-from`). Put the box on a network you trust.
 - There are no automatic security updates. Nothing updates packages by itself. An admin can upgrade named packages with `os plan --install PKG`, then `os apply`. There is no upgrade-all command yet.
 - The agentbox release on the box cannot be updated. A new release means a reinstall.
 - amd64 UEFI has not run anywhere yet. On amd64, only legacy BIOS has run, in a VM.
