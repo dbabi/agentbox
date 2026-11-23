@@ -2,6 +2,7 @@ package taskrun
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -60,6 +61,7 @@ func TestProbe(t *testing.T) {
 			"00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000400 00000001 00000000 00000003 eth0\n"}, nil},
 		{"connect", nil, func(string, string) error { return nil }},
 		{"connect", nil, func(string, string) error { return syscall.ECONNREFUSED }},
+		{"connect", nil, func(string, string) error { return syscall.EAFNOSUPPORT }}, // only IPv6 may be missing
 		{"resolv", map[string]string{"/etc/resolv.conf": "nameserver 127.0.0.1\nnameserver 1.1.1.1\n"}, nil},
 		{"resolv", map[string]string{"/etc/resolv.conf": "nameserver 127.0.0.53\n"}, nil},
 		{"resolv", map[string]string{"/etc/resolv.conf": "search x\n"}, nil},
@@ -77,8 +79,15 @@ func TestProbe(t *testing.T) {
 			t.Errorf("%s %v: %v", c.check, c.over, err)
 		}
 	}
-	// no IPv6 at all is fine; a missing /proc file is a failure, not a pass
-	if _, err := (&Probe{Root: tree(t, map[string]string{"/proc/net/ipv6_route": "-"}), Task: "task_A", Dial: unreachable}).Run(); err != nil {
+	// no IPv6 at all (ipv6.disable=1: no ipv6_route, and an IPv6 socket gets EAFNOSUPPORT, as net.Dial reports it) is
+	// fine; a missing /proc file is a failure, not a pass
+	noIPv6 := func(network, addr string) error {
+		if addr[0] == '[' {
+			return &net.OpError{Op: "dial", Net: network, Err: &os.SyscallError{Syscall: "socket", Err: syscall.EAFNOSUPPORT}}
+		}
+		return unreachable(network, addr)
+	}
+	if _, err := (&Probe{Root: tree(t, map[string]string{"/proc/net/ipv6_route": "-"}), Task: "task_A", Dial: noIPv6}).Run(); err != nil {
 		t.Errorf("no ipv6_route: %v", err)
 	}
 	if _, err := (&Probe{Root: tree(t, map[string]string{"/proc/net/unix": "-"}), Task: "task_A", Dial: unreachable}).Run(); err == nil {
