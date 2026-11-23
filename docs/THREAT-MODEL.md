@@ -59,7 +59,6 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | While the disk is full (below the audit reserve), auditd refuses DENY and other best-effort records with `DISK_FULL`: denials in that window leave no audit record, only the critical disk-full alert | Ship audit off-box |
 | Attach session-home is persistent and agent-writable. Hooks, MCP servers, shell startup files and git config stay off, and Claude's settings are read-only, but instructions a session leaves there (`~/.claude/CLAUDE.md`, skills, rules, agents) load into later attaches without review | Baseline and ack them like workspace control paths (#153) |
 | The post-attach token scan polls the credential files and doesn't unpack git packfiles: a token version that lives less than one poll, or one committed and then packed by `git gc`, is missed | inotify on the credential files; scan packed objects (#154) |
-| The task seccomp profile is podman's default minus btrfs ioctls: it allows every socket family but audit netlink, and clone, clone3, setns and unshare with no conditions | A socket family allowlist and conditional namespace syscalls (#155) |
 | Root can always remove confinement: after a root-level flush, brokers are unconfined for up to 60 s, until the next `fwcheck` | |
 | One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late | |
 | Jev egress when enabled | |

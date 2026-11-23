@@ -1,5 +1,5 @@
 #!/bin/sh
-# Weeks 5-6 task gate (PLAN.md row 5-6; ARCHITECTURE.md §4.2, §10, Appendix C; issues #13 and #14) on the local QEMU
+# Weeks 5-6 task gate (PLAN.md row 5-6; ARCHITECTURE.md §4.2, §10, Appendix C; issues #13, #14 and #155) on the local QEMU
 # VM, arm64 UEFI, none mode, through the real rootd, agentboxd and auditd and rootless podman.
 #   hack/tasks-gate.sh [install|checks ...]   default: both, in order
 # install  hack/gate.sh none: the unattended install and the release pipeline, so podman, the units, the seccomp
@@ -25,7 +25,10 @@
 #            the new process on the same socket path, with no relaunch;
 #          - 20 consecutive launches each take under 300 ms over the user bus, open one login session, and run no
 #            update-motd.d;
-#          - a btrfs ioctl from a task fails with EOPNOTSUPP, also with high cmd bits set (#14).
+#          - a btrfs ioctl from a task fails with EOPNOTSUPP, also with high cmd bits set (#14);
+#          - a task opens only AF_UNIX, AF_INET, AF_INET6 and NETLINK_ROUTE sockets, on the low 32 bits of the family,
+#            and AF_UNIX socketpairs; it can't make namespaces with clone, unshare or setns, and clone3 gets ENOSYS
+#            (#155).
 # PASS/FAIL lines go to .vm/tasks-gate.txt, command output to .vm/tasks-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -165,7 +168,7 @@ P
 check "  ... the next task's HOME is fresh: only the generated configs, byte for byte, read-only at the source" 'T3=$(new 2m < /tmp/tg-p) &&
   wait_end $T3 60 && [ "$(field $T3 end_reason)" = completed ] && [ "$(cat $W/t3.claude $W/t3.codex $W/t3.exports)" = "same
 same
-ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.agentbox/output /home/agent/.claude /home/agent/.claude/settings.json /home/agent/.codex /home/agent/.codex/config.toml " ]'
+ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.agentbox/output /home/agent/.claude /home/agent/.claude/CLAUDE.md /home/agent/.claude/settings.json /home/agent/.codex /home/agent/.codex/AGENTS.md /home/agent/.codex/config.toml /home/agent/.config /home/agent/.config/opencode /home/agent/.config/opencode/AGENTS.md " ] || { cat $W/t3.home $W/t3.claude $W/t3.codex $W/t3.exports; false; }'
 check "  ... hooks are off for every settings source (disableAllHooks, the skill frontmatter hook included), MCP config empty, git hooks off" '
   grep -qx "  \"disableAllHooks\": true" /var/lib/agentbox/control/exports/gt/claude-settings.json && grep -q "\"mcpServers\": {}" /var/lib/agentbox/control/exports/gt/mcp.json &&
   [ "$(cat $W/t3.git)" = /opt/agentbox/exports/nohooks ] && [ -z "$(ls -A /var/lib/agentbox/control/exports/gt/nohooks)" ]'
@@ -277,6 +280,42 @@ check "a task's btrfs ioctls fail with EOPNOTSUPP (95), also with the high cmd b
   grep -q "^0x5401 -1 25$" $W/t13.ioctl && grep -qi "not supported" $W/t13.btrfs && [ ! -e $W/sv ]'
 check "  ... the workspace is btrfs, and from the host (no task profile) GET_FEATURES succeeds, high bits too" '[ "$(stat -f -c %T $W)" = btrfs ] &&
   python3 /tmp/tg-ioctl.py $W 0x80189439 0xdead000080189439 > /tmp/tg-host && grep -qx "0x80189439 0 0" /tmp/tg-host && grep -qx "0xdead000080189439 0 0" /tmp/tg-host'
+
+# --- #155: only the socket families tasks need, no namespaces ---
+# sys.py: raw syscalls with full 64-bit args, each printing "<label> <ret> <errno>"; a child from clone exits at once
+cat > /tmp/tg-sys.py <<'PY'
+import ctypes, os
+nr = {"aarch64": dict(socket=198, socketpair=199, clone=220, unshare=97, setns=268, clone3=435),
+      "x86_64": dict(socket=41, socketpair=53, clone=56, unshare=272, setns=308, clone3=435)}[os.uname().machine]
+libc = ctypes.CDLL(None, use_errno=True)
+sv = (ctypes.c_int * 2)()
+def call(label, name, *a):
+    ctypes.set_errno(0)
+    r = libc.syscall(ctypes.c_long(nr[name]), *[x if isinstance(x, ctypes.Array) else ctypes.c_ulong(x) for x in a])
+    if name == "clone" and r == 0:
+        os._exit(0)
+    print(label, 0 if r >= 0 else -1, ctypes.get_errno() if r < 0 else 0, flush=True)
+call("unix", "socket", 1, 1, 0); call("inet", "socket", 2, 1, 0); call("inet6", "socket", 10, 2, 0)
+call("route", "socket", 16, 3, 0); call("audit", "socket", 16, 3, 9); call("alg", "socket", 38, 5, 0)
+call("vsock", "socket", 40, 1, 0); call("vsock-hi", "socket", 0x100000028, 1, 0)
+call("pair-unix", "socketpair", 1, 1, 0, sv); call("pair-inet", "socketpair", 2, 1, 0, sv)
+call("clone-fork", "clone", 17, 0, 0, 0, 0); call("clone-newuser", "clone", 0x10000000 | 17, 0, 0, 0, 0)
+call("unshare-fs", "unshare", 0x200); call("unshare-newns", "unshare", 0x20000); call("unshare-newtime", "unshare", 0x80)
+call("setns", "setns", 0, 0); call("clone3", "clone3", 0, 0)
+PY
+{ echo "cat > /tmp/sys.py <<'PY'"; cat /tmp/tg-sys.py; echo PY; echo 'python3 /tmp/sys.py > /workspace/t14.sys 2>&1'
+  echo 'unshare -Ur true > /workspace/t14.unshare 2>&1; echo $? >> /workspace/t14.unshare'
+  echo 'agentbox gate call --socket /run/agentbox/gate/gate.sock "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"file.delete\",\"params\":{}}" > /workspace/t14.gate 2>&1'
+  echo '{ git init -q /tmp/r && git -C /tmp/r status --short && echo ok; } > /workspace/t14.go 2>&1'; } > /tmp/tg-p
+check "a task can open AF_UNIX, AF_INET, AF_INET6 and NETLINK_ROUTE sockets and an AF_UNIX socketpair, fork, and unshare CLONE_FS" 'T14=$(new 2m < /tmp/tg-p) &&
+  echo $T14 > /tmp/tg-t14 && wait_end $T14 60 && cat $W/t14.sys $W/t14.unshare &&
+  for l in unix inet inet6 route pair-unix clone-fork unshare-fs; do grep -qx "$l 0 0" $W/t14.sys || exit 1; done'
+check "  ... AF_ALG, AF_VSOCK (also with high bits set) and NETLINK_AUDIT sockets and an AF_INET socketpair get ENOSYS (38)" '
+  for l in alg vsock vsock-hi audit pair-inet; do grep -qx "$l -1 38" $W/t14.sys || exit 1; done'
+check "  ... clone with CLONE_NEWUSER, unshare with CLONE_NEWNS or CLONE_NEWTIME, and setns get EPERM; clone3 gets ENOSYS" '
+  for l in clone-newuser unshare-newns unshare-newtime setns; do grep -qx "$l -1 1" $W/t14.sys || exit 1; done && grep -qx "clone3 -1 38" $W/t14.sys'
+check "  ... unshare -Ur true fails" '[ "$(tail -1 $W/t14.unshare)" != 0 ] && grep -qi "operation not permitted" $W/t14.unshare'
+check "  ... the gate socket still answers, and git still runs (the toolchains: m4-taskenv)" 'cat $W/t14.go; grep -q UNKNOWN_OP $W/t14.gate && [ "$(tail -1 $W/t14.go)" = ok ]'
 
 # --- #13: 20 consecutive launches ---
 printf '#!/bin/sh\ntouch /run/tg-motd-ran\n' > /etc/update-motd.d/00-tg-marker && chmod 0755 /etc/update-motd.d/00-tg-marker

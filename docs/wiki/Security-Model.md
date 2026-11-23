@@ -73,7 +73,7 @@ A trust boundary is a place where data or control passes between parts that trus
 | agentbox service users to the network | Outbound connections from the broker uids and `_ntfy` | The `inet agentbox` nftables table: each uid reaches only the address and port pairs in its own set. Private and special-purpose ranges are dropped unless that exact uid, address and port is on an allow list. Only rootd fills the sets, from names it resolved. `fwcheck` restores an altered table within 60 s, and agent units can't start while it fails. |
 | Producers to the audit log | Audit records | One socket per producer, checked with `SO_PEERCRED`. auditd acknowledges a record only after it is on disk, and the effect waits for that. rootd seals each finished segment immutable. |
 | Console to box | The keyboard and boot media | Console login needs the admin password. GRUB has no password. |
-| Container to host kernel | Task code | One rootless podman container per task, under the agent's own uid and sub-id range: no network, no capabilities, `no-new-privileges`, a read-only root and a seccomp profile that blocks btrfs ioctls. All tasks share the host kernel. |
+| Container to host kernel | Task code | One rootless podman container per task, under the agent's own uid and sub-id range: no network, no capabilities, `no-new-privileges`, a read-only root and a seccomp profile. The profile blocks btrfs ioctls and namespace creation, and allows only Unix, IPv4, IPv6 and routing netlink sockets. All tasks share the host kernel. |
 | Task to its own sockets | Requests from task code | rootd creates a socket directory for each task, and revokes it when the task ends. agentboxd checks the caller of each request from the socket. |
 | Interactive session to the admin's terminal | Session output | rootd relays it through a filter that drops clipboard writes, DCS strings and terminal report requests. |
 
@@ -213,7 +213,6 @@ These are the known risks. They are listed so you can decide where agentbox fits
 - All tasks share the host kernel. A kernel exploit escapes the container. The v2 plan is microVM tasks.
 - An interactive session's home persists, and the session can write to it. Instructions it leaves there, such as Claude Code skills or `CLAUDE.md`, load into later sessions without review (issue #153). Hooks, MCP servers and shell startup files stay off.
 - The token scan after a session polls the login files and doesn't read git packfiles. A token that lives for less than one poll, or one committed and then packed by `git gc`, can be missed (issue #154).
-- The task seccomp profile is podman's default with btrfs ioctls removed. It still allows every socket family but audit netlink, AF_ALG included, and the namespace syscalls (issue #155).
 - The milestone 4 gates ran in `none` mode on arm64 UEFI only, with stand-in brokers.
 
 **Updates**
