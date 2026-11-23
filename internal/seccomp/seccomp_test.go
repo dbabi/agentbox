@@ -78,6 +78,9 @@ func TestTaskSocketsAndNamespaces(t *testing.T) {
 	if p.DefaultAction != "SCMP_ACT_ERRNO" || p.DefaultErrnoRet == nil || *p.DefaultErrnoRet != enosys {
 		t.Fatalf("default %s %v, want ENOSYS", p.DefaultAction, p.DefaultErrnoRet)
 	}
+	if len(p.ArchMap) != 0 {
+		t.Fatalf("archMap %s: a compat architecture gets around the argument rules", p.ArchMap)
+	}
 	for _, s := range p.Syscalls {
 		for _, n := range plain {
 			if slices.Contains(s.Names, n) && len(s.Args) == 0 && len(s.Includes) <= 2 && len(s.Excludes) <= 2 && s.Action == "SCMP_ACT_ALLOW" {
@@ -123,6 +126,8 @@ func TestTaskSocketsAndNamespaces(t *testing.T) {
 		{"unshare", []uint64{0x02000000}, "EPERM"}, // CLONE_NEWCGROUP
 		{"setns", []uint64{3, 0}, "EPERM"},
 		{"clone3", []uint64{0, 0}, "ENOSYS"},
+		{"socketcall", []uint64{1, 0}, "default"}, // #181: its args are in memory, out of seccomp's reach
+		{"ipc", []uint64{23, 0}, "default"},
 	} {
 		if got := eval(t, p, c.name, c.args...); got != c.want {
 			t.Errorf("%s(%#x): %s, want %s", c.name, c.args, got, c.want)
