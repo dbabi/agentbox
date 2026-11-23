@@ -18,7 +18,7 @@ import (
 // cmdTask is the human side of tasks (§4.2), on rootd-admin.sock: new reads the prompt on stdin.
 func cmdTask(args []string) error {
 	if len(args) == 0 {
-		return errors.New("task: expected new, stop or list")
+		return errors.New("task: expected new, stop, list or undo")
 	}
 	fs := flag.NewFlagSet("task "+args[0], flag.ContinueOnError)
 	req := map[string]any{"op": "task." + args[0]}
@@ -49,6 +49,12 @@ func cmdTask(args []string) error {
 		if err := parse(fs, args[1:]); err != nil {
 			return err
 		}
+	case "undo":
+		id := fs.String("task", "", "the task whose start snapshot the workspace goes back to")
+		if err := parse(fs, args[1:]); err != nil {
+			return err
+		}
+		req["task"] = *id
 	default:
 		return fmt.Errorf("task: unknown subcommand %q", args[0])
 	}

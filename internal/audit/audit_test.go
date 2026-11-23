@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -899,4 +900,34 @@ func TestRekeyWorkspaces(t *testing.T) {
 	if calls != 3 { // alice and gone, then gone again: rows already keyed by N are never looked up
 		t.Fatalf("uid lookups: %d", calls)
 	}
+}
+
+// #103's records as rootd sends them: a task-start snapshot of a tainted workspace (INTENT bound to its epoch, the
+// taint copied to snap:<id>, RESULT), then the undo (SUBJECT_ADD, a pre-restore snapshot, the signed restore). The
+// workspace, cleared in between, is tainted again by the restore: it keeps the taint the snapshot had.
+func TestSnapshotUndoRecords(t *testing.T) {
+	b := newBox(t)
+	const ws, snap = "workspace:alice#1", "snap_01M835M8X3M3NJE9SMNZESK3EY"
+	b.ok(rootdProducer, `{"type":"WRITER_ADD","holder":"task:T1","workspace":"`+ws+`"}`)
+	b.ok("proxy", `{"type":"TAINT","subject":"`+ws+`","source":"x"}`)
+	b.nack(rootdProducer, `{"type":"INTENT","opId":"`+snap+`","name":"workspace.snapshot","origin":"rootd","agent":"alice","task":"task_T1","taintEpochs":{"`+ws+`":0}}`, CodeStale)
+	b.ok(rootdProducer, `{"type":"INTENT","opId":"`+snap+`","name":"workspace.snapshot","origin":"rootd","agent":"alice","task":"task_T1","taintEpochs":{"`+ws+`":1}}`)
+	b.ok(rootdProducer, `{"type":"TAINT","subject":"snap:`+snap+`","source":"`+ws+`"}`)
+	b.ok(rootdProducer, `{"type":"RESULT","opId":"`+snap+`","status":"executed","detail":""}`)
+	b.ok(rootdProducer, `{"type":"WRITER_DEL","holder":"task:T1"}`)
+	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-c","name":"taint.clear","origin":"admin","signer":"boxadmin:ssh","args":{"subject":"`+ws+`","contentId":"S1"},"taintEpochs":{"`+ws+`":1}}`)
+	b.ok(rootdProducer, `{"type":"RESULT","opId":"op-c","status":"executed"}`)
+	if r := b.taint(ws); r.Tainted {
+		t.Fatal("not cleared")
+	}
+	b.ok(rootdProducer, `{"type":"SUBJECT_ADD","task":"task:T1","subject":"`+ws+`"}`)
+	if rep := b.ok(rootdProducer, `{"type":"taint.get","holder":"task:T1"}`); !slices.ContainsFunc(rep.View.Subjects, func(r taintRow) bool { return r.Subject == ws && r.Epoch == 2 }) {
+		t.Fatalf("the ended task's view lacks the workspace: %+v", rep.View)
+	}
+	b.ok(rootdProducer, `{"type":"INTENT","opId":"op-r","name":"workspace.restore","origin":"admin","signer":"rootd-admin:root","agent":"alice","workspace":"`+ws+`","args":{"id":"`+snap+`"}}`)
+	b.ok(rootdProducer, `{"type":"RESULT","opId":"op-r","status":"executed","detail":""}`)
+	if r := b.taint(ws); !r.Tainted || r.Epoch != 3 {
+		t.Fatalf("restored workspace: want the snapshot's taint at a new epoch, got %+v", r)
+	}
+	b.verify()
 }
