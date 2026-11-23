@@ -41,7 +41,8 @@
 #          - every task start takes a read-only snapshot of the workspace in qgroup 1/N; after a task runs
 #            rm -rf /workspace/*, agentbox task undo restores a tree with the same digest, keeping the taint the
 #            snapshot had; 7 tasks later 5 task-start snapshots are left, and no clean-baseline or pre-restore one is
-#            pruned (#103).
+#            pruned (#103); a nested subvolume made on the host refuses the task-start snapshot with
+#            NESTED_SUBVOLUME (#184).
 # PASS/FAIL lines go to .vm/tasks-gate.txt, command output to .vm/tasks-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -474,6 +475,12 @@ check "  ... after 7 more tasks 5 task-start snapshots are left; the clean-basel
   sql "SELECT kind, count(*) FROM workspace_snapshots WHERE workspace=? GROUP BY kind ORDER BY kind" "$WS" | tee /tmp/tg-kinds &&
   [ "$(cat /tmp/tg-kinds | tr "\n" " ")" = "clean-baseline|1 pre-restore|1 task-start|5 " ] && [ "$(ls $SN | wc -l)" = 7 ] && [ -d $SN/$BASE ]'
 check "  ... and undo of the pruned task now says so" '! $B task undo --task $T > /tmp/tg-undo2 2>&1; cat /tmp/tg-undo2; grep -q pruned /tmp/tg-undo2'
+btrfs subvolume create $W/tg-nested >/dev/null
+check "  ... a nested subvolume made on the host: task new fails with snapshot_failed and NESTED_SUBVOLUME, before any launch (#184)" '
+  ! $B task new --agent gt --cli sh --deadline 2m < /tmp/tg-p > /tmp/tg-nest 2>&1; cat /tmp/tg-nest;
+  grep -q "\"reason\":\"snapshot_failed\"" /tmp/tg-nest && grep -q NESTED_SUBVOLUME /tmp/tg-nest && [ -z "$(pod ps -a --format "{{.Names}}" | grep task-)" ]'
+btrfs subvolume delete $W/tg-nested >/dev/null
+check "  ... with it deleted by hand, the next task starts and completes" 't=$(new 2m < /tmp/tg-p) && wait_end $t 60 && [ "$(field $t end_reason)" = completed ]'
 
 # --- the box afterwards ---
 check "sockets check: the live per-task dirs and sockets match the inventory" '$B sockets check'

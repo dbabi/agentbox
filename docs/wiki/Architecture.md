@@ -349,7 +349,9 @@ Each service runs as its own Linux user, with only the access it needs.
 ### Undoing a task
 
 - Before each task's container starts, rootd takes a read-only btrfs snapshot of the workspace.
-  The snapshot counts against the agent's disk quota and carries the workspace's taint.
+  The snapshot counts against the agent's disk quota and carries the workspace's taint, including taint another task adds while the snapshot runs.
+  If the workspace holds a nested subvolume, the task does not start (`NESTED_SUBVOLUME`).
+  A snapshot whose audit records fail is deleted, so undo never restores it.
 - rootd keeps the last 5 of these per agent and deletes older ones.
   It never deletes other snapshots, such as the one an undo takes.
 - `agentbox task undo --task <id>` puts the workspace back as it was when that task started.
