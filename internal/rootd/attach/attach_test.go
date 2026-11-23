@@ -466,14 +466,14 @@ func TestPrepare(t *testing.T) {
 
 // The session container gets a task's hardening (§4.2) and session-home in place of the tmpfs HOME, as ag-<agent>.
 func TestPodmanArgv(t *testing.T) {
-	s := Session{ID: "ses_1", Agent: "at", TTY: "/dev/pts/3", Dir: Workspace, Env: []string{"HOME=" + Home}, Argv: []string{"bash", "--noprofile", "--norc", "-i"},
+	s := Session{ID: "ses_1", Agent: "at", UID: 70002, GID: 70002, TTY: "/dev/pts/3", Dir: Workspace, Env: []string{"HOME=" + Home}, Argv: []string{"bash", "--noprofile", "--norc", "-i"},
 		Mounts: []Mount{{Src: "/sh", Dst: Home}, {Src: "/x.json", Dst: Home + "/.claude/settings.json", RO: true}}}
 	a := strings.Join(Podman{Seccomp: "/s.json", Image: "img", HostUsr: []string{"/usr/bin"}}.Argv(s), " ")
 	for _, want := range []string{
 		"systemd-run --user -M ag-at@ --wait --collect --quiet --service-type=exec --unit=agentbox-attach-ses_1.service",
 		"-p TTYPath=/dev/pts/3 -p StandardInput=tty", "-p Delegate=yes -p KillMode=mixed",
 		"-p ExecStopPost=-/usr/bin/podman rm -f -i -t 0 attach-ses_1 /usr/bin/podman run --cgroups=split --rm -it --name attach-ses_1",
-		"--network=none --userns=keep-id --security-opt=no-new-privileges --cap-drop=all --security-opt=seccomp=/s.json --read-only",
+		"--network=none --userns=keep-id --user=70002:70002 --security-opt=no-new-privileges --cap-drop=all --security-opt=seccomp=/s.json --read-only",
 		"-w /workspace -v /sh:/home/agent -v /x.json:/home/agent/.claude/settings.json:ro", "-v /usr/bin:/usr/bin:ro",
 		"-e HOME=/home/agent img bash --noprofile --norc -i",
 	} {

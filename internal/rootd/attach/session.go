@@ -353,6 +353,7 @@ func (p Podman) Argv(s Session) []string {
 		"-p", "Delegate=yes", "-p", "KillMode=mixed", "-p", "TimeoutStopSec="+strconv.Itoa(int(task.StopTimeout/time.Second)),
 		"-p", "ExecStopPost=-"+task.Podman+" rm -f -i -t 0 attach-"+s.ID,
 		task.Podman, "run", "--cgroups=split", "--rm", "-it", "--name", "attach-"+s.ID, "--network=none", "--userns=keep-id",
+		"--user="+strconv.Itoa(s.UID)+":"+strconv.Itoa(s.GID), // an image USER never applies (#109)
 		"--security-opt=no-new-privileges", "--cap-drop=all", "--security-opt=seccomp="+p.Seccomp,
 		"--read-only", "--tmpfs", "/tmp:rw,size=2g", "--pids-limit=4096", "--log-driver=none", "-w", s.Dir)
 	for _, m := range s.Mounts {

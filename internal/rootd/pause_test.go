@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agentbox/internal/ids"
+	"agentbox/internal/image"
 )
 
 // checkPause (#125, #149): only a live pause process of the agent uid, in the agent's user namespace and its user
@@ -80,7 +81,8 @@ func TestCheckPause(t *testing.T) {
 }
 
 // ensurePodman runs before every launch: a stale pause.pid is audited, and the setup call runs unless the pause
-// process is live (#149); podman's "cannot set user namespace" is the typed reason podman_userns (#125).
+// process is live (#149); podman's "cannot set user namespace" is the typed reason podman_userns (#125), and an
+// image.Refused carries its code.
 func TestEnsurePodman(t *testing.T) {
 	r := newRig(t)
 	var setups []bool
@@ -115,6 +117,11 @@ func TestEnsurePodman(t *testing.T) {
 	why, imgErr = "", errors.New("exit status 1")
 	if rep := r.t.start(ids.New(ids.Task), "claude", "daemon"); rep["reason"] != "launch_failed" {
 		t.Errorf("other failure: %v", rep)
+	}
+	// a refused task image is a typed reply (#102, #109)
+	imgErr = &image.Refused{Code: image.BlobMismatch, Detail: "x"}
+	if rep := r.t.start(ids.New(ids.Task), "claude", "daemon"); rep["reason"] != "image_refused" || rep["code"] != image.BlobMismatch {
+		t.Errorf("image refusal: %v", rep)
 	}
 }
 

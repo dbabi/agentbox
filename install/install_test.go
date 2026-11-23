@@ -44,7 +44,8 @@ func stage(t *testing.T, stubs map[string]string) (c *exec.Cmd, box, trace strin
 	for name, body := range map[string]string{"install.sh": s, "bin/linux-arm64/agentbox": "#!/bin/sh\necho 1.0.0\n",
 		"systemd/agentbox-x.service": "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=multi-user.target\n",
 		"sysusers.d/agentbox.conf":   "u agentbox-x -\n", "tmpfiles.d/agentbox.conf": "d /run/agentbox-x 0711 root root -\n",
-		"gen/cedar.schema": "namespace Agentbox {}\n", "seccomp/seccomp-task.json": "{}\n"} {
+		"gen/cedar.schema": "namespace Agentbox {}\n", "seccomp/seccomp-task.json": "{}\n",
+		"image/linux-arm64/task.oci.tar": "oci\n", "SHA256SUMS": "x  image/linux-arm64/task.oci.tar\n"} {
 		os.MkdirAll(filepath.Dir(filepath.Join(rel, name)), 0o755)
 		os.WriteFile(filepath.Join(rel, name), []byte(body), 0o755)
 	}
@@ -88,6 +89,18 @@ func TestSyncBeforeRename(t *testing.T) {
 	}
 	if c, err := os.ReadFile(filepath.Join(box, "usr/lib/sysusers.d/agentbox.conf")); err != nil || string(c) != "u agentbox-x -\n" {
 		t.Errorf("sysusers copy: %q %v", c, err)
+	}
+	// the box's task image and the SHA256SUMS rootd checks it against (#102); podman auto-update masked (#109)
+	if c, err := os.ReadFile(r + "1.0.0/image/task.oci.tar"); err != nil || string(c) != "oci\n" {
+		t.Errorf("task image: %q %v", c, err)
+	}
+	if _, err := os.Stat(r + "1.0.0/SHA256SUMS"); err != nil {
+		t.Error(err)
+	}
+	for _, u := range []string{"podman-auto-update.timer", "podman-auto-update.service"} {
+		if l, err := os.Readlink(filepath.Join(box, "etc/systemd/user", u)); err != nil || l != "/dev/null" {
+			t.Errorf("%s: %q %v, want masked", u, l, err)
+		}
 	}
 }
 
