@@ -149,16 +149,16 @@ rm -f ~/.claude/settings.json; echo "rm=\$?"
 mv ~/.claude ~/.claude-moved; echo "mv=\$?"
 mv ~ /tmp/x 2>/dev/null; echo "mvhome=\$?"
 # after the mv: across filesystems mv copies, then deletes what it can of session-home
-mkdir -p ~/.claude/skills/gate && echo planted > ~/.claude/skills/gate/SKILL.md && echo planted > ~/.claude/CLAUDE.md; echo "plant=\$?"
+mkdir -p ~/.claude/skills/gate ~/.agents/skills/gate && echo planted > ~/.claude/skills/gate/SKILL.md && echo planted > ~/.agents/skills/gate/SKILL.md && echo planted > ~/.claude/CLAUDE.md; echo "plant=\$?"
 h=${b64%??????}; printf '\033]52;c;%s%s\007\033P1\$r\033\\\\\033[6n\033[c\033[>c\033[14t\033[1mGATEBOLD\033[0m\n' "\$h" "${b64#????????}"
 sleep 1; exit
 IN
 check "attach 2: a bash session, input relayed, token scan clean (with --ack-control-changes: the claude session wrote its own)" 'typed /tmp/gate-in2 | attach --cli bash --ack-control-changes >/tmp/gate-a2 2>&1; cat -v /tmp/gate-a2;
   grep -qF "[agentbox] session ended; token scan: clean" /tmp/gate-a2 && grep -q "commit=0" /tmp/gate-a2 && grep -q "plant=0" /tmp/gate-a2'
 check "  ... the file it touched in the marker dir shows on the host (markers are live)" '[ -e $M/m-probe ] && rm $M/m-probe'
-check "  ... the next attach is refused naming only what the session changed: AGENTS.md, and the skill and CLAUDE.md it left in session-home" '! attach --cli bash </dev/null >/tmp/gate-a2b 2>&1;
-  cat /tmp/gate-a2b; grep -qF "changed since the last accepted state: /home/agent/.claude/CLAUDE.md, /home/agent/.claude/skills/gate/SKILL.md, AGENTS.md;" /tmp/gate-a2b ||
-  { find $H/.claude -maxdepth 3 -ls; false; }'
+check "  ... the next attach is refused naming only what the session changed: AGENTS.md, and the Claude and Codex skills and CLAUDE.md it left in session-home" '! attach --cli bash </dev/null >/tmp/gate-a2b 2>&1;
+  cat /tmp/gate-a2b; grep -qF "changed since the last accepted state: /home/agent/.agents/skills/gate/SKILL.md, /home/agent/.claude/CLAUDE.md, /home/agent/.claude/skills/gate/SKILL.md, AGENTS.md;" /tmp/gate-a2b ||
+  { find $H/.claude $H/.agents -maxdepth 3 -ls; false; }'
 check "  ... bash read no startup file; git used no ~/.gitconfig pager, alias or filter and no repo-local pager" 'none || { markers; false; }'
 check "  ... in a container: loopback only, the seccomp filter, no_new_privs and no capabilities" 'grep -q "^net=lo.\$" /tmp/gate-a2 &&
   grep -q "^Seccomp:2" /tmp/gate-a2 && grep -q "^NoNewPrivs:1" /tmp/gate-a2 && grep -q "^CapEff:0000000000000000" /tmp/gate-a2'
