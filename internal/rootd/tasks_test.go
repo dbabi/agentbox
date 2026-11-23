@@ -33,7 +33,8 @@ type rig struct {
 	calls   []string
 	launch  [][]string
 	auditUp bool
-	wsTaint bool // auditd's view: workspace:claude is tainted
+	wsTaint bool // auditd's view: workspace:claude#1 is tainted
+	wsEpoch int64
 }
 
 func newRig(t *testing.T) *rig {
@@ -68,15 +69,9 @@ func newRig(t *testing.T) *rig {
 		query: func(m map[string]any) (*auditReply, error) {
 			rep := &auditReply{OK: true}
 			rep.View = &struct {
-				Subjects []struct {
-					Subject string `json:"subject"`
-					Tainted bool   `json:"tainted"`
-				} `json:"subjects"`
+				Subjects []taintSubject `json:"subjects"`
 			}{}
-			rep.View.Subjects = append(rep.View.Subjects, struct {
-				Subject string `json:"subject"`
-				Tainted bool   `json:"tainted"`
-			}{"workspace:claude", r.wsTaint})
+			rep.View.Subjects = append(rep.View.Subjects, taintSubject{"workspace:claude#1", r.wsTaint, r.wsEpoch})
 			return rep, nil
 		}}
 	return r

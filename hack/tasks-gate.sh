@@ -1,5 +1,5 @@
 #!/bin/sh
-# Weeks 5-6 task gate (PLAN.md row 5-6; ARCHITECTURE.md §4.2, §10, Appendix C; issues #13, #14, #106 and #155) on the local QEMU
+# Weeks 5-6 task gate (PLAN.md row 5-6; ARCHITECTURE.md §4.2, §10, Appendix C; issues #13, #14, #103, #106 and #155) on the local QEMU
 # VM, arm64 UEFI, none mode, through the real rootd, agentboxd and auditd and rootless podman.
 #   hack/tasks-gate.sh [install|checks ...]   default: both, in order
 # install  hack/gate.sh none: the unattended install and the release pipeline, so podman, the units, the seccomp
@@ -37,7 +37,11 @@
 #          - taskrun's isolation probe: a network interface, a default route, a sibling task's socket dir and an
 #            abstract socket, each added on its own through a wrapper over podman, stop the task with
 #            TASK_ISOLATION_PROBE before the CLI runs, with an audit ALERT and an ntfy alert; a normal task passes it in
-#            under 100 ms (#106).
+#            under 100 ms (#106);
+#          - every task start takes a read-only snapshot of the workspace in qgroup 1/N; after a task runs
+#            rm -rf /workspace/*, agentbox task undo restores a tree with the same digest, keeping the taint the
+#            snapshot had; 7 tasks later 5 task-start snapshots are left, and no clean-baseline or pre-restore one is
+#            pruned (#103).
 # PASS/FAIL lines go to .vm/tasks-gate.txt, command output to .vm/tasks-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -425,6 +429,45 @@ check "  ... the next task still starts and completes; rootd removed the stale p
   wait_end $t 60 && [ "$(field $t end_reason)" = completed ] && [ -f $W/tp.done ] && pause_ok && [ "$(cat $PP)" != "$(cat /tmp/tg-reused)" ] &&
   cat /var/lib/agentbox/audit/seg-*.jsonl | grep "\"PAUSE_PID_STALE\"" | grep "\"agent\":\"gt\"" | grep -q "\"reason\":\"wrong_userns\""'
 kill "$(cat /tmp/tg-reused 2>/dev/null)" 2>/dev/null || :
+
+# --- #103: a snapshot at every task start, and agentbox task undo ---
+WS="workspace:gt#$((U - 70000))" SN=/var/lib/agentbox/data/agents/gt/snapshots BASE=snap_00000000000000000000GATE00
+asend() { $B audit send --socket /run/agentbox-audit/rootd.sock "$1"; }
+# digest: every entry's type, mode, owner and link target, and every file's sha256
+digest() { (cd $W && find . -mindepth 1 -printf '%y %m %U %G %p %l\n' | LC_ALL=C sort && find . -type f -exec sha256sum {} + | LC_ALL=C sort) | sha256sum | cut -c1-64; }
+sql() { python3 -c 'import sqlite3,sys; c=sqlite3.connect("/var/lib/agentbox/rootd.db", timeout=10); r=c.execute(sys.argv[1], sys.argv[2:]).fetchall(); c.commit(); print("\n".join("|".join(map(str,x)) for x in r))' "$@"; }
+wsepoch() { asend "{\"type\":\"taint.get\",\"holder\":\"task:$1\"}" | python3 -c 'import json,sys; v=json.load(sys.stdin)["view"]; print([s for s in v["subjects"] if s["subject"]==sys.argv[1]][0]["epoch"])' "$WS"; }
+# a clean-baseline snapshot, as taint.clear will take one: rootd must never prune it
+mkdir -p $SN && btrfs subvolume snapshot -r $W $SN/$BASE >/dev/null &&
+  sql "INSERT INTO workspace_snapshots(id, workspace, agent, kind, created_at) VALUES(?,?,'gt','clean-baseline',1)" $BASE "$WS" >/dev/null
+as() { runuser -u ag-gt -- "$@"; }
+as mkdir -p $W/proj/src $W/proj/.cfg && as sh -c "echo one > $W/proj/a.txt; echo two > $W/proj/src/b.go; echo three > $W/proj/.cfg/c; ln -s src/b.go $W/proj/link; chmod 0640 $W/proj/a.txt"
+D0=$(digest)
+echo 'rm -rf /workspace/*; echo gone > /workspace/after' > /tmp/tg-p
+check "#103: a task runs rm -rf /workspace/*; its start snapshot is a read-only subvolume in qgroup 1/$((U - 70000)), in a root-only dir" 'T=$(new 2m < /tmp/tg-p) &&
+  echo $T > /tmp/tg-undo && wait_end $T 60 && [ ! -e $W/proj ] && [ "$(digest)" != "$D0" ] &&
+  S=$(sql "SELECT id FROM workspace_snapshots WHERE task=? AND kind=?" $T task-start) && echo "snapshot $S" && [ -n "$S" ] &&
+  [ "$(btrfs property get -ts $SN/$S ro)" = ro=true ] && [ "$(stat -c "%U %a" $SN)" = "root 700" ] &&
+  id=$(btrfs inspect-internal rootid $SN/$S) && btrfs --format=json qgroup show -p /var/lib/agentbox |
+  python3 -c "import json,sys; q={r[\"qgroupid\"]: r[\"parents\"] for r in json.load(sys.stdin)[\"qgroup-show\"]}; sys.exit(sys.argv[2] not in q[sys.argv[1]])" 0/$id 1/$((U - 70000))'
+T=$(cat /tmp/tg-undo)
+check "  ... the workspace taint is cleared after it (auditd taint.clear, as rootd), so the restore can show the snapshot's own" '
+  asend "{\"type\":\"SUBJECT_ADD\",\"task\":\"task:$T\",\"subject\":\"$WS\"}" && E=$(wsepoch $T) && echo "epoch $E" &&
+  asend "{\"type\":\"INTENT\",\"opId\":\"tg-clear\",\"name\":\"taint.clear\",\"origin\":\"admin\",\"signer\":\"gate\",\"args\":{\"subject\":\"$WS\",\"contentId\":\"gate\"},\"taintEpochs\":{\"$WS\":$E}}" &&
+  asend "{\"type\":\"RESULT\",\"opId\":\"tg-clear\",\"status\":\"executed\"}" &&
+  asend "{\"type\":\"taint.get\",\"holder\":\"task:$T\"}" | grep -q "\"subject\":\"$WS\",\"tainted\":false"'
+check "  ... agentbox task undo restores a tree with the digest it had before the task" '$B task undo --task $T > /tmp/tg-undo-rep; cat /tmp/tg-undo-rep;
+  grep -q "\"ok\":true" /tmp/tg-undo-rep && [ "$(digest)" = "$D0" ] && [ ! -e $W/after ] && [ "$(stat -c "%U %a" $W)" = "ag-gt 700" ]'
+check "  ... the restored workspace keeps the taint the snapshot had (tainted), at a new epoch, and the next task starts tainted" '
+  grep -q "\"tainted\":true" /tmp/tg-undo-rep && asend "{\"type\":\"taint.get\",\"holder\":\"task:$T\"}" | grep -q "\"subject\":\"$WS\",\"tainted\":true" &&
+  echo true > /tmp/tg-p && t=$(new 2m < /tmp/tg-p) && grep -q "\"tainted\":true" /tmp/tg-new && wait_end $t 60'
+check "  ... a pre-restore snapshot holds the tree the undo replaced; the audit has the signed workspace.restore" '
+  P=$(sql "SELECT id FROM workspace_snapshots WHERE task=? AND kind=?" $T pre-restore) && [ -e $SN/$P/after ] &&
+  cat /var/lib/agentbox/audit/seg-*.jsonl | grep "\"name\":\"workspace.restore\"" | grep "\"workspace\":\"$WS\"" | grep -q "\"signer\":\"rootd-admin:root\""'
+check "  ... after 7 more tasks 5 task-start snapshots are left; the clean-baseline and pre-restore ones stay" 'for i in $(seq 7); do t=$(new 2m < /tmp/tg-p) && wait_end $t 60 || exit 1; done;
+  sql "SELECT kind, count(*) FROM workspace_snapshots WHERE workspace=? GROUP BY kind ORDER BY kind" "$WS" | tee /tmp/tg-kinds &&
+  [ "$(cat /tmp/tg-kinds | tr "\n" " ")" = "clean-baseline|1 pre-restore|1 task-start|5 " ] && [ "$(ls $SN | wc -l)" = 7 ] && [ -d $SN/$BASE ]'
+check "  ... and undo of the pruned task now says so" '! $B task undo --task $T > /tmp/tg-undo2 2>&1; cat /tmp/tg-undo2; grep -q pruned /tmp/tg-undo2'
 
 # --- the box afterwards ---
 check "sockets check: the live per-task dirs and sockets match the inventory" '$B sockets check'

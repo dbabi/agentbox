@@ -95,7 +95,7 @@ func OpenDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("rootd.db: journal_mode=%s synchronous=%d, need wal and FULL (2)", mode, syncv)
 	}
-	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, attach.Schema, attach.BaselineSchema} {
+	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, snapSchema, attach.Schema, attach.BaselineSchema} {
 		if _, err := db.Exec(schema); err != nil {
 			db.Close()
 			return nil, err
@@ -201,7 +201,7 @@ func Run(cfg Config) error {
 	if cfg.Tasks.EgressDir == "" {
 		cfg.Tasks.EgressDir = cfg.EgressDir
 	}
-	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, alert: cfg.Alert, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
+	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, alert: cfg.Alert, nested: s.nested, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
 	s.tasks.reopenWitnesses()
 	s.tasks.resume()
 	if s.cfg.Attach == nil {
@@ -447,7 +447,7 @@ func (s *server) handle(sock string, p peer, r request) reply {
 
 func (s *server) admin(r request, p peer) reply {
 	switch r.Op {
-	case "task.new", "task.stop", "task.list":
+	case "task.new", "task.stop", "task.list", "task.undo":
 		if s.tasks == nil {
 			return fail("bad_request")
 		}
@@ -553,6 +553,9 @@ func (s *server) taskAdmin(r request, p peer) reply {
 	human := "root"
 	if u, err := user.LookupId(strconv.Itoa(int(p.uid))); err == nil {
 		human = u.Username
+	}
+	if r.Op == "task.undo" {
+		return s.tasks.undo(r.Task, "rootd-admin:"+human)
 	}
 	asks, dl := DefaultAsks, DefaultDeadline
 	if r.Asks != nil {

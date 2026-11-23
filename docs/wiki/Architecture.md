@@ -346,6 +346,17 @@ Each service runs as its own Linux user, with only the access it needs.
 - If processes survive the stop, rootd blocks new tasks for that agent and sends an alert.
   The block survives a rootd restart. `agentbox attach rescan --agent <name>` lifts it once the processes are gone.
 
+### Undoing a task
+
+- Before each task's container starts, rootd takes a read-only btrfs snapshot of the workspace.
+  The snapshot counts against the agent's disk quota and carries the workspace's taint.
+- rootd keeps the last 5 of these per agent and deletes older ones.
+  It never deletes other snapshots, such as the one an undo takes.
+- `agentbox task undo --task <id>` puts the workspace back as it was when that task started.
+  It refuses while a task or a session of that agent runs.
+  It first snapshots the current tree, so the undo can be undone by hand.
+- The restored workspace is tainted if the snapshot was, even if the workspace was clean before the undo.
+
 ### Interactive sessions
 
 - `agentbox attach --agent <name>` opens an interactive Claude Code, Codex or bash session.

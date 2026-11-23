@@ -54,6 +54,7 @@ type Account struct {
 	UID, GID  uint32
 	SubID     uint32 // the first of its 65536 sub-ids
 	Workspace string // data/workspaces/<name>, mounted rw at /workspace
+	Snaps     string // data/agents/<name>/snapshots: its workspace snapshots, root-only
 	Home, XDG string // the root-owned home and XDG base dirs its podman runs with
 }
 
@@ -73,7 +74,7 @@ func (i idsAccounts) Lookup(agent string) (Account, error) {
 	if err != nil {
 		return Account{}, err
 	}
-	return Account{Name: a.Name, UID: uint32(a.UID()), GID: uint32(a.UID()), SubID: uint32(a.SubID()), Workspace: a.Workspace(), Home: a.Home(), XDG: a.XDG()}, nil
+	return Account{Name: a.Name, UID: uint32(a.UID()), GID: uint32(a.UID()), SubID: uint32(a.SubID()), Workspace: a.Workspace(), Snaps: a.Dir() + "/snapshots", Home: a.Home(), XDG: a.XDG()}, nil
 }
 
 func (a Account) podmanEnv() []string {
@@ -102,6 +103,7 @@ type TaskConfig struct {
 	Exports     string // control/exports
 	EgressDir   string // control/egress: the allowlists and go.private patterns the task env comes from; rootd's own if ""
 	WitnessRoot string // /run/agentbox-witness/t (§5.6 Witness)
+	Btrfs       Btrfs  // the task-start snapshot and undo; nil: none (tests)
 	Seccomp     string
 	Image       string
 	HostUsr     []string
@@ -118,6 +120,7 @@ type tasks struct {
 	stops   map[string]*sync.Mutex // one task.stop at a time per task
 	watch   map[string]bool
 	noWatch bool // tests: no cgroup to watch
+	nested  func(string) ([]string, error)
 	witMu   sync.Mutex
 	wit     map[string]*witness.W // the live tasks' witnesses, by task id
 }
@@ -125,12 +128,17 @@ type tasks struct {
 type auditReply struct {
 	OK   bool `json:"ok"`
 	View *struct {
-		Subjects []struct {
-			Subject string `json:"subject"`
-			Tainted bool   `json:"tainted"`
-		} `json:"subjects"`
+		Subjects []taintSubject `json:"subjects"`
 	} `json:"view"`
 }
+
+type taintSubject struct {
+	Subject string `json:"subject"`
+	Tainted bool   `json:"tainted"`
+	Epoch   int64  `json:"epoch"`
+}
+
+var errSnapshot = errors.New("task-start snapshot")
 
 // ErrNoSvc is a service with no svc-<svc>.sock on this box.
 var ErrNoSvc = errors.New("service not installed")
@@ -198,7 +206,9 @@ func (t *tasks) start(id, agent, origin string) reply {
 		log.Printf("task.start %s: %v; stopping it", id, err)
 		t.stop(id, "failed")
 		reason := "launch_failed"
-		if strings.Contains(err.Error(), "cannot set user namespace") {
+		if errors.Is(err, errSnapshot) {
+			reason = "snapshot_failed"
+		} else if strings.Contains(err.Error(), "cannot set user namespace") {
 			reason = "podman_userns" // podman joined a process that is not its pause process (#125)
 		}
 		return reply{"ok": false, "reason": reason, "error": err.Error()}
@@ -314,6 +324,13 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 		for _, s := range rep.View.Subjects {
 			tainted = tainted || s.Tainted
 		}
+	}
+	if t.cfg.Btrfs != nil {
+		// before anything of the task runs: `agentbox task undo` restores this tree (#103)
+		if _, err := t.snapshot(acct, "task:"+id, id, "task-start"); err != nil {
+			return false, fmt.Errorf("%w: %v", errSnapshot, err)
+		}
+		defer t.prune(acct)
 	}
 	for _, v := range task.Svcs {
 		if err := t.cfg.MakeDir(task.SockDir(v.Name, id), task.SvcUser[v.Name], acct.GID); err != nil {
@@ -598,6 +615,7 @@ func DefaultTaskConfig() TaskConfig {
 		},
 		Svc:         svcCall,
 		MakeDir:     makeTaskDir,
+		Btrfs:       btrfsCmd{},
 		Cgroup:      "/sys/fs/cgroup",
 		Exports:     task.ExportsDir,
 		WitnessRoot: witness.Root,
