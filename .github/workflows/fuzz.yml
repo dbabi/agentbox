@@ -63,8 +63,8 @@ jobs:
         run: |
           echo "corpus at start: $(find "$DIR" -type f 2>/dev/null | wc -l) entries"
           go test -run='^$' -fuzz="^${TARGET}\$" -fuzztime="$FUZZTIME" "$PKG"
-          echo "corpus at end: $(find "$DIR" -type f | wc -l) entries; CPU seconds (user, sys) of go test and its workers:"
-          times | tail -n 1
+          echo "corpus at end: $(find "$DIR" -type f | wc -l) entries; the second line is go test's CPU time (user, sys):"
+          times # not in a pipeline: a subshell has no children to count
       - if: always()
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
