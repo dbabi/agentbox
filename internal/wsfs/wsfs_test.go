@@ -150,4 +150,3 @@ func TestReadersUseWalker(t *testing.T) {
 		})
 	}
 }
-

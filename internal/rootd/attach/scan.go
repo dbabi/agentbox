@@ -233,7 +233,7 @@ var packRe = regexp.MustCompile(`^pack-([0-9a-f]{40}|[0-9a-f]{64})\.pack$`)
 // inPack inflates each object of a git pack (v2 or v3) and looks for a token in it: a base object's body, or the
 // bytes a delta inserts. A corrupt pack is scanned up to the damage, as git can read no further either.
 func (m *matcher) inPack(r io.Reader, idLen int) bool {
-	br := bufio.NewReaderSize(r, 64<<10) // an io.ByteReader: flate then reads no byte past its stream
+	br := bufio.NewReaderSize(r, 64<<10)       // an io.ByteReader: flate then reads no byte past its stream
 	budget := &io.LimitedReader{N: inflateCap} // for all of the pack's objects together
 	var h [12]byte
 	if _, err := io.ReadFull(br, h[:]); err != nil || string(h[:4]) != "PACK" {
