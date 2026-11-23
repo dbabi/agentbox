@@ -60,13 +60,19 @@ func scanArgv(root, exe, ws string) []string {
 func runSecretScan(control string) func(Account) ([]secrets.Hit, error) {
 	return func(acct Account) ([]secrets.Hit, error) {
 		root := filepath.Join(control, "secretscan-root")
-		for _, d := range []string{"", "ws", "tmp", "var/tmp", "proc", "sys", "dev"} {
-			if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+		// chmod after mkdir: rootd's UMask=0077 would leave them 0700, and the scan's uid could not enter its own root
+		for _, d := range []string{"", "ws", "var", "proc", "sys", "dev", "tmp", "var/tmp"} {
+			p, mode := filepath.Join(root, d), os.FileMode(0o755)
+			if strings.HasSuffix(d, "tmp") {
+				mode = 0o777 | os.ModeSticky
+			}
+			if err := os.MkdirAll(p, 0o755); err != nil {
+				return nil, err
+			}
+			if err := os.Chmod(p, mode); err != nil {
 				return nil, err
 			}
 		}
-		os.Chmod(filepath.Join(root, "tmp"), 0o1777)
-		os.Chmod(filepath.Join(root, "var/tmp"), 0o1777)
 		if f, err := os.OpenFile(filepath.Join(root, "agentbox"), os.O_CREATE|os.O_RDONLY, 0o755); err == nil {
 			f.Close()
 		}
