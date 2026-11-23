@@ -251,7 +251,9 @@ func TestTaskStartSnapshotTaintNotACKed(t *testing.T) {
 			op, _ = m["opId"].(string)
 		}
 	}
-	if !slices.ContainsFunc(r.records, func(m map[string]any) bool { return m["type"] == "RESULT" && m["opId"] == op && m["status"] == "failed" }) {
+	if !slices.ContainsFunc(r.records, func(m map[string]any) bool {
+		return m["type"] == "RESULT" && m["opId"] == op && m["status"] == "failed"
+	}) {
 		t.Fatalf("no failed RESULT for %s: %v", op, r.records)
 	}
 }
