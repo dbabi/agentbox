@@ -161,7 +161,7 @@ try:
         print("sent")
         sys.exit()
     try:
-        print("ok", s.recv(64).split(b"-")[0].decode(errors="replace"))
+        print(("ok " + s.recv(64).split(b"-")[0].decode(errors="replace")).strip())  # "ok" when it closes at once
     except socket.timeout:
         print("ok")
 except OSError as e:
