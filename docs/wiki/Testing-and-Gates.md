@@ -684,6 +684,7 @@ The regression after the review fixes. Every VM gate ran on a fresh `none`-mode 
 | Milestone 3 suites | Passed again: `w4-registry` 12, `w4-agentboxd` 30 and `w4-sockets` 38 PASS, 0 FAIL each | `7394cd9` |
 | Milestone 2 suites | `w3-firewall` 54, `w3-auditd` 114 and `w3-quota-ntfy` 54 PASS, 0 FAIL each. `w3-rootd` failed 2 checks at `7394cd9`: `rootd.db` was world-readable, because reconcile now creates it first, and two new tables were not STRICT (issue #150). After the fix: 104 PASS, 0 FAIL. | `7394cd9`; `w3-rootd` at `8b2a87c` |
 | Milestone 1 smoke: `gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso` | Passed | `deb0ef9` |
+| Inbound firewall (issue #80) | `w3-firewall` 72 PASS, 0 FAIL, with the new inbound checks. A first run failed only the `tailscale0` check, a bug in the gate's own probe. `w3-rootd` 104 and `w3-quota-ntfy` 54 PASS, 0 FAIL. The `hack/gate.sh none` install inside `w3-quota-ntfy` passed with the default SSH ranges. Two standalone `gates-none` runs stopped early, both times because the host slept. | `d654152` |
 | Milestone 4 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
 | `go vet ./...` and `go test ./...` | Passed on the Mac | `8b2a87c` |
 
