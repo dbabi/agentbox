@@ -112,7 +112,7 @@ func TestTaskStartAdmin(t *testing.T) {
 	if rep["ok"] != true || !slices.Equal(rep["chain"].([]string), []string{"human:boxadmin", "agent:claude"}) || rep["tainted"] != false {
 		t.Fatalf("start: %v", rep)
 	}
-	if got := r.types(); !slices.Equal(got, []string{"WRITER_ADD"}) || r.records[0]["workspace"] != "workspace:claude" {
+	if got := r.types(); !slices.Equal(got, []string{"WRITER_ADD"}) || r.records[0]["workspace"] != "workspace:claude#1" {
 		t.Fatalf("audit: %v", r.records)
 	}
 	argv := strings.Join(r.launch[0], " ")

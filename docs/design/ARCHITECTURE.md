@@ -507,7 +507,7 @@ recovery: before rootd listens on any socket (§2.1), it reconciles every 'appro
 **Time.** `expiresAt` in H is an integer: Unix milliseconds UTC, the same value as `pending.expires_at`. rootd checks `P.expiresAt > now` in Go before the approval UPDATE and again at execute; the SQL predicate is a second check. `:now_ms` is always bound from Go (App. E).
 
 **Taint fence.**
-- **Subjects:** `task:<id>`, `session:<id>`, `workspace:<agent>`, `ref:<repo>:<ref>`, `snap:<id>`, `fact:<id>`.
+- **Subjects:** `task:<id>`, `session:<id>`, `workspace:<agent>#<N>` (keyed by the agent's N too: a name can come back after removal, N never does), `ref:<repo>:<ref>`, `snap:<id>`, `fact:<id>`.
 - **Writers.** At `task.start` and `agent.attach`, rootd registers each rw workspace mount with auditd (`writers`, App. E) before the container starts. Stop deletes the row. In the same `synchronous=FULL` transaction that taints any holder, auditd also taints every workspace that holder writes, and bumps both epochs. A tainted task or session taints a workspace as soon as it mounts it. Attach sessions are tainted from start. This happens at the proxy, keys, git or READ-INTENT (§9), before any byte flows, so no file watch is needed.
 - **Effective taint** of a task is the OR of its own taint, its workspace's, every chain ancestor's, and every tainted ref it fetched (`task_subjects`, App. E). rootd evaluates it at `task.start`, at the floor check and again at execution.
 - **H binds `taintEpochs`,** a JCS map `{subject: epoch}` over every subject in the effective set. auditd ACKs INTENT only if every listed epoch is unchanged. A missing row is clean at epoch 0. If any epoch moved, auditd refuses the INTENT and rootd re-evaluates; a tainted result becomes Ask.
@@ -1873,7 +1873,7 @@ CREATE TABLE os_lock(id INTEGER PRIMARY KEY CHECK(id = 1), plan TEXT NOT NULL, g
 CREATE TABLE set_elements(set_name TEXT NOT NULL, element TEXT NOT NULL, expires_at INTEGER, PRIMARY KEY(set_name, element)) STRICT;  -- nft refill source (§6.1)
 CREATE TABLE clock(id INTEGER PRIMARY KEY CHECK(id = 1), boot_id TEXT NOT NULL, offset_ms INTEGER NOT NULL) STRICT;  -- wall minus CLOCK_MONOTONIC when the dst expiries were last written; a change within the boot is a wall step: rootd rebases the expiries by it, fwcheck its now
 -- taint.db (auditd, synchronous=FULL)
--- subject: 'task:<id>' | 'session:<id>' | 'workspace:<agent>' | 'ref:<repo>:<ref>' | 'snap:<id>' | 'fact:<id>'
+-- subject: 'task:<id>' | 'session:<id>' | 'workspace:<agent>#<N>' | 'ref:<repo>:<ref>' | 'snap:<id>' | 'fact:<id>'
 -- content_id: for workspace: the clean-baseline snapshot; for ref: the cleared OID; for fact: the cleared body hash
 CREATE TABLE taint(subject TEXT PRIMARY KEY, tainted INTEGER NOT NULL, epoch INTEGER NOT NULL DEFAULT 0, source TEXT, since INTEGER,
                    cleared_by TEXT, cleared_at INTEGER, content_id TEXT) STRICT;  -- epoch moves only on clean→tainted, on clear, and on a signed workspace.restore (§5.2); rows are never deleted, so epochs never repeat

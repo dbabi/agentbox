@@ -16,6 +16,7 @@ import (
 
 	"agentbox/internal/denial"
 	"agentbox/internal/ops"
+	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/attach"
 )
 
@@ -31,7 +32,7 @@ var lookupAgent = func(name string) (int, int, error) {
 }
 
 // attach is agent.attach (§4.2): rootd owns the session PTY and relays its output through the filter. Before the
-// session: the task block, INTENT, and the session registered as a tainted writer of workspace:<agent> (§5.2). After
+// session: the task block, INTENT, and the session registered as a tainted writer of workspace:<agent>#<N> (§5.2). After
 // it: the token scan, which lifts the block only when the workspace holds no session-home token.
 func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	refuse := func(format string, a ...any) {
@@ -93,7 +94,7 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	}
 	o, _ := ops.Lookup("agent.attach")
 	args := map[string]any{"name": r.Name, "workspace": r.Name}
-	holder, ws := "session:"+id, "workspace:"+r.Name
+	holder, ws := "session:"+id, accounts.WorkspaceSubject(r.Name, uid)
 	if err := s.audit(map[string]any{"type": "INTENT", "opId": opID, "name": o.Name, "origin": "admin", "args": ops.Classify(o.Args, args)}); err != nil {
 		unblock()
 		refuse("audit: the INTENT was not ACKed, no session: %v", err)

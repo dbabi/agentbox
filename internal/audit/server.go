@@ -9,8 +9,10 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -44,7 +46,8 @@ type Server struct {
 	SegmentAgeMs int64
 	ReserveBytes int64
 	Logf         func(format string, args ...any)
-	Crash        func(point string) // test hook for the crash-mid-seal gate
+	Crash        func(point string)             // test hook for the crash-mid-seal gate
+	AgentUID     func(name string) (int, error) // ag-<name>'s uid, for rekeyWorkspaces; nil looks up the user
 
 	// clocks and the free-space probe; tests replace them
 	Wall   func() int64
@@ -104,9 +107,22 @@ func (s *Server) Start() error {
 	if s.Avail == nil {
 		s.Avail = func() (uint64, error) { return availBytes(s.Dir) }
 	}
+	if s.AgentUID == nil {
+		s.AgentUID = func(name string) (int, error) {
+			u, err := user.Lookup("ag-" + name)
+			if err != nil {
+				return 0, err
+			}
+			return strconv.Atoi(u.Uid)
+		}
+	}
 	db, err := openTaintDB(filepath.Join(s.Dir, "taint.db"))
 	if err != nil {
 		return err
+	}
+	if err := rekeyWorkspaces(db, s.AgentUID); err != nil {
+		db.Close()
+		return fmt.Errorf("taint.db: rekey workspace subjects: %v", err)
 	}
 	s.db = db
 	s.mu.Lock()
@@ -652,6 +668,9 @@ func (s *Server) apply(tx *sql.Tx, p string, r *request, now int64) (Reply, func
 		if r.OpID == "" || len(r.OpID) > 128 || r.Name == "" {
 			return bad("INTENT needs opId and name")
 		}
+		if r.Workspace != "" && r.Name != "workspace.restore" {
+			return bad("only a workspace.restore INTENT names a workspace")
+		}
 		for subj := range r.TaintEpochs {
 			if !validSubject(subj) {
 				return bad("bad subject in taintEpochs")
@@ -682,8 +701,10 @@ func (s *Server) apply(tx *sql.Tx, p string, r *request, now int64) (Reply, func
 				return bad("taint.clear: taintEpochs must bind the subject's epoch")
 			}
 		case "workspace.restore":
-			target, content = "workspace:"+r.Agent, r.Args.ID // the executor's own workspace (§5.3)
-			if !strings.HasPrefix(target, "workspace:") || !validSubject(target) || !validSubject("snap:"+content) || r.Signer == "" {
+			target, content = r.Workspace, r.Args.ID // the executor's own workspace (§5.3), keyed by its N
+			n, ok := strings.CutPrefix(target, "workspace:"+r.Agent+"#")
+			if _, err := strconv.ParseUint(n, 10, 16); r.Agent == "" || !ok || err != nil || !validSubject(target) ||
+				!validSubject("snap:"+content) || r.Signer == "" {
 				return bad("workspace.restore: a signed restore of the agent's workspace from a snapshot id")
 			}
 			if err := restore(tx, target, "snap:"+content, "restore:"+content, now); err != nil {
@@ -799,7 +820,8 @@ var adminEdits = map[string]ops.Op{
 // recordKeys are the only top-level keys an INTENT or RESULT may carry: anything else would reach the chain with no
 // class check.
 var recordKeys = map[string]map[string]bool{
-	"INTENT": keySet("type", "opId", "name", "origin", "signer", "agent", "task", "chain", "args", "taintEpochs", "ts"),
+	"INTENT": keySet("type", "opId", "name", "origin", "signer", "agent", "workspace", "task", "chain", "args", "taintEpochs",
+		"ts"),
 	"RESULT": keySet("type", "opId", "name", "status", "errorCode", "outputs", "detail", "changed"),
 }
 

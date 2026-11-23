@@ -11,8 +11,8 @@
 #          EDQUOT, also in its storage, while system state keeps writing and 2/0 keeps its limit. Removing the newest
 #          agent deletes its user, sub-ids and drop-ins and archives its subvolumes; adding another never reuses its
 #          uid or sub-id range, and re-adding its name gets a new N. A nested subvolume refuses agent.remove with
-#          NESTED_SUBVOLUME and taints the workspace. A foreign /etc/subuid entry inside the agentbox span stops
-#          reconcile. After a reboot reconcile rebuilds the same accounts and nothing failed.
+#          NESTED_SUBVOLUME and taints workspace:<name>#<N>; re-adding that name gets a clean workspace subject while the
+#          old one stays tainted. A foreign /etc/subuid entry inside the agentbox span stops reconcile. After a reboot reconcile rebuilds the same accounts and nothing failed.
 # PASS/FAIL lines go to .vm/accounts-gate.txt, command output to .vm/accounts-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -52,6 +52,7 @@ qg() { btrfs --format=json qgroup show -p -r -e $M | python3 -c "import json,sys
 qid() { echo "0/$(btrfs inspect-internal rootid "$1")"; }
 st() { grep "^$1:" /etc/subuid; }
 sg() { grep "^$1:" /etc/subgid; }
+taint() { python3 -c "import sqlite3,sys; c=sqlite3.connect(\"file:$M/audit/taint.db?mode=ro\", uri=True); r=c.execute(\"select tainted from taint where subject=?\", (sys.argv[1],)).fetchone(); print(r[0] if r else \"\")" "$1"; }
 users() { getent passwd | awk -F: "\$3 >= 70000 && \$3 < 71000 {print \$1, \$3}" | sort; }
 S=$(( $(stat -f -c %b $M) * $(stat -f -c %S $M) )); R=$((S / 10)); [ $R -ge 4294967296 ] || R=4294967296
 '
@@ -106,9 +107,14 @@ check "agent add $QB again: its name comes back with a new N, not $NB" 'ag add -
 btrfs subvolume create $D/workspaces/$QC/nested >/dev/null
 check "a nested subvolume in $QC's workspace: agent remove is refused NESTED_SUBVOLUME" '! ag remove --name $QC && grep -q "\"code\":\"NESTED_SUBVOLUME\"" /run/ag.json && grep -q "\"tainted\":true" /run/ag.json'
 check "  ... $QC is untouched: user, workspace and the nested subvolume remain" 'getent passwd ag-$QC && [ -d $D/workspaces/$QC/nested ]'
-check "  ... and taint.db has workspace:$QC tainted" 'python3 -c "import sqlite3,sys; c=sqlite3.connect(\"file:$M/audit/taint.db?mode=ro\", uri=True); exit(0 if c.execute(\"select tainted from taint where subject=?\", (\"workspace:\"+sys.argv[1],)).fetchone() == (1,) else 1)" $QC'
+check "  ... and taint.db has workspace:$QC#$NC tainted, keyed by N" 'taint "workspace:$QC#$NC" | grep -qx 1'
 btrfs subvolume delete $D/workspaces/$QC/nested >/dev/null
 check "  ... with it deleted by hand, agent remove $QC succeeds" 'ag remove --name $QC'
+check "agent add $QC again: a new N" 'ag add --name $QC && [ "$(f n)" -gt $NC ]'
+NC2=$(f n)
+check "  ... its workspace subject workspace:$QC#$NC2 starts clean, while workspace:$QC#$NC stays tainted" '
+  [ -z "$(taint "workspace:$QC#$NC2")" ] && [ "$(taint "workspace:$QC#$NC")" = 1 ] && [ -z "$(taint "workspace:$QC")" ]'
+ag remove --name $QC >/dev/null
 check "agent list shows every row, retired ones included" 'ag list && for n in $QA $QB $QC; do grep -q "\"name\":\"$n\"" /run/ag.json || exit 1; done'
 cp /etc/subuid /run/subuid.ok
 echo "evil:$((0x70000000)):65536" >> /etc/subuid

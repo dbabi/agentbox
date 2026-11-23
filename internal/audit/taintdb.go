@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	_ "modernc.org/sqlite"
+
+	"agentbox/internal/rootd/accounts"
 )
 
 // taint.db (Appendix E). Taint rows are never deleted, so a subject's epochs never repeat. ops is auditd's own index of
@@ -50,6 +52,52 @@ func openTaintDB(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+// rekeyWorkspaces moves the workspace subjects of earlier releases, keyed by name only (workspace:<name>), to
+// workspace:<name>#<N> (#95). A name goes to the agent that holds it now, the fail-closed choice; a name with no
+// agent keeps its old row, which nothing names again. An op ACKed before the move still binds the old subject, so a
+// pending taint.clear on it is not applied and the workspace stays tainted.
+func rekeyWorkspaces(db *sql.DB, uid func(string) (int, error)) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT subject FROM taint WHERE subject LIKE 'workspace:%' AND instr(subject, '#') = 0
+		UNION SELECT workspace FROM writers WHERE workspace LIKE 'workspace:%' AND instr(workspace, '#') = 0
+		UNION SELECT subject FROM task_subjects WHERE subject LIKE 'workspace:%' AND instr(subject, '#') = 0`)
+	if err != nil {
+		return err
+	}
+	var old []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			rows.Close()
+			return err
+		}
+		old = append(old, s)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, o := range old {
+		name := strings.TrimPrefix(o, "workspace:")
+		u, err := uid(name)
+		if err != nil {
+			continue
+		}
+		n := accounts.WorkspaceSubject(name, u)
+		for _, q := range []string{"UPDATE OR IGNORE taint SET subject=? WHERE subject=?", "UPDATE writers SET workspace=? WHERE workspace=?",
+			"UPDATE OR IGNORE task_subjects SET subject=? WHERE subject=?"} {
+			if _, err := tx.Exec(q, n, o); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
 }
 
 var subjectKinds = []string{"task:", "session:", "workspace:", "ref:", "snap:", "fact:"}

@@ -121,7 +121,7 @@ func TestAgentOps(t *testing.T) {
 	recs = nil
 	rep := call("agent.remove", `{"name":"b"}`)
 	if rep["ok"] != false || rep["code"] != "NESTED_SUBVOLUME" || rep["tainted"] != true || len(recs) != 1 ||
-		recs[0]["type"] != "TAINT" || recs[0]["subject"] != "workspace:b" {
+		recs[0]["type"] != "TAINT" || recs[0]["subject"] != "workspace:b#2" {
 		t.Fatalf("nested: %v, records %v", rep, recs)
 	}
 	if a, err := accounts.Lookup(db, "b"); err != nil || a.N != 2 {

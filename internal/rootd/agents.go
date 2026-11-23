@@ -110,7 +110,7 @@ func (s *server) refuseNested(a accounts.Agent) reply {
 		log.Printf("agent.remove %s: NESTED_SUBVOLUME in %s: %q", a.Name, p, nested)
 		rep := reply{"ok": false, "code": ops.NestedSubvolume.String(), "error": p + " holds nested subvolumes; remove them by hand first",
 			"nested": nested, "tainted": true}
-		if err := s.audit(map[string]any{"type": "TAINT", "subject": "workspace:" + a.Name, "source": "nested_subvolume"}); err != nil {
+		if err := s.audit(map[string]any{"type": "TAINT", "subject": accounts.WorkspaceSubject(a.Name, a.UID()), "source": "nested_subvolume"}); err != nil {
 			log.Printf("agent.remove %s: workspace taint not ACKed: %v", a.Name, err)
 			rep["tainted"] = false
 		}
