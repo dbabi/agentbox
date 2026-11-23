@@ -19,7 +19,8 @@
 #          session-home.
 #          The session can't write, remove or move session-home's settings, which stay byte-for-byte unchanged. The
 #          output filter drops OSC 52, DCS and CSI report requests and keeps SGR. Tasks are blocked while an attach is
-#          live, and task.start refuses. A session that copies its token into the workspace (and into a git object) and then rotates it leaves
+#          live, and task.start refuses. A session that copies its token into the workspace (into a file, a commit that
+#          git gc packs, and a loose object), copies a version that lives 0.5 s (inotify, not the poll, sees it), and then rotates it leaves
 #          tasks blocked with an ntfy alert, a second attach is refused, and rescan lifts the block only once the token
 #          is gone; after a rootd restart a clean rescan keeps it until --ack-restart. Every attach is INTENT, a tainted session writer, RESULT; no session unit is left; the chain verifies.
 # PASS/FAIL lines go to .vm/attach-gate.txt, command output to .vm/attach-gate.log; exit 1 on any FAIL.
@@ -73,7 +74,7 @@ B=/var/lib/agentbox/current/bin/agentbox
 H=/var/lib/agentbox/data/agents/at/session-home
 W=/var/lib/agentbox/data/workspaces/at
 M=/workspace/.gate-m # markers: in the workspace, and /workspace on the host links to it, so one path works on both sides
-TOK=gate-oauth-at-gate-old-$$-AAAAAAAAAAAAAAAAAAAA NEW=gate-oauth-at-gate-new-$$-BBBBBBBBBBBBBBBBBBBB
+TOK=gate-oauth-at-gate-old-$$-AAAAAAAAAAAAAAAAAAAA NEW=gate-oauth-at-gate-new-$$-BBBBBBBBBBBBBBBBBBBB MID=gate-oauth-at-gate-mid-$$-DDDDDDDDDDDDDDDDDDDD
 as() { runuser -u ag-at -- "$@"; }
 markers() { ls $M | tr '\n' ' '; }
 none() { [ -z "$(ls $M)" ]; }
@@ -173,8 +174,10 @@ chown ag-at:ag-at $H/.claude/.credentials.json && chmod 0600 $H/.claude/.credent
 cat > /tmp/gate-in3 <<IN
 cd /workspace && agentbox attach status >/dev/null 2>&1; echo "status-as-agent=\$?"
 cp ~/.claude/.credentials.json notes.json
-sed -n 's/.*accessToken":"\([^"]*\)".*/\1/p' notes.json > gitleak && git add gitleak && git -c user.name=t -c user.email=t@example.com commit -qm leak && git rm -q gitleak && echo committed
+sed -n 's/.*accessToken":"\([^"]*\)".*/\1/p' notes.json > gitleak && git add gitleak && git -c user.name=t -c user.email=t@example.com commit -qm leak && git rm -q gitleak &&
+  git -c gc.auto=0 gc -q && ls .git/objects/pack/*.pack >/dev/null && { echo loose; git show HEAD:gitleak; } | git hash-object -w --stdin >/dev/null && echo committed
 sleep 3
+printf '{"claudeAiOauth":{"accessToken":"$MID"}}\n' > ~/.claude/.credentials.json; cp ~/.claude/.credentials.json mid.json; sleep 0.5
 printf '{"claudeAiOauth":{"accessToken":"$NEW"}}\n' > ~/.claude/.credentials.json
 sleep 3; exit
 IN
@@ -188,16 +191,17 @@ check "  ... a second attach of the same agent is refused while it runs" '! atta
 check "  ... it ends: the scan finds the rotated-away token, tasks stay blocked" 'for i in $(seq 60); do grep -qF "[agentbox] session ended" /tmp/gate-a3 && break; sleep 1; done;
   cat -v /tmp/gate-a3; grep -q committed /tmp/gate-a3 && grep -qF "workspace file(s) hold a session-home token: tasks blocked" /tmp/gate-a3 &&
   [ "$(sed -n "s/.*accessToken\":\"\([^\"]*\)\".*/\1/p" $H/.claude/.credentials.json)" = "$NEW" ]'
-check "  ... the block names notes.json and the git object, never the token" 'B=$B sh /tmp/gate-blocked.sh token_in_workspace &&
-  grep -q "notes.json" /tmp/gate-st && grep -q "\.git/objects/" /tmp/gate-st && ! grep -qF "$TOK" /tmp/gate-st &&
-  ! journalctl -b -o cat | grep -qF "$TOK" && ! grep -rqF "$TOK" /var/lib/agentbox/audit'
+check "  ... the block names notes.json, the packfile git gc wrote, a loose object, and mid.json (a version that lived 0.5 s), never a token" '
+  B=$B sh /tmp/gate-blocked.sh token_in_workspace && grep -q "notes.json" /tmp/gate-st && grep -q "\.git/objects/pack/pack-[0-9a-f]*\.pack" /tmp/gate-st &&
+  grep -q "\.git/objects/[0-9a-f][0-9a-f]/" /tmp/gate-st && grep -q "mid.json" /tmp/gate-st && ! grep -qF "$TOK" /tmp/gate-st && ! grep -qF "$MID" /tmp/gate-st &&
+  ! journalctl -b -o cat | grep -qF -e "$TOK" -e "$MID" && ! grep -rqF -e "$TOK" -e "$MID" /var/lib/agentbox/audit'
 check "  ... an ntfy alert went out on agentbox-alerts" 'journalctl -b -u agentbox-rootd -o cat | grep -q "alert sent: .* hold a session-home token" &&
   python3 -c "import sqlite3,sys; c=sqlite3.connect(\"file:/var/lib/ntfy/cache.db?mode=ro\",uri=True); sys.exit(0 if c.execute(\"select count(*) from messages where topic=\x27agentbox-alerts\x27 and message like \x27%token%\x27\").fetchone()[0] else 1)"'
 check "  ... a later attach is refused while the block stands" '! attach --cli bash </dev/null >/tmp/gate-a4 2>&1 && grep -q "not cleared" /tmp/gate-a4'
 check "rescan keeps the block while the token is in the workspace" '$B attach rescan --agent at | grep -q "\"blocked\":true"'
-as rm -f $W/notes.json
+as rm -f $W/notes.json $W/mid.json
 as git -C $W -c user.name=t -c user.email=t@example.com -c core.hooksPath=/dev/null reset -q --hard HEAD~1
-as git -C $W -c gc.auto=0 reflog expire --expire=now --all; as git -C $W prune --expire=now
+as git -C $W -c gc.auto=0 reflog expire --expire=now --all; as git -C $W gc -q --prune=now
 check "  ... after a rootd restart a clean rescan keeps the block: the rotated-away versions are gone from memory" 'systemctl restart agentbox-rootd &&
   $B attach rescan --agent at > /tmp/gate-rs; cat /tmp/gate-rs; grep -q "\"blocked\":true" /tmp/gate-rs && grep -q -- "--ack-restart" /tmp/gate-rs'
 check "  ... and --ack-restart lifts it once the token is gone from files and objects" '$B attach rescan --agent at --ack-restart | grep -q "\"blocked\":false" &&

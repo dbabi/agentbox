@@ -1,11 +1,14 @@
 package attach
 
 import (
+	"bufio"
 	"bytes"
 	"compress/zlib"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"io/fs"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -102,12 +105,13 @@ func (s *Seen) All() []string {
 	return slices.Clone(s.tokens)
 }
 
-// Watch re-reads the credential files every interval until stop closes, and once more then.
-// shortcut: polling, not inotify; a token that lives for less than one interval can be missed. Use inotify if a CLI
-// ever rotates that fast.
+// Watch re-reads the credential files on each inotify event in their dirs, and every interval as a backstop, until
+// stop closes, and once more then. A version a CLI replaces before rootd reads it after the event is still missed.
 func (s *Seen) Watch(home string, every time.Duration, stop <-chan struct{}) {
 	t := time.NewTicker(every)
 	defer t.Stop()
+	ev, end := credEvents(home)
+	defer end()
 	for {
 		s.Add(Tokens(home))
 		select {
@@ -115,6 +119,10 @@ func (s *Seen) Watch(home string, every time.Duration, stop <-chan struct{}) {
 			s.Add(Tokens(home))
 			return
 		case <-t.C:
+		case _, ok := <-ev:
+			if !ok {
+				ev = nil // inotify failed: the ticker alone
+			}
 		}
 	}
 }
@@ -124,9 +132,10 @@ type Hit struct{ Path string }
 
 // Scan looks for any of tokens in the workspace entries that changed since start (ctime: a session can't set it back):
 // whole file bodies, symlink targets, and the name of every entry (changed or not), including loose git objects,
-// which hold a committed file zlib-compressed. Symlinks are not followed.
-// shortcut: packfiles aren't unpacked; a session that commits the token and runs git gc hides it from this scan. The
-// review diff (§7) covers that until a pack reader lands.
+// which hold a committed file zlib-compressed, and every object in a git packfile (git gc moves loose objects there).
+// Symlinks are not followed.
+// shortcut: a deltified pack object is scanned as its delta's inserted bytes, not rebuilt from its base; a token
+// spliced from copies of base bytes is missed, as an encoded one is anyway. The review diff (§7) is the backstop.
 func Scan(ws string, start time.Time, tokens []string) ([]Hit, error) {
 	if len(tokens) == 0 {
 		return nil, nil
@@ -188,6 +197,14 @@ func Scan(ws string, start time.Time, tokens []string) ([]Hit, error) {
 				}
 			}
 		}
+		if n := packRe.FindStringSubmatch(d.Name()); n != nil {
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				return err
+			}
+			if m.inPack(f, len(n[1])/2) {
+				return hit()
+			}
+		}
 		return nil
 	})
 	return hits, err
@@ -235,6 +252,88 @@ func (m *matcher) in(r io.Reader) (bool, error) {
 		keep := min(len(buf), m.longest-1)
 		buf = append(buf[:0], buf[len(buf)-keep:]...)
 	}
+}
+
+// packRe is a pack's name; its hex is the pack's hash, so its length is the repo's object id length (SHA-1 or SHA-256).
+var packRe = regexp.MustCompile(`^pack-([0-9a-f]{40}|[0-9a-f]{64})\.pack$`)
+
+// inPack inflates each object of a git pack (v2 or v3) and looks for a token in it: a base object's body, or the
+// bytes a delta inserts. A corrupt pack is scanned up to the damage, as git can read no further either.
+func (m *matcher) inPack(r io.Reader, idLen int) bool {
+	br := bufio.NewReaderSize(r, 64<<10) // an io.ByteReader: flate then reads no byte past its stream
+	var h [12]byte
+	if _, err := io.ReadFull(br, h[:]); err != nil || string(h[:4]) != "PACK" {
+		return false
+	}
+	for n := binary.BigEndian.Uint32(h[8:]); n > 0; n-- {
+		c, err := br.ReadByte()
+		typ := c >> 4 & 7
+		for err == nil && c&0x80 != 0 { // the rest of the size
+			c, err = br.ReadByte()
+		}
+		switch {
+		case err != nil:
+			return false
+		case typ == 6: // OFS_DELTA: the base's offset, a varint
+			for c = 0x80; err == nil && c&0x80 != 0; {
+				c, err = br.ReadByte()
+			}
+		case typ == 7: // REF_DELTA: the base's object id
+			_, err = br.Discard(idLen)
+		}
+		if err != nil {
+			return false
+		}
+		z, err := zlib.NewReader(br)
+		if err != nil {
+			return false
+		}
+		var body io.Reader = z
+		if typ >= 6 {
+			body = &literals{r: bufio.NewReader(z)}
+		}
+		if ok, err := m.in(body); ok || err != nil {
+			return ok
+		}
+	}
+	return false
+}
+
+// literals reads the bytes a git delta inserts, without its two sizes and its copy instructions: git cuts an insert
+// into chunks of at most 127 bytes, so a token in the raw delta can be split by an instruction byte.
+type literals struct {
+	r    *bufio.Reader
+	left int // of the current insert
+	hdr  bool
+}
+
+func (l *literals) Read(p []byte) (int, error) {
+	for !l.hdr { // the base's size and the result's, varints
+		for i := 0; i < 2; {
+			c, err := l.r.ReadByte()
+			if err != nil {
+				return 0, err
+			}
+			if c&0x80 == 0 {
+				i++
+			}
+		}
+		l.hdr = true
+	}
+	for l.left == 0 {
+		op, err := l.r.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		if op&0x80 == 0 {
+			l.left = int(op)
+		} else if _, err := l.r.Discard(bits.OnesCount8(op & 0x7f)); err != nil { // a copy: its offset and size bytes
+			return 0, err
+		}
+	}
+	n, err := l.r.Read(p[:min(len(p), l.left)])
+	l.left -= n
+	return n, err
 }
 
 var objRe = regexp.MustCompile(`/objects/[0-9a-f]{2}/[0-9a-f]{38,62}$`)

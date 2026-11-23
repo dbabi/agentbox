@@ -57,7 +57,7 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | A compromised auditd can forge ACKs and mask taint until off-box verification catches it | v2: rootd keeps its own append-only taint record and refuses on regression |
 | Until the broker units land, nothing hides resolved's AF_UNIX interfaces (Varlink socket mode 0666, D-Bus `ResolveHostname`) from the broker uids: nft sees only IP, so a broker process could resolve, and leak data in query names, there | Each broker unit sets `InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket` (§6.1); `TestBrokerUnitsHideResolved` and the rootd gate check it per unit |
 | While the disk is full (below the audit reserve), auditd refuses DENY and other best-effort records with `DISK_FULL`: denials in that window leave no audit record, only the critical disk-full alert | Ship audit off-box |
-| The post-attach token scan polls the credential files and doesn't unpack git packfiles: a token version that lives less than one poll, or one committed and then packed by `git gc`, is missed | inotify on the credential files; scan packed objects (#154) |
+| The post-attach token scan finds a token as written, not encoded, and reads a packed git delta's inserted bytes without rebuilding it from its base: an agent that encodes the token or splices it from copies evades it | The review diff (§7) |
 | Root can always remove confinement: after a root-level flush, brokers are unconfined for up to 60 s, until the next `fwcheck` | |
 | One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late | |
 | Jev egress when enabled | |

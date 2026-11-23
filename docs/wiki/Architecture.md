@@ -356,6 +356,7 @@ Each service runs as its own Linux user, with only the access it needs.
 - rootd relays the session output through a filter.
   The filter drops terminal escape sequences that could write to your clipboard or inject input.
 - When the session ends, rootd scans the workspace for every login token the session held.
+  rootd watches the login files during the session, so a token the CLI rotated away counts too, and the scan reads git objects and packfiles.
   Tasks stay blocked until the scan is clean, and a hit sends an alert.
 - A session has no network yet, so a real login can't reach its servers (issue #90).
 
