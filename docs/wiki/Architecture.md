@@ -347,7 +347,8 @@ Each service runs as its own Linux user, with only the access it needs.
   `session-home` is never mounted into automated tasks.
 - Hooks, MCP servers, git hooks and shell startup files don't run in a session.
   The session can't change its own Claude settings.
-- An attach is refused while the workspace's control files changed since the last attach, until you pass `--ack-control-changes`.
+- An attach is refused while control files changed since the last accepted state, until you pass `--ack-control-changes`.
+  These are the workspace's control files and the instruction files in `session-home`: `~/.claude/CLAUDE.md`, rules, skills, agents and commands, `~/.npmrc` and `~/.local/bin`.
 - An attach and a task of the same agent never run at once.
 - rootd relays the session output through a filter.
   The filter drops terminal escape sequences that could write to your clipboard or inject input.

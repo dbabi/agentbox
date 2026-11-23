@@ -65,8 +65,9 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	defer s.live.Delete(r.Name)
 	unblock := func() { attach.End(s.db, r.Name, id, nil) } // nothing ran: no scan to wait for
 	p := attach.AgentPaths(root, r.Name, id)
-	// the control-path gate (§4.2), after Begin: no task can change the workspace from here on
-	cur, err := attach.Manifest(p.Workspace)
+	// the control-path gate (§4.2), after Begin: no task can change the workspace from here on, and only an attach
+	// writes session-home
+	cur, err := attach.Controls(p)
 	var changed []string
 	if err == nil {
 		changed, err = attach.ControlChanges(s.db, r.Name, cur)
@@ -78,7 +79,7 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 			if len(list) > 50 {
 				list = append(list[:50:50], fmt.Sprintf("... %d more", len(changed)-50))
 			}
-			refuse("workspace control paths changed since the last accepted state: %s; review them, then attach with --ack-control-changes",
+			refuse("workspace or session-home control paths changed since the last accepted state: %s; review them, then attach with --ack-control-changes",
 				strings.Join(list, ", "))
 			return
 		}

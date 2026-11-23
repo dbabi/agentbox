@@ -211,7 +211,6 @@ These are the known risks. They are listed so you can decide where agentbox fits
 **Tasks and interactive sessions**
 
 - All tasks share the host kernel. A kernel exploit escapes the container. The v2 plan is microVM tasks.
-- An interactive session's home persists, and the session can write to it. Instructions it leaves there, such as Claude Code skills or `CLAUDE.md`, load into later sessions without review (issue #153). Hooks, MCP servers and shell startup files stay off.
 - The token scan after a session polls the login files and doesn't read git packfiles. A token that lives for less than one poll, or one committed and then packed by `git gc`, can be missed (issue #154).
 - The milestone 4 gates ran in `none` mode on arm64 UEFI only, with stand-in brokers.
 
