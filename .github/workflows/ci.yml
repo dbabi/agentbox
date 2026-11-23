@@ -21,10 +21,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
-        with: {go-version-file: go.mod, cache: false} # stdlib only: no go.sum to key a cache on
+        with: {go-version-file: go.mod} # caches modules and builds, keyed on go.sum
       # GitHub sets CI=true, so the tests that need these tools fail instead of skipping
-      - run: sudo apt-get update && sudo apt-get install -y minisign xorriso python3-yaml
-      - run: go vet ./... && go test ./...
+      - run: sudo apt-get update && sudo apt-get install -y minisign xorriso python3-yaml qemu-utils
+      # a skip fails the step unless hack/testdata/ci-skips.txt lists it, so a tool missing from the runner shows up
+      - run: go vet ./... && go test -json ./... | go run ./hack/ciskips hack/testdata/ci-skips.txt
+        shell: bash # bash, not the default bash -e: -o pipefail, so a failing go test fails the step
       # the unprivileged run skips the chattr tests; root has CAP_LINUX_IMMUTABLE, so here a skip is a failure
       - name: go test internal/audit as root
         run: |
@@ -49,7 +51,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
-        with: {go-version-file: go.mod, cache: false}
+        with: {go-version-file: go.mod}
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: gofmt
         run: test -z "$(gofmt -l . | tee /dev/stderr)"
@@ -81,7 +83,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
-        with: {go-version-file: go.mod, cache: false}
+        with: {go-version-file: go.mod}
       - run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils swtpm xorriso minisign libslirp-dev libglib2.0-dev pkgconf # hack/vmnet
       # vm.sh falls back to TCG with only a warning; without KVM this job must fail, not run a 70-min TCG gate
       - run: sudo chmod 666 /dev/kvm && test -w /dev/kvm

@@ -1,0 +1,7 @@
+# Tests the unprivileged CI go test may skip: "<package> <test>", or "<package> *" for every test in it. ci.yml fails on
+# any other skip, so a test that starts skipping (a tool missing from the runner) shows up. Each line says why.
+
+# needs the agentbox-powercut image in a podman machine; hack/powercut.sh runs it on the Mac
+agentbox/hack TestPowercutCheck
+# chattr needs CAP_LINUX_IMMUTABLE; the "go test internal/audit as root" step reruns this package and fails on any skip
+agentbox/internal/audit *

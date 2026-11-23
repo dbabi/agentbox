@@ -19,6 +19,8 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+          # off on purpose: the signed build starts from a clean module download checked against go.sum, never from a
+          # cache another workflow run wrote
           cache: false
       - run: sudo apt-get update && sudo apt-get install -y minisign xorriso python3-yaml
       - run: go vet ./... && go test ./...

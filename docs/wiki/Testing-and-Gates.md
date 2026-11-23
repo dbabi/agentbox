@@ -244,7 +244,7 @@ The gate's `uefi` or `bios` argument sets the seed's `--boot` flag, and that pic
 | Firmware | Ubuntu's AAVMF, pinned in `hack/SHA256SUMS`, with Microsoft's keys enrolled | SeaBIOS, QEMU's own |
 | Disk | NVMe | SATA |
 | Watchdog | `softdog` (the VM has no watchdog device) | `i6300esb` |
-| Speed | hardware virtualization | KVM on Linux (the CI design; not run yet). Software emulation (TCG) on a Mac, about five times slower. |
+| Speed | hardware virtualization | KVM on Linux (CI, `none` and `tpm2`, every push to main). Software emulation (TCG) on a Mac, about five times slower. |
 | Extra checks | Secure Boot on, per `mokutil`. shim's revocation check passes for every installed kernel. | The box booted with no EFI. |
 
 The **Secure Boot leg** proves:
@@ -569,11 +569,13 @@ Share only the `.txt` and `.log` files. `.vm/keys`, `.vm/id_vm` and `.vm/gate-se
 
 `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. The `unit` job runs twice, on `ubuntu-26.04` (amd64) and `ubuntu-26.04-arm` (arm64), because the release ships both. The other jobs use `ubuntu-26.04`.
 
-- **`unit`** installs `minisign`, `xorriso` and `python3-yaml`, then runs `go vet ./... && go test ./...`. GitHub sets `CI=true`. So if `minisign`, `dash` or PyYAML were missing, `TestBuild` and `TestRenderedSeedsVerify` would fail instead of skipping.
+- **`unit`** installs `minisign`, `xorriso`, `python3-yaml` and `qemu-utils`, then runs `go vet ./...` and `go test -json ./...` through `hack/ciskips`. GitHub sets `CI=true`. So if `minisign`, `dash` or PyYAML were missing, `TestBuild` and `TestRenderedSeedsVerify` would fail instead of skipping.
+- **`unit`** fails if any test skips that `hack/testdata/ci-skips.txt` does not list. A new test that skips in CI fails until someone lists it, with the reason. `TestGateUnwritten` needs `qemu-img` and `qemu-io`, so it runs in CI.
 - **`unit`** then runs `go test -v ./internal/audit/...` again as root (`sudo env PATH=... GOTOOLCHAIN=...`). The unprivileged run skips the `chattr` tests, because `chattr +a` needs `CAP_LINUX_IMMUTABLE`. The root run covers them, and fails if any test still skips.
 - **`test`** passes only if both `unit` runs passed. It is the check that branch protection requires.
 - **`bios`** runs after `test` passes, on pushes to `main` only. It runs `hack/gate.sh none bios` and `hack/gate.sh tpm2 bios` under KVM, with a 120-minute limit. If `/dev/kvm` is missing, the job fails instead of falling back to slow software emulation.
 - **`fuzz`** (`.github/workflows/fuzz.yml`) runs every night and on manual dispatch. Each fuzz test runs for 5 hours in its own job. A crash fails that job and uploads the crash input as an artifact.
+- Every job but `release` caches Go modules and builds, keyed on `go.sum`. The release build starts from a clean module download.
 - `bios` uploads `.vm/gate-*.txt`, `.vm/gate-*.log`, `.vm/install.log` and `.vm/boot-*.log` as artifacts named `gate-<mode>-bios`, kept for 14 days. It never uploads `.vm/keys` or `.vm/id_vm`.
 
 The `lint` job (gofmt, `go vet`, staticcheck, shellcheck, govulncheck) also runs on every push and pull request. `bios` runs on every push to `main`, weekly and on manual dispatch.
