@@ -146,6 +146,7 @@ EOF
 *) die "unknown scenario $s (install, quota or ntfy)" ;;
 esac; done
 echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
+while running; do sleep 2; done # a gate run next on this disk must not find the box still shutting down
 grep -q '^[0-9:]* FAIL' "$OUT" && { echo "quota-ntfy gate: FAIL; see $OUT"; exit 1; }
 grep -q 'ABORT' "$OUT" && exit 1
 echo "quota-ntfy gate: all checks passed"

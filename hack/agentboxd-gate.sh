@@ -138,6 +138,7 @@ EOF
 *) die "unknown stage $s (install or checks)" ;;
 esac; done
 echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
+while running; do sleep 2; done # a gate run next on this disk must not find the box still shutting down
 grep -q '^[0-9:]* FAIL' "$OUT" && { echo "agentboxd gate: FAIL; see $OUT"; exit 1; }
 grep -q 'ABORT' "$OUT" && exit 1
 echo "agentboxd gate: all checks passed"

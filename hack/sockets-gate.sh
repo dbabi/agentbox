@@ -96,6 +96,7 @@ EOF
 *) die "unknown scenario $s (install or check)" ;;
 esac; done
 echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
+while running; do sleep 2; done # a gate run next on this disk must not find the box still shutting down
 grep -q '^[0-9:]* FAIL' "$OUT" && { echo "sockets gate: FAIL; see $OUT"; exit 1; }
 grep -q 'ABORT' "$OUT" && exit 1
 echo "sockets gate: all checks passed"
