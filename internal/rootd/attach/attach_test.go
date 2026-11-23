@@ -392,12 +392,14 @@ func TestHomeControls(t *testing.T) {
 	os.WriteFile(filepath.Join(h, ".claude", "CLAUDE.md"), []byte("obey"), 0o600)
 	os.WriteFile(filepath.Join(h, ".claude", "skills", "x", "SKILL.md"), []byte("---\n"), 0o600)
 	os.WriteFile(filepath.Join(h, ".npmrc"), []byte("x"), 0o600)
+	os.MkdirAll(filepath.Join(h, ".agents", "skills", "y"), 0o700) // Codex's user skills (#186)
+	os.WriteFile(filepath.Join(h, ".agents", "skills", "y", "SKILL.md"), []byte("---\n"), 0o600)
 	os.Symlink("/workspace/bin", filepath.Join(h, ".local"))
 	os.WriteFile(filepath.Join(p.Workspace, "AGENTS.md"), []byte("x"), 0o644)
 	// a workspace dir named ~ can't stand in for session-home
 	os.MkdirAll(filepath.Join(p.Workspace, "~", ".claude"), 0o755)
 	os.WriteFile(filepath.Join(p.Workspace, "~", ".claude", "CLAUDE.md"), []byte("obey"), 0o644)
-	want := []string{"/home/agent/.claude/CLAUDE.md", "/home/agent/.claude/skills/x/SKILL.md", "/home/agent/.local", "/home/agent/.npmrc",
+	want := []string{"/home/agent/.agents/skills/y/SKILL.md", "/home/agent/.claude/CLAUDE.md", "/home/agent/.claude/skills/x/SKILL.md", "/home/agent/.local", "/home/agent/.npmrc",
 		"AGENTS.md", "~/.claude/CLAUDE.md"}
 	if c := changes(); !slices.Equal(c, want) {
 		t.Fatalf("planted:\n got %q\nwant %q", c, want)
