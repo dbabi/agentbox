@@ -121,7 +121,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 - A crash input lands in its package's `testdata/fuzz/<test>/`. Commit it with the fix, so it stays a regression test.
 - On a Mac, `caffeinate -i` keeps the machine from idle sleep. Keep it on power with the lid open.
 
-The `fuzz` workflow in CI runs each fuzz test for 5 hours, every night, in its own job, 8 jobs at a time. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
+The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 49 tests take about 22 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
 
 ### The 24 h gate
 
@@ -130,7 +130,7 @@ PLAN milestone row 4 asks for "24 h of fuzzing, no crash". It passes at a commit
 - Every test that `hack/fuzz-all.sh -l` lists has fuzzed for at least 24 CPU-hours (86400 CPU seconds) in total, over runs at that commit, with the corpus carried from each run to the next.
 - No run at that commit crashed.
 
-Runs that count are `hack/fuzz-all.sh` runs whose `summary.txt` names the commit, with no `-dirty` suffix, and nightly `fuzz` jobs at the commit. A nightly job runs 4 workers for 5 hours, about 20 CPU-hours. A local run with one worker per test adds about 1 CPU-hour per hour.
+Runs that count are `hack/fuzz-all.sh` runs whose `summary.txt` names the commit, with no `-dirty` suffix, and nightly `fuzz` jobs at the commit. A nightly job runs 4 workers for 3 hours, about 12 CPU-hours. A local run with one worker per test adds about 1 CPU-hour per hour.
 
 No commit has met the gate yet.
 
@@ -589,7 +589,7 @@ Share only the `.txt` and `.log` files. `.vm/keys`, `.vm/id_vm` and `.vm/gate-se
 - **`test`** passes only if both `unit` runs passed. It is the check that branch protection requires.
 - **`bios`** runs after `test` passes, on pushes to `main` only. It runs `hack/gate.sh none bios` and `hack/gate.sh tpm2 bios` under KVM, with a 120-minute limit. If `/dev/kvm` is missing, the job fails instead of falling back to slow software emulation.
 - **`host-gates`** (`.github/workflows/host-gates.yml`) runs every Saturday, on manual dispatch, and on a pull request that changes it. On `ubuntu-26.04` under KVM, it installs one amd64 BIOS box with `hack/sockets-gate.sh bios install check`. Then it runs the registry, agentboxd, firewall, audit, rootd and quota-ntfy gates' checks on that box. A failing gate does not stop the next one. It uploads `.vm/*-gate.txt` and `.vm/*-gate.log` as the `host-gates-amd64-bios` artifact.
-- **`fuzz`** (`.github/workflows/fuzz.yml`) runs every night and on manual dispatch. Each fuzz test runs for 5 hours in its own job, at most 8 jobs at a time, so pull request CI still gets runners. Each job carries its test's corpus to the next night in the Actions cache. A crash fails that job and uploads the crash input as an artifact.
+- **`fuzz`** (`.github/workflows/fuzz.yml`) runs every night and on manual dispatch. Each fuzz test runs for 3 hours in its own job, at most 8 jobs at a time, so pull request CI still gets runners. A run fits in a day, and a concurrency group makes a late run wait for the one before it. Each job carries its test's corpus to the next night in the Actions cache. A crash fails that job and uploads the crash input as an artifact.
 - Every job but `release` caches Go modules and builds, keyed on `go.sum`. The release build starts from a clean module download.
 - `bios` uploads `.vm/gate-*.txt`, `.vm/gate-*.log`, `.vm/install.log` and `.vm/boot-*.log` as artifacts named `gate-<mode>-bios`, kept for 14 days. It never uploads `.vm/keys` or `.vm/id_vm`.
 

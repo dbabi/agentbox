@@ -1,4 +1,4 @@
-# PLAN milestone row 4: fuzzers for every parser. Nightly, each target fuzzes 5 h in its own job; a crash fails that job
+# PLAN milestone row 4: fuzzers for every parser. Nightly, each target fuzzes 3 h in its own job; a crash fails that job
 # and uploads the crasher. Commit it to the package's testdata/fuzz/<target>/ with the fix. Each job restores the
 # target's corpus from the last run and saves it again, so the nights add up toward the 24 h gate
 # (docs/wiki/Testing-and-Gates.md, "The 24 h gate").
@@ -10,7 +10,11 @@ on:
     inputs:
       fuzztime:
         description: go test -fuzztime per target
-        default: 5h
+        default: 3h
+# a run that outlasts a day must not overlap the next one: that would hold twice the runners (hack TestFuzzWorkflowDay)
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:
@@ -31,10 +35,12 @@ jobs:
     needs: targets
     name: ${{ matrix.target }}
     runs-on: ubuntu-26.04
-    timeout-minutes: 340 # 5 h of fuzzing plus the build, under the hosted runner's 6 h cap
+    timeout-minutes: 200 # 3 h of fuzzing plus the build
     strategy:
       fail-fast: false
-      max-parallel: 8 # a Free plan runs 20 hosted jobs at once; 45 fuzz jobs would hold PR CI back for hours
+      # a Free plan runs 20 hosted jobs at once; 49 fuzz jobs would hold PR CI back for hours. ceil(targets / 8) waves of
+      # FUZZTIME plus the build fit in 24 h (hack TestFuzzWorkflowDay)
+      max-parallel: 8
       matrix:
         include: ${{ fromJSON(needs.targets.outputs.matrix) }}
     steps:
@@ -57,7 +63,7 @@ jobs:
         env:
           PKG: ${{ matrix.pkg }}
           TARGET: ${{ matrix.target }}
-          FUZZTIME: ${{ inputs.fuzztime || '5h' }}
+          FUZZTIME: ${{ inputs.fuzztime || '3h' }}
           DIR: ${{ steps.corpus.outputs.dir }}
           GOMEMLIMIT: 3GiB # a standard runner has 16 GB: go test plus its 4 workers stay under it
         run: |

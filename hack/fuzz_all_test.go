@@ -120,3 +120,44 @@ esac`,
 		}
 	}
 }
+
+// #185: the nightly fuzz run fits in a day, so runs don't overlap: ceil(targets / max-parallel) waves of the default
+// FUZZTIME plus 15 min each for the build and queueing, and a concurrency group queues a run that is late anyway.
+func TestFuzzWorkflowDay(t *testing.T) {
+	y, err := os.ReadFile("../.github/workflows/fuzz.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	find := func(re string) string {
+		m := regexp.MustCompile(re).FindSubmatch(y)
+		if m == nil {
+			t.Fatalf("fuzz.yml has no match for %s", re)
+		}
+		return string(m[1])
+	}
+	if find(`(?m)^concurrency:\n  group: (\S+)\n  cancel-in-progress: false$`) != "fuzz" {
+		t.Fatal("no fuzz concurrency group")
+	}
+	par, _ := strconv.Atoi(find(`(?m)^\s+max-parallel: (\d+)`))
+	def := find(`(?m)^\s+default: (\d+h)$`)
+	if env := find(`FUZZTIME: \$\{\{ inputs\.fuzztime \|\| '(\d+h)' \}\}`); env != def {
+		t.Fatalf("FUZZTIME default %s, input default %s", env, def)
+	}
+	hours, _ := strconv.Atoi(strings.TrimSuffix(def, "h"))
+	n := 0
+	filepath.WalkDir("..", func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() && strings.HasPrefix(d.Name(), ".") && p != ".." {
+			return filepath.SkipDir
+		}
+		if strings.HasSuffix(p, "_test.go") {
+			b, _ := os.ReadFile(p)
+			n += len(regexp.MustCompile(`(?m)^func Fuzz\w*\(\w+ \*testing\.F\)`).FindAll(b, -1))
+		}
+		return nil
+	})
+	waves := (n + par - 1) / par
+	t.Logf("%d targets, %d at a time, %d h each: %d waves", n, par, hours, waves)
+	if n == 0 || par == 0 || waves*(hours*60+15) > 24*60 {
+		t.Fatalf("%d targets, %d at a time, %d h each: %d waves take over 24 h", n, par, hours, waves)
+	}
+}
