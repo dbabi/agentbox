@@ -367,6 +367,9 @@ Each service runs as its own Linux user, with only the access it needs.
   The session can't change its own Claude settings.
 - An attach is refused while control files changed since the last accepted state, until you pass `--ack-control-changes`.
   These are the workspace's control files and the instruction files in `session-home`: `~/.claude/CLAUDE.md`, rules, skills, agents and commands, Codex's skills and plugins in `~/.agents`, `~/.npmrc` and `~/.local/bin`.
+  The workspace's control files include every git dir, bare repos and the dir a `commondir` file names among them, and every Python venv, the workspace root included.
+  A `.git` file that names a git dir in `session-home` refuses the attach, since a session could change that dir unseen.
+  Tasks and sessions run git with `safe.bareRepository=explicit`, so git finds no bare repo by itself.
 - An attach and a task of the same agent never run at once.
 - rootd relays the session output through a filter.
   The filter drops terminal escape sequences that could write to your clipboard or inject input.

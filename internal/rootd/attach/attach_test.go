@@ -502,3 +502,26 @@ func TestManifestRoots(t *testing.T) {
 		t.Fatalf("manifest %q, want %q", got, want)
 	}
 }
+
+// #182: a root venv, a commondir target and a bare repo need an ack, their objects don't; a git dir in session-home
+// refuses the attach.
+func TestManifestContentRoots(t *testing.T) {
+	ws := t.TempDir()
+	for f, b := range map[string]string{"pyvenv.cfg": "", "bin/python": "", "lib/m.py": "", "wt/.git": "gitdir: ../meta\n", "meta/commondir": "../common",
+		"meta/HEAD": "", "common/config": "", "common/objects/ab": "o", "b/HEAD": "", "b/config": "", "b/objects/cd": "o", "b/refs/heads/main": ""} {
+		os.MkdirAll(filepath.Join(ws, filepath.Dir(f)), 0o755)
+		os.WriteFile(filepath.Join(ws, f), []byte(b), 0o644)
+	}
+	m, err := Manifest(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := slices.Sorted(maps.Keys(m))
+	if want := []string{"b/config", "bin/python", "common/config", "meta/commondir", "pyvenv.cfg", "wt/.git"}; !slices.Equal(got, want) {
+		t.Fatalf("manifest %q, want %q", got, want)
+	}
+	os.WriteFile(filepath.Join(ws, "wt", ".git"), []byte("gitdir: /home/agent/g\n"), 0o644)
+	if _, err := Controls(Paths{Workspace: ws, SessionHome: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "session-home") {
+		t.Fatalf("a gitdir in session-home: %v", err)
+	}
+}

@@ -6,6 +6,7 @@ package controlpaths
 
 import (
 	"bytes"
+	"fmt"
 	"path"
 	"slices"
 	"strings"
@@ -21,8 +22,13 @@ var (
 	Files = []string{".mcp.json", "CLAUDE.md", "AGENTS.md", ".envrc", "opencode.json", "opencode.jsonc"}
 )
 
-// Workspace is the workspace's path inside a task or session, which an absolute gitdir: line names.
-const Workspace = "/workspace"
+// Workspace is the workspace's path inside a task or session, which an absolute gitdir: line names. Home is
+// session-home's path in an attach: it persists and a session can write it, so a git dir there could change after its
+// .git file was acked, and FindRoots refuses one.
+const (
+	Workspace = "/workspace"
+	Home      = "/home/agent"
+)
 
 // Is reports whether a workspace-relative, slash-separated path is a control path by its name alone.
 func Is(p string) bool {
@@ -46,8 +52,9 @@ func Changed(changed []string) []string {
 	return out
 }
 
-// Roots are the workspace dirs that are control paths by content, not by name: each venv (a dir holding pyvenv.cfg,
-// whatever its name) and each git dir a .git file points at.
+// Roots are the dirs that are control paths by content, not by name: each venv (a dir holding pyvenv.cfg, whatever its
+// name, the workspace root included), each git dir a .git or commondir file names, and each bare repo (a dir holding
+// HEAD, objects/ and refs/). They are workspace-relative; "." is the root.
 type Roots struct{ Venvs, GitDirs []string }
 
 // Is reports whether p is a control path by name or under a root: in a venv its pyvenv.cfg, bin/ (the interpreter
@@ -57,7 +64,7 @@ func (r Roots) Is(p string) bool {
 		return true
 	}
 	for _, v := range r.Venvs {
-		if rest, ok := under(p, v); ok && (rest == "pyvenv.cfg" || rest == "bin" || strings.HasPrefix(rest, "bin/") || strings.HasSuffix(rest, ".pth")) {
+		if rest, ok := Under(p, v); ok && (rest == "pyvenv.cfg" || rest == "bin" || strings.HasPrefix(rest, "bin/") || strings.HasSuffix(rest, ".pth")) {
 			return true
 		}
 	}
@@ -67,61 +74,97 @@ func (r Roots) Is(p string) bool {
 // GitDir returns the git dir root that p is inside, or "".
 func (r Roots) GitDir(p string) string {
 	for _, g := range r.GitDirs {
-		if _, ok := under(p, g); ok {
+		if _, ok := Under(p, g); ok {
 			return g
 		}
 	}
 	return ""
 }
 
-func under(p, root string) (string, bool) {
+// Under returns p's path below root, if p is below it. Root "." is the whole workspace.
+func Under(p, root string) (string, bool) {
+	if root == "." {
+		return p, p != "" && p != "."
+	}
 	rest, ok := strings.CutPrefix(p, root+"/")
 	return rest, ok && rest != ""
 }
 
-// FindRoots walks the workspace dir ws for Roots. Symlinks are not followed; a gitdir outside the workspace is
-// not one (the task can't write there).
+// FindRoots walks the workspace dir ws for Roots. Symlinks are not followed. A git dir outside the workspace is not
+// one (the task can't write there, or it doesn't persist), except under Home: FindRoots fails on that.
 func FindRoots(ws string) (Roots, error) {
 	var r Roots
+	common := map[string][]byte{} // dir: the commondir file in it
+	head, objects, refs := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	read := func(e wsfs.Entry) ([]byte, error) {
+		f, err := e.Open()
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		return f.ReadAll(4096)
+	}
 	err := wsfs.Walk(ws, func(e wsfs.Entry) error {
+		dir := path.Dir(e.Rel)
 		switch {
+		case e.IsDir() && e.Name == "objects":
+			objects[dir] = true
+		case e.IsDir() && e.Name == "refs":
+			refs[dir] = true
 		case !e.Mode.IsRegular():
+		case e.Name == "HEAD":
+			head[dir] = true
 		case e.Name == "pyvenv.cfg":
-			r.Venvs = append(r.Venvs, path.Dir(e.Rel))
+			r.Venvs = append(r.Venvs, dir)
 		case e.Name == ".git":
-			f, err := e.Open()
-			if err != nil {
-				return err
+			b, err := read(e)
+			if t, ok := bytes.CutPrefix(bytes.TrimSpace(b), []byte("gitdir:")); err == nil && ok {
+				return r.add(string(t), e.Rel, dir)
 			}
-			b, err := f.ReadAll(4096)
-			f.Close()
-			if g := gitdir(b, path.Dir(e.Rel)); err == nil && g != "" {
-				r.GitDirs = append(r.GitDirs, g)
+		case e.Name == "commondir":
+			if b, err := read(e); err == nil {
+				common[dir] = b
 			}
 		}
 		return nil
 	})
+	// a bare repo: git finds it from a cwd inside it (safe.bareRepository is explicit only in tasks and attach)
+	for d := range head {
+		if objects[d] && refs[d] && !Is(d) {
+			r.GitDirs = append(r.GitDirs, d)
+		}
+	}
+	// git reads config, hooks and info from the dir a git dir's commondir names
+	for d, b := range common {
+		if err == nil && (Is(d) || slices.Contains(r.GitDirs, d) || r.GitDir(d) != "") {
+			err = r.add(string(b), path.Join(d, "commondir"), d)
+		}
+	}
 	return r, err
 }
 
-// gitdir parses a .git file's body, in the workspace dir dir, and returns the workspace-relative dir it names.
-func gitdir(b []byte, dir string) string {
-	t, ok := bytes.CutPrefix(bytes.TrimSpace(b), []byte("gitdir:"))
-	if !ok {
-		return ""
+// add records the git dir that g, a path the git file file in the workspace dir dir names, points at.
+func (r *Roots) add(g, file, dir string) error {
+	g = strings.TrimSpace(g)
+	if g == "" {
+		return nil
 	}
-	g := string(bytes.TrimSpace(t))
 	if path.IsAbs(g) {
-		rest, ok := strings.CutPrefix(path.Clean(g), Workspace+"/")
-		if !ok {
-			return ""
+		g = path.Clean(g) + "/"
+		if strings.HasPrefix(g, Home+"/") {
+			return fmt.Errorf("%s names %s, a git dir in session-home, which a session can change unseen: point it into the workspace", file, path.Clean(g))
 		}
-		g = rest
+		rest, ok := strings.CutPrefix(g, Workspace+"/")
+		if !ok {
+			return nil
+		}
+		g = path.Clean("./" + rest)
 	} else {
 		g = path.Join(dir, g)
 	}
-	if g == "." || g == ".." || strings.HasPrefix(g, "../") {
-		return ""
+	if g == ".." || strings.HasPrefix(g, "../") || Is(g) {
+		return nil // outside the workspace, or a control path by name already
 	}
-	return g
+	r.GitDirs = append(r.GitDirs, g)
+	return nil
 }

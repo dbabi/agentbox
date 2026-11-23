@@ -29,11 +29,12 @@ var gitInert = []string{"objects", "logs", "refs", "index", "HEAD", "ORIG_HEAD",
 
 func inertGit(rel string, r controlpaths.Roots) bool {
 	segs := strings.Split(rel, "/")
-	i := slices.Index(segs, ".git")
-	if g := r.GitDir(rel); i < 0 && g != "" {
-		i = strings.Count(g, "/") // a git dir a .git file names has the same inert entries
+	if i := slices.Index(segs, ".git"); i >= 0 {
+		return i+1 < len(segs) && slices.Contains(gitInert, segs[i+1])
 	}
-	return i >= 0 && i+1 < len(segs) && slices.Contains(gitInert, segs[i+1])
+	// a git dir found by content has the same inert entries
+	rest, ok := controlpaths.Under(rel, r.GitDir(rel))
+	return r.GitDir(rel) != "" && ok && slices.Contains(gitInert, strings.SplitN(rest, "/", 2)[0])
 }
 
 // HomePaths are the session-home paths a CLI loads as instructions or runs from (#153): Claude's, Codex's user skills
