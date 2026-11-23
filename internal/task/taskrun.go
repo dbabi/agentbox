@@ -133,7 +133,7 @@ func (r *Runner) Setup() error {
 }
 
 // Taskrun is the container's PID 1 (§4.2): set up HOME, clean the env and start the forwarders, fetch the task, probe
-// the isolation from inside, run the CLI with the prompt on stdin, post the result. SIGTERM (the unit stopping) goes on to the CLI's process group; systemd SIGKILLs the rest after
+// the isolation from inside and tell the gate it passed, run the CLI with the prompt on stdin, post the result. SIGTERM (the unit stopping) goes on to the CLI's process group; systemd SIGKILLs the rest after
 // TimeoutStopSec, and the payload is inside the unit's cgroup.
 func Taskrun() int {
 	dl, _ := strconv.ParseInt(os.Getenv("AGENTBOX_DEADLINE"), 10, 64)
@@ -166,6 +166,11 @@ func Taskrun() int {
 	}
 	argv, err := CLIArgv(job.CLI)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "taskrun:", err)
+		return 1
+	}
+	// from here on the gate takes no probe failure: only the CLI could send one
+	if err := r.Call("task.probed", map[string]any{}, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "taskrun:", err)
 		return 1
 	}

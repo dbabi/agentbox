@@ -206,6 +206,19 @@ func TestDispatchFetchResult(t *testing.T) {
 	if last := sent[len(sent)-1]; last["reason"] != "failed" || last["probe"] != "route" {
 		t.Fatalf("task.stop: %v", last)
 	}
+	// #183: once taskrun said the probe passed, the CLI runs, so a probe failure is forged: the task fails, no alert
+	if r := call(t, s, tk, `{"jsonrpc":"2.0","id":5,"method":"task.probed","params":{"x":1}}`); r.Error == nil {
+		t.Fatal("task.probed takes no params")
+	}
+	if r := call(t, s, tk, `{"jsonrpc":"2.0","id":6,"method":"task.probed","params":{}}`); r.Error != nil {
+		t.Fatalf("task.probed: %+v", r)
+	}
+	if r := call(t, s, tk, `{"jsonrpc":"2.0","id":7,"method":"task.result","params":{"exit":0,"output":"","outputLen":0,"probe":"route","probeMs":3}}`); r.Error != nil || r.Result["stopped"] != "failed" {
+		t.Fatalf("forged probe result: %+v", r)
+	}
+	if last := sent[len(sent)-1]; last["op"] != "task.stop" || last["reason"] != "failed" || last["probe"] != nil {
+		t.Fatalf("task.stop after task.probed: %v", last)
+	}
 }
 
 // After a restart, every live task rootd lists gets its socket back, provenance chain included.

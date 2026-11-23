@@ -101,7 +101,8 @@ func (p *Probe) route() error {
 	return nil
 }
 
-// connect: a connect to a public IP fails with ENETUNREACH.
+// connect: a connect to a public IP fails with ENETUNREACH. With IPv6 off (ipv6.disable=1) there is no AF_INET6, so
+// the IPv6 address gives EAFNOSUPPORT, which is no way out either.
 func (p *Probe) connect() error {
 	dial := p.Dial
 	if dial == nil {
@@ -114,7 +115,11 @@ func (p *Probe) connect() error {
 		}
 	}
 	for _, a := range publicIPs {
-		if err := dial("udp", a); !errors.Is(err, syscall.ENETUNREACH) {
+		err := dial("udp", a)
+		if a[0] == '[' && errors.Is(err, syscall.EAFNOSUPPORT) {
+			continue
+		}
+		if !errors.Is(err, syscall.ENETUNREACH) {
 			return fmt.Errorf("connect %s: %v, want ENETUNREACH", a, err)
 		}
 	}
