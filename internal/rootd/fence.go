@@ -11,6 +11,7 @@ import (
 
 	"agentbox/internal/denial"
 	"agentbox/internal/rootd/accounts"
+	"agentbox/internal/rootd/quota"
 )
 
 // checkQuota is the qgroup monitor (#79), on rootd's timer and on the admin op quota.check. Inconsistent qgroups mean
@@ -109,4 +110,24 @@ func (s *server) fenceDeny(op string) reply {
 	d := denial.New(denial.Busy, "floor", "floor.quota_fence", op, "", "")
 	log.Printf("DENY by=floor op=%s code=%s rule=%s id=%s", d.Op, d.Code, d.Rule, d.ID)
 	return reply{"ok": false, "reason": "quota_fence", "error": "qgroups are inconsistent: writing ops wait for the rescan", "denial": d}
+}
+
+// checkedDelete runs a qgroup check after each subvolume delete (#79): the kernel drops the tree, and may mark qgroups
+// inconsistent, only after the delete returns, so the check waits for `btrfs subvolume sync` first.
+type checkedDelete struct {
+	Btrfs
+	check func() (bool, error)
+}
+
+func (c checkedDelete) Delete(p string) error {
+	err := c.Btrfs.Delete(p)
+	if err == nil {
+		go func() {
+			if _, err := quota.Run("btrfs", "subvolume", "sync", filepath.Dir(p)); err != nil {
+				log.Printf("quota: subvolume sync after deleting %s: %v", p, err)
+			}
+			c.check()
+		}()
+	}
+	return err
 }

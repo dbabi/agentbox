@@ -204,6 +204,9 @@ func Run(cfg Config) error {
 	if cfg.Tasks.EgressDir == "" {
 		cfg.Tasks.EgressDir = cfg.EgressDir
 	}
+	if cfg.Tasks.Btrfs != nil {
+		cfg.Tasks.Btrfs = checkedDelete{cfg.Tasks.Btrfs, s.checkQuota}
+	}
 	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, alert: cfg.Alert, nested: s.nested, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
 	s.tasks.reopenWitnesses()
 	s.tasks.resume()
@@ -473,7 +476,7 @@ func (s *server) admin(r request, p peer) reply {
 		if s.tasks == nil {
 			return fail("bad_request")
 		}
-		if rep := s.fenceDeny(r.Op); r.Op == "task.new" && rep != nil {
+		if rep := s.fenceDeny(r.Op); (r.Op == "task.new" || r.Op == "task.undo") && rep != nil {
 			return rep
 		}
 		return s.taskAdmin(r, p)

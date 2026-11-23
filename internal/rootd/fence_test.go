@@ -50,7 +50,7 @@ func TestQuotaFence(t *testing.T) {
 		t.Fatalf("inconsistent, rescan fails: fenced %v %v, freeze %q", f, err, frozen())
 	}
 	if !busy(s.taskOp(write)) || !busy(s.handle(sockGate, peer{}, request{Op: "task.start", Task: "T1", Agent: "claude"})) ||
-		!busy(s.admin(request{Op: "task.new", Agent: "claude"}, peer{})) {
+		!busy(s.admin(request{Op: "task.new", Agent: "claude"}, peer{})) || !busy(s.admin(request{Op: "task.undo", Task: "T1"}, peer{})) {
 		t.Fatal("writing ops not refused BUSY while fenced")
 	}
 	if d, _ := s.taskOp(request{Op: "task.op", Name: "disk.usage", Task: "T1", Agent: "claude", Args: json.RawMessage(`{}`)})["denial"].(denial.Denial); d.Rule != "floor.not_built" {
@@ -81,5 +81,23 @@ func TestQuotaFence(t *testing.T) {
 	s.fenced.Store(true) // rootd's start: the first consistent check thaws a freeze a dead rootd left
 	if f, _ := s.checkQuota(); f || frozen() != "0" {
 		t.Fatalf("start: fenced %v, freeze %q", f, frozen())
+	}
+}
+
+type fakeDelete struct{ Btrfs }
+
+func (fakeDelete) Delete(string) error { return nil }
+
+// #79: a subvolume delete (a snapshot prune, an undo) is followed by a qgroup check.
+func TestCheckedDeleteChecks(t *testing.T) {
+	done := make(chan struct{})
+	d := checkedDelete{fakeDelete{}, func() (bool, error) { close(done); return false, nil }}
+	if err := d.Delete(filepath.Join(t.TempDir(), "snap")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no check after the delete")
 	}
 }
