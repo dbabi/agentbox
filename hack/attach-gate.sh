@@ -22,7 +22,10 @@
 #          live, and task.start refuses. A session that copies its token into the workspace (into a file, a commit that
 #          git gc packs, and a loose object), copies a version that lives 0.5 s (inotify, not the poll, sees it), and then rotates it leaves
 #          tasks blocked with an ntfy alert, a second attach is refused, and rescan lifts the block only once the token
-#          is gone; after a rootd restart a clean rescan keeps it until --ack-restart. Every attach is INTENT, a tainted session writer, RESULT; no session unit is left; the chain verifies.
+#          is gone; after a rootd restart a clean rescan keeps it until --ack-restart. A hostile workspace (links to
+#          /etc/shadow, rootd.db and a token file outside, a symlinked .claude/, FIFOs, a 2 GiB sparse go.sum and
+#          CLAUDE.md) and a session-home credential file linked outside: the control-path gate names the link, not
+#          what is behind it, and the attach and its token scan finish clean within 120 s (#107). Every attach is INTENT, a tainted session writer, RESULT; no session unit is left; the chain verifies.
 # PASS/FAIL lines go to .vm/attach-gate.txt, command output to .vm/attach-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -206,6 +209,25 @@ check "  ... after a rootd restart a clean rescan keeps the block: the rotated-a
   $B attach rescan --agent at > /tmp/gate-rs; cat /tmp/gate-rs; grep -q "\"blocked\":true" /tmp/gate-rs && grep -q -- "--ack-restart" /tmp/gate-rs'
 check "  ... and --ack-restart lifts it once the token is gone from files and objects" '$B attach rescan --agent at --ack-restart | grep -q "\"blocked\":false" &&
   $B attach status | grep -qF "\"blocks\":[]"'
+# #107: a hostile workspace and session-home. Every root-side reader refuses or caps: none blocks or reads outside.
+# OTOK is only outside the tree, behind links, and in one plain workspace file: a reader that followed a link to it
+# would make the scan hit that file. The session touches the fixture, so the end-of-attach scan reads all of it, for
+# CTOK: a real session-home token (Codex's), so the scan has one to look for, which is in no workspace file.
+O=/var/lib/agentbox-gate-outside OTOK=gate-oauth-at-gate-out-$$-EEEEEEEEEEEEEEEEEEEE CTOK=gate-codex-at-gate-$$-FFFFFFFFFFFFFFFFFFFF
+HF="shadow approvers.db approvers .claude package-lock.json sub go.sum CLAUDE.md out-copy"
+mkdir -p $O/claude && printf '{"claudeAiOauth":{"accessToken":"%s"}}\n' $OTOK > $O/approvers && cp $O/approvers $O/claude/outside-only.json
+mv $W/.claude $W/.claude.gate && (cd $W && ln -s /etc/shadow shadow && ln -s /var/lib/agentbox/rootd.db approvers.db && ln -s $O/approvers approvers &&
+  ln -s $O/claude .claude && mkdir sub && mkfifo package-lock.json sub/.mcp.json && truncate -s 2G go.sum CLAUDE.md && echo $OTOK > out-copy &&
+  chown -hR ag-at:ag-at $HF) && ln -sf $O/approvers $H/.claude/.credentials.json &&
+  mkdir -p $H/.codex && printf '{"tokens":{"access_token":"%s"}}\n' $CTOK > $H/.codex/auth.json && chown -h ag-at:ag-at $H/.codex $H/.codex/auth.json $H/.claude/.credentials.json
+printf 'cd /workspace && touch go.sum CLAUDE.md out-copy package-lock.json sub/.mcp.json && touch -h shadow approvers approvers.db .claude; echo "touched=$?"\nexit\n' > /tmp/gate-h-in
+check "hostile workspace: attach is refused naming the .claude link, the FIFO .mcp.json and the 2 GiB CLAUDE.md, nothing behind the link" '! attach --cli bash </dev/null >/tmp/gate-h0 2>&1; cat /tmp/gate-h0;
+  grep -q "control paths changed" /tmp/gate-h0 && grep -qE "[ :,]\.claude[,;]" /tmp/gate-h0 && grep -qE "[ :,]sub/\.mcp\.json[,;]" /tmp/gate-h0 &&
+  grep -qE "[ :,]CLAUDE\.md[,;]" /tmp/gate-h0 && ! grep -q "outside-only" /tmp/gate-h0'
+check "  ... with the ack the session touches it all, and the token scan is clean within 120 s: no link or FIFO was followed or blocked on, no 2 GiB file read whole" '
+  s=$(date +%s); typed /tmp/gate-h-in | attach --cli bash --ack-control-changes >/tmp/gate-h1 2>&1; e=$(( $(date +%s) - s )); cat -v /tmp/gate-h1; echo "took ${e}s";
+  grep -q "touched=0" /tmp/gate-h1 && grep -qF "[agentbox] session ended; token scan: clean, tasks may start" /tmp/gate-h1 && [ $e -lt 120 ]'
+(cd $W && rm -rf $HF) && rm -f $H/.claude/.credentials.json $H/.codex/auth.json && mv $W/.claude.gate $W/.claude && rm -rf $O
 check "the agent can't use rootd-admin.sock" 'grep -q "status-as-agent=1" /tmp/gate-a3'
 check "audit: each attach is an INTENT, a tainted session writer of workspace:at#<N>, a WRITER_DEL and a RESULT" '
   cat /var/lib/agentbox/audit/seg-*.jsonl > /tmp/gate-audit && [ "$(grep -c "\"name\":\"agent.attach\"" /tmp/gate-audit)" -ge 3 ] &&

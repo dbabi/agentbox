@@ -9,14 +9,14 @@ import (
 	"io"
 	"io/fs"
 	"math/bits"
-	"os"
-	"path/filepath"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"agentbox/internal/wsfs"
 )
 
 // CredFiles are the session-home files that hold subscription logins (§4.3): Claude's OAuth tokens and Codex's.
@@ -31,7 +31,7 @@ var tokenKey = regexp.MustCompile(`(?i)token|key`)
 func Tokens(home string) []string {
 	var out []string
 	for _, f := range CredFiles {
-		b, err := readNoFollow(home, f, 1<<20)
+		b, err := wsfs.ReadFile(home, f, 1<<20)
 		if err != nil {
 			continue
 		}
@@ -58,28 +58,6 @@ func collect(v any, keyed bool, out *[]string) {
 			*out = append(*out, t)
 		}
 	}
-}
-
-// readNoFollow reads rel under dir without following a symlink in any component below dir.
-func readNoFollow(dir, rel string, max int64) ([]byte, error) {
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-	fi, err := root.Lstat(rel)
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fs.ErrInvalid
-	}
-	f, err := root.Open(rel)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return io.ReadAll(io.LimitReader(f, max))
 }
 
 // Seen is every token version a session-home held during one attach (the issue's rotation case: a CLI refreshes its
@@ -143,65 +121,57 @@ func Scan(ws string, start time.Time, tokens []string) ([]Hit, error) {
 	since := start.Add(-time.Second) // the kernel stamps ctime from a coarse clock, up to a tick behind time.Now
 	m := newMatcher(tokens)
 	var hits []Hit
-	err := filepath.WalkDir(ws, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(ws, p)
+	err := wsfs.Walk(ws, func(e wsfs.Entry) error {
+		rel := e.Rel
 		hit := func() error { hits = append(hits, Hit{rel}); return nil }
-		if m.has([]byte(d.Name())) {
+		if rel != "." && m.has([]byte(e.Name)) {
 			// the hit names the entry's dir, never the name itself; nothing under a named dir is listed either
-			hits = append(hits, Hit{filepath.Join(filepath.Dir(rel), "(an entry named with a token)")})
-			if d.IsDir() {
-				return filepath.SkipDir
+			hits = append(hits, Hit{path.Join(path.Dir(rel), "(an entry named with a token)")})
+			if e.IsDir() {
+				return fs.SkipDir
 			}
 			return nil
 		}
-		t := d.Type()
-		if !t.IsRegular() && t&fs.ModeSymlink == 0 {
-			return nil
-		}
-		fi, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if st, ok := fi.Sys().(*syscall.Stat_t); ok && ctime(st).Before(since) {
+		t := e.Mode.Type()
+		if !t.IsRegular() && t&fs.ModeSymlink == 0 || e.Ctime.Before(since) {
 			return nil
 		}
 		if t&fs.ModeSymlink != 0 {
-			if l, err := os.Readlink(p); err != nil {
+			if l, err := e.Readlink(); err != nil {
 				return err
 			} else if m.has([]byte(l)) {
 				return hit()
 			}
 			return nil
 		}
-		f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+		f, err := e.Open()
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		if ok, err := m.in(f); err != nil || ok {
+		// shortcut: each read stops at scanCap bytes of the file, and inflateCap of what its git objects inflate to,
+		// so a sparse or zlib-bomb file costs at most that; a token past them is missed
+		if ok, err := m.in(io.LimitReader(f, scanCap)); err != nil || ok {
 			if err != nil {
 				return err
 			}
 			return hit()
 		}
-		if looseObject(p) {
+		if looseObject(rel) {
 			if _, err := f.Seek(0, io.SeekStart); err != nil {
 				return err
 			}
-			if z, err := zlib.NewReader(f); err == nil {
-				if ok, _ := m.in(z); ok { // a corrupt object is still scanned up to the damage
+			if z, err := zlib.NewReader(io.LimitReader(f, scanCap)); err == nil {
+				if ok, _ := m.in(io.LimitReader(z, inflateCap)); ok { // a corrupt object is still scanned up to the damage
 					return hit()
 				}
 			}
 		}
-		if n := packRe.FindStringSubmatch(d.Name()); n != nil {
+		if n := packRe.FindStringSubmatch(e.Name); n != nil {
 			if _, err := f.Seek(0, io.SeekStart); err != nil {
 				return err
 			}
-			if m.inPack(f, len(n[1])/2) {
+			if m.inPack(io.LimitReader(f, scanCap), len(n[1])/2) {
 				return hit()
 			}
 		}
@@ -209,6 +179,9 @@ func Scan(ws string, start time.Time, tokens []string) ([]Hit, error) {
 	})
 	return hits, err
 }
+
+// scanCap and inflateCap bound what Scan reads of one file, and inflates from it.
+const scanCap, inflateCap = 256 << 20, 1 << 30
 
 // matcher finds any token in a stream of any length: each chunk is searched with the last longest-1 bytes of the
 // one before, so a token split across chunks is still found.
@@ -261,6 +234,7 @@ var packRe = regexp.MustCompile(`^pack-([0-9a-f]{40}|[0-9a-f]{64})\.pack$`)
 // bytes a delta inserts. A corrupt pack is scanned up to the damage, as git can read no further either.
 func (m *matcher) inPack(r io.Reader, idLen int) bool {
 	br := bufio.NewReaderSize(r, 64<<10) // an io.ByteReader: flate then reads no byte past its stream
+	budget := &io.LimitedReader{N: inflateCap} // for all of the pack's objects together
 	var h [12]byte
 	if _, err := io.ReadFull(br, h[:]); err != nil || string(h[:4]) != "PACK" {
 		return false
@@ -288,7 +262,8 @@ func (m *matcher) inPack(r io.Reader, idLen int) bool {
 		if err != nil {
 			return false
 		}
-		var body io.Reader = z
+		budget.R = z
+		var body io.Reader = budget
 		if typ >= 6 {
 			body = &literals{r: bufio.NewReader(z)}
 		}
@@ -338,6 +313,6 @@ func (l *literals) Read(p []byte) (int, error) {
 
 var objRe = regexp.MustCompile(`/objects/[0-9a-f]{2}/[0-9a-f]{38,62}$`)
 
-func looseObject(p string) bool {
-	return strings.Contains(p, ".git/") && objRe.MatchString(filepath.ToSlash(p))
+func looseObject(rel string) bool {
+	return strings.Contains(rel, ".git/") && objRe.MatchString(rel)
 }
