@@ -1,7 +1,8 @@
 #!/bin/sh
 # Week 4 agentboxd gate (PLAN.md row 4; ARCHITECTURE.md §2, §2.1, §5.2, §5.6, §9) on the local QEMU VM, arm64 UEFI,
 # none mode, through the real agentboxd, rootd and auditd.
-#   hack/agentboxd-gate.sh [install|checks ...]   default: both, in order
+#   hack/agentboxd-gate.sh [uefi|bios] [install|checks ...]   default: both, in order
+# uefi (default) is the arm64 VM, bios the amd64 one (hack/gate.sh's boot modes); only install uses it.
 # install  hack/gate.sh none: the unattended install and the release pipeline, so the units and gen/ arrive the real way.
 # checks   agentboxd runs with PrivateNetwork and AF_UNIX only. A task registered on svc-gate.sock (as rootd's
 #          task.start will) gets its gate socket, usable by that agent's uid only. With rootd's test effect for
@@ -17,6 +18,8 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 VM="$ROOT/.vm"
+BOOT=uefi; case ${1:-} in uefi|bios) BOOT=$1; shift ;; esac
+G=none; [ "$BOOT" = uefi ] || G=none-bios # gate.sh writes .vm/gate-$G.txt
 [ $# -gt 0 ] || set -- install checks
 OUT="$VM/agentboxd-gate.txt" LOG="$VM/agentboxd-gate.log"
 mkdir -p "$VM"
@@ -41,7 +44,7 @@ guest() {
 
 for s; do case $s in
 install)
-  hack/gate.sh none >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-none.txt"
+  hack/gate.sh none "$BOOT" >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-$G.txt"
   log "PASS install: hack/gate.sh none (install, release pipeline, firstboot, no failed units)" ;;
 checks)
   up
@@ -135,6 +138,7 @@ EOF
 *) die "unknown stage $s (install or checks)" ;;
 esac; done
 echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
+while running; do sleep 2; done # a gate run next on this disk must not find the box still shutting down
 grep -q '^[0-9:]* FAIL' "$OUT" && { echo "agentboxd gate: FAIL; see $OUT"; exit 1; }
 grep -q 'ABORT' "$OUT" && exit 1
 echo "agentboxd gate: all checks passed"

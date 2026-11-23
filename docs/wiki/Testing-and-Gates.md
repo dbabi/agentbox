@@ -440,7 +440,7 @@ The firewall, rootd and quota gates enable `agentbox-agent-stub.service`, a stan
 
 ### What they do not prove
 
-- They ran in `none` mode on arm64 UEFI only. `tpm2`, `tpm2+tang` and amd64 BIOS were not run for them. The milestone 2 code does not touch unlock or boot.
+- They ran in `none` mode only, on arm64 UEFI and, in CI, on amd64 BIOS. `tpm2` and `tpm2+tang` were not run for them. The milestone 2 code does not touch unlock or boot.
 - No broker exists yet. The gates write the answers a broker would get, or use a stand-in uid. Hiding systemd-resolved's Unix interfaces from the broker users waits for the broker units.
 - The resolver's `unavailable` reason, for a systemd-resolved that is down, has no gate check.
 - The QEMU VM reaches the internet through slirp. The rootd flow check needs a public HTTP server (`FLOW=host:port`, default `example.com:80`).
@@ -588,13 +588,14 @@ Share only the `.txt` and `.log` files. `.vm/keys`, `.vm/id_vm` and `.vm/gate-se
 - **`unit`** then runs `go test -v ./internal/audit/...` again as root (`sudo env PATH=... GOTOOLCHAIN=...`). The unprivileged run skips the `chattr` tests, because `chattr +a` needs `CAP_LINUX_IMMUTABLE`. The root run covers them, and fails if any test still skips.
 - **`test`** passes only if both `unit` runs passed. It is the check that branch protection requires.
 - **`bios`** runs after `test` passes, on pushes to `main` only. It runs `hack/gate.sh none bios` and `hack/gate.sh tpm2 bios` under KVM, with a 120-minute limit. If `/dev/kvm` is missing, the job fails instead of falling back to slow software emulation.
+- **`host-gates`** (`.github/workflows/host-gates.yml`) runs every Saturday, on manual dispatch, and on a pull request that changes it. On `ubuntu-26.04` under KVM, it installs one amd64 BIOS box with `hack/sockets-gate.sh bios install check`. Then it runs the registry, agentboxd, firewall, audit, rootd and quota-ntfy gates' checks on that box. A failing gate does not stop the next one. It uploads `.vm/*-gate.txt` and `.vm/*-gate.log` as the `host-gates-amd64-bios` artifact.
 - **`fuzz`** (`.github/workflows/fuzz.yml`) runs every night and on manual dispatch. Each fuzz test runs for 5 hours in its own job, at most 8 jobs at a time, so pull request CI still gets runners. Each job carries its test's corpus to the next night in the Actions cache. A crash fails that job and uploads the crash input as an artifact.
 - Every job but `release` caches Go modules and builds, keyed on `go.sum`. The release build starts from a clean module download.
 - `bios` uploads `.vm/gate-*.txt`, `.vm/gate-*.log`, `.vm/install.log` and `.vm/boot-*.log` as artifacts named `gate-<mode>-bios`, kept for 14 days. It never uploads `.vm/keys` or `.vm/id_vm`.
 
 The `lint` job (gofmt, `go vet`, staticcheck, shellcheck, govulncheck) also runs on every push and pull request. `bios` runs on every push to `main`, weekly and on manual dispatch.
 
-CI cannot run the arm64 UEFI gates as written, because they need HVF on macOS. That includes the milestone 2 and 3 gates. `hack/powercut.sh` also assumes a podman machine.
+CI cannot run the arm64 UEFI gates as written, because they need HVF on macOS. The milestone 2 and 3 host-service gates run on amd64 BIOS in `host-gates` instead. Each takes `uefi` (the default) or `bios` as its first argument, which picks the box `install` makes. `hack/powercut.sh` also assumes a podman machine.
 
 The `ubuntu-26.04-arm` runner has no `/dev/kvm`. The probe step in `unit` printed `ls: cannot access '/dev/kvm': No such file or directory` on 2026-11-22, in ci run 44975721818. So arm64 VM gates cannot run there under KVM either.
 
@@ -637,7 +638,8 @@ All on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. Before the revie
 | `w3-rootd` | Passed: 104 PASS, 0 FAIL | `fb89de4` |
 | `w3-quota-ntfy` | Passed: 54 PASS, 0 FAIL, in a second run. The first run at `fb89de4` was cut off mid-install by the harness clock, with no verdict. | `fb89de4` |
 | Milestone 1 smoke: `gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso` | Passed | `fb89de4` |
-| Milestone 2 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
+| Milestone 2 gates on amd64 BIOS, in CI under KVM (`host-gates`), all on one `none`-mode install | Passed: `w3-firewall` 53, `w3-auditd` 61, `w3-rootd` 104 and `w3-quota-ntfy` 53 PASS, 0 FAIL each. The counts leave out the install, which the sockets gate ran. | the branch of pull request #178, before it merged |
+| Milestone 2 gates in `tpm2`, `tpm2+tang` | Not run | |
 | `go vet ./...` and `go test ./...` | Passed on the Mac | `fb89de4` |
 
 ### Milestone 3
@@ -655,7 +657,8 @@ All VM gates on a fresh `none`-mode install, arm64 UEFI, Secure Boot on, with fo
 | Fuzz tests, 24 hours | Not run yet. A 24-hour local run stopped when the host restarted, with no result. The first nightly `fuzz` run: 41 of 46 fuzz tests ran 5 hours each with no crash, and 5 were still running. | `a6897c0` |
 | CI: `internal/audit` as root | Passed: 28 PASS, 0 SKIP | `3b4c438` |
 | `go vet ./...` and `go test ./...` | Passed on the Mac | `ac68bc8` |
-| Milestone 3 gates in `tpm2`, `tpm2+tang`, amd64 BIOS | Not run | |
+| Milestone 3 gates on amd64 BIOS, in CI under KVM (`host-gates`), on the same install | Passed: `w4-registry` 11, `w4-agentboxd` 29 and `w4-sockets` 38 PASS, 0 FAIL each | the branch of pull request #178, before it merged |
+| Milestone 3 gates in `tpm2`, `tpm2+tang` | Not run | |
 
 ### Milestone 4
 
