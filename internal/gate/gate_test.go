@@ -199,6 +199,13 @@ func TestDispatchFetchResult(t *testing.T) {
 	if last := sent[len(sent)-1]; last["op"] != "task.stop" || last["task"] != "T1" || last["reason"] != "failed" {
 		t.Fatalf("task.stop: %v", last)
 	}
+	// #106: a failed isolation probe goes on to rootd, which alerts
+	if r := call(t, s, tk, `{"jsonrpc":"2.0","id":4,"method":"task.result","params":{"exit":0,"output":"","outputLen":0,"probe":"route","probeMs":3}}`); r.Error != nil || r.Result["stopped"] != "failed" {
+		t.Fatalf("probe result: %+v", r)
+	}
+	if last := sent[len(sent)-1]; last["reason"] != "failed" || last["probe"] != "route" {
+		t.Fatalf("task.stop: %v", last)
+	}
 }
 
 // After a restart, every live task rootd lists gets its socket back, provenance chain included.

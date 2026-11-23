@@ -403,3 +403,27 @@ func TestTaskWitness(t *testing.T) {
 	}
 	t.Fatalf("no incomplete WITNESS for %s: %v", id, r.records)
 }
+
+// #106: a failed isolation probe is an ALERT to auditd and to ntfy naming the check; a check name rootd doesn't know is
+// not passed on.
+func TestProbeFailedAlert(t *testing.T) {
+	r := newRig(t)
+	alerts, records := make(chan string, 1), make(chan map[string]any, 1)
+	r.t.alert = func(_, m string) error { alerts <- m; return nil }
+	r.t.audit = func(m map[string]any) error { records <- m; return nil }
+	id := ids.New(ids.Task)
+	for check, want := range map[string]string{"route": "route", "x\nALERT forged": "unknown"} {
+		r.t.probeFailed(id, check)
+		select {
+		case m := <-alerts:
+			if !strings.Contains(m, "TASK_ISOLATION_PROBE: the "+want+" check failed") {
+				t.Fatalf("alert %q", m)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("no ntfy alert")
+		}
+		if m := <-records; m["type"] != "ALERT" || m["reason"] != "TASK_ISOLATION_PROBE" || m["task"] != id || m["check"] != want {
+			t.Fatalf("audit %v", m)
+		}
+	}
+}

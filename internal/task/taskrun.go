@@ -35,11 +35,13 @@ type Job struct {
 	Prompt string `json:"prompt"`
 }
 
-// Result is the task.result post.
+// Result is the task.result post. Probe names the isolation check that failed (taskrun.ProbeChecks), if one did.
 type Result struct {
 	Exit      int    `json:"exit"`
 	Output    string `json:"output"`
 	OutputLen int64  `json:"outputLen"`
+	Probe     string `json:"probe,omitempty"`
+	ProbeMS   int64  `json:"probeMs"`
 }
 
 // Runner is taskrun's environment; tests replace the socket and the clock.
@@ -133,8 +135,8 @@ func (r *Runner) Setup() error {
 	return os.MkdirAll(filepath.Join(r.Home, ".agentbox"), 0o700)
 }
 
-// Taskrun is the container's PID 1 (§4.2): set up HOME, clean the env and start the forwarders, fetch the task, run the
-// CLI with the prompt on stdin, post the result. SIGTERM (the unit stopping) goes on to the CLI's process group; systemd SIGKILLs the rest after
+// Taskrun is the container's PID 1 (§4.2): set up HOME, clean the env and start the forwarders, fetch the task, probe
+// the isolation from inside, run the CLI with the prompt on stdin, post the result. SIGTERM (the unit stopping) goes on to the CLI's process group; systemd SIGKILLs the rest after
 // TimeoutStopSec, and the payload is inside the unit's cgroup.
 func Taskrun() int {
 	dl, _ := strconv.ParseInt(os.Getenv("AGENTBOX_DEADLINE"), 10, 64)
@@ -155,13 +157,23 @@ func Taskrun() int {
 		fmt.Fprintln(os.Stderr, "taskrun:", err)
 		return 1
 	}
+	pt, perr := (&taskrun.Probe{Root: "/", Task: job.Task}).Run()
+	if perr != nil {
+		var pe *taskrun.ProbeError
+		errors.As(perr, &pe)
+		fmt.Fprintln(os.Stderr, "taskrun:", perr)
+		if err := r.Call("task.result", Result{Exit: 1, Output: perr.Error(), Probe: pe.Check, ProbeMS: pt.Milliseconds()}, nil); err != nil {
+			fmt.Fprintln(os.Stderr, "taskrun:", err)
+		}
+		return 1
+	}
 	argv, err := CLIArgv(job.CLI)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "taskrun:", err)
 		return 1
 	}
 	code, out, n := r.run(argv, job.Prompt)
-	if err := r.Call("task.result", Result{Exit: code, Output: out, OutputLen: n}, nil); err != nil {
+	if err := r.Call("task.result", Result{Exit: code, Output: out, OutputLen: n, ProbeMS: pt.Milliseconds()}, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "taskrun:", err)
 		return 1
 	}
