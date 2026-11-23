@@ -48,10 +48,11 @@ const usage = `usage:
   agentbox agentboxd [--gen-dir DIR]   (agentboxd.service: the task gate, on the box)
   agentbox gate register --task T --agent A [--chain T1,T2] | revoke --task T | list   (as root: rootd's task registration)
   agentbox gate call --socket /run/agentbox-gate/t/<task>/gate.sock JSON-RPC...   (a task-side test client)
-  agentbox task new --agent A [--cli claude|codex] [--asks N] [--deadline 2h] < prompt   (admin, on the box)
+  agentbox task new --agent A [--cli claude|codex] [--asks N] [--deadline 2h] [--ack-secrets N] < prompt   (admin, on the box)
   agentbox task stop --task T | list   (admin, on the box)
   agentbox task undo --task T   (admin: restore the workspace from the snapshot taken when that task started)
   agentbox taskrun   (the task container's PID 1)
+  agentbox secretscan --dir D   (rootd's workspace credential scan, in its no-network unit: a JSON report on stdout)
   agentbox broker-stub --svc proxy|keys|git   (test boxes: a broker stand-in for the restart gate)
   agentbox goprivate set --agent A --patterns 'corp.example/*,...'   (admin: go.private.set; "" clears)
   agentbox why [<CODE> | --errno <E>]   (in a task: recent denials, or fixed guidance; no gate call)
@@ -138,6 +139,8 @@ func run(args []string) error {
 		return cmdAccounts(args[1:])
 	case "task":
 		return cmdTask(args[1:])
+	case "secretscan":
+		return cmdSecretscan(args[1:])
 	case "taskrun":
 		return cmdTaskrun(args[1:])
 	case "broker-stub":

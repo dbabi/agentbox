@@ -63,6 +63,11 @@ func (s *server) agentOp(r request) reply {
 		s.forget(name)
 		err = s.applyOS()
 	}
+	if err == nil && r.Op == "agent.add" && s.tasks != nil {
+		if acct, lerr := s.tasks.cfg.Accounts.Lookup(name); lerr == nil {
+			s.tasks.rescan(acct, 0, false) // #104: at creation; the first task scans again
+		}
+	}
 	status, detail := "executed", ""
 	if err != nil {
 		status, detail = "failed", err.Error()

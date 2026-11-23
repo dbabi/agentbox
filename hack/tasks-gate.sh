@@ -1,5 +1,5 @@
 #!/bin/sh
-# Weeks 5-6 task gate (PLAN.md row 5-6; ARCHITECTURE.md §4.2, §10, Appendix C; issues #13, #14, #103, #106 and #155) on the local QEMU
+# Weeks 5-6 task gate (PLAN.md row 5-6; ARCHITECTURE.md §4.2, §10, Appendix C; issues #13, #14, #103, #104, #106 and #155) on the local QEMU
 # VM, arm64 UEFI, none mode, through the real rootd, agentboxd and auditd and rootless podman.
 #   hack/tasks-gate.sh [install|checks ...]   default: both, in order
 # install  hack/gate.sh none: the unattended install and the release pipeline, so podman, the units, the seccomp
@@ -42,7 +42,10 @@
 #            rm -rf /workspace/*, agentbox task undo restores a tree with the same digest, keeping the taint the
 #            snapshot had; 7 tasks later 5 task-start snapshots are left, and no clean-baseline or pre-restore one is
 #            pruned (#103); a nested subvolume made on the host refuses the task-start snapshot with
-#            NESTED_SUBVOLUME (#184).
+#            NESTED_SUBVOLUME (#184);
+#          - a new agent's workspace is scanned for credentials (gitleaks rules) in a unit with only loopback; a
+#            GitHub token planted before its first task blocks it, naming the file and type; --ack-secrets 1 lets it
+#            start; an egress grant for github.com names the token type; once removed, the next task starts (#104).
 # PASS/FAIL lines go to .vm/tasks-gate.txt, command output to .vm/tasks-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -98,6 +101,7 @@ H=/var/lib/agentbox/data/agents/gt/account
 RS=/run/systemd/system
 # new DEADLINE < script: start a task as the human, print its id
 new() { newc sh "$1"; }
+newg() { $B task new --agent gs --cli sh --deadline 2m > /tmp/tg-new && sed -n 's/.*"task":"\(task_[0-9A-Z]*\)".*/\1/p' /tmp/tg-new; }
 newc() { $B task new --agent gt --cli "$1" --deadline "$2" > /tmp/tg-new && sed -n 's/.*"task":"\(task_[0-9A-Z]*\)".*/\1/p' /tmp/tg-new; }
 field() { $B task list | python3 -c 'import json,sys; t=[x for x in json.load(sys.stdin)["tasks"] if x["task"]==sys.argv[1]]; v=t[0].get(sys.argv[2],"") if t else ""
 print(v if isinstance(v,str) else json.dumps(v,separators=(",",":")))' "$1" "$2"; }
@@ -481,6 +485,34 @@ check "  ... a nested subvolume made on the host: task new fails with snapshot_f
   grep -q "\"reason\":\"snapshot_failed\"" /tmp/tg-nest && grep -q NESTED_SUBVOLUME /tmp/tg-nest && [ -z "$(pod ps -a --format "{{.Names}}" | grep task-)" ]'
 btrfs subvolume delete $W/tg-nested >/dev/null
 check "  ... with it deleted by hand, the next task starts and completes" 't=$(new 2m < /tmp/tg-p) && wait_end $t 60 && [ "$(field $t end_reason)" = completed ]'
+
+# --- #104: the offline workspace credential scan ---
+# a second agent, so the token is in its workspace before its first task; the token is made here, never committed
+W2=/var/lib/agentbox/data/workspaces/gs GHT=ghp_$(head -c 600 /dev/urandom | tr -dc A-Za-z0-9 | head -c 36)
+scans() { journalctl -b -u agentbox-rootd -o cat | grep "secret scan $1: "; }
+check "#104: agent add gs: rootd scans the new workspace in its no-network unit" '$B agent add --name gs >/dev/null && U2=$(id -u ag-gs) && i=0;
+  until systemctl is-active -q user@$U2.service; do i=$((i+1)); [ $i -lt 50 ] || exit 1; sleep 0.2; done && scans gs | grep -q "0 hits, .*netdevs \[lo\]$"'
+runuser -u ag-gs -- mkdir -p $W2/notes && runuser -u ag-gs -- sh -c "printf 'x\nGH_TOKEN=%s\n' $GHT > $W2/notes/creds.txt"
+echo 'echo ran > /workspace/gs.ran' > /tmp/tg-p
+check "  ... a planted GitHub token blocks its first task; the block names the file and the token type, never the token" '
+  ! $B task new --agent gs --cli sh --deadline 2m < /tmp/tg-p > /tmp/tg-sec 2>&1; cat /tmp/tg-sec; [ ! -e $W2/gs.ran ] &&
+  grep -q "\"reason\":\"secrets_in_workspace\"" /tmp/tg-sec && grep -qF "notes/creds.txt:2 (github-pat)" /tmp/tg-sec && ! grep -qF "$GHT" /tmp/tg-sec &&
+  ! journalctl -b -o cat | grep -qF "$GHT" && ! grep -rqF "$GHT" /var/lib/agentbox/audit /var/lib/agentbox/rootd.db'
+check "  ... --ack-secrets 2 (not the count) is refused; --ack-secrets 1 lets the task start, and it completes" '
+  ! $B task new --agent gs --cli sh --deadline 2m --ack-secrets 2 < /tmp/tg-p > /tmp/tg-sec2 2>&1; grep -q secrets_ack_mismatch /tmp/tg-sec2 &&
+  $B task new --agent gs --cli sh --deadline 2m --ack-secrets 1 < /tmp/tg-p > /tmp/tg-new && t=$(sed -n "s/.*\"task\":\"\(task_[0-9A-Z]*\)\".*/\1/p" /tmp/tg-new) &&
+  wait_end $t 60 && [ "$(field $t end_reason)" = completed ] && [ -e $W2/gs.ran ]'
+check "  ... an egress grant for github.com:443 names the token type, agent and file; one for pypi.org:443 names none" '
+  $B egress allow --svc proxy --entry github.com:443 > /tmp/tg-eg; $B egress remove --svc proxy --entry github.com:443 >/dev/null; cat /tmp/tg-eg;
+  grep -qF "a github-pat in gs'"'"'s workspace (notes/creds.txt:2)" /tmp/tg-eg && ! grep -qF "$GHT" /tmp/tg-eg &&
+  $B egress allow --svc proxy --entry pypi.org:443 > /tmp/tg-eg2; $B egress remove --svc proxy --entry pypi.org:443 >/dev/null; cat /tmp/tg-eg2;
+  grep -q "\"ok\":true" /tmp/tg-eg2 && ! grep -q github-pat /tmp/tg-eg2'
+check "  ... once the token is removed, the next task scans clean and starts" 'rm $W2/notes/creds.txt && rm -f $W2/gs.ran && t=$(newg < /tmp/tg-p) &&
+  wait_end $t 60 && [ -e $W2/gs.ran ] && scans gs | tail -1 | grep -q " 0 hits, "'
+check "  ... the scanner had no network: each scan saw only lo; run on the host instead it sees the NIC, which rootd would refuse (the control)" '
+  scans "[a-z]*" | tee /tmp/tg-scans | tail -3; [ "$(wc -l < /tmp/tg-scans)" -ge 5 ] && ! grep -v "netdevs \[lo\]$" /tmp/tg-scans &&
+  $B secretscan --dir $W2 | grep -q "\"netdevs\":\[\"lo\",\""'
+$B agent remove --name gs >/dev/null 2>&1 || :
 
 # --- the box afterwards ---
 check "sockets check: the live per-task dirs and sockets match the inventory" '$B sockets check'
