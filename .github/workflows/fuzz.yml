@@ -1,6 +1,7 @@
 # PLAN milestone row 4: fuzzers for every parser. Nightly, each target fuzzes 5 h in its own job; a crash fails that job
-# and uploads the crasher. Commit it to the package's testdata/fuzz/<target>/ with the fix. The 24 h gate itself is
-# hack/fuzz-all.sh on one machine.
+# and uploads the crasher. Commit it to the package's testdata/fuzz/<target>/ with the fix. Each job restores the
+# target's corpus from the last run and saves it again, so the nights add up toward the 24 h gate
+# (docs/wiki/Testing-and-Gates.md, "The 24 h gate").
 name: fuzz
 on:
   schedule:
@@ -33,6 +34,7 @@ jobs:
     timeout-minutes: 340 # 5 h of fuzzing plus the build, under the hosted runner's 6 h cap
     strategy:
       fail-fast: false
+      max-parallel: 8 # a Free plan runs 20 hosted jobs at once; 45 fuzz jobs would hold PR CI back for hours
       matrix:
         include: ${{ fromJSON(needs.targets.outputs.matrix) }}
     steps:
@@ -40,12 +42,34 @@ jobs:
         with: {persist-credentials: false}
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with: {go-version-file: go.mod}
+      - id: corpus
+        env:
+          PKG: ${{ matrix.pkg }}
+          TARGET: ${{ matrix.target }}
+        run: echo "dir=$(go env GOCACHE)/fuzz/$PKG/$TARGET" >> "$GITHUB_OUTPUT"
+      # each run saves under a new key (a cache entry can't be overwritten); restore takes the newest for this target
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.corpus.outputs.dir }}
+          key: fuzz-${{ matrix.pkg }}-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.pkg }}-${{ matrix.target }}-
       - name: fuzz
         env:
           PKG: ${{ matrix.pkg }}
           TARGET: ${{ matrix.target }}
           FUZZTIME: ${{ inputs.fuzztime || '5h' }}
-        run: go test -run='^$' -fuzz="^${TARGET}\$" -fuzztime="$FUZZTIME" "$PKG"
+          DIR: ${{ steps.corpus.outputs.dir }}
+          GOMEMLIMIT: 3GiB # a standard runner has 16 GB: go test plus its 4 workers stay under it
+        run: |
+          echo "corpus at start: $(find "$DIR" -type f 2>/dev/null | wc -l) entries"
+          go test -run='^$' -fuzz="^${TARGET}\$" -fuzztime="$FUZZTIME" "$PKG"
+          echo "corpus at end: $(find "$DIR" -type f | wc -l) entries; CPU seconds (user, sys) of go test and its workers:"
+          times | tail -n 1
+      - if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.corpus.outputs.dir }}
+          key: fuzz-${{ matrix.pkg }}-${{ matrix.target }}-${{ github.run_id }}
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
