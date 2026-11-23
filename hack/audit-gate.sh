@@ -199,7 +199,7 @@ done
 rm -f /run/systemd/system/agentbox-auditd.service.d/gate.conf /run/systemd/system/agentbox-rootd.service.d/gate.conf $D/.gate-crash-*
 systemctl daemon-reload; systemctl reset-failed agentbox-rootd.service agentbox-auditd.service; systemctl restart agentbox-rootd.service agentbox-auditd.service
 check "back on the shipped units: ACK" 'send "{\"type\":\"TAINT\",\"subject\":\"task:after\",\"source\":\"s\"}"'
-check "no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
+check "no failed units" 'f=$(systemctl --failed --no-legend --plain); echo "$f"; [ -z "$f" ]'
 nsegs > /var/tmp/gate-nsegs
 cp /run/audit-gate.log /var/tmp/audit-gate-1.log; journalctl -b -u agentbox-auditd.service -u agentbox-rootd.service -o short-precise > /var/tmp/audit-gate-1.journal
 echo "audit-fails=$fails"
@@ -213,7 +213,7 @@ check "after a reboot: auditd ACKs, and its first start in the new boot rotated 
   send "{\"type\":\"TAINT\",\"subject\":\"task:reboot\",\"source\":\"s\"}" && [ $(nsegs) -gt $(cat /var/tmp/gate-nsegs) ] &&
   head -n 1 $D/$(newest) | grep -qF "\"boot_id\":\"$(cat /proc/sys/kernel/random/boot_id)\""'
 check "audit verify after the reboot" verify
-check "no failed units after the reboot" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
+check "no failed units after the reboot" 'f=$(systemctl --failed --no-legend --plain); echo "$f"; [ -z "$f" ]'
 cat /run/audit-verify.txt; rm -f /var/tmp/gate-nsegs
 echo "audit-fails=$fails"
 EOF

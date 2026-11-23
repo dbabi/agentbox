@@ -248,7 +248,8 @@ sc_checks() {
   { prelude; phase2; } | vmrun | tee -a "$OUT"
   u="-u agentbox-firewall.service -u agentbox-health.service -u agentbox-agent-stub.service -u agentbox-rootd.service"
   echo "cat /var/tmp/fw-gate.log; for b in -1 0; do journalctl -b \$b --no-pager -o short-iso $u; done" | root >>"$LOG" 2>&1 || :
-  echo 'systemctl poweroff' | root >/dev/null 2>&1 || :
+  # the stand-in goes back off at boot, as shipped: a gate run next on this disk crashes rootd on purpose
+  echo 'rm -f /etc/systemd/system/multi-user.target.wants/agentbox-agent-stub.service; systemctl poweroff' | root >/dev/null 2>&1 || :
   while running; do sleep 2; done
 }
 
