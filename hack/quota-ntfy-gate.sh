@@ -1,7 +1,8 @@
 #!/bin/sh
 # Week 3 gates for the disk reserve and packaged ntfy (PLAN.md row 3, ARCHITECTURE.md §2, §2.1, §3.2, §4.1, §6.1) on
 # the local QEMU VM, arm64 UEFI, none mode.
-#   hack/quota-ntfy-gate.sh [install|quota|ntfy ...]   default: all three, in order
+#   hack/quota-ntfy-gate.sh [uefi|bios] [install|quota|ntfy ...]   default: all three, in order
+# uefi (default) is the arm64 VM, bios the amd64 one (hack/gate.sh's boot modes); only install uses it.
 # install  hack/gate.sh none: the unattended install and the release pipeline; firstboot's install.sh puts in the
 #          ntfy package and agentbox-reconcile sets up quotas and ntfy.
 # quota    full-mode quotas, 2/0 limited to the file system size minus max(10%, 4 GiB) over every fillable store,
@@ -20,6 +21,8 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 VM="$ROOT/.vm"
+BOOT=uefi; case ${1:-} in uefi|bios) BOOT=$1; shift ;; esac
+G=none; [ "$BOOT" = uefi ] || G=none-bios # gate.sh writes .vm/gate-$G.txt
 [ $# -gt 0 ] || set -- install quota ntfy
 OUT="$VM/quota-ntfy-gate.txt" LOG="$VM/quota-ntfy-gate.log"
 mkdir -p "$VM"
@@ -54,7 +57,7 @@ limits() { btrfs --format=json qgroup show -p -r -e $M | python3 -c "import json
 
 for s; do case $s in
 install)
-  hack/gate.sh none >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-none.txt"
+  hack/gate.sh none "$BOOT" >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-$G.txt"
   log "PASS install: hack/gate.sh none (install, release pipeline, firstboot, reconcile, no failed units)" ;;
 quota)
   up

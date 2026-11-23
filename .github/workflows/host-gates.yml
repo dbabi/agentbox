@@ -1,0 +1,59 @@
+# The milestone 2-3 host-service gates on amd64: one BIOS install under KVM, then each gate's checks on that box. The
+# arm64 runs are on the Mac VM (HVF); this is the only place amd64 runs them. Weekly, so a change that breaks them on
+# amd64 shows up within days.
+name: host-gates
+on:
+  schedule:
+    - cron: '23 3 * * 6' # Saturday, away from the weekday fuzz and ci runs
+  workflow_dispatch:
+  pull_request: # a change to this job runs it before it merges
+    paths: [.github/workflows/host-gates.yml]
+permissions:
+  contents: read
+jobs:
+  amd64-bios:
+    runs-on: ubuntu-26.04 # 24.04's swtpm 0.7 has no --ctrl terminate, which vm.sh uses
+    timeout-minutes: 340 # under the hosted runner's 6 h cap
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with: {go-version-file: go.mod, cache: false}
+      - run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils swtpm xorriso minisign libslirp-dev libglib2.0-dev pkgconf # hack/vmnet
+      # vm.sh falls back to TCG with only a warning; without KVM this job must fail, not run for hours under TCG
+      - run: sudo chmod 666 /dev/kvm && test -w /dev/kvm
+      # .vm stays in the checkout: swtpm's AppArmor profile lets it write only under $HOME
+      - run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc && df -h .
+      - run: |
+          f=ubuntu-26.04.1-live-server-amd64.iso
+          mkdir -p .vm
+          curl -fsSL --retry 3 -o ".vm/$f" "https://releases.ubuntu.com/26.04.1/$f" ||
+            curl -fsSL --retry 3 -o ".vm/$f" "https://old-releases.ubuntu.com/releases/26.04.1/$f"
+      # the sockets gate installs (hack/gate.sh none bios); every later gate runs its checks on that box, so one
+      # failing gate still lets the rest run. The order puts the gates that reboot or fill the disk last.
+      - run: hack/sockets-gate.sh bios install check
+      - if: '!cancelled()'
+        run: hack/registry-gate.sh bios checks
+      - if: '!cancelled()'
+        run: hack/agentboxd-gate.sh bios checks
+      - if: '!cancelled()'
+        run: hack/fw-gate.sh bios checks
+      - if: '!cancelled()'
+        run: hack/audit-gate.sh bios audit
+      - if: '!cancelled()'
+        run: hack/rootd-gate.sh bios checks
+      - if: '!cancelled()'
+        run: hack/quota-ntfy-gate.sh bios quota ntfy
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: host-gates-amd64-bios
+          retention-days: 30
+          include-hidden-files: true # .vm is a dot dir; only these logs go up, never .vm/keys or .vm/id_vm
+          path: |
+            .vm/*-gate.txt
+            .vm/*-gate.log
+            .vm/rootd-gate-flow.txt
+            .vm/gate-*.txt
+            .vm/install.log
+            .vm/boot-*.log

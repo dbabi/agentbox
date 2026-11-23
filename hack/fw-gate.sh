@@ -1,6 +1,7 @@
 #!/bin/sh
 # Firewall gates (PLAN.md row 3; ARCHITECTURE.md §6.1, Appendix B) on the local arm64 QEMU VM.
-#   hack/fw-gate.sh [install] [checks]   default: both
+#   hack/fw-gate.sh [uefi|bios] [install] [checks]   default: both
+# uefi (default) is the arm64 VM, bios the amd64 one (hack/gate.sh's boot modes); only install uses it.
 # install  hack/gate.sh none: the unattended install and its gates; firstboot installs this checkout's release (make
 #          release, install.sh, systemd/), so agentbox-firewall.service and the stub come from the real install path.
 # checks   on the installed box, as root:
@@ -28,6 +29,8 @@ cd "$ROOT"
 VM="$ROOT/.vm"
 mkdir -p "$VM"
 OUT="$VM/fw-gate.txt" LOG="$VM/fw-gate.log"
+BOOT=uefi; case ${1:-} in uefi|bios) BOOT=$1; shift ;; esac
+G=none; [ "$BOOT" = uefi ] || G=none-bios # gate.sh writes .vm/gate-$G.txt
 [ $# -gt 0 ] || set -- install checks
 ! command -v caffeinate >/dev/null || { caffeinate -i -w $$ & }
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$OUT"; }
@@ -230,7 +233,7 @@ EOF
 }
 
 sc_install() {
-  hack/gate.sh none >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-none.txt"
+  hack/gate.sh none "$BOOT" >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-$G.txt"
   log "PASS hack/gate.sh none: install gates, and firstboot installed this checkout's release"
 }
 

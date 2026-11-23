@@ -1,7 +1,8 @@
 #!/bin/sh
 # Week 4 gate for the socket inventory as code (PLAN.md row 4, ARCHITECTURE.md §2.1, A-arch-runtime-network-07) on
 # the local arm64 QEMU VM, none mode.
-#   hack/sockets-gate.sh [install] [check]   default: both, in order
+#   hack/sockets-gate.sh [uefi|bios] [install] [check]   default: both, in order
+# uefi (default) is the arm64 VM, bios the amd64 one (hack/gate.sh's boot modes); only install uses it.
 # install  hack/gate.sh none: the unattended install and the release pipeline, so the generated tmpfiles.d and
 #          .socket units reach the box by the real path (install.sh).
 # check    the installed box matches internal/sockets exactly (`agentbox sockets check`), before and after a reboot;
@@ -14,6 +15,8 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 VM="$ROOT/.vm"
+BOOT=uefi; case ${1:-} in uefi|bios) BOOT=$1; shift ;; esac
+G=none; [ "$BOOT" = uefi ] || G=none-bios # gate.sh writes .vm/gate-$G.txt
 [ $# -gt 0 ] || set -- install check
 OUT="$VM/sockets-gate.txt" LOG="$VM/sockets-gate.log"
 mkdir -p "$VM"
@@ -53,7 +56,7 @@ check "the live sockets are there and were checked: rootd, auditd, ntfy" "for s 
 
 for s; do case $s in
 install)
-  hack/gate.sh none >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-none.txt"
+  hack/gate.sh none "$BOOT" >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-$G.txt"
   log "PASS install: hack/gate.sh none (install, release pipeline, firstboot, reconcile, no failed units)" ;;
 check)
   up

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Week 4 op registry gate (PLAN.md row 4, ARCHITECTURE.md §5.1) on the local QEMU VM, arm64 UEFI, none mode.
-#   hack/registry-gate.sh [install|checks ...]   default: both, in order
+#   hack/registry-gate.sh [uefi|bios] [install|checks ...]   default: both, in order
+# uefi (default) is the arm64 VM, bios the amd64 one (hack/gate.sh's boot modes); only install uses it.
 # install  hack/gate.sh none: the unattended install and the release pipeline, so the release's gen/ files reach the
 #          box by the real path (make release, install.sh).
 # checks   rootd starts on the shipped gen/ and logs the match. Then, one at a time: one byte appended to
@@ -13,6 +14,8 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 VM="$ROOT/.vm"
+BOOT=uefi; case ${1:-} in uefi|bios) BOOT=$1; shift ;; esac
+G=none; [ "$BOOT" = uefi ] || G=none-bios # gate.sh writes .vm/gate-$G.txt
 [ $# -gt 0 ] || set -- install checks
 OUT="$VM/registry-gate.txt" LOG="$VM/registry-gate.log"
 mkdir -p "$VM"
@@ -37,7 +40,7 @@ guest() {
 
 for s; do case $s in
 install)
-  hack/gate.sh none >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-none.txt"
+  hack/gate.sh none "$BOOT" >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-$G.txt"
   log "PASS install: hack/gate.sh none (install, release pipeline, firstboot, no failed units)" ;;
 checks)
   up
