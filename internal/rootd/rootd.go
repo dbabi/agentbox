@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -53,6 +54,7 @@ type Config struct {
 	Attach         attach.Runner     // runs agent.attach sessions; nil: attach.Podman with the task image
 	AttachRoot     string            // /var/lib/agentbox (attach.Root) unless a test sets it
 	Alert          func(title, msg string) error
+	QuotaHold      string // AGENTBOX_TEST_QUOTA_HOLD: while this file exists, a qgroup repair waits before its rescan (test VMs only)
 }
 
 // Socket names: each .socket unit sets FileDescriptorName= to one of these.
@@ -194,7 +196,8 @@ func Run(cfg Config) error {
 	s := &server{cfg: cfg, db: db, svc: svc, seal: &audit.Files{Dir: cfg.AuditDir, UID: int(auid), GID: int(agid), Crash: cfg.SealCrash},
 		audit: func(r map[string]any) error { return auditSend(cfg.AuditSocket, r) },
 		store: accounts.EnsureStore, nested: nestedIn,
-		applyOS: func() error { _, err := quota.Run("systemctl", "start", accounts.Unit); return err }}
+		applyOS:      func() error { _, err := quota.Run("systemctl", "start", accounts.Unit); return err },
+		inconsistent: quota.Inconsistent, qrescan: quota.Rescan}
 	if cfg.Tasks.Accounts == nil {
 		cfg.Tasks.Accounts = idsAccounts{db}
 	}
@@ -213,6 +216,14 @@ func Run(cfg Config) error {
 			}
 			return s.tasks.ensurePodman(a)
 		}}
+	}
+	// the first qgroup check, before READY=1 so no writing op slips past it; a consistent one also thaws a freeze a dead
+	// rootd left. A repair (a rescan can take minutes) runs after READY=1, with writing ops refused until it ends.
+	s.fenced.Store(true)
+	if bad, err := s.inconsistent(); err != nil || bad {
+		go s.checkQuota()
+	} else {
+		s.checkQuota()
 	}
 	for name, ln := range lns {
 		go s.accept(name, ln)
@@ -237,6 +248,7 @@ func Run(cfg Config) error {
 				log.Printf("timer refill: %+v", res)
 			}
 			s.refresh(ctx)
+			go s.checkQuota()
 		}
 	}
 }
@@ -269,6 +281,13 @@ type server struct {
 	// watched is agent -> the session id whose every token version this rootd process saw: after a restart a rescan
 	// can't match the versions the session rotated away, so it doesn't lift that block alone
 	watched sync.Map
+
+	// the qgroup fence (checkQuota); fenceMu also guards alerted
+	fenced       atomic.Bool
+	fenceMu      sync.Mutex
+	alerted      bool
+	inconsistent func() (bool, error)
+	qrescan      func() error
 }
 
 // refresh re-resolves ntfy.sh:443 into ntfy_dst (§6.1). A failure only logs: ntfy is down until the next try.
@@ -414,6 +433,9 @@ func (s *server) handle(sock string, p peer, r request) reply {
 		return s.taskOp(r)
 	case s.tasks == nil:
 	case sock == sockGate && r.Op == "task.start":
+		if rep := s.fenceDeny(r.Op); rep != nil {
+			return rep
+		}
 		return s.tasks.start(r.Task, r.Agent, r.Origin)
 	case sock == sockGate && r.Op == "task.stop":
 		if r.Probe != "" {
@@ -450,6 +472,9 @@ func (s *server) admin(r request, p peer) reply {
 	case "task.new", "task.stop", "task.list", "task.undo":
 		if s.tasks == nil {
 			return fail("bad_request")
+		}
+		if rep := s.fenceDeny(r.Op); r.Op == "task.new" && rep != nil {
+			return rep
 		}
 		return s.taskAdmin(r, p)
 	case "egress.allow", "egress.remove":
@@ -492,6 +517,12 @@ func (s *server) admin(r request, p peer) reply {
 		return s.goPrivateSet(r)
 	case "sets.refill":
 		return s.refill(r)
+	case "quota.check":
+		fenced, err := s.checkQuota()
+		if err != nil {
+			return reply{"ok": false, "fenced": fenced, "error": err.Error()}
+		}
+		return reply{"ok": true, "fenced": fenced}
 	case "attach.status":
 		l, err := attach.List(s.db)
 		if err != nil {

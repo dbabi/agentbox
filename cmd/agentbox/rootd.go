@@ -43,6 +43,7 @@ func cmdRootd(args []string) error {
 		return errors.New("rootd: need 10s <= --element-timeout <= 10m and 5s <= --refill-interval < --element-timeout (ntfy_dst must refresh before it expires)")
 	}
 	cfg.Effects, cfg.RawAudit = testEffects()
+	cfg.QuotaHold = os.Getenv("AGENTBOX_TEST_QUOTA_HOLD") // hack/accounts-gate.sh holds a qgroup repair open; test VMs only
 	cfg.Tasks = rootd.DefaultTaskConfig()
 	// hack/taskenv-gate.sh: tasks run a full image (image/task, with the pinned Go) the gate loads into each agent's
 	// podman, instead of the stub skeleton and the host's /usr. Test VMs only.

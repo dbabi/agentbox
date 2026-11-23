@@ -47,6 +47,9 @@ func (s *server) taskOp(r request) reply {
 	if aerr != nil {
 		return deny(denial.InvalidArgs, "floor.schema", r.Name, aerr.Field, aerr.Expect)
 	}
+	if rep := s.fenceDeny(o.Name); o.Class != ops.Read && rep != nil {
+		return rep
+	}
 	eff := s.cfg.Effects[o.Name]
 	if eff == nil {
 		return deny(denial.UnknownOp, "floor.not_built", r.Name, "", "")

@@ -8,7 +8,10 @@
 #          XDG dirs with storage.conf; the user@ drop-in (Requires= and After= firewall, reconcile, rootd; the XDG env;
 #          ExecStartPre=+fwcheck), the slice drop-in, linger and a running user manager; workspace, storage and
 #          session-home subvolumes owned by the agent in qgroup 1/N under 2/0 with the requested limit. An agent at its quota gets
-#          EDQUOT, also in its storage, while system state keeps writing and 2/0 keeps its limit. Removing the newest
+#          EDQUOT, also in its storage, while system state keeps writing and 2/0 keeps its limit. With drop_subtree_threshold 1
+#          a snapshot delete makes qgroups inconsistent: rootd freezes the agent's slice, refuses file.write through the
+#          task gate and task new with BUSY and alerts; after its rescan the flag is 0, the slice thaws and 1/N gives
+#          EDQUOT again (#79). Removing the newest
 #          agent deletes its user, sub-ids and drop-ins and archives its subvolumes; adding another never reuses its
 #          uid or sub-id range, and re-adding its name gets a new N. A nested subvolume refuses agent.remove with
 #          NESTED_SUBVOLUME and taints workspace:<name>#<N>; re-adding that name gets a clean workspace subject while the
@@ -89,6 +92,38 @@ check "an agent at its 64 MiB quota gets EDQUOT" 'e=$(runuser -u ag-$QA -- dd if
 check "  ... and its storage shares the quota: EDQUOT there too" '! runuser -u ag-$QA -- dd if=/dev/urandom of=$ST/more bs=1M count=8 conv=fsync'
 check "  ... while system state (outside 2/0) still writes 100 MiB" 'mkdir -p $M/audit && dd if=/dev/urandom of=$M/audit/gate-fill bs=1M count=100 conv=fsync && [ $(stat -c %s $M/audit/gate-fill) = $((100 << 20)) ]'
 rm -f $M/audit/gate-fill $W/fill $ST/more
+# #79: a snapshot drop past qgroups/drop_subtree_threshold makes qgroups inconsistent; rootd fences the 2/0 writers until
+# a rescan. The hold file keeps the fence up while the checks look; rootd restarts once to read its env.
+Q=/sys/fs/btrfs/$(btrfs filesystem show $M | sed -n "s/.* uuid: \([0-9a-f-]*\).*/\1/p")/qgroups CG=/sys/fs/cgroup/user.slice/user-$UA.slice
+fenced() { $A quota check > /run/qc.json; grep -q "\"fenced\":$1" /run/qc.json; }
+mkdir -p /run/systemd/system/agentbox-rootd.service.d
+printf '[Service]\nEnvironment=AGENTBOX_TEST_QUOTA_HOLD=/run/agentbox-quota-hold\n' > /run/systemd/system/agentbox-rootd.service.d/50-gate-hold.conf
+systemctl daemon-reload && systemctl restart agentbox-rootd.service
+for i in $(seq 60); do systemctl is-active -q user@$UA.service && fenced false && break; sleep 1; done
+check "qgroups consistent and rootd's fence down before the snapshot drop" '[ "$(cat $Q/inconsistent)" = 0 ] && fenced false && grep -qx "frozen 0" $CG/cgroup.events'
+touch /run/agentbox-quota-hold
+btrfs subvolume create $D/qg-gate >/dev/null
+python3 -c "import os,sys; [open(os.path.join(sys.argv[1], 'f%d' % i), 'wb').write(os.urandom(2000)) for i in range(20000)]" $D/qg-gate
+echo 1 > $Q/drop_subtree_threshold
+btrfs subvolume snapshot $D/qg-gate $D/qg-snap >/dev/null && sync && btrfs subvolume delete $D/qg-snap >/dev/null && btrfs subvolume sync $D
+check "drop_subtree_threshold 1, a snapshot deleted: qgroups/inconsistent reads 1" '[ "$(cat $Q/inconsistent)" = 1 ]'
+( $A quota check > /run/qc-held.json 2>&1 & )
+check "  ... rootd fences: quota check says fenced, ag-$QA's user slice is frozen" 'for i in $(seq 30); do grep -qx "frozen 1" $CG/cgroup.events && break; sleep 1; done &&
+  grep -qx "frozen 1" $CG/cgroup.events && fenced true'
+install -d -o agentbox -g ag-$QA -m 2750 /run/agentbox-gate/t/QF$X && $A gate register --task QF$X --agent $QA >/dev/null
+check "  ... a file.write through the task gate gets the typed denial BUSY (by floor, rule floor.quota_fence)" '
+  setpriv --reuid ag-$QA --regid ag-$QA --init-groups $A gate call --socket /run/agentbox-gate/t/QF$X/gate.sock "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"file.write\",\"params\":{\"path\":\"/srv/x\",\"content\":\"x\"}}" > /run/qf.json;
+  grep -qF "\"code\":-32010" /run/qf.json && grep -qF "\"code\":\"BUSY\"" /run/qf.json && grep -qF "\"rule\":\"floor.quota_fence\"" /run/qf.json'
+check "  ... task new is refused with the same denial" '! echo hi | $A task new --agent $QA > /run/qt.json 2>&1; grep -qF "\"code\":\"BUSY\"" /run/qt.json'
+check "  ... rootd sent the ALERT" 'journalctl -b -u agentbox-rootd -o cat | grep -q "ALERT quota: qgroups are inconsistent"'
+rm -f /run/agentbox-quota-hold
+check "hold released: the rescan runs, quota check says not fenced" 'for i in $(seq 120); do fenced false && exit 0; sleep 1; done; exit 1'
+check "  ... qgroups/inconsistent reads 0 and the slice is thawed" '[ "$(cat $Q/inconsistent)" = 0 ] && grep -qx "frozen 0" $CG/cgroup.events &&
+  journalctl -b -u agentbox-rootd -o cat | grep -q "qgroups consistent, writers thawed"'
+check "  ... and 1/$NA limits again: a write past 64 MiB gets EDQUOT" 'e=$(runuser -u ag-$QA -- dd if=/dev/urandom of=$W/fill bs=1M count=200 conv=fsync 2>&1); echo "$e" | grep -aq "Disk quota exceeded" && [ $(stat -c %s $W/fill) -le $((64 << 20)) ]'
+$A gate revoke --task QF$X >/dev/null; rm -f $W/fill /run/systemd/system/agentbox-rootd.service.d/50-gate-hold.conf
+echo 3 > $Q/drop_subtree_threshold && btrfs subvolume delete $D/qg-gate >/dev/null && btrfs subvolume sync $D && systemctl daemon-reload
+check "  ... threshold back to 3, the test subvolume gone, qgroups still consistent" '[ "$(cat $Q/drop_subtree_threshold)" = 3 ] && [ "$(cat $Q/inconsistent)" = 0 ]'
 check "agent add $QB: the next N" 'ag add --name $QB && [ "$(f n)" = $((NA + 1)) ]'
 NB=$(f n); UB=$((70000 + NB)); BB=$((0x70000000 + NB * 65536))
 check "agent remove $QB (the newest): ok, retired" 'ag remove --name $QB && [ "$(f active)" = False ]'

@@ -1,7 +1,7 @@
 // Package denial builds agentbox-denial/v1 objects (ARCHITECTURE.md §5.6) for the codes the week-4 gate and rootd's
 // executor return, and mints <kind>_<ULID> ids (§5.1).
 //
-// shortcut: a hand-kept table of the 6 codes week 4 returns; issue #11's generated codes table, ops.Deny and
+// shortcut: a hand-kept table of the 7 codes week 4 returns; issue #11's generated codes table, ops.Deny and
 // gen/denial.v1.json replace it, and every caller moves to ops.Deny then.
 package denial
 
@@ -23,6 +23,7 @@ const (
 	AuditUnavailable  Code = "AUDIT_UNAVAILABLE"
 	EffectFailed      Code = "EFFECT_FAILED"
 	BrokerUnavailable Code = "BROKER_UNAVAILABLE"
+	Busy              Code = "BUSY"
 	// RPCCode is the gate JSON-RPC error code of a denial: message = code; data = the denial (§5.6 Surfaces).
 	RPCCode = -32010
 	maxLen  = 1024
@@ -38,6 +39,7 @@ var codes = map[Code]spec{
 	AuditUnavailable:  {"retry", "The audit log did not acknowledge the op, so nothing ran; retry later."},
 	EffectFailed:      {"human", "The op did not complete; report the code and id to a human."},
 	BrokerUnavailable: {"retry", "The gate could not reach its executor; nothing ran; retry later."},
+	Busy:              {"retry", "The box is busy, so nothing ran; retry later."},
 }
 
 // Remedy is one §5.6 remedy entry.
@@ -114,6 +116,8 @@ func New(code Code, by, rule, op, field, expectText string) Denial {
 		}
 	case AuditUnavailable, BrokerUnavailable:
 		d.Remedy = append(d.Remedy, Remedy{Retry: &Retry{AfterMs: 30000}})
+	case Busy:
+		d.Remedy = append(d.Remedy, Remedy{Retry: &Retry{AfterMs: 60000}})
 	case EffectFailed:
 		d.Remedy = append(d.Remedy, Remedy{Human: &Human{}})
 	}

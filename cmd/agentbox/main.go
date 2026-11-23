@@ -42,6 +42,7 @@ const usage = `usage:
   agentbox sockets check [--root /]   (the live box against the §2.1 socket inventory)
   agentbox attach --agent A [--cli claude|codex|bash] [-- ARGS...] | status | rescan --agent A   (admin, on the box)
   agentbox egress list | refill | allow|remove --svc keys|git|proxy --entry HOST:PORT   (admin, on the box)
+  agentbox quota check   (admin: read qgroups/inconsistent now; fenced while a rescan repairs them)
   agentbox agent list | add --name N [--disk-bytes B] | remove --name N   (admin, on the box)
   agentbox accounts apply   (agentbox-accounts.service: rootd's ids table onto /etc, on the box)
   agentbox agentboxd [--gen-dir DIR]   (agentboxd.service: the task gate, on the box)
@@ -120,6 +121,11 @@ func run(args []string) error {
 		return cmdAttach(args[1:])
 	case "egress":
 		return cmdEgress(args[1:])
+	case "quota":
+		if len(args) != 2 || args[1] != "check" {
+			return errors.New("quota: expected check")
+		}
+		return adminCall(map[string]any{"op": "quota.check"}, "quota check")
 	case "sockets":
 		return cmdSockets(args[1:])
 	case "agentboxd":

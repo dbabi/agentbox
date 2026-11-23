@@ -44,6 +44,10 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 		refuse("bad agent or workspace name (one workspace per agent: data/workspaces/<agent>)")
 		return
 	}
+	if rep := s.fenceDeny("agent.attach"); rep != nil {
+		c.Write(encode(rep))
+		return
+	}
 	if r.CLI == "" {
 		r.CLI = "claude"
 	}

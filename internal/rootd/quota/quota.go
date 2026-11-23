@@ -377,6 +377,51 @@ func EnsureAgent(n int, limit uint64, subvols ...string) error {
 	return err
 }
 
+// Inconsistent reads the file system's qgroups/inconsistent flag (#79). Full mode marks qgroups inconsistent when it
+// skips the accounting of a large dropped subtree (qgroup_drop_subtree_thres), and from then on 2/0 limits nothing
+// until a rescan. Simple quotas never get there, but they don't count shared extents (Ensure).
+func Inconsistent() (bool, error) {
+	out, err := run("btrfs", "filesystem", "show", Agentbox)
+	if err != nil {
+		return false, err
+	}
+	uuid, err := parseUUID(string(out))
+	if err != nil {
+		return false, err
+	}
+	b, err := os.ReadFile("/sys/fs/btrfs/" + uuid + "/qgroups/inconsistent")
+	if err != nil {
+		return false, err
+	}
+	switch strings.TrimSpace(string(b)) {
+	case "0":
+		return false, nil
+	case "1":
+		return true, nil
+	}
+	return false, fmt.Errorf("quota: qgroups/inconsistent reads %q", b)
+}
+
+// parseUUID takes the fsid from `btrfs filesystem show`'s first line, the name of its /sys/fs/btrfs dir.
+func parseUUID(s string) (string, error) {
+	if _, rest, ok := strings.Cut(s, " uuid: "); ok {
+		if f := strings.Fields(rest); len(f) > 0 && len(f[0]) == 36 && strings.Count(f[0], "-") == 4 {
+			return f[0], nil
+		}
+	}
+	return "", fmt.Errorf("quota: no uuid in btrfs filesystem show: %q", s)
+}
+
+// Rescan starts a qgroup rescan and waits for it (-w; -W only waits for one that already runs). If one already runs,
+// it waits for that one instead.
+func Rescan() error {
+	_, err := run("btrfs", "quota", "rescan", "-w", Agentbox)
+	if err != nil && strings.Contains(err.Error(), "in progress") {
+		_, err = run("btrfs", "quota", "rescan", "-W", Agentbox)
+	}
+	return err
+}
+
 // Nested lists the subvolumes below subvolume p (`btrfs subvolume list -o`): §4.1 refuses NESTED_SUBVOLUME on any.
 func Nested(p string) ([]string, error) {
 	out, err := run("btrfs", "subvolume", "list", "-o", p)
