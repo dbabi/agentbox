@@ -207,3 +207,16 @@ func pair(t *testing.T) (cli, srv *net.UnixConn) {
 	t.Cleanup(func() { c.Close(); sc.Close() })
 	return c, sc
 }
+
+// #79: while the qgroup fence is up, agent.attach is refused BUSY before any session starts.
+func TestAttachFenced(t *testing.T) {
+	fr := &fakeRunner{run: func(attach.Session) error { t.Error("an attach ran while fenced"); return nil }}
+	s := &server{cfg: Config{Attach: fr}}
+	s.fenced.Store(true)
+	cli, srv := pair(t)
+	go func() { s.attach(srv, request{Op: "agent.attach", Name: "at", CLI: "bash"}, nil); srv.Close() }()
+	out, _ := io.ReadAll(cli)
+	if !strings.Contains(string(out), `"code":"BUSY"`) || !strings.Contains(string(out), `"ok":false`) {
+		t.Fatalf("got %s", out)
+	}
+}

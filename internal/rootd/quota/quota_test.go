@@ -70,3 +70,15 @@ func TestParseNested(t *testing.T) {
 		t.Errorf("empty list: %q", got)
 	}
 }
+
+func TestParseUUID(t *testing.T) {
+	const s = "Label: none  uuid: 3f1c2a9e-5b7d-4e8a-9c0f-1a2b3c4d5e6f\n\tTotal devices 1 FS bytes used 2.10GiB\n"
+	if u, err := parseUUID(s); err != nil || u != "3f1c2a9e-5b7d-4e8a-9c0f-1a2b3c4d5e6f" {
+		t.Fatalf("got %q %v", u, err)
+	}
+	for _, bad := range []string{"", "Label: none  uuid: ../../x\n", "uuid:3f1c2a9e-5b7d-4e8a-9c0f-1a2b3c4d5e6f"} {
+		if u, err := parseUUID(bad); err == nil {
+			t.Errorf("%q: got %q", bad, u)
+		}
+	}
+}
