@@ -6,15 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 
 	"agentbox/internal/controlpaths"
+	"agentbox/internal/wsfs"
 )
 
 // BaselineSchema is the control-path state the admin last accepted for each agent's workspace (§4.2: rootd refuses
@@ -49,12 +48,12 @@ func Controls(p Paths) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	h, err := walk(p.SessionHome, func(rel string, d fs.DirEntry) sel {
+	h, err := walk(p.SessionHome, func(rel string, d wsfs.Entry) sel {
 		for _, hp := range HomePaths {
 			switch {
 			case rel == hp || strings.HasPrefix(rel, hp+"/"):
 				return record
-			case strings.HasPrefix(hp, rel+"/") && d.Type()&fs.ModeSymlink != 0:
+			case strings.HasPrefix(hp, rel+"/") && d.Mode&fs.ModeSymlink != 0:
 				return record // ~/.local as a link: the CLI would follow it to a bin dir no walk sees
 			case strings.HasPrefix(hp, rel+"/"):
 				return descend
@@ -75,7 +74,7 @@ func Manifest(ws string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return walk(ws, func(rel string, _ fs.DirEntry) sel {
+	return walk(ws, func(rel string, _ wsfs.Entry) sel {
 		switch {
 		case !roots.Is(rel):
 			return descend
@@ -94,49 +93,48 @@ const (
 	skip               // neither
 )
 
-func walk(root string, which func(rel string, d fs.DirEntry) sel) (map[string]string, error) {
+// hashCap is the largest control-path file walk hashes. A larger one is recorded by size and ctime instead: any write
+// to it moves its ctime, and a session can't set ctime back, so a change still shows (a chmod or touch shows too).
+const hashCap = 64 << 20
+
+func walk(root string, which func(rel string, d wsfs.Entry) sel) (map[string]string, error) {
 	m := map[string]string{}
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(root, p)
-		rel = filepath.ToSlash(rel)
+	err := wsfs.Walk(root, func(e wsfs.Entry) error {
+		rel := e.Rel
 		if rel == "." {
 			return nil
 		}
-		switch which(rel, d) {
+		switch which(rel, e) {
 		case skip:
-			if d.IsDir() {
-				return filepath.SkipDir
+			if e.IsDir() {
+				return fs.SkipDir
 			}
 			return nil
 		case descend:
 			return nil
 		}
-		switch t := d.Type(); {
+		switch t := e.Mode.Type(); {
 		case t&fs.ModeSymlink != 0:
-			l, err := os.Readlink(p)
+			l, err := e.Readlink()
 			if err != nil {
 				return err
 			}
 			m[rel] = "link " + l
 		case t.IsRegular():
-			fi, err := d.Info()
+			f, err := e.Open()
 			if err != nil {
 				return err
 			}
-			f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-			if err != nil {
-				return err
+			defer f.Close()
+			if f.Size > hashCap {
+				m[rel] = fmt.Sprintf("%s large %d %d", e.Mode.Perm(), f.Size, e.Ctime.UnixNano())
+				return nil
 			}
 			h := sha256.New()
-			_, err = io.Copy(h, f)
-			f.Close()
-			if err != nil {
+			if _, err := io.Copy(h, io.LimitReader(f, hashCap)); err != nil {
 				return err
 			}
-			m[rel] = fi.Mode().Perm().String() + " " + hex.EncodeToString(h.Sum(nil))
+			m[rel] = e.Mode.Perm().String() + " " + hex.EncodeToString(h.Sum(nil))
 		case !t.IsDir():
 			m[rel] = "special " + t.String() // a fifo or device: unusual, so it needs an ack too
 		}

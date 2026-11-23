@@ -6,12 +6,11 @@ package controlpaths
 
 import (
 	"bytes"
-	"io/fs"
-	"os"
 	"path"
-	"path/filepath"
 	"slices"
 	"strings"
+
+	"agentbox/internal/wsfs"
 )
 
 var (
@@ -84,19 +83,19 @@ func under(p, root string) (string, bool) {
 // not one (the task can't write there).
 func FindRoots(ws string) (Roots, error) {
 	var r Roots
-	err := filepath.WalkDir(ws, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(ws, p)
-		rel = filepath.ToSlash(rel)
+	err := wsfs.Walk(ws, func(e wsfs.Entry) error {
 		switch {
-		case d.IsDir():
-			if fi, err := os.Lstat(filepath.Join(p, "pyvenv.cfg")); err == nil && fi.Mode().IsRegular() {
-				r.Venvs = append(r.Venvs, rel)
+		case !e.Mode.IsRegular():
+		case e.Name == "pyvenv.cfg":
+			r.Venvs = append(r.Venvs, path.Dir(e.Rel))
+		case e.Name == ".git":
+			f, err := e.Open()
+			if err != nil {
+				return err
 			}
-		case d.Name() == ".git" && d.Type().IsRegular():
-			if g := gitdir(p, path.Dir(rel)); g != "" {
+			b, err := f.ReadAll(4096)
+			f.Close()
+			if g := gitdir(b, path.Dir(e.Rel)); err == nil && g != "" {
 				r.GitDirs = append(r.GitDirs, g)
 			}
 		}
@@ -105,12 +104,8 @@ func FindRoots(ws string) (Roots, error) {
 	return r, err
 }
 
-// gitdir reads a .git file at p, in the workspace dir dir, and returns the workspace-relative dir it names.
-func gitdir(p, dir string) string {
-	b, err := os.ReadFile(p)
-	if err != nil || len(b) > 4096 {
-		return ""
-	}
+// gitdir parses a .git file's body, in the workspace dir dir, and returns the workspace-relative dir it names.
+func gitdir(b []byte, dir string) string {
 	t, ok := bytes.CutPrefix(bytes.TrimSpace(b), []byte("gitdir:"))
 	if !ok {
 		return ""
