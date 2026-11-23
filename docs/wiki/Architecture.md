@@ -309,9 +309,13 @@ Each service runs as its own Linux user, with only the access it needs.
 - Before the CLI starts, taskrun checks its own boundary from inside.
   The task must see only `lo`, no default route, `ENETUNREACH` for a public IP, only `127.0.0.1` in `resolv.conf`, no other task's sockets and no abstract socket.
   Any failure stops the task with `TASK_ISOLATION_PROBE`, an audit record and an ntfy alert.
-- The design names three agent CLIs: Claude Code, Codex and opencode.
-  Their configs and flags are built.
-  The CLIs are not in the task image yet, and only Claude Code has run in a test.
+- Tasks run two agent CLIs: Claude Code and Codex.
+  Their configs, flags and system policy files are built.
+  The policy files sit in the image's read-only `/etc`, so a CLI started by hand in a task obeys them too.
+  They turn off workspace hooks, MCP servers, plugins, web search, updates and telemetry.
+  The CLIs are not in the task image yet; the gates install them on the host.
+- opencode is not supported.
+  Its current release has no setting that stops a plugin named in a workspace `opencode.json` from running.
 - The forwarders listen on `127.0.0.1:8080` for egress, `:8081` for LLM APIs and `:8082` for git.
 - The forwarders lead to the task's own Unix sockets for the proxy, keys and git.
   A fourth socket reaches the gate in agentboxd.

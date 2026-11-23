@@ -74,8 +74,69 @@ func TestCLIArgv(t *testing.T) {
 	if c, _ := CLIArgv("codex"); !slices.Contains(c, "-") {
 		t.Errorf("codex must read the prompt on stdin: %v", c)
 	}
-	if _, err := CLIArgv("bash"); err == nil {
-		t.Error("an unknown CLI must be refused")
+	for _, c := range []string{"bash", "opencode"} {
+		if _, err := CLIArgv(c); err == nil {
+			t.Errorf("%s must be refused", c)
+		}
+	}
+	for _, c := range []string{"claude", "codex", "sh"} {
+		a, _ := CLIArgv(c)
+		for _, f := range DeniedFlags {
+			if slices.Contains(a, f) || slices.Contains(a, "--bare") {
+				t.Errorf("%s argv has %s or --bare", c, f)
+			}
+		}
+	}
+}
+
+// #77, #121: the image's policy files lock what user and project config can't change back; the generated Codex
+// config sends the model API to the forwarder and turns the same switches off.
+func TestPolicyFiles(t *testing.T) {
+	files := map[string]string{}
+	tr := tar.NewReader(bytes.NewReader(Skeleton()))
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		c, _ := io.ReadAll(tr)
+		files[h.Name] = string(c)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(files["etc/claude-code/managed-settings.json"]), &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"allowManagedHooksOnly", "allowManagedMcpServersOnly", "allowManagedPermissionRulesOnly", "disableAllHooks"} {
+		if m[k] != true {
+			t.Errorf("managed %s = %v", k, m[k])
+		}
+	}
+	if a, ok := m["allowedMcpServers"].([]any); !ok || len(a) != 0 {
+		t.Errorf("allowedMcpServers %v: want an empty allowlist", m["allowedMcpServers"])
+	}
+	r := files["etc/codex/requirements.toml"]
+	for _, want := range []string{"\nallowed_web_search_modes = []\n", "\nallow_managed_hooks_only = true\n", "\n[features]\nhooks = false\nplugins = false\n",
+		"\ncheck_for_update_on_startup = false\n", "\n[feedback]\nenabled = false\n"} {
+		if !strings.Contains(r, want) {
+			t.Errorf("requirements.toml lacks %q", want)
+		}
+	}
+	c := Exports["codex-config.toml"]
+	for _, want := range []string{"\nmodel_provider = \"agentbox\"\nweb_search = \"disabled\"\n", "\n[analytics]\nenabled = false\n", "\nexporter = \"none\"\n",
+		"\n[model_providers.agentbox]\nname = \"agentbox\"\nbase_url = \"http://127.0.0.1:8081/openai/v1\"\n"} {
+		if !strings.Contains(c, want) {
+			t.Errorf("codex-config.toml lacks %q", want)
+		}
+	}
+	if i, j := strings.Index(c, "model_provider ="), strings.Index(c, "\n["); i > j {
+		t.Error("codex-config.toml: a top-level key after a table belongs to that table")
+	}
+	s := strings.Join(Argv(Spec{Task: "task_x", Agent: "a"}), " ")
+	for _, want := range []string{"-e ANTHROPIC_BASE_URL=http://127.0.0.1:8081/anthropic", "-e DISABLE_UPDATES=1", "-e CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1",
+		"-e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("argv lacks %q", want)
+		}
 	}
 }
 
@@ -152,7 +213,7 @@ func TestSetupAndExports(t *testing.T) {
 	if string(b) != Exports["claude-settings.json"] {
 		t.Fatalf("settings %q", b)
 	}
-	for f, dst := range map[string]string{"CLAUDE.md": ".claude/CLAUDE.md", "AGENTS.md": ".config/opencode/AGENTS.md"} {
+	for f, dst := range map[string]string{"CLAUDE.md": ".claude/CLAUDE.md", "AGENTS.md": ".codex/AGENTS.md"} {
 		if b, _ := os.ReadFile(filepath.Join(home, dst)); string(b) != string(ops.Exports()[f]) {
 			t.Fatalf("%s: %q", dst, b)
 		}

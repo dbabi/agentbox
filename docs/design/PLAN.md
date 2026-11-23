@@ -47,7 +47,7 @@
 **Weeks 5–6 open, with the reason:**
 - The SKILL.md frontmatter clause: partial (above). It needs a model turn.
 - Brokers are stand-ins until weeks 7–8: `agentbox broker-stub` in `m4-tasks`, a small svc stub in `m4-taskenv`. No task reaches a model or the internet.
-- No agent CLI is in the task image yet: the task image is a root skeleton plus the host's `/usr`, read-only, and the gates install the Claude Code CLI on the host. Codex and opencode have not run in a task or an attach. Attach sessions don't get the task env.
+- No agent CLI is in the task image yet: the task image is a root skeleton plus the host's `/usr`, read-only, and the gates install the Claude Code and Codex CLIs on the host. `hack/cli-gate.sh` runs both in tasks and Codex in an attach, against stand-in brokers that answer every model request with an error. opencode is dropped (#77). Attach sessions don't get the task env.
 - Attach sessions have no network path (#90), so a real Claude login can't reach its servers from an attach.
 - Marked shortcuts, each with an issue: the token scan polls and skips packfiles (#154); session-home instruction files persist unreviewed (#153, a THREAT-MODEL residual); the task seccomp profile is podman's default minus btrfs ioctls (#155); auditd's `workspace:<name>` taint carries over to a re-added agent of the same name (#95, fail-closed). Not filed: a Codex token refreshed by rename is lost at the end of an attach (`session.go`).
 - Other modes: the weeks 5–6 gates ran in `none` on arm64 UEFI only. The weeks 5–6 code doesn't touch unlock or boot.

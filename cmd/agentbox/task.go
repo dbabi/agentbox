@@ -25,7 +25,7 @@ func cmdTask(args []string) error {
 	switch args[0] {
 	case "new":
 		agent := fs.String("agent", "", "the agent that runs it")
-		cli := fs.String("cli", "claude", "claude, codex or opencode")
+		cli := fs.String("cli", "claude", "claude or codex")
 		asks := fs.Int("asks", rootd.DefaultAsks, "the task's ask budget, 0 to 10")
 		deadline := fs.Duration("deadline", rootd.DefaultDeadline, "how long it may run, at most 2h")
 		if err := parse(fs, args[1:]); err != nil {

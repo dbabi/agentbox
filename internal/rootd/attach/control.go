@@ -28,9 +28,12 @@ CREATE TABLE IF NOT EXISTS attach_baseline(agent TEXT PRIMARY KEY, manifest TEXT
 // (config, hooks, info/attributes, anything unknown) is a control path.
 var gitInert = []string{"objects", "logs", "refs", "index", "HEAD", "ORIG_HEAD", "FETCH_HEAD", "MERGE_HEAD", "COMMIT_EDITMSG", "packed-refs", "description", "lfs"}
 
-func inertGit(rel string) bool {
+func inertGit(rel string, r controlpaths.Roots) bool {
 	segs := strings.Split(rel, "/")
 	i := slices.Index(segs, ".git")
+	if g := r.GitDir(rel); i < 0 && g != "" {
+		i = strings.Count(g, "/") // a git dir a .git file names has the same inert entries
+	}
 	return i >= 0 && i+1 < len(segs) && slices.Contains(gitInert, segs[i+1])
 }
 
@@ -68,11 +71,15 @@ func Controls(p Paths) (map[string]string, error) {
 // Manifest is the workspace's control paths: each file's mode and sha256, each symlink's target. Symlinks are not
 // followed.
 func Manifest(ws string) (map[string]string, error) {
+	roots, err := controlpaths.FindRoots(ws)
+	if err != nil {
+		return nil, err
+	}
 	return walk(ws, func(rel string, _ fs.DirEntry) sel {
 		switch {
-		case !controlpaths.Is(rel):
+		case !roots.Is(rel):
 			return descend
-		case inertGit(rel):
+		case inertGit(rel, roots):
 			return skip
 		}
 		return record

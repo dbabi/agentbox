@@ -21,7 +21,7 @@ At the time of writing:
 
 None yet. Tasks can start an agent CLI, but no task can reach a model until the brokers are built.
 
-The design names three agent CLIs: Claude Code, Codex and opencode. The plan for running them:
+Tasks run two agent CLIs: Claude Code and Codex. opencode is not supported: its current release can't stop a workspace plugin from running. The plan for running them:
 
 - Each task runs in its own disposable podman container. The container has no network and a temporary home directory. This part is built.
 - No credential exists inside a task. Broker services outside the container hold the LLM API keys and the GitHub token.

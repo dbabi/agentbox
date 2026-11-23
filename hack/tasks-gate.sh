@@ -10,8 +10,8 @@
 #          - a task plants Claude, Codex and opencode hooks, settings and MCP config, in HOME and in the workspace,
 #            and a SKILL.md frontmatter hook: the next task's HOME holds only the generated configs and hooks are off.
 #            The real Claude Code CLI (linux-arm64, pinned in hack/SHA256SUMS, as in attach-gate.sh) run without the
-#            task flags in a task runs the workspace SessionStart hook and .mcp.json server (the control); run as
-#            `--cli claude` it runs neither. A skill's frontmatter hook needs a model turn, so only the shared
+#            task flags on the host runs the workspace SessionStart hook and .mcp.json server (the control); run the
+#            same way in a task (the image's managed settings) or as `--cli claude`, it runs neither. A skill's frontmatter hook needs a model turn, so only the shared
 #            disableAllHooks switch is checked for it;
 #          - agent.attach is refused while a task of the agent runs;
 #          - a task tainted mid-run makes the next task start tainted;
@@ -181,24 +181,33 @@ P
 check "  ... the next task's HOME is fresh: only the generated configs, byte for byte, read-only at the source" 'T3=$(new 2m < /tmp/tg-p) &&
   wait_end $T3 60 && [ "$(field $T3 end_reason)" = completed ] && [ "$(cat $W/t3.claude $W/t3.codex $W/t3.exports)" = "same
 same
-ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.agentbox/output /home/agent/.claude /home/agent/.claude/CLAUDE.md /home/agent/.claude/settings.json /home/agent/.codex /home/agent/.codex/AGENTS.md /home/agent/.codex/config.toml /home/agent/.config /home/agent/.config/opencode /home/agent/.config/opencode/AGENTS.md " ] || { cat $W/t3.home $W/t3.claude $W/t3.codex $W/t3.exports; false; }'
+ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.agentbox/output /home/agent/.claude /home/agent/.claude/CLAUDE.md /home/agent/.claude/settings.json /home/agent/.codex /home/agent/.codex/AGENTS.md /home/agent/.codex/config.toml " ] || { cat $W/t3.home $W/t3.claude $W/t3.codex $W/t3.exports; false; }'
 check "  ... hooks are off for every settings source (disableAllHooks, the skill frontmatter hook included), MCP config empty, git hooks off" '
   grep -qx "  \"disableAllHooks\": true" /var/lib/agentbox/control/exports/gt/claude-settings.json && grep -q "\"mcpServers\": {}" /var/lib/agentbox/control/exports/gt/mcp.json &&
   [ "$(cat $W/t3.git)" = /opt/agentbox/exports/nohooks ] && [ -z "$(ls -A /var/lib/agentbox/control/exports/gt/nohooks)" ]'
 # in /usr/bin, which the stub task image mounts from the host
 mkdir -p /tmp/cc && tar -xzf /tmp/claude.tgz -C /tmp/cc package/claude && install -m 0755 /tmp/cc/package/claude /usr/bin/claude
 rm -rf /tmp/cc /tmp/claude.tgz
+# by hand: a fresh HOME, not the task's (its generated user settings turn hooks off), every settings source, a trusted
+# workspace with the planted server enabled
 cat > /tmp/tg-p <<'P'
-export HOME=$(mktemp -d) # not the task HOME: its generated user settings turn hooks off
+export HOME=$(mktemp -d)
 echo '{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true,"enabledMcpjsonServers":["evil"]}}}' > $HOME/.claude.json
 cd /workspace && timeout 60 claude -p hi --setting-sources user,project,local --dangerously-skip-permissions </dev/null > /workspace/tc.out 2>&1
 sleep 2; echo done > /workspace/tc.done
 P
-check "  ... control: claude without the task flags, in a task, runs the planted SessionStart hook and .mcp.json server" 'Tc=$(new 2m < /tmp/tg-p) &&
-  wait_end $Tc 90 && [ -f $W/tc.done ] && [ -e $W/HOOK-RAN ] && [ -e $W/MCP-RAN ] || { ls -A $W; cat $W/tc.out; false; }'
-rm -f $W/HOOK-RAN $W/MCP-RAN $W/tc.*
+# the control runs the same on the host, as the agent, where no managed settings exist; /workspace links to the workspace
+T=$(mktemp -d) && sed -n "s/^echo '\(.*\)' > \$HOME\/.claude.json$/\1/p" /tmp/tg-p > $T/.claude.json && chown -R ag-gt $T && ln -sfn $W /workspace
+runuser -u ag-gt -- sh -c "cd $W && HOME=$T timeout 60 claude -p hi --setting-sources user,project,local --dangerously-skip-permissions" </dev/null >/tmp/tg-ctl 2>&1 || :
+check "  ... control: claude without the task flags, on the host, runs the planted SessionStart hook and .mcp.json server" '
+  [ -e $W/HOOK-RAN ] && [ -e $W/MCP-RAN ] || { ls -A $W; cat /tmp/tg-ctl; false; }'
+rm -rf $T; rm -f /workspace $W/HOOK-RAN $W/MCP-RAN
+check "  ... the same claude, by hand in a task, runs neither: the image's managed settings outrank every source" 'Tc=$(new 2m < /tmp/tg-p) &&
+  wait_end $Tc 90 && [ -f $W/tc.done ] && [ ! -e $W/HOOK-RAN ] && [ ! -e $W/MCP-RAN ] || { ls -A $W; cat $W/tc.out; false; }'
+rm -f $W/tc.*
+# the model API goes to the keys stand-in, which isn't HTTP: claude retries until the deadline
 check "  ... a --cli claude task (the real CLI with the task flags) runs neither" 'echo hi > /tmp/tg-p && T3c=$(newc claude 2m < /tmp/tg-p) &&
-  wait_end $T3c 90 && sleep 2 && [ ! -e $W/HOOK-RAN ] && [ ! -e $W/MCP-RAN ] || { ls -A $W; false; }'
+  wait_end $T3c 200 && sleep 2 && [ ! -e $W/HOOK-RAN ] && [ ! -e $W/MCP-RAN ] || { ls -A $W; false; }'
 
 # --- #13: taint carry-over ---
 echo 'touch /workspace/t4.up; i=0; while [ ! -e /workspace/t4.go ] && [ $i -lt 100 ]; do sleep 0.5; i=$((i+1)); done' > /tmp/tg-p
