@@ -61,6 +61,7 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | A credential in the workspace that works against a host allowed before the credential was written stays usable until the next grant or first-task scan finds it | |
 | The post-attach token scan finds a token as written, not encoded, and reads a packed git delta's inserted bytes without rebuilding it from its base: an agent that encodes the token or splices it from copies evades it | The review diff (§7) |
 | A file that a workspace git config pulls in with `include.path` or `includeIf` is not a control path: once the include line is acknowledged, the included file can change with no new acknowledgement | Issue #193: treat include targets as control paths |
+| In session-home, only the CLIs' instruction files and what the shells, editors, pagers, Python, ssh, git and go read at startup are control paths: another tool's per-user config, or a cache a tool trusts, can carry code from one attach to a later one | Give each session a fresh HOME that holds only the CLIs' own state from session-home |
 | Root can always remove confinement: after a root-level flush, brokers are unconfined for up to 60 s, until the next `fwcheck` | |
 | One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late | |
 | Jev egress when enabled | |

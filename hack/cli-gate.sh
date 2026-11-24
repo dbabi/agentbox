@@ -26,7 +26,8 @@
 #               pinned set below (no WebSearch). Bumping the Claude Code pin means running this gate.
 #          #123 a task writes .vscode/tasks.json (runOn folderOpen), a nested repo sub/.git and a venv named env/,
 #               and (#182) a venv at the workspace root, a bare repo and a git dir's commondir target: the next attach
-#               is refused naming each, until --ack-control-changes; git in the task finds no bare repo by itself.
+#               is refused naming each, until --ack-control-changes quotes the digest the refusal printed; git in
+#               the task finds no bare repo by itself.
 #               (taint review has no CLI yet.)
 # PASS/FAIL lines go to .vm/cli-gate.txt, command output to .vm/cli-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
@@ -343,13 +344,16 @@ check "#77 #121 a no-op --cli codex task: no hook, no web_search, 0 CONNECTs, on
 
 # --- #77 in an attach; #123 control paths ---
 attach() { timeout 180 $B attach --agent cg "$@"; }
-check "#77 attach refuses --dangerously-bypass-hook-trust" '! attach --cli codex --ack-control-changes -- exec --dangerously-bypass-hook-trust </dev/null >$G/a0 2>&1; cat $G/a0;
+digest() { sed -n 's/.*--ack-control-changes=\([0-9a-f]\{64\}\).*/\1/p' "$1" | head -1; } # the one a refusal printed
+# the tasks above changed control paths: the first attach is refused for those, then acked with the digest it printed
+check "#77 attach refuses --dangerously-bypass-hook-trust" '! attach --cli codex -- exec --dangerously-bypass-hook-trust </dev/null >$G/a0 2>&1; D=$(digest $G/a0);
+  { [ -z "$D" ] || ! attach --cli codex --ack-control-changes=$D -- exec --dangerously-bypass-hook-trust </dev/null >$G/a0 2>&1; }; cat $G/a0;
   grep -q "refused: --dangerously-bypass-hook-trust" $G/a0'
 cat > $G/a1 <<'IN'
 cd /workspace; cp .gate/user-hooks.json $CODEX_HOME/hooks.json; echo hi | timeout 60 codex exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -c features.hooks=true -C /workspace - >/dev/null 2>&1
 exit
 IN
-check "#77 in an attach (codex by hand, hooks planted in its CODEX_HOME, the bypass flag): no hook runs" 'attach --cli bash --ack-control-changes < $G/a1 > $G/a1.out 2>&1; cat $G/a1.out;
+check "#77 in an attach (codex by hand, hooks planted in its CODEX_HOME, the bypass flag): no hook runs" 'attach --cli bash < $G/a1 > $G/a1.out 2>&1; cat $G/a1.out;
   grep -qF "[agentbox] session ended; token scan: clean, tasks may start" $G/a1.out && sleep 2 && none'
 cat > $G/p <<'P'
 cd /workspace
@@ -367,7 +371,8 @@ check "  ... git in the task finds no bare repo by itself (safe.bareRepository=e
 check "  ... the next attach is refused, naming each" '! attach --cli bash </dev/null > $G/a2 2>&1; cat $G/a2; grep -q "control paths changed" $G/a2 &&
   for p in .vscode/tasks.json sub/.git/config env/pyvenv.cfg env/bin/python pyvenv.cfg bin/evil.pth bare.git/config common/config; do
     grep -qE "(: |, )$p(, |;)" $G/a2 || exit 1; done && ! grep -q "sub/.git/objects\|bare.git/objects\|\.gate" $G/a2'
-check "  ... and passes with --ack-control-changes" '{ sleep 3; echo "sleep 1; exit"; } | attach --cli bash --ack-control-changes > $G/a3 2>&1; cat $G/a3; grep -qF "[agentbox] session ended" $G/a3'
+check "  ... and passes with --ack-control-changes and the digest it printed" '{ sleep 3; echo "sleep 1; exit"; } | attach --cli bash --ack-control-changes=$(digest $G/a2) > $G/a3 2>&1;
+  cat $G/a3; grep -qF "[agentbox] session ended" $G/a3'
 
 # --- the box afterwards ---
 for v in proxy keys; do kill "$(cat $G/svc-$v.pid)" 2>/dev/null; rm -f /run/agentbox-rootd/svc-$v.sock; done

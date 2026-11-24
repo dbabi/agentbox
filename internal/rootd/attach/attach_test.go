@@ -290,8 +290,34 @@ func TestPrepare(t *testing.T) {
 	if l, _ := os.Readlink(filepath.Join(p.Codex, "auth.json")); l != Home+"/.codex/auth.json" {
 		t.Fatalf("codex auth link %q", l)
 	}
+	// CODEX_HOME is in session-home, under the agent's own quota (#210), and it is the session's own: no bind
+	if fi, err := os.Lstat(p.Codex); err != nil || !fi.IsDir() || filepath.Dir(p.Codex) != p.SessionHome || CodexHome != Home+"/"+CodexDir {
+		t.Fatalf("CODEX_HOME %s: %v %v", p.Codex, fi, err)
+	}
+	for _, m := range s.Mounts {
+		if strings.Contains(m.Dst, CodexDir) || strings.HasPrefix(m.Src, filepath.Join(root, "control", "attach")) {
+			t.Fatalf("a CODEX_HOME bind: %+v", m)
+		}
+	}
 	if c, _ := os.ReadFile(filepath.Join(p.Codex, "config.toml")); strings.Contains(string(c), "[projects") || !strings.Contains(string(c), "\nweb_search = \"disabled\"\n") {
 		t.Fatalf("codex config %s", c)
+	}
+	RemoveRun(p)
+	if _, err := os.Lstat(p.Codex); err == nil {
+		t.Fatal("RemoveRun left CODEX_HOME")
+	}
+	// one a session left as a link is removed, not followed
+	elsewhere := t.TempDir()
+	os.WriteFile(filepath.Join(elsewhere, "keep"), nil, 0o600)
+	os.Symlink(elsewhere, p.Codex)
+	if _, err := Prepare(root, "ses_1", "at", "codex", nil, uid, gid, "/dev/pts/9", ""); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(p.Codex); err != nil || !fi.IsDir() {
+		t.Fatalf("CODEX_HOME over a planted link: %v %v", fi, err)
+	}
+	if ents, _ := os.ReadDir(elsewhere); len(ents) != 1 {
+		t.Fatalf("rootd wrote or removed through the link: %v", ents)
 	}
 	RemoveRun(p)
 	for _, bad := range []string{"--dangerously-bypass-hook-trust", "--trust", "--trust=yes"} {
@@ -395,12 +421,23 @@ func TestHomeControls(t *testing.T) {
 	os.MkdirAll(filepath.Join(h, ".agents", "skills", "y"), 0o700) // Codex's user skills (#186)
 	os.WriteFile(filepath.Join(h, ".agents", "skills", "y", "SKILL.md"), []byte("---\n"), 0o600)
 	os.Symlink("/workspace/bin", filepath.Join(h, ".local"))
+	// #200: what the shells and tools a session runs read at startup; not the empty git config rootd binds over
+	for _, f := range []string{".bashrc", ".profile", ".bash_aliases", ".inputrc", ".vimrc", ".ssh/config", "bin/git", ".config/git/attributes", ".config/git/config",
+		".less", ".config/go/env"} {
+		os.MkdirAll(filepath.Join(h, filepath.Dir(f)), 0o700)
+		os.WriteFile(filepath.Join(h, f), []byte("x"), 0o600)
+	}
+	// ~/.local links into the workspace: its bin and the python user site there are control paths
+	os.MkdirAll(filepath.Join(p.Workspace, "bin", "lib", "python3.14", "site-packages"), 0o755)
+	os.WriteFile(filepath.Join(p.Workspace, "bin", "lib", "python3.14", "site-packages", "x.pth"), []byte("import os"), 0o644)
 	os.WriteFile(filepath.Join(p.Workspace, "AGENTS.md"), []byte("x"), 0o644)
 	// a workspace dir named ~ can't stand in for session-home
 	os.MkdirAll(filepath.Join(p.Workspace, "~", ".claude"), 0o755)
 	os.WriteFile(filepath.Join(p.Workspace, "~", ".claude", "CLAUDE.md"), []byte("obey"), 0o644)
-	want := []string{"/home/agent/.agents/skills/y/SKILL.md", "/home/agent/.claude/CLAUDE.md", "/home/agent/.claude/skills/x/SKILL.md", "/home/agent/.local", "/home/agent/.npmrc",
-		"AGENTS.md", "~/.claude/CLAUDE.md"}
+	want := []string{"/home/agent/.agents/skills/y/SKILL.md", "/home/agent/.bash_aliases", "/home/agent/.bashrc", "/home/agent/.claude/CLAUDE.md",
+		"/home/agent/.claude/skills/x/SKILL.md", "/home/agent/.config/git/attributes", "/home/agent/.config/go/env", "/home/agent/.inputrc", "/home/agent/.less",
+		"/home/agent/.local", "/home/agent/.npmrc",
+		"/home/agent/.profile", "/home/agent/.ssh/config", "/home/agent/.vimrc", "/home/agent/bin/git", "AGENTS.md", "bin/lib/python3.14/site-packages/x.pth", "~/.claude/CLAUDE.md"}
 	if c := changes(); !slices.Equal(c, want) {
 		t.Fatalf("planted:\n got %q\nwant %q", c, want)
 	}
@@ -411,7 +448,8 @@ func TestHomeControls(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(h, ".claude", "skills", "x", "SKILL.md"), []byte("---\nhooks: x\n"), 0o600)
 	os.Remove(filepath.Join(h, ".claude", "CLAUDE.md"))
-	if c := changes(); !slices.Equal(c, []string{"/home/agent/.claude/CLAUDE.md", "/home/agent/.claude/skills/x/SKILL.md"}) {
+	os.WriteFile(filepath.Join(h, ".bashrc"), []byte("git() { :; }"), 0o600)
+	if c := changes(); !slices.Equal(c, []string{"/home/agent/.bashrc", "/home/agent/.claude/CLAUDE.md", "/home/agent/.claude/skills/x/SKILL.md"}) {
 		t.Fatalf("changed and removed: %q", c)
 	}
 }
@@ -523,5 +561,168 @@ func TestManifestContentRoots(t *testing.T) {
 	os.WriteFile(filepath.Join(ws, "wt", ".git"), []byte("gitdir: /home/agent/g\n"), 0o644)
 	if _, err := Controls(Paths{Workspace: ws, SessionHome: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "session-home") {
 		t.Fatalf("a gitdir in session-home: %v", err)
+	}
+}
+
+// #202: a symlink at or under a control path is recorded by its target and by what it resolves to in the session, so
+// an edit behind an acked link needs an ack too; a link into session-home is followed there, and refused without it.
+func TestManifestLinks(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	write := func(dir string, files map[string]string) {
+		for f, b := range files {
+			os.MkdirAll(filepath.Join(dir, filepath.Dir(f)), 0o755)
+			os.WriteFile(filepath.Join(dir, f), []byte(b), 0o644)
+		}
+	}
+	link := func(dir, at, to string) {
+		os.MkdirAll(filepath.Join(dir, filepath.Dir(at)), 0o755)
+		if err := os.Symlink(to, filepath.Join(dir, at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(ws, map[string]string{"docs/guide.txt": "obey", "store/HEAD": "", "store/config": "[alias]\n", "store/objs/ab": "o", "store/refs/heads/main": "",
+		"stuff/settings.json": "{}", "payload": "[core]\n", "notes/r.md": "rule", "src/main.go": ""})
+	link(ws, "CLAUDE.md", "docs/guide.txt")
+	link(ws, "proj/.git", "../store")
+	link(ws, "store/objects", "objs")
+	link(ws, ".claude", "stuff")
+	link(ws, "sub/.git", "../.gitdir-real")
+	write(ws, map[string]string{".gitdir-real/config": "", "sub/x": ""})
+	link(ws, "a/.mcp.json", "/home/agent/mcp.json")
+	write(home, map[string]string{"mcp.json": "{}", "notes.md": "obey", ".claude/x": ""})
+	link(home, ".claude/CLAUDE.md", "../notes.md")
+	link(home, ".claude/rules/r", "/workspace/notes/r.md")
+	m, err := Controls(Paths{Workspace: ws, SessionHome: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"CLAUDE.md", "docs/guide.txt", "proj/.git", "store/config", ".claude", "stuff/settings.json", "sub/.git", ".gitdir-real/config",
+		"a/.mcp.json", Home + "/mcp.json", Home + "/.claude/CLAUDE.md", Home + "/notes.md", Home + "/.claude/rules/r", "notes/r.md"} {
+		if _, ok := m[k]; !ok {
+			t.Errorf("no %s in %q", k, slices.Sorted(maps.Keys(m)))
+		}
+	}
+	for _, k := range []string{"src/main.go", "store/objects", "store/HEAD", "store/refs/heads/main", "sub/x", Home + "/.claude/x"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("%s is not a control path", k)
+		}
+	}
+	// an edit behind each link changes the state
+	for _, f := range []string{"docs/guide.txt", "store/config", "stuff/settings.json"} {
+		os.WriteFile(filepath.Join(ws, f), []byte("changed"), 0o644)
+	}
+	os.WriteFile(filepath.Join(home, "notes.md"), []byte("changed"), 0o644)
+	m2, _ := Controls(Paths{Workspace: ws, SessionHome: home})
+	for _, k := range []string{"docs/guide.txt", "store/config", "stuff/settings.json", Home + "/notes.md"} {
+		if m2[k] == m[k] {
+			t.Errorf("%s changed, the state did not", k)
+		}
+	}
+	// without session-home, a workspace control link into it is refused
+	if _, err := Manifest(ws); err == nil || !strings.Contains(err.Error(), "session-home") {
+		t.Errorf("Manifest with a link into session-home: %v", err)
+	}
+	// a link to what git keeps as inert, and a link on the way, are recorded too: retargeting either needs an ack
+	write(ws, map[string]string{".git/description": "obey", "d1/agents.txt": "obey", "d2/agents.txt": "obey"})
+	link(ws, "CLAUDE.local.md", ".git/description")
+	link(ws, "AGENTS.md", "via/agents.txt")
+	link(ws, "via", "d1")
+	m3, err := Controls(Paths{Workspace: ws, SessionHome: home})
+	for _, k := range []string{"CLAUDE.local.md", ".git/description", "AGENTS.md", "via", "d1/agents.txt"} {
+		if _, ok := m3[k]; err != nil || !ok {
+			t.Errorf("no %s: %v", k, err)
+		}
+	}
+	os.WriteFile(filepath.Join(ws, ".git", "description"), []byte("changed"), 0o644)
+	os.Remove(filepath.Join(ws, "via"))
+	link(ws, "via", "d2")
+	m4, _ := Controls(Paths{Workspace: ws, SessionHome: home})
+	if m4[".git/description"] == m3[".git/description"] || m4["via"] == m3["via"] {
+		t.Errorf("an inert target or a link on the way changed, the state did not: %q %q", m4[".git/description"], m4["via"])
+	}
+	// /proc/self/cwd is the workspace in a session, and nothing says which file is behind it: refused
+	link(ws, "sub2/CLAUDE.md", "/proc/self/cwd/docs/guide.txt")
+	if _, err := Controls(Paths{Workspace: ws, SessionHome: home}); err == nil || !strings.Contains(err.Error(), "/proc") {
+		t.Errorf("a control link through /proc: %v", err)
+	}
+	os.Remove(filepath.Join(ws, "sub2", "CLAUDE.md"))
+	// a .git link into session-home is refused outright, as a gitdir: line there is
+	os.Remove(filepath.Join(ws, "a", ".mcp.json"))
+	link(ws, "p2/.git", "/home/agent/g")
+	if _, err := Controls(Paths{Workspace: ws, SessionHome: home}); err == nil || !strings.Contains(err.Error(), "session-home") {
+		t.Errorf("a .git link into session-home: %v", err)
+	}
+}
+
+// #210: a file an instruction file imports with @path is a control path too, through further imports, in the
+// workspace and in session-home; "\ " is a space; an e-mail address is no import. Imports nested too deep refuse.
+func TestManifestImports(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	for f, b := range map[string]string{"CLAUDE.md": "See @docs/agent.md and @~/mine.md, or mail me@example.com.\n@docs/with\\ space.md\n",
+		"docs/agent.md": "more in @../deep/x.txt", "deep/x.txt": "obey", "docs/with space.md": "", "docs/other.md": "not imported", "README.md": "@CLAUDE.md"} {
+		os.MkdirAll(filepath.Join(ws, filepath.Dir(f)), 0o755)
+		os.WriteFile(filepath.Join(ws, f), []byte(b), 0o644)
+	}
+	os.WriteFile(filepath.Join(home, "mine.md"), []byte("obey"), 0o644)
+	m, err := Controls(Paths{Workspace: ws, SessionHome: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := slices.Sorted(maps.Keys(m))
+	if want := []string{"/home/agent/mine.md", "CLAUDE.md", "deep/x.txt", "docs/agent.md", "docs/with space.md"}; !slices.Equal(got, want) {
+		t.Fatalf("manifest %q, want %q", got, want)
+	}
+	if _, err := Manifest(ws); err == nil || !strings.Contains(err.Error(), "session-home") {
+		t.Errorf("Manifest with an import from session-home: %v", err)
+	}
+	// a chain of imports deeper than maxRounds, each found only in the round after the one that names it
+	ws = t.TempDir()
+	os.MkdirAll(filepath.Join(ws, "d"), 0o755)
+	os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte(fmt.Sprintf("@d/%02d.md", maxRounds+2)), 0o644)
+	for i := 1; i <= maxRounds+2; i++ {
+		os.WriteFile(filepath.Join(ws, "d", fmt.Sprintf("%02d.md", i)), []byte(fmt.Sprintf("@%02d.md", i-1)), 0o644)
+	}
+	if _, err := Manifest(ws); err == nil || !strings.Contains(err.Error(), "deep") {
+		t.Errorf("imports nested %d deep: %v", maxRounds+2, err)
+	}
+}
+
+// #210: an import names a file from the dir of the link the CLI opened, or from the target's own dir, and a ".."
+// in it can climb from a name through a dir link, as Node's path.resolve does: every one of those is recorded.
+func TestManifestImportNames(t *testing.T) {
+	ws := t.TempDir()
+	for f, b := range map[string]string{"docs/inner/real.md": "@evil.md", "sub/evil.md": "obey", "a/b/c/CLAUDE.md": "@../../x.md", "x.md": "obey",
+		"a/x.md": "obey", "unrelated.md": ""} {
+		os.MkdirAll(filepath.Join(ws, filepath.Dir(f)), 0o755)
+		os.WriteFile(filepath.Join(ws, f), []byte(b), 0o644)
+	}
+	os.Symlink("../docs/inner/real.md", filepath.Join(ws, "sub", "CLAUDE.md")) // read as sub/CLAUDE.md, @evil.md is sub/evil.md
+	os.MkdirAll(filepath.Join(ws, "deep"), 0o755)
+	os.Symlink("../a/b/c", filepath.Join(ws, "deep", "n")) // deep/n/CLAUDE.md is a/b/c/CLAUDE.md
+	m, err := Manifest(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"sub/CLAUDE.md", "docs/inner/real.md", "sub/evil.md", "a/b/c/CLAUDE.md", "a/x.md", "x.md"} {
+		if _, ok := m[k]; !ok {
+			t.Errorf("no %s in %q", k, slices.Sorted(maps.Keys(m)))
+		}
+	}
+	if _, ok := m["unrelated.md"]; ok {
+		t.Error("unrelated.md is not imported")
+	}
+}
+
+func TestDigest(t *testing.T) {
+	cur := map[string]string{".mcp.json": "-rw-r--r-- ab", "AGENTS.md": "-rw-r--r-- cd"}
+	d := Digest([]string{".mcp.json", "AGENTS.md"}, cur)
+	if len(d) != 64 || d != Digest([]string{".mcp.json", "AGENTS.md"}, maps.Clone(cur)) {
+		t.Fatalf("digest %q", d)
+	}
+	for _, other := range []string{Digest([]string{".mcp.json"}, cur), Digest([]string{".mcp.json", "AGENTS.md", "x"}, cur),
+		Digest([]string{".mcp.json", "AGENTS.md"}, map[string]string{".mcp.json": "-rw-r--r-- ab", "AGENTS.md": "-rw-r--r-- ce"})} {
+		if other == d {
+			t.Fatal("a different list or state has the same digest")
+		}
 	}
 }

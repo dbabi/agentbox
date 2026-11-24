@@ -398,9 +398,9 @@ type request struct {
 	Rows      int      `json:"rows,omitempty"`
 	Cols      int      `json:"cols,omitempty"`
 	Term      string   `json:"term,omitempty"`
-	// agent.attach --ack-control-changes (§4.2); attach.rescan --ack-restart
-	AckControlChanges bool `json:"ackControlChanges,omitempty"`
-	AckRestart        bool `json:"ackRestart,omitempty"`
+	// agent.attach --ack-control-changes (§4.2): the digest of the changes the admin accepts; attach.rescan --ack-restart
+	AckControlChanges string `json:"ackControlChanges,omitempty"`
+	AckRestart        bool   `json:"ackRestart,omitempty"`
 	// go.private.set (§5.3)
 	Patterns *string `json:"patterns,omitempty"`
 	// task new --ack-secrets (#104): the credential count the admin acknowledges

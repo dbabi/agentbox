@@ -150,21 +150,35 @@ func TestAttach(t *testing.T) {
 	}
 
 	// the control-path gate: a planted .mcp.json refuses the attach, with no block left, until --ack-control-changes
+	// quotes the digest of that list (#210): a change made after the refusal needs a new one
+	refused := func(ack string) (line, digest string) {
+		t.Helper()
+		cli, srv := pair(t)
+		go s.attach(srv, request{Op: "agent.attach", Name: "at", CLI: "bash", AckControlChanges: ack}, nil)
+		l, _ := bufio.NewReader(cli).ReadString('\n')
+		if !strings.Contains(l, "control paths changed") || !strings.Contains(l, ".mcp.json") {
+			t.Fatalf("attach, ack %q: %s", ack, l)
+		}
+		if _, ok, _ := attach.Blocked(db, "at"); ok {
+			t.Fatal("a refused attach left a block")
+		}
+		_, d, _ := strings.Cut(l, "--ack-control-changes=")
+		return l, d[:min(len(d), 64)]
+	}
 	os.WriteFile(filepath.Join(p.Workspace, ".mcp.json"), []byte(`{"mcpServers":{}}`), 0o644)
-	cli, srv = pair(t)
-	go s.attach(srv, request{Op: "agent.attach", Name: "at", CLI: "bash"}, nil)
-	if l, _ := bufio.NewReader(cli).ReadString('\n'); !strings.Contains(l, "control paths changed") || !strings.Contains(l, ".mcp.json") {
-		t.Fatalf("attach over a planted .mcp.json: %s", l)
+	_, d := refused("")
+	os.WriteFile(filepath.Join(p.Workspace, "AGENTS.md"), []byte("planted after the refusal"), 0o644)
+	l, d2 := refused(d)
+	if d2 == d || len(d2) != 64 || !strings.Contains(l, "AGENTS.md") || !strings.Contains(l, "digest does not match this list") {
+		t.Fatalf("a change after the refusal, acked with the old digest %s: %s", d, l)
 	}
-	if _, ok, _ := attach.Blocked(db, "at"); ok {
-		t.Fatal("a refused attach left a block")
-	}
+	d = d2
 	fr.run = func(attach.Session) error { return nil }
-	for _, ack := range []bool{true, false} { // acked once, the next attach needs no flag
+	for _, ack := range []string{d, ""} { // acked once, the next attach needs no flag
 		cli, srv = pair(t)
 		go s.attach(srv, request{Op: "agent.attach", Name: "at", CLI: "bash", AckControlChanges: ack}, nil)
 		if l, _ := bufio.NewReader(cli).ReadString('\n'); !strings.Contains(l, `"ok":true`) {
-			t.Fatalf("attach, ack %v: %s", ack, l)
+			t.Fatalf("attach, ack %q: %s", ack, l)
 		}
 		io.ReadAll(cli)
 		for i := 0; i < 100; i++ {
