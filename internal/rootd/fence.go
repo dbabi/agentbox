@@ -17,7 +17,8 @@ import (
 // checkQuota is the qgroup monitor (#79), on rootd's timer and on the admin op quota.check. Inconsistent qgroups mean
 // 2/0 limits nothing, so rootd fences its writers: every agent slice frozen, writing ops refused BUSY. Then it alerts,
 // rescans, and thaws only once the rescan succeeded and the flag reads 0. It returns whether the fence is up; while a
-// repair runs, a second call returns at once.
+// repair runs, a second call returns at once. Consistent qgroups also get 2/0's limit moved with the usage outside
+// 2/0, so that usage never eats the reserve (#209).
 func (s *server) checkQuota() (bool, error) {
 	if !s.fenceMu.TryLock() {
 		return true, nil
@@ -37,6 +38,7 @@ func (s *server) checkLocked() (bool, error) {
 		if s.fenced.Swap(false) { // at start too: a rootd that died mid-repair left its freeze behind
 			s.freeze(false)
 		}
+		s.moveLimit()
 		return false, nil
 	}
 	s.fenced.Store(true)
@@ -75,7 +77,19 @@ func (s *server) checkLocked() (bool, error) {
 	s.fenced.Store(false)
 	s.alerted = false
 	log.Printf("quota: rescan in %d ms; qgroups consistent, writers thawed", time.Since(t0).Milliseconds())
+	s.moveLimit()
 	return false, nil
+}
+
+// moveLimit moves 2/0's limit with the usage outside 2/0 (quota.Refresh). Only consistent qgroups count 2/0's bytes
+// right. A failure leaves the limit where it was until the next check.
+func (s *server) moveLimit() {
+	if s.qlimit == nil {
+		return
+	}
+	if err := s.qlimit(); err != nil {
+		log.Printf("quota: 2/0 limit: %v", err)
+	}
 }
 
 // freeze sets cgroup.freeze on every active agent's user slice: its user manager, tasks and attach. An agent with no

@@ -8,7 +8,7 @@
 #          XDG dirs with storage.conf; the user@ drop-in (Requires= and After= firewall, reconcile, rootd; the XDG env;
 #          ExecStartPre=+fwcheck), the slice drop-in, linger and a running user manager; workspace, storage and
 #          session-home subvolumes owned by the agent in qgroup 1/N under 2/0 with the requested limit. An agent at its quota gets
-#          EDQUOT, also in its storage, while system state keeps writing and 2/0 keeps its limit. With drop_subtree_threshold 1
+#          EDQUOT, also in its storage, while system state keeps writing and 2/0's limit still leaves the reserve. With drop_subtree_threshold 1
 #          a snapshot delete makes qgroups inconsistent: rootd freezes the agent's slice, refuses file.write through the
 #          task gate and task new with BUSY and alerts; after its rescan the flag is 0, the slice thaws and 1/N gives
 #          EDQUOT again (#79). Removing the newest
@@ -58,6 +58,10 @@ sg() { grep "^$1:" /etc/subgid; }
 taint() { python3 -c "import sqlite3,sys; c=sqlite3.connect(\"file:$M/audit/taint.db?mode=ro\", uri=True); r=c.execute(\"select tainted from taint where subject=?\", (sys.argv[1],)).fetchone(); print(r[0] if r else \"\")" "$1"; }
 users() { getent passwd | awk -F: "\$3 >= 70000 && \$3 < 71000 {print \$1, \$3}" | sort; }
 S=$(( $(stat -f -c %b $M) * $(stat -f -c %S $M) )); R=$((S / 10)); [ $R -ge 4294967296 ] || R=4294967296
+# leaves: the 2/0 limit leaves the reserve R free: at most its bound (free space + what 2/0 references - R), and
+# within 256 MiB of it (quota.Refresh sets it 64 MiB below and lets it drift 128 MiB more)
+leaves() { l=$(qg 2/0 max_referenced) b=$(( $(stat -f -c %a $M) * $(stat -f -c %S $M) + $(qg 2/0 referenced) - R )); echo "2/0 limit $l, bound $b"
+  [ "$l" -le $b ] && [ "$l" -ge $((b - (256 << 20))) ]; }
 '
 
 for s; do case $s in
@@ -86,8 +90,8 @@ check "  ... linger on, and its user manager runs" '[ "$(loginctl show-user ag-$
 W=$D/workspaces/$QA ST=$D/agents/$QA/storage SH=$D/agents/$QA/session-home
 check "  ... workspace, storage and session-home: subvolumes owned by ag-$QA, 0700, in qgroup 1/$NA" 'for p in $W $ST $SH; do
   [ "$(stat -c "%i %u %a" $p)" = "256 $UA 700" ] && qg "$(qid $p)" parents | tr , "\n" | grep -qx 1/$NA || exit 1; done'
-check "  ... 1/$NA is under 2/0 with a 64 MiB exclusive limit; 2/0 keeps its fs size - max(10%, 4 GiB) limit" '
-  qg 1/$NA parents | tr , "\n" | grep -qx 2/0 && [ "$(qg 1/$NA max_exclusive)" = $((64 << 20)) ] && [ "$(qg 2/0 max_referenced)" = $((S - R)) ]'
+check "  ... 1/$NA is under 2/0 with a 64 MiB exclusive limit; 2/0's limit still leaves the max(10%, 4 GiB) reserve" '
+  qg 1/$NA parents | tr , "\n" | grep -qx 2/0 && [ "$(qg 1/$NA max_exclusive)" = $((64 << 20)) ] && leaves'
 check "an agent at its 64 MiB quota gets EDQUOT" 'e=$(runuser -u ag-$QA -- dd if=/dev/urandom of=$W/fill bs=1M count=200 conv=fsync 2>&1); echo "$e" | grep -aq "Disk quota exceeded" && [ $(stat -c %s $W/fill) -le $((64 << 20)) ]'
 check "  ... and its storage shares the quota: EDQUOT there too" '! runuser -u ag-$QA -- dd if=/dev/urandom of=$ST/more bs=1M count=8 conv=fsync'
 check "  ... while system state (outside 2/0) still writes 100 MiB" 'mkdir -p $M/audit && dd if=/dev/urandom of=$M/audit/gate-fill bs=1M count=100 conv=fsync && [ $(stat -c %s $M/audit/gate-fill) = $((100 << 20)) ]'

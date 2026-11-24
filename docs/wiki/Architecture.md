@@ -150,7 +150,7 @@ More: [Encryption and Recovery](Encryption-and-Recovery.md) and [Installing on R
 - These subvolumes stay the same across generations: `@home`, `@var_log`, `@var_lib_agentbox`, `@var_lib_agentbox_data`, `@var_lib_tailscale`, `@var_lib_ntfy`, `@srv` and `@snapshots`.
   Persistent data is outside the generations, so it survives a fallback.
 - Each generation keeps its kernels and initrds in `/bootpart/agentbox/gens/gen-N/`, bind-mounted at `/boot`.
-- *Built (milestone 2):* btrfs quotas. One parent quota group, `2/0`, caps every store that agents and apps can fill, at the file system size minus max(10%, 4 GiB). The OS, agentbox's control state and the generations stay outside it, so they always keep a reserve. The content store (`cas`) has its own cap. Per-agent quota groups come with agent accounts (milestone 4).
+- *Built (milestone 2):* btrfs quotas. One parent quota group, `2/0`, caps every store that agents and apps can fill. Its limit leaves max(10%, 4 GiB) of the file system free, and it moves with the space the OS, agentbox's control state and the generations use. Those stay outside `2/0`, so they always keep the reserve. The content store (`cas`) has its own cap. Per-agent quota groups come with agent accounts (milestone 4).
 
 ### Generations
 

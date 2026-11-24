@@ -9,12 +9,55 @@ func TestLimits(t *testing.T) {
 		{100 * G, 10 * G, 10 * G},
 		{2000 * G, 200 * G, 200 * G},
 	} {
-		if r := Reserve(c.size); r != c.reserve || ParentLimit(c.size) != c.size-c.reserve || CASMax(c.size) != c.cas {
-			t.Errorf("size %d: reserve %d limit %d cas %d", c.size, r, ParentLimit(c.size), CASMax(c.size))
+		if r := Reserve(c.size); r != c.reserve || CASMax(c.size) != c.cas {
+			t.Errorf("size %d: reserve %d cas %d", c.size, r, CASMax(c.size))
 		}
 	}
-	if ParentLimit(4*G) != 0 || ParentLimit(3*G) != 0 {
-		t.Error("a file system no bigger than the reserve must get no 2/0 limit (Ensure refuses it)")
+}
+
+// #209: 2/0's limit leaves the reserve free whatever lives outside 2/0. A 64 GiB pool with 9 GiB outside 2/0 and
+// 20 GiB in it: 35 GiB free, so 2/0 may grow by 35 - 6.4 GiB, not up to 57.6 GiB in all.
+func TestParentLimit(t *testing.T) {
+	const G = 1 << 30
+	size, rfer := uint64(64*G), uint64(20*G)
+	free := size - 9*G - rfer
+	b := Bound(size, free, rfer)
+	if r := Reserve(size); b != int64(free+rfer-r) || b >= int64(size-r) {
+		t.Fatalf("bound %d, want %d, under the old %d", b, free+rfer-r, size-r)
+	}
+	l := ParentLimit(size, free, rfer)
+	if l != uint64(b)-slack || l-rfer+Reserve(size)+slack != free {
+		t.Fatalf("limit %d, bound %d", l, b)
+	}
+	// a full 2/0 at that limit leaves the reserve (and the slack) free
+	if left := free - (l - rfer); left != Reserve(size)+slack {
+		t.Fatalf("2/0 full: %d left, want %d", left, Reserve(size)+slack)
+	}
+	if ParentLimit(size, size, size) != size-Reserve(size) {
+		t.Error("the limit is capped at size minus the reserve")
+	}
+	// usage outside 2/0 has eaten the reserve: 2/0 refuses every write, and 0 (no limit) never comes out
+	if ParentLimit(size, Reserve(size)/2, rfer/100) != 1 || Bound(size, Reserve(size)/2, 0) >= 0 {
+		t.Error("an eaten reserve must leave 2/0 a 1-byte limit")
+	}
+	for _, c := range []struct {
+		cur, want uint64
+		bound     int64
+		keep      bool
+	}{
+		{l, l, b, true},
+		{0, l, b, false},               // no limit at all
+		{l + slack + 1, l, b, false},   // above the bound: outside usage grew into the reserve
+		{l + slack, l, b, true},        // at the bound: the reserve is still whole
+		{l - 2*slack, l, b, true},      // a little below: not worth a rewrite
+		{l - 2*slack - 1, l, b, false}, // outside usage shrank: give 2/0 the space back
+		{1, 1, -5, true},               // the reserve is gone and 2/0 already refuses writes
+		{1, l, b, false},               // space came back
+		{l, 1, -5, false},              // the reserve went
+	} {
+		if got := keep(c.cur, c.want, c.bound); got != c.keep {
+			t.Errorf("keep(%d, %d, %d) = %v", c.cur, c.want, c.bound, got)
+		}
 	}
 }
 
@@ -30,7 +73,7 @@ func TestParseShow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if q := qs["2/0"]; q.MaxRfer != 33283899392 || q.MaxExcl != 0 || len(q.Parents) != 0 {
+	if q := qs["2/0"]; q.Rfer != 114688 || q.MaxRfer != 33283899392 || q.MaxExcl != 0 || len(q.Parents) != 0 {
 		t.Errorf("2/0: %+v", q)
 	}
 	if q := qs["0/269"]; q.MaxExcl != 3757886668 || q.MaxRfer != 0 || !q.hasParent(Parent) {

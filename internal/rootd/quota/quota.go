@@ -1,7 +1,7 @@
 // Package quota sets up the disk reserve (ARCHITECTURE.md §3.2, §4.1, §12): btrfs quotas in full mode, one parent
-// qgroup 2/0 over every store agents or apps can fill, limited to the file system size minus max(10%, 4 GiB), and
-// the CAS cap. Control state (releases, control/, rootd.db, audit/ with taint.db) and the OS generations stay
-// outside 2/0, so they always keep the reserve.
+// qgroup 2/0 over every store agents or apps can fill, limited so that max(10%, 4 GiB) of the file system stays free
+// when 2/0 is full, and the CAS cap. Control state (releases, control/, rootd.db, audit/ with taint.db) and the OS
+// generations stay outside 2/0, so they always keep the reserve.
 package quota
 
 import (
@@ -24,6 +24,9 @@ const (
 	Data       = Agentbox + "/data" // @var_lib_agentbox_data
 	Parent     = "2/0"
 	minReserve = 4 << 30
+	// slack is how far 2/0's limit may drift before Refresh moves it. The limit is set slack below its bound, so a
+	// drift never eats into the reserve.
+	slack = 64 << 20
 )
 
 // Fillable are the nested subvolumes this package creates (cas/ may already exist: `os plan` creates it too).
@@ -36,12 +39,20 @@ var Members = append(append([]string{}, Fillable...), Data, "/srv")
 // Reserve is what 2/0 leaves free for control state and the OS: max(10%, 4 GiB) of the file system.
 func Reserve(size uint64) uint64 { return max(size/10, minReserve) }
 
-// ParentLimit is 2/0's referenced limit.
-func ParentLimit(size uint64) uint64 {
-	if size <= Reserve(size) {
-		return 0
+// Bound is the most 2/0 may reference and still leave the reserve free: what it references now plus the free space
+// above the reserve. Usage outside 2/0 (the OS generations, logs, control state) thus comes out of 2/0's share, not
+// out of the reserve (#209). Once that usage has eaten into the reserve, Bound is below what 2/0 references, and it
+// can go negative.
+func Bound(size, free, rfer uint64) int64 { return int64(free) + int64(rfer) - int64(Reserve(size)) }
+
+// ParentLimit is 2/0's referenced limit: slack below Bound, at most size minus the reserve, and at least 1 byte (0
+// would mean no limit), which refuses every write once the reserve is gone.
+func ParentLimit(size, free, rfer uint64) uint64 {
+	b := Bound(size, free, rfer) - slack
+	if b < 1 {
+		return 1
 	}
-	return size - Reserve(size)
+	return min(uint64(b), size-min(size, Reserve(size)))
 }
 
 // CASMax is budgets.toml cas.max_bytes' default: 10% of the pool. shortcut: budgets.toml isn't read yet; it lands
@@ -87,12 +98,18 @@ func rootID(p string) (string, error) {
 	return "0/" + id, nil
 }
 
-func fsSize(p string) (uint64, error) {
+// fsSpace is the file system's size and the bytes free to an unprivileged writer.
+func fsSpace(p string) (size, free uint64, err error) {
 	var s syscall.Statfs_t
 	if err := syscall.Statfs(p, &s); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return uint64(s.Blocks) * uint64(s.Bsize), nil
+	return uint64(s.Blocks) * uint64(s.Bsize), uint64(s.Bavail) * uint64(s.Bsize), nil
+}
+
+func fsSize(p string) (uint64, error) {
+	size, _, err := fsSpace(p)
+	return size, err
 }
 
 // Ensure brings quotas to the §4.1 state, idempotently: agentbox-reconcile runs it on every boot, so a hand edit or
@@ -134,7 +151,7 @@ func Ensure() error {
 	if err != nil {
 		return err
 	}
-	if ParentLimit(size) == 0 {
+	if size <= Reserve(size) {
 		return fmt.Errorf("quota: a %d-byte file system leaves nothing above the %d-byte reserve", size, Reserve(size))
 	}
 	for _, p := range Members {
@@ -148,11 +165,6 @@ func Ensure() error {
 			}
 		}
 	}
-	if qs[Parent].MaxRfer != ParentLimit(size) {
-		if _, err := run("btrfs", "qgroup", "limit", strconv.FormatUint(ParentLimit(size), 10), Parent, Agentbox); err != nil {
-			return err
-		}
-	}
 	cas, err := rootID(gens.CASDir)
 	if err != nil {
 		return err
@@ -162,11 +174,44 @@ func Ensure() error {
 			return err
 		}
 	}
-	// an assign can leave the numbers inconsistent until the rescan it scheduled finishes
+	// an assign can leave the numbers inconsistent until the rescan it scheduled finishes; Refresh needs them right
 	if _, err := run("btrfs", "quota", "rescan", "-W", Agentbox); err != nil {
 		return err
 	}
+	if err := Refresh(); err != nil {
+		return err
+	}
 	return Verify()
+}
+
+// Refresh moves 2/0's limit to ParentLimit when it is above Bound (usage outside 2/0 grew into the reserve) or more
+// than 2×slack below ParentLimit (that usage shrank). Run it only while qgroups are consistent: 2/0's referenced count is wrong
+// otherwise. agentbox-reconcile runs it at boot (Ensure) and rootd on its qgroup timer.
+func Refresh() error {
+	size, free, err := fsSpace(Agentbox)
+	if err != nil {
+		return err
+	}
+	qs, err := Show()
+	if err != nil {
+		return err
+	}
+	q, ok := qs[Parent]
+	if !ok {
+		return fmt.Errorf("quota: no qgroup %s", Parent)
+	}
+	if want := ParentLimit(size, free, q.Rfer); !keep(q.MaxRfer, want, Bound(size, free, q.Rfer)) {
+		if _, err := run("btrfs", "qgroup", "limit", strconv.FormatUint(want, 10), Parent, Agentbox); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// keep says a 2/0 limit cur still holds: set, at most bound (or the 1-byte floor once bound is gone), and within
+// 2×slack of want, so a limit isn't rewritten for every byte written outside 2/0.
+func keep(cur, want uint64, bound int64) bool {
+	return cur != 0 && (int64(cur) <= bound || cur == 1) && cur+2*slack >= want
 }
 
 // Verify checks the §4.1 state without changing anything.
@@ -186,8 +231,14 @@ func Verify() error {
 	if err != nil {
 		return err
 	}
-	if q := qs[Parent]; q.MaxRfer != ParentLimit(size) {
-		return fmt.Errorf("quota: %s max referenced %d, want %d", Parent, q.MaxRfer, ParentLimit(size))
+	_, free, err := fsSpace(Agentbox)
+	if err != nil {
+		return err
+	}
+	// a limit that drifted (usage outside 2/0 changed since Refresh) is still fine while it leaves the reserve
+	if q := qs[Parent]; q.MaxRfer == 0 || (int64(q.MaxRfer) > Bound(size, free, q.Rfer) && q.MaxRfer != 1) {
+		return fmt.Errorf("quota: %s max referenced %d, but %d free and %d referenced leave the %d-byte reserve only below %d",
+			Parent, q.MaxRfer, free, q.Rfer, Reserve(size), Bound(size, free, q.Rfer))
 	}
 	for _, p := range Members {
 		id, err := rootID(p)
@@ -219,8 +270,8 @@ func Verify() error {
 
 // Qgroup is one row of `btrfs qgroup show`. A zero limit means none.
 type Qgroup struct {
-	MaxRfer, MaxExcl uint64
-	Parents          []string
+	Rfer, MaxRfer, MaxExcl uint64
+	Parents                []string
 }
 
 func (q Qgroup) hasParent(p string) bool {
@@ -245,6 +296,7 @@ func parseShow(b []byte) (map[string]Qgroup, error) {
 	var doc struct {
 		Rows []struct {
 			ID      string          `json:"qgroupid"`
+			Rfer    json.RawMessage `json:"referenced"`
 			MaxRfer json.RawMessage `json:"max_referenced"`
 			MaxExcl json.RawMessage `json:"max_exclusive"`
 			Parents []string        `json:"parents"`
@@ -263,6 +315,9 @@ func parseShow(b []byte) (map[string]Qgroup, error) {
 	for _, r := range doc.Rows {
 		var q Qgroup
 		var err error
+		if q.Rfer, err = strconv.ParseUint(strings.Trim(string(r.Rfer), `"`), 10, 64); err != nil {
+			return nil, fmt.Errorf("quota: %s referenced %s", r.ID, r.Rfer)
+		}
 		if q.MaxRfer, err = lim(r.MaxRfer); err != nil {
 			return nil, fmt.Errorf("quota: %s max_referenced %s", r.ID, r.MaxRfer)
 		}

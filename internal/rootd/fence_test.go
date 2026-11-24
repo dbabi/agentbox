@@ -33,13 +33,14 @@ func TestQuotaFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	frozen := func() string { b, _ := os.ReadFile(filepath.Join(slice, "cgroup.freeze")); return string(b) }
-	flag, rescanErr, rescans := true, errors.New("no space"), 0
+	flag, rescanErr, rescans, limits := true, errors.New("no space"), 0, 0
 	var alerts atomic.Int32
 	s := &server{db: db, tasks: &tasks{}, cfg: Config{Tasks: TaskConfig{Cgroup: cg}, Alert: func(_, _ string) error { alerts.Add(1); return nil },
 		Effects: map[string]Effect{"file.write": func(string, map[string]any) (map[string]any, error) { return nil, nil }}},
 		audit:        func(map[string]any) error { return nil },
 		inconsistent: func() (bool, error) { return flag, nil },
-		qrescan:      func() error { rescans++; return rescanErr }}
+		qrescan:      func() error { rescans++; return rescanErr },
+		qlimit:       func() error { limits++; return nil }}
 	busy := func(rep reply) bool {
 		d, ok := rep["denial"].(denial.Denial)
 		b, _ := json.Marshal(d)
@@ -67,17 +68,20 @@ func TestQuotaFence(t *testing.T) {
 	if f, _ := s.checkQuota(); !f || frozen() != "1" {
 		t.Fatalf("flag still 1 after the rescan: fenced %v, freeze %q", f, frozen())
 	}
+	if limits != 0 { // #209: 2/0's referenced count is wrong while the flag is set
+		t.Fatalf("2/0's limit moved %d times while qgroups were inconsistent", limits)
+	}
 	s.qrescan = func() error { flag = false; return nil }
-	if f, err := s.checkQuota(); f || err != nil || frozen() != "0" || s.fenced.Load() {
-		t.Fatalf("repaired: fenced %v %v, freeze %q", f, err, frozen())
+	if f, err := s.checkQuota(); f || err != nil || frozen() != "0" || s.fenced.Load() || limits != 1 {
+		t.Fatalf("repaired: fenced %v %v, freeze %q, %d limit moves", f, err, frozen(), limits)
 	}
 	if rep := s.taskOp(write); rep["ok"] != true {
 		t.Fatalf("after the thaw: %v", rep)
 	}
 	os.WriteFile(filepath.Join(slice, "cgroup.freeze"), []byte("1"), 0o644) // someone else's freeze: a consistent check keeps it
 	s.checkQuota()
-	if frozen() != "1" || alerts.Load() != 1 {
-		t.Fatalf("consistent check: freeze %q, %d alerts", frozen(), alerts.Load())
+	if frozen() != "1" || alerts.Load() != 1 || limits != 2 {
+		t.Fatalf("consistent check: freeze %q, %d alerts, %d limit moves", frozen(), alerts.Load(), limits)
 	}
 	s.fenced.Store(true) // rootd's start: the first consistent check thaws a freeze a dead rootd left
 	if f, _ := s.checkQuota(); f || frozen() != "0" {
