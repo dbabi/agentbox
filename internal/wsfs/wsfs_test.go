@@ -89,7 +89,18 @@ func TestWalkSwap(t *testing.T) {
 	}
 }
 
-func TestReadFile(t *testing.T) {
+func TestReadFile(t *testing.T) { testReadFile(t) }
+
+// The one-name-at-a-time walk, which Linux falls back to when a seccomp filter answers openat2 with ENOSYS, refuses
+// the same paths.
+func TestReadFileByNames(t *testing.T) {
+	old := openFn
+	openFn = openatNames
+	defer func() { openFn = old }()
+	testReadFile(t)
+}
+
+func testReadFile(t *testing.T) {
 	ws, out := t.TempDir(), t.TempDir()
 	os.WriteFile(filepath.Join(out, "secret"), []byte("outside"), 0o600)
 	os.MkdirAll(filepath.Join(ws, "a"), 0o755)

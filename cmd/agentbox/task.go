@@ -1,17 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"time"
 
 	"agentbox/internal/gate"
 	"agentbox/internal/rootd"
+	"agentbox/internal/secrets"
 	"agentbox/internal/task"
 )
 
@@ -28,8 +31,12 @@ func cmdTask(args []string) error {
 		cli := fs.String("cli", "claude", "claude or codex")
 		asks := fs.Int("asks", rootd.DefaultAsks, "the task's ask budget, 0 to 10")
 		deadline := fs.Duration("deadline", rootd.DefaultDeadline, "how long it may run, at most 2h")
+		ack := fs.Int("ack-secrets", 0, "start although the workspace scan found this many credentials (the count it reported)")
 		if err := parse(fs, args[1:]); err != nil {
 			return err
+		}
+		if *ack > 0 {
+			req["ackSecrets"] = *ack
 		}
 		p, err := io.ReadAll(io.LimitReader(os.Stdin, gate.MaxPrompt+1))
 		if err != nil {
@@ -102,4 +109,27 @@ func cmdBrokerStub(args []string) error {
 	}
 	sdNotify("READY=1")
 	return s.ServeControl(ctl)
+}
+
+// cmdSecretscan is the credential scan's entry in its transient unit (#104): rootd binds the workspace at --dir and reads
+// the JSON report on stdout. It names the network interfaces it can see, so rootd can refuse a scan that had a network.
+func cmdSecretscan(args []string) error {
+	fs := flag.NewFlagSet("secretscan", flag.ContinueOnError)
+	dir := fs.String("dir", "", "the tree to scan")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return err
+	}
+	r, err := secrets.Scan(*dir)
+	if err != nil {
+		return err
+	}
+	r.Netdevs = []string{}
+	for _, i := range ifs {
+		r.Netdevs = append(r.Netdevs, i.Name)
+	}
+	return json.NewEncoder(os.Stdout).Encode(r)
 }

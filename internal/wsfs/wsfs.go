@@ -165,8 +165,10 @@ func entry(rel, name string, dir int, st *unix.Stat_t) Entry {
 	return Entry{Rel: rel, Name: name, Mode: m, Size: st.Size, Ctime: time.Unix(st.Ctim.Unix()), dir: dir}
 }
 
+var openFn = openat // tests swap in openatNames
+
 func openFile(dir int, rel string) (*File, error) {
-	fd, err := openat(dir, rel, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC)
+	fd, err := openFn(dir, rel, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC)
 	if err != nil {
 		return nil, &fs.PathError{Op: "openat2", Path: rel, Err: err}
 	}
@@ -182,7 +184,7 @@ func openFile(dir int, rel string) (*File, error) {
 }
 
 func openDir(dir int, name string) (int, error) {
-	return openat(dir, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_CLOEXEC)
+	return openFn(dir, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_CLOEXEC)
 }
 
 // ReadFile reads the regular file rel (slash-separated, below root) in full. Any symlink, "..", or absolute path on

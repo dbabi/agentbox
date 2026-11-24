@@ -97,7 +97,7 @@ func OpenDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("rootd.db: journal_mode=%s synchronous=%d, need wal and FULL (2)", mode, syncv)
 	}
-	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, snapSchema, attach.Schema, attach.BaselineSchema} {
+	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, snapSchema, secretSchema, attach.Schema, attach.BaselineSchema} {
 		if _, err := db.Exec(schema); err != nil {
 			db.Close()
 			return nil, err
@@ -403,6 +403,8 @@ type request struct {
 	AckRestart        bool `json:"ackRestart,omitempty"`
 	// go.private.set (§5.3)
 	Patterns *string `json:"patterns,omitempty"`
+	// task new --ack-secrets (#104): the credential count the admin acknowledges
+	AckSecrets int `json:"ackSecrets,omitempty"`
 }
 
 // peer is a connection's SO_PEERCRED uid and SO_PEERGROUPS groups.
@@ -487,6 +489,11 @@ func (s *server) admin(r request, p peer) reply {
 		}
 		// §9: INTENT, its ACK, the effect, RESULT. auditd down means the list stays as it is.
 		// shortcut: rootd logs the edit as an admin op itself; weeks 9-10's net.allow_domain flow replaces this.
+		var found []map[string]any
+		var failed []string
+		if r.Op == "egress.allow" && s.tasks != nil {
+			found, failed = s.tasks.grantScan(s.activeAgents(), e.Host) // #104: a workspace token for this host
+		}
 		id := newDenyID()
 		if err := s.audit(map[string]any{"type": "INTENT", "opId": id, "name": r.Op, "origin": "admin",
 			"args": map[string]string{"svc": r.Svc, "entry": e.String()}}); err != nil {
@@ -503,6 +510,12 @@ func (s *server) admin(r request, p peer) reply {
 		}
 		rep := s.refill(r) // even with no RESULT ACK: a removal must still revoke
 		rep["changed"] = changed
+		if len(found) > 0 {
+			rep["secrets"], rep["warning"] = found, grantWarning(found, e.Host)
+		}
+		if len(failed) > 0 {
+			rep["secretScanFailed"] = failed
+		}
 		if aerr != nil {
 			log.Printf("%s %s %s: RESULT not audited: %v", r.Op, r.Svc, r.Entry, aerr)
 			rep["ok"], rep["error"] = false, "the list changed, but its audit RESULT was not ACKed: "+aerr.Error()
@@ -590,6 +603,12 @@ func (s *server) taskAdmin(r request, p peer) reply {
 	}
 	if r.Op == "task.undo" {
 		return s.tasks.undo(r.Task, "rootd-admin:"+human)
+	}
+	if acct, err := s.tasks.cfg.Accounts.Lookup(r.Agent); err == nil {
+		// here, not only in task.start: the first scan can take longer than agentboxd waits for task.start
+		if rep := s.tasks.secretGate(acct, r.AckSecrets); rep != nil {
+			return rep
+		}
 	}
 	asks, dl := DefaultAsks, DefaultDeadline
 	if r.Asks != nil {

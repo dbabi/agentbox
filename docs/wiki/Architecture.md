@@ -361,6 +361,18 @@ Each service runs as its own Linux user, with only the access it needs.
   It first snapshots the current tree, so the undo can be undone by hand.
 - The restored workspace is tainted if the snapshot was, even if the workspace was clean before the undo.
 
+### Credentials in the workspace
+
+- The proxy does not strip credentials that a task sends itself.
+  So a token left in a workspace file works against any host the egress list allows.
+- rootd scans the workspace for live credentials before an agent's first task and at each `agentbox egress allow`.
+  The rules are a pinned subset of gitleaks' rules: GitHub, GitLab, AWS, Anthropic, OpenAI, npm, PyPI, Slack, Stripe, Hugging Face, DigitalOcean, Google API keys and private keys.
+- The scan runs in a transient unit with no network but loopback, a throwaway uid that can read but not write the workspace, and nothing else in its file system.
+- A hit blocks the agent's tasks. The refusal names each file, line and credential type, never the credential.
+  Remove the file, or start the task with `agentbox task new --ack-secrets <n>`, where `<n>` is the number of hits the refusal reported.
+- An `egress allow` reply names each credential that works against the host being allowed.
+- The scan is a detection aid. See the residuals in the [threat model](../../docs/THREAT-MODEL.md).
+
 ### Interactive sessions
 
 - `agentbox attach --agent <name>` opens an interactive Claude Code, Codex or bash session.

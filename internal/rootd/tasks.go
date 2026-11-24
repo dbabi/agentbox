@@ -25,6 +25,7 @@ import (
 	"agentbox/internal/rootd/attach"
 	"agentbox/internal/rootd/witness"
 	"agentbox/internal/seccomp"
+	"agentbox/internal/secrets"
 	"agentbox/internal/task"
 	"agentbox/internal/taskenv"
 	"agentbox/internal/taskrun"
@@ -104,10 +105,12 @@ type TaskConfig struct {
 	EgressDir   string // control/egress: the allowlists and go.private patterns the task env comes from; rootd's own if ""
 	WitnessRoot string // /run/agentbox-witness/t (§5.6 Witness)
 	Btrfs       Btrfs  // the task-start snapshot and undo; nil: none (tests)
-	Seccomp     string
-	Image       string
-	HostUsr     []string
-	Now         func() time.Time
+	// SecretScan runs the offline credential scan of a workspace (#104); nil: none (tests)
+	SecretScan func(Account) ([]secrets.Hit, error)
+	Seccomp    string
+	Image      string
+	HostUsr    []string
+	Now        func() time.Time
 }
 
 type tasks struct {
@@ -194,6 +197,12 @@ func (t *tasks) start(id, agent, origin string) reply {
 		return fail("no_agent")
 	}
 	si, why := t.provenance(id, agent, origin)
+	if why == "" {
+		if rep := t.secretGate(acct, 0); rep != nil {
+			log.Printf("task.start %s: %s: %v", id, rep["reason"], rep["error"])
+			return rep
+		}
+	}
 	if why == "" {
 		why = t.register(id, acct, si)
 	}
@@ -616,6 +625,7 @@ func DefaultTaskConfig() TaskConfig {
 		Svc:         svcCall,
 		MakeDir:     makeTaskDir,
 		Btrfs:       btrfsCmd{},
+		SecretScan:  runSecretScan(filepath.Dir(task.ExportsDir)),
 		Cgroup:      "/sys/fs/cgroup",
 		Exports:     task.ExportsDir,
 		WitnessRoot: witness.Root,
