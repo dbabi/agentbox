@@ -212,6 +212,7 @@ These are the known risks. They are listed so you can decide where agentbox fits
 
 - All tasks share the host kernel. A kernel exploit escapes the container. The v2 plan is microVM tasks.
 - The token scan after a session looks for each token as written. An encoded token, or one spliced together inside a git delta, is missed.
+- A file that a workspace git config pulls in with `include.path` is not a control path. After you acknowledge the include line, that file can change with no new acknowledgement (issue #193).
 - The milestone 4 gates ran in `none` mode on arm64 UEFI only, with stand-in brokers.
 
 **Updates**

@@ -209,7 +209,7 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 | Notifications | The Ubuntu `ntfy` package. It takes only local requests, and can reach only `ntfy.sh`. |
 | Operation registry | One list of every operation an agent may request. The policy schema, the JSON schemas and the MCP tool list are generated from it. The root daemon refuses to start if any of them differ. |
 | Agent accounts | `agentbox agent add` makes one Linux account per agent, with its own uid, sub-id range, disk quota and limits. A removed agent's ids are never reused. |
-| Task containers | `agentbox task new` runs each task in a disposable rootless podman container: no network, no capabilities, a read-only root, a seccomp profile and a fresh home. Leftover processes are killed at the end. |
+| Task containers | `agentbox task new` runs each task in a disposable rootless podman container: no network, no capabilities, a read-only root, a seccomp profile and a fresh home. Leftover processes are killed at the end. Each task start snapshots the workspace, and `agentbox task undo` puts it back. |
 | Task environment | Each task gets no DNS, quiet package managers and Go settings that follow its allowlist. `agentbox why` explains a recent denial. |
 | Interactive sessions | `agentbox attach` runs an agent CLI or a shell in a container, with a separate persistent home. Planted hooks don't run, the output is filtered, and tasks wait for a token scan. |
 | Request checks | `agentboxd` gives each task its own socket. It checks each request's caller and arguments before anything privileged runs. A refused request gets a stable denial code, never the raw input. |
@@ -285,7 +285,6 @@ Known limits of what is built today:
 - The admin account is root-equivalent. The seed holds its password hash, so keep the seed private.
 - The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules. SSH, and anything else that listens, is open to your LAN. Do not give the box a public IP address.
 - There are no automatic security updates.
-- An interactive session's home persists. Instructions a session writes there, such as Claude Code skills or `CLAUDE.md`, load into later sessions without review. Hooks and MCP servers stay off.
 - All tasks share the host kernel. A kernel exploit escapes the container.
 
 Read the one-page [threat model](docs/THREAT-MODEL.md) and the [Security model][sec] page.
