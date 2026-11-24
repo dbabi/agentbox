@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,8 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"agentbox/internal/rootd/gens"
+	"agentbox/internal/rootd/quota"
 )
 
 // cmdOS runs `agentbox os ...` as root on the box (ARCHITECTURE.md §3.3). Week 1 runs the os.apply pipeline from
@@ -38,6 +42,7 @@ func cmdOS(args []string) error {
 		argv := append([]string{"unshare", "--mount", "--propagation", "private", exe, "os"}, args...)
 		return syscall.Exec(unshare, argv, append(os.Environ(), "AGENTBOX_OS_NS=1"))
 	}
+	gens.AfterDelete = qgroupCheck
 	fs := flag.NewFlagSet("os "+args[0], flag.ContinueOnError)
 	switch args[0] {
 	case "plan":
@@ -114,6 +119,35 @@ func cmdOS(args []string) error {
 		return osStatus()
 	}
 	return fmt.Errorf("os: unknown subcommand %q", args[0])
+}
+
+// qgroupCheck is gens.AfterDelete. Once Linux has dropped the generation subvolumes this command deleted, and removed
+// their qgroups (quota.Dropped), the qgroup flag says whether the drop left qgroups inconsistent, so 1/N and 2/0 limit
+// nothing. rootd's quota.check then fences, rescans and thaws at once, not at its 5-minute timer (#209). That timer is
+// all that is left when this fails, so a failure alerts.
+func qgroupCheck(ids []string) error {
+	err := quota.Dropped(ids...)
+	var line []byte
+	var cerr error
+	// "fenced" while another check holds rootd's fence lock: that check may have read the flag before the drop set it,
+	// so ask again until rootd itself checked. A repair keeps the fence up for as long as it takes.
+	for i := 0; i < 300; i++ {
+		if i > 0 {
+			time.Sleep(2 * time.Second)
+		}
+		var rep struct {
+			Fenced bool `json:"fenced"`
+		}
+		if line, cerr = adminLine(map[string]any{"op": "quota.check"}, "rootd quota check"); cerr != nil || json.Unmarshal(line, &rep) != nil || !rep.Fenced {
+			break
+		}
+	}
+	if err = errors.Join(err, cerr); err != nil {
+		fmt.Fprintf(os.Stderr, "agentbox: ALERT: qgroups not checked after deleting subvolumes %s: %v %s\n", strings.Join(ids, " "), err, bytes.TrimSpace(line))
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "os: qgroups checked after deleting subvolumes %s: %s\n", strings.Join(ids, " "), bytes.TrimSpace(line))
+	return nil
 }
 
 // mountTop mounts the btrfs top level at a fixed dir (gens.Mounts); the mounts exist only in this command's namespace.

@@ -78,6 +78,25 @@ up() {
   wait_boot none 900 || die "no SSH (see $VM/boot-*.log)"
 }
 status() { echo "$A os status" | root >>"$LOG" 2>&1 || :; }
+# qstore: a test store in a new qgroup 1/999 under 2/0 with a 64 MiB exclusive limit, as agent add makes a 1/N
+qstore() { root >>"$LOG" 2>&1 <<'EOF'
+set -e
+M=/var/lib/agentbox S=/var/lib/agentbox/data/gate-quota
+btrfs subvolume create $S >/dev/null && chown nobody $S
+btrfs qgroup create 1/999 $M && btrfs qgroup assign "0/$(btrfs inspect-internal rootid $S)" 1/999 $M && btrfs qgroup assign 1/999 2/0 $M
+btrfs qgroup limit -e 64M 1/999 $M && btrfs quota rescan -W $M
+EOF
+}
+# qfill: qgroups read consistent, and the test store's writer gets EDQUOT at 64 MiB; then the store goes
+qfill() { root <<'EOF'
+M=/var/lib/agentbox S=/var/lib/agentbox/data/gate-quota
+F=/sys/fs/btrfs/$(btrfs filesystem show $M | sed -n "s/.* uuid: \([0-9a-f-]*\).*/\1/p")/qgroups/inconsistent; f=$(cat $F)
+e=$(runuser -u nobody -- dd if=/dev/urandom of=$S/fill bs=1M count=200 conv=fsync 2>&1); n=$(stat -c %s $S/fill)
+echo "inconsistent $f, wrote $n: $e"; journalctl -k -b -o cat | grep "qgroup marked inconsistent" || :
+btrfs subvolume delete $S >/dev/null && btrfs subvolume sync $M && btrfs qgroup destroy 1/999 $M; btrfs qgroup clear-stale $M >/dev/null 2>&1 || :
+[ "$f" = 0 ] && echo "$e" | grep -aq "Disk quota exceeded" && [ "$n" -le $((64 << 20)) ]
+EOF
+}
 # stamp: the mtime of the file apt's 15update-stamp hook touches after every successful apt-get update
 stamp() { echo 'stat -c %Y /var/lib/apt/periodic/update-success-stamp 2>/dev/null || :' | root; }
 # plan ARGS: plans on the VM, logs the plan, sets H. Planning runs none of the running generation's apt hooks.
@@ -217,8 +236,14 @@ EOF
   check "cycle 2: the nspawn-built initrd loads the watchdog driver (force_drivers), PID 1 arms it" "echo 'grep -qx active /sys/class/watchdog/watchdog0/state' | root"
   [ "$ENC" = none ] || check "cycle 2: LUKS unlocked by clevis from the nspawn-built initrd" "vssh 'journalctl -b -o cat' | grep -q 'Finished systemd-cryptsetup@croot.service' && echo 'journalctl -b -t clevis-luks-askpass -o cat' | root | grep -q '^Unlocked '"
   plan --reinstall --install base-files
+  qstore || die "cycles: could not make the 1/999 test store" # before the prune: no assign or rescan after it
   build; trial "cycle 3"
   check "cycle 3: gen-$O pruned with its boot dir, gone from grub.cfg" 'echo "test ! -e /bootpart/agentbox/gens/gen-$O && ! grep -q agentbox-gen-$O- /boot/grub/grub.cfg && ! btrfs subvolume list / | grep -qw @gen-$O" | root'
+  # #209: Linux drops @gen-$O after the commit and can mark qgroups inconsistent at the very end, so 1/N and 2/0 limit
+  # nothing. os health waits for that and has rootd check at once; rootd's 5-minute timer has not run yet here.
+  wait_root 300 'journalctl -b -u agentbox-health -o cat | grep -q "^os: qgroups checked after deleting subvolumes "' || :
+  check "cycle 3: once @gen-$O was dropped, os health had rootd check qgroups, and they were not left fenced" "echo 'journalctl -b -u agentbox-health -o cat' | root | grep '^os: qgroups checked after deleting subvolumes ' | grep -qF '\"fenced\":false'"
+  check "cycle 3: right after, qgroups are consistent and a writer at its 64 MiB 1/N quota gets EDQUOT" 'qfill >>"$LOG" 2>&1'
   CUR=$E PREV="agentbox-gen-$(( ${M#gen-} - 1 ))-$KN"
   # current cold-boots
   echo 'systemctl poweroff' | root >/dev/null 2>&1 || :

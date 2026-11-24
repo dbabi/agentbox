@@ -316,15 +316,16 @@ func Build(hash, top string) (*Pending, error) {
 	pend, err := build(p, hash, root, boot, m, sums)
 	if err != nil && pend == nil {
 		fmt.Fprintf(os.Stderr, "agentbox: ALERT: build %s discarded: %v\n", m, err)
-		if derr := discard(top, m); derr != nil {
+		id, derr := discard(top, m)
+		if derr != nil {
 			return nil, fmt.Errorf("%v; discarding %s failed too: %v", err, m, derr)
 		}
 		if cfg, _ := os.ReadFile(filepath.Join(GrubDir, "grub.cfg")); bytes.Contains(cfg, []byte("'agentbox-"+m+"-")) {
 			if uerr := UpdateGrub(); uerr != nil {
-				return nil, fmt.Errorf("%v; update-grub after the discard failed: %v", err, uerr)
+				err = fmt.Errorf("%v; update-grub after the discard failed: %v", err, uerr)
 			}
 		}
-		return nil, err
+		return nil, errors.Join(err, afterDelete(id))
 	}
 	return pend, err
 }

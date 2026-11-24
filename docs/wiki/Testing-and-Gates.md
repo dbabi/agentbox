@@ -295,7 +295,7 @@ The first argument is the encryption mode. `uefi` or `bios` may come next. Then 
 |---|---|
 | `install` | Runs the install gate (`hack/gate.sh`) for the same mode and VM. Copies its check lines. |
 | `setup` | Sets the commit deadline to `DEADLINE` seconds for later boots. Then checks the boot mode and what firstboot left: the release, the health timer, the committed generation, the armed deadline. |
-| `cycles` | Three real applies. Generation 2 removes the newest kernel. Generation 3 brings it back with systemd upgraded, and its initrd is built inside the offline container. Generation 4 prunes generation 1. Then the current generation cold-boots, the previous one boots once, and the deadline returns the box to current. |
+| `cycles` | Three real applies. Generation 2 removes the newest kernel. Generation 3 brings it back with systemd upgraded, and its initrd is built inside the offline container. Generation 4 prunes generation 1. Once Linux has freed it, health has rootd check the disk quota counts, and a writer in a test quota group gets `EDQUOT` at its limit right away. Then the current generation cold-boots, the previous one boots once, and the deadline returns the box to current. |
 | `breaks` | Five broken trials and an emptied grubenv (list below). Each must fall back with no console input. |
 | `cuts` | Power cuts during an apply, a split grubenv, a failed `next_entry` write, then one apply replayed write by write (list below). Needs the podman machine. |
 

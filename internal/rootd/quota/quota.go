@@ -12,9 +12,11 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"agentbox/internal/rootd/gens"
 )
@@ -435,15 +437,11 @@ func EnsureAgent(n int, limit uint64, subvols ...string) error {
 // skips the accounting of a large dropped subtree (qgroup_drop_subtree_thres), and from then on 2/0 limits nothing
 // until a rescan. Simple quotas never get there, but they don't count shared extents (Ensure).
 func Inconsistent() (bool, error) {
-	out, err := run("btrfs", "filesystem", "show", Agentbox)
+	dir, err := qgroupsDir()
 	if err != nil {
 		return false, err
 	}
-	uuid, err := parseUUID(string(out))
-	if err != nil {
-		return false, err
-	}
-	b, err := os.ReadFile("/sys/fs/btrfs/" + uuid + "/qgroups/inconsistent")
+	b, err := os.ReadFile(filepath.Join(dir, "inconsistent"))
 	if err != nil {
 		return false, err
 	}
@@ -454,6 +452,59 @@ func Inconsistent() (bool, error) {
 		return true, nil
 	}
 	return false, fmt.Errorf("quota: qgroups/inconsistent reads %q", b)
+}
+
+// Dropped waits until Linux has dropped the deleted subvolumes ids (`btrfs subvolume sync`) and then removed their
+// level-0 qgroups. That removal is the drop's last step, and full mode marks qgroups inconsistent there when the
+// qgroup still counts bytes, as a generation's does after a prune (#209). The sync returns once the subvolume's root
+// item is gone, which can be before it, so only then does the flag say what the drop did.
+func Dropped(ids ...string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if _, err := run("btrfs", append([]string{"subvolume", "sync", Agentbox}, ids...)...); err != nil {
+		return err
+	}
+	dir, err := qgroupsDir()
+	if err != nil {
+		return err
+	}
+	return qgroupsGone(dir, ids, time.Minute)
+}
+
+// qgroupsGone waits up to wait for /sys/fs/btrfs/<fsid>/qgroups/0_<id> to go for each id. With quotas off there is
+// no such dir at all.
+func qgroupsGone(dir string, ids []string, wait time.Duration) error {
+	end := time.Now().Add(wait)
+	for _, id := range ids {
+		for {
+			_, err := os.Stat(filepath.Join(dir, "0_"+id))
+			if errors.Is(err, fs.ErrNotExist) {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if time.Now().After(end) {
+				return fmt.Errorf("quota: qgroup 0/%s is still there %v after its subvolume was dropped", id, wait)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	return nil
+}
+
+// qgroupsDir is the pool's /sys/fs/btrfs/<fsid>/qgroups.
+func qgroupsDir() (string, error) {
+	out, err := run("btrfs", "filesystem", "show", Agentbox)
+	if err != nil {
+		return "", err
+	}
+	uuid, err := parseUUID(string(out))
+	if err != nil {
+		return "", err
+	}
+	return "/sys/fs/btrfs/" + uuid + "/qgroups", nil
 }
 
 // parseUUID takes the fsid from `btrfs filesystem show`'s first line, the name of its /sys/fs/btrfs dir.
