@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agentbox/internal/denial"
+	"agentbox/internal/ids"
 	"agentbox/internal/rootd/accounts"
 )
 
@@ -91,7 +92,7 @@ func (fakeDelete) Delete(string) error { return nil }
 // #79: a subvolume delete (a snapshot prune, an undo) is followed by a qgroup check.
 func TestCheckedDeleteChecks(t *testing.T) {
 	done := make(chan struct{})
-	d := checkedDelete{fakeDelete{}, func() (bool, error) { close(done); return false, nil }}
+	d := checkedBtrfs{fakeDelete{}, func() { close(done) }}
 	if err := d.Delete(filepath.Join(t.TempDir(), "snap")); err != nil {
 		t.Fatal(err)
 	}
@@ -99,5 +100,44 @@ func TestCheckedDeleteChecks(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("no check after the delete")
+	}
+}
+
+// #205: a task-start snapshot that leaves qgroups inconsistent (an agent reflinked a file from outside 1/N) raises the
+// fence before the snapshot call returns: the task is refused BUSY with no launch, and the background repair runs.
+// A flag that can't be read fences too.
+func TestSnapshotFences(t *testing.T) {
+	for _, readErr := range []error{nil, errors.New("no uuid")} {
+		r, fb, _ := snapRig(t)
+		var flag atomic.Bool
+		rescanned := make(chan struct{}, 1)
+		s := &server{db: r.db, tasks: r.t, cfg: Config{Tasks: TaskConfig{Cgroup: t.TempDir()}},
+			audit:        func(map[string]any) error { return nil },
+			inconsistent: func() (bool, error) { return flag.Load(), readErr },
+			qrescan:      func() error { flag.Store(false); rescanned <- struct{}{}; return nil }}
+		r.t.fenced = s.fenced.Load
+		r.t.cfg.Btrfs = checkedBtrfs{hookBtrfs{fb, func() { flag.Store(true) }}, s.fenceAfter}
+		req, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
+		rep := r.t.start(ids.New(ids.Task), "claude", "admin:"+req)
+		d, ok := rep["denial"].(denial.Denial)
+		if rep["ok"] != false || !ok || d.Code != denial.Busy || d.Rule != "floor.quota_fence" || len(r.launch) != 0 {
+			t.Fatalf("read error %v: start %v, launches %d", readErr, rep, len(r.launch))
+		}
+		if readErr == nil {
+			select {
+			case <-rescanned:
+			case <-time.After(10 * time.Second):
+				t.Fatal("no repair after the snapshot")
+			}
+		}
+	}
+	// a consistent flag after the snapshot: the task launches
+	r, fb, _ := snapRig(t)
+	s := &server{inconsistent: func() (bool, error) { return false, nil }}
+	r.t.fenced = s.fenced.Load
+	r.t.cfg.Btrfs = checkedBtrfs{fb, s.fenceAfter}
+	r.adminTask(t)
+	if len(r.launch) != 1 || s.fenced.Load() {
+		t.Fatalf("consistent: launches %d, fenced %v", len(r.launch), s.fenced.Load())
 	}
 }

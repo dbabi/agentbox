@@ -124,6 +124,7 @@ type tasks struct {
 	watch   map[string]bool
 	noWatch bool // tests: no cgroup to watch
 	nested  func(string) ([]string, error)
+	fenced  func() bool // the qgroup fence (fence.go); nil: none
 	witMu   sync.Mutex
 	wit     map[string]*witness.W // the live tasks' witnesses, by task id
 }
@@ -142,6 +143,9 @@ type taintSubject struct {
 }
 
 var errSnapshot = errors.New("task-start snapshot")
+
+// errFenced is a task-start snapshot that raised the qgroup fence: the task never runs (#205).
+var errFenced = errors.New("the task-start snapshot made qgroups inconsistent")
 
 // ErrNoSvc is a service with no svc-<svc>.sock on this box.
 var ErrNoSvc = errors.New("service not installed")
@@ -214,6 +218,9 @@ func (t *tasks) start(id, agent, origin string) reply {
 	if err != nil {
 		log.Printf("task.start %s: %v; stopping it", id, err)
 		t.stop(id, "failed")
+		if errors.Is(err, errFenced) {
+			return fenceReply("task.start")
+		}
 		reason := "launch_failed"
 		if errors.Is(err, errSnapshot) {
 			reason = "snapshot_failed"
@@ -340,6 +347,9 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 			return false, fmt.Errorf("%w: %v", errSnapshot, err)
 		}
 		defer t.prune(acct)
+		if t.fenced != nil && t.fenced() {
+			return false, errFenced
+		}
 	}
 	for _, v := range task.Svcs {
 		if err := t.cfg.MakeDir(task.SockDir(v.Name, id), task.SvcUser[v.Name], acct.GID); err != nil {

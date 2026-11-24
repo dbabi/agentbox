@@ -128,6 +128,7 @@ func TestTaskSocketsAndNamespaces(t *testing.T) {
 		{"clone3", []uint64{0, 0}, "ENOSYS"},
 		{"socketcall", []uint64{1, 0}, "default"}, // #181: its args are in memory, out of seccomp's reach
 		{"ipc", []uint64{23, 0}, "default"},
+		{"copy_file_range", []uint64{3, 0, 4, 0, 1 << 30, 0}, "ENOSYS"}, // #205: a reflink across qgroups
 	} {
 		if got := eval(t, p, c.name, c.args...); got != c.want {
 			t.Errorf("%s(%#x): %s, want %s", c.name, c.args, got, c.want)
@@ -204,8 +205,9 @@ func TestTaskIoctl(t *testing.T) {
 	// every other syscall rule stays as upstream ships it
 	var src Profile
 	json.Unmarshal(common, &src)
-	// the ioctl rules, 4 socket, 1 socketpair, 2 clone/unshare allows, 7 + 8 EPERMs and clone3, for upstream's 7 socket rules
-	if len(p.Syscalls) != len(src.Syscalls)+9+4+1+2+15+1-7 || p.DefaultAction != src.DefaultAction {
+	// the ioctl rules, 4 socket, 1 socketpair, 2 clone/unshare allows, 7 + 8 EPERMs, clone3 and copy_file_range, for
+	// upstream's 7 socket rules
+	if len(p.Syscalls) != len(src.Syscalls)+9+4+1+2+15+1+1-7 || p.DefaultAction != src.DefaultAction {
 		t.Fatalf("%d rules from %d, default %s", len(p.Syscalls), len(src.Syscalls), p.DefaultAction)
 	}
 }
