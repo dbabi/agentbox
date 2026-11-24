@@ -312,7 +312,8 @@ C="0x5000940e 0xffffffff5000940e 0x50009417 0x40049409 0x80189439 0xdead00008018
 check "a task's btrfs ioctls fail with EOPNOTSUPP (95), also with the high cmd bits set; a btrfs subvolume create fails" 'T13=$(new 2m < /tmp/tg-p) && wait_end $T13 60 &&
   cat $W/t13.ioctl && for c in 0x5000940e 0xffffffff5000940e 0x50009417 0x40049409 0x80189439 0xdead000080189439; do grep -qx "$c -1 95" $W/t13.ioctl || exit 1; done &&
   grep -q "^0x5401 -1 25$" $W/t13.ioctl && grep -qi "not supported" $W/t13.btrfs && [ ! -e $W/sv ]'
-# #205: copy_file_range within one btrfs is a reflink; the binary's extents are outside 1/N
+# #205: copy_file_range within one btrfs is a reflink; the binary's extents are outside 1/N. btrfs filesystem du:
+# total minus exclusive is what a file shares with any other file
 cat > /tmp/tg-p <<'P'
 python3 -c 'import os
 s = os.open("/usr/local/bin/agentbox", os.O_RDONLY)
@@ -325,7 +326,7 @@ cp /usr/local/bin/agentbox /workspace/t14.cp; echo "cp $?" >> /workspace/t14.out
 P
 check "a task's copy_file_range from the agentbox binary gets ENOSYS (38); cp still copies it, sharing no extent" 'T14=$(new 2m < /tmp/tg-p) && wait_end $T14 60 &&
   cat $W/t14.out && grep -qx "errno 38" $W/t14.out && grep -qx "cp 0" $W/t14.out && cmp $W/t14.cp /var/lib/agentbox/current/bin/agentbox &&
-  btrfs filesystem du -s --raw $W/t14.cp | tee /tmp/tg-du && [ "$(awk "NR==2 {print \$3}" /tmp/tg-du)" = 0 ]'
+  btrfs filesystem du -s --raw $W/t14.cp | tee /tmp/tg-du && [ "$(awk "NR==2 {print \$1 - \$2}" /tmp/tg-du)" = 0 ]'
 rm -f $W/t14.*
 check "  ... the workspace is btrfs, and from the host (no task profile) GET_FEATURES succeeds, high bits too" '[ "$(stat -f -c %T $W)" = btrfs ] &&
   python3 /tmp/tg-ioctl.py $W 0x80189439 0xdead000080189439 > /tmp/tg-host && grep -qx "0x80189439 0 0" /tmp/tg-host && grep -qx "0xdead000080189439 0 0" /tmp/tg-host'
@@ -504,11 +505,14 @@ check "  ... a nested subvolume made on the host: task new fails with snapshot_f
 btrfs subvolume delete $W/tg-nested >/dev/null
 check "  ... with it deleted by hand, the next task starts and completes" 't=$(new 2m < /tmp/tg-p) && wait_end $t 60 && [ "$(field $t end_reason)" = completed ]'
 # #205: a workspace file that shares extents with a file outside 1/N. A task can't make one (copy_file_range and
-# FICLONE are out of its profile, above), so root on the host reflinks the release binary in.
+# FICLONE are out of its profile, above), so root on the host copy_file_ranges the release binary in: across the
+# two mounts FICLONE gets EXDEV, but copy_file_range reflinks within the one file system.
 Q=/sys/fs/btrfs/$(btrfs filesystem show /var/lib/agentbox | sed -n "s/.* uuid: \([0-9a-f-]*\).*/\1/p")/qgroups
 qfenced() { $B quota check > /tmp/tg-qc; grep -q "\"fenced\":$1" /tmp/tg-qc; }
-cp --reflink=always /var/lib/agentbox/current/bin/agentbox $W/tg-shared && chown ag-gt $W/tg-shared
+python3 -c "import os,sys; s=os.open(sys.argv[1],os.O_RDONLY); d=os.open(sys.argv[2],os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+while os.copy_file_range(s,d,1<<30): pass" /var/lib/agentbox/current/bin/agentbox $W/tg-shared && chown ag-gt $W/tg-shared
 check "#205: a workspace file sharing extents outside 1/N: task new is refused BUSY (quota_fence), before any launch" '
+  btrfs filesystem du -s --raw $W/tg-shared | tee /tmp/tg-du && [ "$(awk "NR==2 {print \$1 - \$2}" /tmp/tg-du)" -gt 0 ] &&
   [ "$(cat $Q/inconsistent)" = 0 ] && qfenced false && ! $B task new --agent gt --cli sh --deadline 2m < /tmp/tg-p > /tmp/tg-fence 2>&1; cat /tmp/tg-fence;
   grep -q "\"reason\":\"quota_fence\"" /tmp/tg-fence && grep -q "\"code\":\"BUSY\"" /tmp/tg-fence && [ -z "$(pod ps -a --format "{{.Names}}" | grep task-)" ]'
 check "  ... rootd sent the ALERT, rescanned, and the fence is down again" 'for i in $(seq 120); do qfenced false && break; sleep 1; done; qfenced false &&
