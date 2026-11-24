@@ -467,8 +467,9 @@ asend() { $B audit send --socket /run/agentbox-audit/rootd.sock "$1"; }
 digest() { (cd $W && find . -mindepth 1 -printf '%y %m %U %G %p %l\n' | LC_ALL=C sort && find . -type f -exec sha256sum {} + | LC_ALL=C sort) | sha256sum | cut -c1-64; }
 sql() { python3 -c 'import sqlite3,sys; c=sqlite3.connect("/var/lib/agentbox/rootd.db", timeout=10); r=c.execute(sys.argv[1], sys.argv[2:]).fetchall(); c.commit(); print("\n".join("|".join(map(str,x)) for x in r))' "$@"; }
 wsepoch() { asend "{\"type\":\"taint.get\",\"holder\":\"task:$1\"}" | python3 -c 'import json,sys; v=json.load(sys.stdin)["view"]; print([s for s in v["subjects"] if s["subject"]==sys.argv[1]][0]["epoch"])' "$WS"; }
-# a clean-baseline snapshot, as taint.clear will take one: rootd must never prune it
-mkdir -p $SN && btrfs subvolume snapshot -r $W $SN/$BASE >/dev/null &&
+# a clean-baseline snapshot, as taint.clear will take one: rootd must never prune it. In 1/N, as rootd takes every
+# snapshot: one outside it would share the workspace's extents, and each task-start snapshot would then fence (#205)
+mkdir -p $SN && btrfs subvolume snapshot -r -i 1/$((U - 70000)) $W $SN/$BASE >/dev/null &&
   sql "INSERT INTO workspace_snapshots(id, workspace, agent, kind, created_at) VALUES(?,?,'gt','clean-baseline',1)" $BASE "$WS" >/dev/null
 as() { runuser -u ag-gt -- "$@"; }
 as mkdir -p $W/proj/src $W/proj/.cfg && as sh -c "echo one > $W/proj/a.txt; echo two > $W/proj/src/b.go; echo three > $W/proj/.cfg/c; ln -s src/b.go $W/proj/link; chmod 0640 $W/proj/a.txt"
