@@ -726,6 +726,40 @@ func TestSyncFailsRecordLost(t *testing.T) {
 	b.recovers()
 }
 
+// sealOnDisk fails the test when auditd asks rootd to seal a segment that does not end in close on the disk. A lost
+// write reaches these tests' files as zeros, so the file is the disk.
+type sealOnDisk struct {
+	t testing.TB
+	Sealer
+}
+
+func (s sealOnDisk) Seal(seg uint64, h string) error {
+	err := s.Sealer.Seal(seg, h)
+	if err != nil {
+		s.t.Errorf("seal of %s asked before its close was on the disk: %v", SegName(seg), err)
+	}
+	return err
+}
+
+// A new boot's close fails its fdatasync with its bytes lost, at start and again in the reread after it. Linux reports
+// the error once, so the fdatasync after it proves nothing: the seal waits for a close the reread finds on the disk.
+func TestCloseSyncFailsTwice(t *testing.T) {
+	b := newBox(t)
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+	// two lost closes: the one the new boot's start writes, and the one the reread writes again
+	syncFault(t, `"type":"close"`, syscall.EIO, true)
+	syncFault(t, `"type":"close"`, syscall.EIO, true)
+	b.bootID = "boot-2"
+	b.start()
+	b.s.Seal = sealOnDisk{t, b.s.Seal}
+	b.nack("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`, CodeUnavailable)
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`)
+	if rep := b.verify(); len(rep) != 2 || !rep[0].Closed || len(rep[0].Torn) != 2 {
+		t.Fatalf("want seg 1 sealed with both lost closes declared torn, got %+v", rep)
+	}
+	b.recovers()
+}
+
 // A record is cut short, then the wall clock steps before the next one: torn must come right after the bytes, and
 // clock_step only after it.
 func TestTornThenClockStep(t *testing.T) {

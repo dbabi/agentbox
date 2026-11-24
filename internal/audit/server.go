@@ -65,10 +65,10 @@ type Server struct {
 	openBoot int64  // ts_boot of the open segment's open record
 	lastWall int64
 	lastBoot int64
-	sealing  bool // close is written; the segment still needs rootd's seal and its successor's open
-	needOpen bool // the open segment has no open record yet: nothing else may be appended first
-	torn     bool // a failed append may have left bytes past end
-	unsynced bool // an fdatasync of the segment failed: the head may name bytes that never reached the disk
+	sealing  bool  // close is written; the segment still needs rootd's seal and its successor's open
+	needOpen bool  // the open segment has no open record yet: nothing else may be appended first
+	torn     bool  // a failed append may have left bytes past end
+	unsynced error // an fdatasync of the segment failed: the head may name bytes that never reached the disk
 	diskFull bool
 }
 
@@ -292,7 +292,7 @@ func (s *Server) rotate() error {
 func (s *Server) finishSeal() error {
 	if s.f != nil {
 		if err := syncFile(s.f); err != nil {
-			s.unsynced = true
+			s.unsynced = err
 			return err
 		}
 		s.f.Close()
@@ -318,19 +318,22 @@ func (s *Server) reopen() error {
 		s.f.Close()
 		s.f = nil
 	}
-	s.torn, s.sealing, s.needOpen, s.unsynced = false, false, false, false
+	s.torn, s.sealing, s.needOpen, s.unsynced = false, false, false, nil
 	s.lastWall, s.lastBoot = 0, 0 // as at start: openChain takes them from the last record on disk, after any torn
-	if err := s.openChain(); err != nil {
-		s.unsynced = true // the head is not known yet: read it again before the next record
-		return err
+	err := s.openChain()
+	if err == nil {
+		err = s.unsynced // openChain holds back a new boot's failed seal: its close may have failed fdatasync again
 	}
-	return nil
+	if err != nil {
+		s.unsynced = err // the head is not known yet: read it again before the next record
+	}
+	return err
 }
 
 // ready brings the chain to a state that can take a record: the head reread after a failed fdatasync, a pending seal
 // done, a torn tail declared, a full segment rotated.
 func (s *Server) ready() error {
-	if s.unsynced {
+	if s.unsynced != nil {
 		if err := s.reopen(); err != nil {
 			return err
 		}
@@ -383,7 +386,7 @@ func (s *Server) append(typ, producer string, uid uint32, pid int32, body json.R
 		s.lastWall, s.lastBoot = wall, boot
 	}
 	if err := syncFile(s.f); err != nil {
-		s.unsynced = true // not ACKed, and ready rereads the head from the disk before the next record
+		s.unsynced = err // not ACKed, and ready rereads the head from the disk before the next record
 		return r.Seq, err
 	}
 	return r.Seq, nil
@@ -471,7 +474,7 @@ func (s *Server) enterDiskFull(why string) {
 
 // alert writes a critical alert record when the chain can take it; the journal line above is the fallback.
 func (s *Server) alert(reason string) {
-	if (s.unsynced && s.reopen() != nil) || s.f == nil || s.sealing || (s.torn && s.repairTail() != nil) || (s.needOpen && s.writeOpen() != nil) {
+	if (s.unsynced != nil && s.reopen() != nil) || s.f == nil || s.sealing || (s.torn && s.repairTail() != nil) || (s.needOpen && s.writeOpen() != nil) {
 		return
 	}
 	b, _ := json.Marshal(map[string]string{"reason": reason})
