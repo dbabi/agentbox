@@ -238,6 +238,8 @@ func TestValidateRejects(t *testing.T) {
 		{"amd64 image user usbmux", "admin user", EncNone, func(c *Config) { c.AdminUser = "usbmux" }},
 		{"33-char user", "admin user", EncNone, func(c *Config) { c.AdminUser = strings.Repeat("a", 33) }},
 		{"serial with space (shell/YAML injection)", "disk serial", EncNone, func(c *Config) { c.DiskSerial = "S4EV 123; rm -rf /" }},
+		{"ssh-from with shell (injection)", "--ssh-from", EncNone, func(c *Config) { c.SSHFrom = []string{"10.0.0.0/8'; reboot; '"} }},
+		{"ssh-from overlapping", "--ssh-from", EncNone, func(c *Config) { c.SSHFrom = []string{"10.0.0.0/8", "10.1.0.0/16"} }},
 		{"serial with quote", "disk serial", EncNone, func(c *Config) { c.DiskSerial = "S4EV'x" }},
 		{"serial with newline", "disk serial", EncNone, func(c *Config) { c.DiskSerial = "S4EV\n" }},
 		{"empty serial", "disk serial", EncNone, func(c *Config) { c.DiskSerial = "" }},
@@ -299,6 +301,41 @@ func TestValidateRejects(t *testing.T) {
 				t.Fatalf("want exactly one %q error, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+// TestSSHFrom runs the rendered ssh-from line under dash: the file holds the parsed prefixes, and no flag writes none
+// (fw.DefaultSSHFrom applies).
+func TestSSHFrom(t *testing.T) {
+	if _, err := exec.LookPath("dash"); err != nil {
+		t.Skip("needs dash")
+	}
+	c := validConfig(t, EncNone, "uefi")
+	ud, err := Render(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(ud), "ssh-from") {
+		t.Error("a seed without --ssh-from writes an ssh-from file")
+	}
+	c.SSHFrom = []string{"192.168.1.7/24", "fd00::/8", "10.0.2.2/32"}
+	ud, err = Render(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var line string
+	for _, l := range strings.Split(string(ud), "\n") {
+		if strings.Contains(l, "/etc/agentbox/ssh-from") {
+			line = strings.TrimSpace(l)
+		}
+	}
+	root := t.TempDir()
+	if out, err := exec.Command("dash", "-euc", strings.ReplaceAll(line, "/mnt/new", root)).CombinedOutput(); err != nil {
+		t.Fatalf("%q: %v: %s", line, err, out)
+	}
+	b, err := os.ReadFile(filepath.Join(root, "etc", "agentbox", "ssh-from"))
+	if err != nil || string(b) != "192.168.1.0/24\nfd00::/8\n10.0.2.2/32\n" {
+		t.Errorf("ssh-from file %q, %v", b, err)
 	}
 }
 
@@ -683,7 +720,11 @@ func TestRenderedSeedsVerify(t *testing.T) {
 	for _, enc := range []string{EncTPM2Tang, EncTPM2, EncNone} {
 		for _, boot := range []string{"uefi", "bios"} {
 			dir := t.TempDir()
-			if err := WriteNoCloud(validConfig(t, enc, boot), dir, time.Unix(0, 0)); err != nil {
+			c := validConfig(t, enc, boot)
+			if enc == EncNone {
+				c.SSHFrom = []string{"192.168.1.0/24", "fd00::/8"}
+			}
+			if err := WriteNoCloud(c, dir, time.Unix(0, 0)); err != nil {
 				t.Fatal(err)
 			}
 			args := append(append([]string{}, cmd[1:]...), filepath.Join("..", "..", "hack", "verify-seed.py"), filepath.Join(dir, "user-data"))

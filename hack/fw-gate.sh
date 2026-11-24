@@ -17,6 +17,12 @@
 #            DNS included); a confined uid reaches nothing
 #          - a keys flow survives its element's expiry (conntrack), while a new connection is refused
 #          - `nft flush ruleset`: within 60 s the health timer's fwcheck alerts and the table is back, sets refilled
+#          - inbound (issue #80), with network-namespace peers on a LAN link (lan0) and on tailscale0: a listener on
+#            0.0.0.0/[::]:11434 is unreachable from the LAN; SSH works only from the seed's --ssh-from prefixes (IPv4 and
+#            IPv6, after neighbor discovery); Tailscale's direct UDP 41641 arrives; tailscale0 reaches everything; the
+#            box's own connections get their replies; an enabled ufw that allows 11434 opens nothing
+#          - the input chain's policy set to accept, a rule inserted in it, the chain deleted, or a prefix added to
+#            ssh_from4 each keep the stand-in from starting, and a firewall restart repairs each
 #          - after a reboot: the sets are back and the stand-in starts at boot, with no failed unit
 # The sets rootd fills come from the real agentbox-rootd.service: rootd records the fixed port_allow tuples itself, and
 # the gate writes the dst answers rootd would have written (set_answers, with their entries on the allowlists) and asks rootd to
@@ -75,6 +81,9 @@ IP=$(cat /var/tmp/fw-ip 2>/dev/null || :)
 EOF
 }
 
+# the gate's seed: the VM network's SSH forward (10.0.2.0/24) and the lan0 peers' halves (see phase1)
+SSH_FROM="10.0.2.0/24 192.0.2.0/25 fd00:ab::/112"
+
 phase1() { cat <<'EOF'
 : >$L
 IP=$(getent ahostsv4 ports.ubuntu.com | awk 'NR == 1 {print $1}'); echo "$IP" > /var/tmp/fw-ip
@@ -126,6 +135,76 @@ check "rootd is up at boot, after the firewall, and fwcheck passes" 'systemctl i
 check "the agent stand-in starts while the firewall is intact" 'systemctl start agentbox-agent-stub.service && systemctl is-active agentbox-agent-stub.service && systemctl stop agentbox-agent-stub.service'
 check "the test address $IP (ports.ubuntu.com) is public: not in private4" '[ -n "$IP" ] && ! nft get element inet agentbox private4 "{ $IP }"'
 
+# Inbound (issue #80). Peers in network namespaces stand in for other hosts: on lan0, 192.0.2.10 and fd00:ab::10 are
+# inside the seed's --ssh-from, 192.0.2.200 and fd00:ab::1:10 outside; tailscale0 is the name tailscaled gives its tun.
+check "inbound: the input chain drops by default; ssh_from4/6 hold the seed's --ssh-from, written to /etc/agentbox/ssh-from" 'nft list chain inet agentbox input | grep -q "hook input priority filter; policy drop;" && [ "$(cat /etc/agentbox/ssh-from | paste -sd " " -)" = "10.0.2.0/24 192.0.2.0/25 fd00:ab::/112" ] && nft list set inet agentbox ssh_from4 | grep -qF "elements = { 10.0.2.0/24, 192.0.2.0/25 }" && nft list set inet agentbox ssh_from6 | grep -qF "elements = { fd00:ab::/112 }"'
+check "inbound: the gate's own SSH session comes from the VM network, inside the seed's --ssh-from" 'ss -Htn state established "( sport = :22 )" | awk "{print \$4}" | grep -q "^10\.0\.2\.[0-9]*:"'
+ip netns add lan; ip link add lan0 type veth peer name eth0 netns lan
+ip addr add 192.0.2.1/24 dev lan0; ip addr add fd00:ab::1/64 dev lan0 nodad; ip link set lan0 up
+for a in 192.0.2.10/24 192.0.2.200/24; do ip -n lan addr add $a dev eth0; done
+for a in fd00:ab::10/64 fd00:ab::1:10/64; do ip -n lan addr add $a dev eth0 nodad; done
+ip -n lan link set lo up; ip -n lan link set eth0 up
+ip netns add ts; ip link add tailscale0 type veth peer name eth0 netns ts
+ip addr add 100.100.1.1/24 dev tailscale0; ip link set tailscale0 up
+ip -n ts addr add 100.100.1.2/24 dev eth0; ip -n ts link set lo up; ip -n ts link set eth0 up
+cat > /var/tmp/probe.py <<'P'
+import errno, socket, sys
+src, host, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+udp = len(sys.argv) > 4
+s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_DGRAM if udp else socket.SOCK_STREAM)
+s.settimeout(3)
+try:
+    s.bind((src, 0))
+    s.connect((host, port))
+    if udp:
+        s.send(b"x")
+        print("sent")
+        sys.exit()
+    try:
+        print(("ok " + s.recv(64).split(b"-")[0].decode(errors="replace")).strip())  # "ok" when it closes at once
+    except socket.timeout:
+        print("ok")
+except OSError as e:
+    print(errno.errorcode.get(e.errno, "") if e.errno else type(e).__name__)
+P
+cat > /var/tmp/inlisten.py <<'P'
+import select, socket, sys
+log = open(sys.argv[1], "a", buffering=1)
+ss = []
+for t, p in ((socket.SOCK_STREAM, 11434), (socket.SOCK_DGRAM, 11434), (socket.SOCK_DGRAM, 41641)):
+    s = socket.socket(socket.AF_INET6, t)
+    s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)  # [::] takes IPv4 too, like 0.0.0.0
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("::", p))
+    t == socket.SOCK_STREAM and s.listen()
+    ss.append(s)
+while True:
+    for s in select.select(ss, [], [])[0]:
+        if s.type == socket.SOCK_STREAM:
+            c, a = s.accept(); c.close()
+        else:
+            a = s.recvfrom(512)[1]
+        log.write("%s %d %s\n" % ("tcp" if s.type == socket.SOCK_STREAM else "udp", s.getsockname()[1], a[0].removeprefix("::ffff:")))
+P
+: > /var/tmp/inlisten.log
+python3 /var/tmp/inlisten.py /var/tmp/inlisten.log 2>>$L & IL=$!
+ip netns exec lan python3 -c 'import socket; s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("192.0.2.200", 8080)); s.listen()
+while True: s.accept()[0].close()' 2>>$L & PL=$!
+sleep 2
+# peer NS SRC DST PORT [udp]: what a connect from SRC in namespace NS gets
+peer() { ns=$1; shift; ip netns exec $ns python3 /var/tmp/probe.py "$@"; }
+seen() { grep -c "^$1 $2 $3\$" /var/tmp/inlisten.log; }
+check "inbound: [::]:11434 listens on every address (the stand-in for a listener the owner adds)" '[ -n "$(ss -Hltn "sport = :11434")" ] && [ "$(python3 /var/tmp/conn.py 127.0.0.1 11434)" = ok ]'
+check "inbound: 11434 is unreachable from the LAN, inside the SSH prefixes and outside, IPv4 and IPv6; it saw nothing" 'for s in 192.0.2.10 192.0.2.200; do [ "$(peer lan $s 192.0.2.1 11434)" = TimeoutError ] && [ "$(seen tcp 11434 $s)" = 0 ] || exit 1; done && for s in fd00:ab::10 fd00:ab::1:10; do [ "$(peer lan $s fd00:ab::1 11434)" = TimeoutError ] && [ "$(seen tcp 11434 $s)" = 0 ] || exit 1; done'
+check "inbound: SSH from the seed's --ssh-from works: sshd's banner to 192.0.2.10 and fd00:ab::10 (IPv6 neighbor discovery passes)" '[ "$(peer lan 192.0.2.10 192.0.2.1 22)" = "ok SSH" ] && [ "$(peer lan fd00:ab::10 fd00:ab::1 22)" = "ok SSH" ]'
+check "inbound: SSH from outside the seed's --ssh-from (192.0.2.200, fd00:ab::1:10) is dropped" '[ "$(peer lan 192.0.2.200 192.0.2.1 22)" = TimeoutError ] && [ "$(peer lan fd00:ab::1:10 fd00:ab::1 22)" = TimeoutError ]'
+check "inbound: Tailscale's direct UDP 41641 from a LAN peer outside the SSH prefixes arrives; UDP 11434 does not" 'peer lan 192.0.2.200 192.0.2.1 41641 udp && peer lan fd00:ab::1:10 fd00:ab::1 41641 udp && peer lan 192.0.2.200 192.0.2.1 11434 udp && sleep 1 && [ "$(seen udp 41641 192.0.2.200)" = 1 ] && [ "$(seen udp 41641 fd00:ab::1:10)" = 1 ] && [ "$(seen udp 11434 192.0.2.200)" = 0 ]'
+check "inbound: from tailscale0 (the tailnet, where tailscale serve fronts ntfy) the 11434 listener and SSH are reachable" '[ "$(peer ts 100.100.1.2 100.100.1.1 11434)" = ok ] && [ "$(seen tcp 11434 100.100.1.2)" = 1 ] && [ "$(peer ts 100.100.1.2 100.100.1.1 22)" = "ok SSH" ]'
+check "inbound: the box's own connection to a LAN peer's listener gets its replies (ct state established)" '[ "$(python3 /var/tmp/conn.py 192.0.2.200 8080)" = ok ]'
+# ufw's iptables-nft tables hook input in their own tables: a packet must pass every hook, so ufw can only drop more
+check "inbound: an enabled ufw that allows 11434/tcp opens nothing the input chain drops; fwcheck passes; ufw disabled again" 'ufw allow 22/tcp && ufw allow 11434/tcp && ufw --force enable && ufw status | grep -q "Status: active" && [ "$(peer lan 192.0.2.10 192.0.2.1 11434)" = TimeoutError ] && [ "$(peer lan 192.0.2.10 192.0.2.1 22)" = "ok SSH" ] && $A fwcheck; r=$?; ufw --force disable; ufw delete allow 11434/tcp; ufw delete allow 22/tcp; exit $r'
+kill $IL $PL; ip netns del lan; ip netns del ts
+
 check "rootd recorded the fixed port_allow tuples itself (0 . 43100, 0 . 43200) and filled port_allow from them" '[ "$(python3 -c "import sqlite3; print(\",\".join(sorted(r[0] for r in sqlite3.connect(\"file:$DB?mode=ro\", uri=True).execute(\"select element from set_elements where set_name = \x27port_allow\x27\"))))")" = "0 . 43100,0 . 43200" ] && [ "$(pa)" = "$PA" ]'
 # the row rootd would have written before adding the proxy's element (rootd.db set_answers, Appendix E); the answer is
 # for an entry on its allowlist, or rootd's refill revokes it
@@ -151,6 +230,10 @@ altered "a (uid . port) tuple rootd never recorded in port_allow" "nft add eleme
 altered "ntfy.service under another uid" 'mkdir -p /run/systemd/system/ntfy.service.d && printf "[Service]\nUser=nobody\n" > /run/systemd/system/ntfy.service.d/gate.conf && systemctl daemon-reload' 'rm -r /run/systemd/system/ntfy.service.d && systemctl daemon-reload'
 altered "ip_local_reserved_ports cleared" 'echo 0 > /proc/sys/net/ipv4/ip_local_reserved_ports'
 altered "nftables.service unmasked" 'systemctl unmask nftables.service' 'systemctl mask nftables.service'
+altered "the input chain's policy set to accept" 'nft chain inet agentbox input "{ policy accept; }"'
+altered "an input rule accepting tcp dport 11434" 'nft insert rule inet agentbox input tcp dport 11434 accept'
+altered "the input chain deleted" 'nft flush chain inet agentbox input && nft delete chain inet agentbox input'
+altered "a prefix the seed never named added to ssh_from4" "nft add element inet agentbox ssh_from4 '{ 203.0.113.0/24 }'"
 check "a table with an extra hooked chain fails the firewall load itself (fail closed); deleting it restores" 'nft add chain inet agentbox evil "{ type filter hook output priority -10; policy accept; }" && ! systemctl restart agentbox-firewall.service && ! systemctl is-active agentbox-firewall.service && journalctl -u agentbox-firewall.service -n 20 -o cat | grep -q "stateless hash" && nft delete chain inet agentbox evil && systemctl reset-failed && restore'
 
 # Reload, restart and fw load keep the sets
@@ -226,6 +309,7 @@ phase2() { cat <<'EOF'
 echo "== after reboot" >>$L
 check "reboot: firewall, rootd and agent stand-in active; no failed units" '[ "$(systemctl is-system-running --wait)" = running ] && systemctl is-active agentbox-firewall.service agentbox-rootd.service agentbox-agent-stub.service'
 check "reboot: the static sets are loaded and rootd's sets are back from rootd.db" 'nft list set inet agentbox confined | grep -qF 70001-70999 && [ "$(elems private4 | wc -l)" = 13 ] && [ "$(pa)" = "$PA" ] && [ "$(elems proxy_dst4)" = "{\"concat\": [\"$IP\", 80]}" ]'
+check "reboot: the input chain drops by default and ssh_from4/6 hold the seed's --ssh-from" 'nft list chain inet agentbox input | grep -q "policy drop;" && nft list set inet agentbox ssh_from4 | grep -qF "elements = { 10.0.2.0/24, 192.0.2.0/25 }" && nft list set inet agentbox ssh_from6 | grep -qF "elements = { fd00:ab::/112 }"'
 check "reboot: fwcheck passes; agentbox-proxy reaches $IP:80 and nothing else" '$A fwcheck && [ "$(as agentbox-proxy $IP 80)" = ok ] && dropped agentbox-proxy 1.1.1.1 443'
 check "reboot: the agent stand-in's own fwcheck ran and passed at boot" 'journalctl -b -u agentbox-agent-stub.service -o cat | grep -q "Started agentbox-agent-stub.service\|Started agentbox agent stand-in" && ! journalctl -b -u agentbox-agent-stub.service -o cat | grep -q "agentbox: fwcheck: "'
 echo "fails=$fails"
@@ -233,7 +317,7 @@ EOF
 }
 
 sc_install() {
-  hack/gate.sh none "$BOOT" >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-$G.txt"
+  SEED_SSH_FROM=$SSH_FROM hack/gate.sh none "$BOOT" >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-$G.txt"
   log "PASS hack/gate.sh none: install gates, and firstboot installed this checkout's release"
 }
 

@@ -205,6 +205,10 @@ autoinstall:
       /var/lib/agentbox/current/bin/agentbox os mark-last-good
       touch /var/lib/agentbox/.firstboot-done
       FB
+{{- if .SSHFromCmd}}
+      # agentbox-firewall.service's input chain takes SSH only from these prefixes (ARCHITECTURE.md §6.1)
+      {{.SSHFromCmd}}
+{{- end}}
       printf '%s\n' 'AGENTBOX_RELEASE_URL={{.ReleaseURL}}' 'AGENTBOX_RELEASE_SHA256={{.ReleaseSHA256}}' 'AGENTBOX_MINISIGN_PUBKEY={{.MinisignPubKey}}' \
         > /mnt/new/etc/agentbox-firstboot.env
       printf '%s\n' '[Unit]' 'Description=agentbox first boot' 'After=network-online.target' 'Wants=network-online.target' \

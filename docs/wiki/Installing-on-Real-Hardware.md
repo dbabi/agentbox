@@ -41,7 +41,7 @@ These parts of the path have not run in any test:
 Know these limits before the box joins your network:
 
 - It runs no AI agents yet. Today agentbox is an installer, an OS layer and the first host services.
-- The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules. Put the box on a network you trust.
+- The host firewall drops inbound traffic except SSH from the address ranges in the seed (`--ssh-from`). Put the box on a network you trust.
 - The milestone 2 services (firewall, audit daemon, root daemon, quotas, ntfy) have passed their gates in `none` mode on arm64 UEFI only.
 - Nothing updates packages by itself. An admin updates them with `os plan` and `os apply`. See [Generations and Updates](Generations-and-Updates.md).
 - The agentbox release on the box cannot be updated. A new release means a reinstall.
@@ -324,6 +324,7 @@ The flags:
 | `--encryption` | `tpm2+tang` | `tpm2+tang`, `tpm2` or `none` |
 | `--tang-url`, `--tang-thp` | none | For `tpm2+tang` only, and required there |
 | `--recovery-pub` | none | Required for `tpm2` and `tpm2+tang`. Refused with `none`. An RSA key of 4096 bits or more. |
+| `--ssh-from` | the private LAN ranges, `100.64.0.0/10` and link-local | An IPv4 or IPv6 prefix the firewall takes SSH from, such as `192.168.1.0/24`. Repeat the flag for more. Prefixes may not overlap. SSH over Tailscale works whatever you set. |
 | `--hostname` | `agentbox` | A lowercase RFC 1123 label |
 | `--admin` | `boxadmin` | The admin user name. The seed refuses names that the Ubuntu installer reserves, such as `root` and `admin`, and names that already exist in the installed system. |
 | `--out` | required | The output directory |

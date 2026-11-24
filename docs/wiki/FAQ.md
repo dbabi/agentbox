@@ -13,7 +13,7 @@ At the time of writing:
 - Milestones 1, 2 and 4 of 9 are built: the installer, the OS layer, the first host services (a firewall, an audit daemon and a root daemon skeleton), agent accounts and task containers. Milestone 3, the request checks, waits for its 24-hour fuzz run.
 - No AI agent can do useful work on it yet: no task can reach a model.
 - It has run only in QEMU virtual machines. No real hardware has run it.
-- The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules, so anything that listens is open to your LAN.
+- The host firewall drops inbound traffic except SSH from the address ranges in the seed. By default those are the private LAN ranges and the Tailscale range.
 - There are no automatic security updates: apt's daily timers are masked. Packages do not change on their own. To change them, an admin runs `agentbox os plan`, then `agentbox os apply`, as root on the box. The binary is not on `PATH`, so give its full path, for example `sudo /var/lib/agentbox/current/bin/agentbox os plan --install <pkg>`.
 - An installed box cannot update its agentbox release. A new release means a reinstall.
 
@@ -114,7 +114,7 @@ Not today. No cloud VM has run agentbox. It is designed for a dedicated machine 
 - The installer boots the Ubuntu Server ISO and wipes one disk, matched by its exact serial. Most cloud VMs boot from a provider image, not from an installer ISO.
 - The encrypted modes need a TPM 2.0. The default mode, `tpm2+tang`, also needs a Tang server on the same LAN, at a private IPv4 address.
 - The disk encryption targets disk removal and whole-machine theft. Those are threats to a box you own.
-- The host firewall has no inbound rules. Do not give the box a public IP address.
+- The host firewall takes SSH from private LAN ranges by default. Do not give the box a public IP address.
 
 So far, agentbox has run only in QEMU VMs on an Apple Silicon Mac.
 

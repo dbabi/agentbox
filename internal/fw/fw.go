@@ -1,4 +1,5 @@
-// Package fw loads and verifies the inet agentbox nftables table (ARCHITECTURE.md §6.1, Appendix B).
+// Package fw loads and verifies the inet agentbox nftables table (ARCHITECTURE.md §6.1, Appendix B): the output chain
+// that confines agentbox's own uids, and the default-drop input chain.
 //
 // Load is agentbox-firewall.service: one add-only nft -f transaction, then a check that the live table is the one the
 // ruleset makes. Check is fwcheck: the normalized stateless hash, the static sets, the sets rootd fills (compared to
@@ -34,6 +35,8 @@ const (
 	RulesPath  = "/etc/nftables.d/agentbox.nft"
 	SysctlPath = "/etc/sysctl.d/60-agentbox.conf"
 	RootdDB    = "/var/lib/agentbox/rootd.db"
+	// SSHFromPath lists the prefixes sshd accepts connections from, one per line (`agentbox seed --ssh-from`).
+	SSHFromPath = "/etc/agentbox/ssh-from"
 	// Reserved loopback service ports (§6.1): only (uid . port) tuples in port_allow may open them.
 	ReservedLo, ReservedHi = 43000, 45999
 	ElementTimeout         = 10 * time.Minute
@@ -54,6 +57,70 @@ var (
 		"5f00::/16", "fc00::/7", "fe80::/10", "fec0::/10", "ff00::/8"}
 )
 
+// DefaultSSHFrom is the input chain's SSH sources on a box whose seed named none: the private LAN ranges, the tailnet's
+// CGNAT range and link-local, so a box that gets the input chain in an update keeps its LAN SSH.
+var DefaultSSHFrom = []string{"10.0.0.0/8", "100.64.0.0/10", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "fe80::/10"}
+
+// ParseSSHFrom reads the ssh-from format: one prefix per line, blank lines and # comments skipped. It returns the
+// canonical prefixes and refuses an empty list (no SSH but the console and tailscale0) and overlapping prefixes, which
+// nft refuses in an interval set without auto-merge.
+func ParseSSHFrom(b []byte) ([]netip.Prefix, error) {
+	var ps []netip.Prefix
+	for _, l := range strings.Split(string(b), "\n") {
+		if l = strings.TrimSpace(l); l == "" || strings.HasPrefix(l, "#") {
+			continue
+		}
+		p, err := netip.ParsePrefix(l)
+		if err != nil || p.Addr().Zone() != "" || p.Addr().Is4In6() {
+			return nil, fmt.Errorf("ssh-from %q: not an IPv4 or IPv6 prefix", l)
+		}
+		p = p.Masked()
+		for _, q := range ps {
+			if q.Overlaps(p) {
+				return nil, fmt.Errorf("ssh-from %s overlaps %s", p, q)
+			}
+		}
+		ps = append(ps, p)
+	}
+	if len(ps) == 0 {
+		return nil, errors.New("ssh-from: no prefix; SSH would be open to none")
+	}
+	return ps, nil
+}
+
+// SSHFrom reads SSHFromPath, or returns DefaultSSHFrom when it doesn't exist.
+func SSHFrom() ([]netip.Prefix, error) {
+	b, err := os.ReadFile(SSHFromPath)
+	if errors.Is(err, os.ErrNotExist) {
+		b, err = []byte(strings.Join(DefaultSSHFrom, "\n")), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ps, err := ParseSSHFrom(b)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", SSHFromPath, err)
+	}
+	return ps, nil
+}
+
+// sshSets splits the prefixes into ssh_from4 and ssh_from6 in Canon's form; nft prints a full-length prefix as its
+// address.
+func sshSets(ps []netip.Prefix) (v4, v6 []string) {
+	for _, p := range ps {
+		e := p.String()
+		if p.IsSingleIP() {
+			e = p.Addr().String()
+		}
+		if p.Addr().Is4() {
+			v4 = append(v4, e)
+		} else {
+			v6 = append(v6, e)
+		}
+	}
+	return v4, v6
+}
+
 // RootdSets are the sets only rootd fills. Exact ones must equal rootd.db; timeout (dst) ones may only hold answers
 // rootd recorded and that have not expired, so an empty set passes.
 var (
@@ -67,10 +134,18 @@ var (
 //go:embed agentbox.nft
 var ruleset string
 
-// Render returns the ruleset with the static sets and the reserved ports filled in.
-func Render() []byte {
+// Render returns the ruleset with the static sets, the SSH sources and the reserved ports filled in.
+func Render(sshFrom []netip.Prefix) []byte {
+	v4, v6 := sshSets(sshFrom)
+	elems := func(es []string) string { // an empty elements block is a syntax error
+		if len(es) == 0 {
+			return ""
+		}
+		return "elements = { " + strings.Join(es, ", ") + " }"
+	}
 	return []byte(strings.NewReplacer("{{.Confined}}", strings.Join(Confined, ", "), "{{.Private4}}", strings.Join(Private4, ", "),
-		"{{.Private6}}", strings.Join(Private6, ", "), "{{.Reserved}}", fmt.Sprintf("%d-%d", ReservedLo, ReservedHi)).Replace(ruleset))
+		"{{.Private6}}", strings.Join(Private6, ", "), "{{.Reserved}}", fmt.Sprintf("%d-%d", ReservedLo, ReservedHi),
+		"{{.SSHFrom4}}", elems(v4), "{{.SSHFrom6}}", elems(v6)).Replace(ruleset))
 }
 
 // Table is a parsed `nft -j -s list table inet agentbox`.
@@ -290,10 +365,12 @@ func readDB(path, boot string, off int64) (rows []Row, step int64, err error) {
 	return rows, step, err
 }
 
-// Static checks the static sets against the constants (rootd never inserts into them); each problem is one line.
-func Static(live map[string][]string) []string {
+// Static checks the static sets against the constants and the SSH sources (rootd never inserts into them); each problem
+// is one line.
+func Static(live map[string][]string, sshFrom []netip.Prefix) []string {
 	var bad []string
-	for s, w := range map[string][]string{"confined": Confined, "private4": Private4, "private6": Private6} {
+	v4, v6 := sshSets(sshFrom)
+	for s, w := range map[string][]string{"confined": Confined, "private4": Private4, "private6": Private6, "ssh_from4": v4, "ssh_from6": v6} {
 		bad = append(bad, diff(s, live[s], w)...)
 	}
 	sort.Strings(bad)
@@ -399,9 +476,9 @@ func live() (Table, error) {
 
 // expected loads the ruleset into a fresh network namespace and lists it there: the hash every box with this release
 // must have, whatever was in the live table before the add-only load.
-func expected() (Table, error) {
+func expected(sshFrom []netip.Prefix) (Table, error) {
 	c := exec.Command("unshare", "--net", "sh", "-c", "nft -f - && nft -j -s list table inet agentbox")
-	c.Stdin = bytes.NewReader(Render())
+	c.Stdin = bytes.NewReader(Render(sshFrom))
 	out, err := c.Output()
 	if err != nil {
 		return Table{}, fmt.Errorf("ruleset in a scratch netns: %w", cmdErr(err))
@@ -412,7 +489,11 @@ func expected() (Table, error) {
 // verifyTable compares the live table's hash to the ruleset's and its static sets to the constants. rootd's sets are
 // left to Check.
 func verifyTable() (Table, []string, error) {
-	want, err := expected()
+	ssh, err := SSHFrom()
+	if err != nil {
+		return Table{}, nil, err
+	}
+	want, err := expected(ssh)
 	if err != nil {
 		return Table{}, nil, err
 	}
@@ -424,7 +505,7 @@ func verifyTable() (Table, []string, error) {
 	if got.Hash != want.Hash {
 		bad = append(bad, fmt.Sprintf("table inet agentbox: stateless hash %s, the ruleset gives %s (rules, chains or set definitions changed)", got.Hash, want.Hash))
 	}
-	return got, append(bad, Static(got.Elems)...), nil
+	return got, append(bad, Static(got.Elems, ssh)...), nil
 }
 
 func writeFile(path string, b []byte) error {
@@ -443,7 +524,11 @@ func writeFile(path string, b []byte) error {
 
 // WriteConfig writes the rendered ruleset and the reserved-ports sysctl file, then checks the ruleset with nft -c.
 func WriteConfig() error {
-	if err := writeFile(RulesPath, Render()); err != nil {
+	ssh, err := SSHFrom()
+	if err != nil {
+		return err
+	}
+	if err := writeFile(RulesPath, Render(ssh)); err != nil {
 		return err
 	}
 	if err := writeFile(SysctlPath, []byte(fmt.Sprintf("# agentbox (ARCHITECTURE.md §6.1): no ephemeral port in the reserved loopback service range\nnet.ipv4.ip_local_reserved_ports = %d-%d\n", ReservedLo, ReservedHi))); err != nil {

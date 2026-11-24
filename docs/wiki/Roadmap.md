@@ -118,7 +118,7 @@ Every milestone 4 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 
 | Gap today | Where the plan closes it |
 |---|---|
-| The host firewall filters outbound traffic from agentbox's service users only. It has no inbound rules, so SSH and any other listener are open to the LAN. | Not in the plan yet. Keep the box on a network you trust. |
+| Rootful Docker publishes ports past the host firewall. | Not in the plan. Use rootless podman. |
 | No task can reach a model or the internet yet, and no agent CLI is in the task image. The design targets Claude Code and Codex. | Milestone 5: the brokers |
 | No signed approvals. Today an admin approves an OS change by passing the plan's SHA-256 to `os apply` as root. | Milestone 6 |
 | No automatic OS updates. apt's daily timers are masked. Updates happen only when an admin runs `os plan` and `os apply`. | Milestone 7: nightly updates |

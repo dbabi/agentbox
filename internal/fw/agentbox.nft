@@ -1,15 +1,21 @@
 # agentbox fw load (ARCHITECTURE.md §6.1, Appendix B): the whole file is one nft -f transaction. No destroy: the sets
-# rootd fills keep their elements. The three static sets are flushed and refilled in the same transaction, so an element
-# inserted into one of them can't survive a reload. Rendered from internal/fw; do not edit /etc/nftables.d/agentbox.nft.
+# rootd fills keep their elements. The static sets and the SSH sources are flushed and refilled in the same transaction,
+# so an element inserted into one of them can't survive a reload. Rendered from internal/fw; do not edit /etc/nftables.d/agentbox.nft.
 add table inet agentbox
 add chain inet agentbox output { type filter hook output priority filter; policy accept; }
 flush chain inet agentbox output
+add chain inet agentbox input { type filter hook input priority filter; policy drop; }
+flush chain inet agentbox input
 add set inet agentbox confined { typeof meta skuid; flags interval; }
 add set inet agentbox private4 { typeof ip daddr; flags interval; }
 add set inet agentbox private6 { typeof ip6 daddr; flags interval; }
 flush set inet agentbox confined
 flush set inet agentbox private4
 flush set inet agentbox private6
+add set inet agentbox ssh_from4 { typeof ip saddr; flags interval; }
+add set inet agentbox ssh_from6 { typeof ip6 saddr; flags interval; }
+flush set inet agentbox ssh_from4
+flush set inet agentbox ssh_from6
 table inet agentbox {
   set confined   { typeof meta skuid; flags interval; elements = { {{.Confined}} } }
   set port_allow { typeof meta skuid . tcp dport; }
@@ -25,6 +31,8 @@ table inet agentbox {
   set private6   { typeof ip6 daddr; flags interval; elements = { {{.Private6}} } }
   set allow_private4 { typeof meta skuid . ip daddr . tcp dport; }
   set allow_private6 { typeof meta skuid . ip6 daddr . tcp dport; }
+  set ssh_from4  { typeof ip saddr; flags interval; {{.SSHFrom4}} }
+  set ssh_from6  { typeof ip6 saddr; flags interval; {{.SSHFrom6}} }
   chain output {
     type filter hook output priority filter; policy accept;
     meta skuid @confined counter drop
@@ -52,5 +60,19 @@ table inet agentbox {
     meta skuid "agentbox-git" counter drop
     meta skuid { "agentbox", "agentbox-audit", "agentbox-approve", "agentbox-llm", "agentbox-llm-decide", "agentbox-ingress" } oif "lo" accept
     meta skuid { "agentbox", "agentbox-audit", "agentbox-approve", "agentbox-llm", "agentbox-llm-decide", "agentbox-ingress" } counter drop
+  }
+  # inbound: loopback, replies, the tailnet, Tailscale's direct UDP, IPv6 neighbor discovery, DHCP replies and SSH from
+  # the seed's --ssh-from prefixes; every other listener, including one added later, is closed to the network
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iif "lo" accept
+    ct state established,related accept
+    iifname "tailscale0" accept
+    udp dport 41641 accept
+    icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, mld-listener-query } accept
+    udp sport 67 udp dport 68 accept
+    ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept
+    tcp dport 22 ip saddr @ssh_from4 accept
+    tcp dport 22 ip6 saddr @ssh_from6 accept
   }
 }

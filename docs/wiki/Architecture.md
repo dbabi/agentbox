@@ -526,7 +526,13 @@ Root access is the approval.
 Built today (milestone 2): `agentbox fw load` adds the table as one add-only transaction, so a reload keeps every element rootd added.
 `fwcheck` runs from the health timer every 50 s, and from each agent-side unit's `ExecStartPre=`.
 On a mismatch it prints `agentbox: ALERT: firewall altered` and restarts the firewall unit, which restarts every unit that `Requires=` it.
-The table has an output chain only. It has no inbound rules, so SSH and any other listener stay open to the LAN.
+An input chain drops inbound traffic by default.
+It accepts loopback, replies to the box's own connections, the `tailscale0` interface, Tailscale's direct UDP port 41641, IPv6 neighbor discovery and DHCP replies.
+It accepts SSH only from the prefixes in `/etc/agentbox/ssh-from`, which the seed's `--ssh-from` writes.
+Without that file, the defaults are the private LAN ranges, `100.64.0.0/10` (Tailscale) and link-local.
+`fwcheck` covers the input chain and the SSH prefixes like the rest of the table.
+An enabled `ufw` can only drop more: a packet must pass every input hook.
+Rootful Docker is unsupported: it publishes ports through the forward hook, which this table does not filter.
 
 ### DNS and pinned dialing
 

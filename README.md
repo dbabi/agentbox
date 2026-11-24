@@ -37,14 +37,14 @@ The installer, safe OS updates, the first host services (firewall, audit log, ro
 - Unattended install of Ubuntu Server 26.04.1 from one seed, with disk encryption and a recovery key. Zero-touch installs work on arm64 UEFI with Secure Boot on, and on amd64 legacy BIOS.
 - A/B OS generations: a package change builds offline, boots once, and stays only if healthy.
 - Releases you build and sign yourself with `make release`. First boot checks them against a pinned SHA-256 and your minisign key. There is no official release yet.
-- A host firewall that limits each agentbox service to its allowed destinations.
+- A host firewall that limits each agentbox service to its allowed destinations, and drops inbound traffic except SSH.
 - Agent accounts and sealed tasks. `agentbox task new` runs each task in a disposable container with no network and a fresh home. `agentbox attach` opens a filtered interactive session.
 
 **Not yet:**
 
 - Brokers, policy, approvals, the agent bus and memory. All of them are designed. None of them is built. Until the brokers land, no task can reach a model or the internet.
 - Real hardware. amd64 UEFI has not run anywhere.
-- Inbound filtering and automatic security updates.
+- Automatic security updates.
 - Updating agentbox itself on an installed box. This is out of scope for the first release. A new release means a reinstall.
 
 ## Why
@@ -283,7 +283,8 @@ Known limits of what is built today:
 - In `tpm2+tang` mode, an attacker who stays on your LAN with physical access can unlock it too.
 - A signed but malicious package in a plan you approve runs as root at the trial boot. Fallback covers crashes, not hostile code.
 - The admin account is root-equivalent. The seed holds its password hash, so keep the seed private.
-- The host firewall filters only outbound traffic from agentbox's own service users. It has no inbound rules. SSH, and anything else that listens, is open to your LAN. Do not give the box a public IP address.
+- The host firewall takes SSH only from the address ranges in the seed. By default those are the private LAN ranges, the Tailscale range and link-local. Do not give the box a public IP address.
+- Rootful Docker is unsupported. The ports it publishes bypass the host firewall.
 - There are no automatic security updates.
 - All tasks share the host kernel. A kernel exploit escapes the container.
 
