@@ -370,6 +370,8 @@ Each service runs as its own Linux user, with only the access it needs.
 - The scan runs in a transient unit with no network but loopback, a throwaway uid that can read but not write the workspace, and nothing else in its file system.
 - A hit blocks the agent's tasks. The refusal names each file, line and credential type, never the credential.
   Remove the file, or start the task with `agentbox task new --ack-secrets <n>`, where `<n>` is the number of hits the refusal reported.
+- The scan stops at 1000 hits. Files after that are not read, so the list is not complete and `--ack-secrets` can't acknowledge it.
+  Tasks stay blocked until the workspace holds fewer.
 - An `egress allow` reply names each credential that works against the host being allowed.
 - The scan is a detection aid. See the residuals in the [threat model](../../docs/THREAT-MODEL.md).
 

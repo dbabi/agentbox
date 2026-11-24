@@ -36,7 +36,11 @@ const (
 	SecretsInWorkspace = "secrets_in_workspace"
 	SecretScanFailed   = "secret_scan_failed"
 	SecretsAckMismatch = "secrets_ack_mismatch"
+	SecretsTooMany     = "secrets_too_many"
 )
+
+// errTooManyHits is a report the scan cut off at secrets.MaxHits: files after the last hit were not read.
+var errTooManyHits = fmt.Errorf("the scan stopped at %d hits", secrets.MaxHits)
 
 // scanTimeout bounds one scan: task.start runs it within agentboxd's 60 s wait for rootd.
 const scanTimeout = 45 * time.Second
@@ -102,7 +106,14 @@ func runSecretScan(control string) func(Account) ([]secrets.Hit, error) {
 		if err := checkReport(rep); err != nil {
 			return nil, err
 		}
-		log.Printf("secret scan %s: %d files, %d hits, in %d ms, netdevs %v", acct.Name, rep.Files, len(rep.Hits), time.Since(t0).Milliseconds(), rep.Netdevs)
+		cut := ""
+		if rep.Truncated {
+			cut = " (cut off, files after them unread)"
+		}
+		log.Printf("secret scan %s: %d files, %d hits%s, in %d ms, netdevs %v", acct.Name, rep.Files, len(rep.Hits), cut, time.Since(t0).Milliseconds(), rep.Netdevs)
+		if rep.Truncated {
+			return rep.Hits, errTooManyHits
+		}
 		return rep.Hits, nil
 	}
 }
@@ -179,10 +190,12 @@ func covered(hits, acked []secrets.Hit) bool {
 
 // rescan scans acct's workspace and records it. A scan never marks the workspace checked unless every hit is
 // acknowledged, so new hits block the next task; firstTask false (workspace creation, an egress grant) leaves it
-// unchecked, since only the scan right before a task counts for that task.
+// unchecked, since only the scan right before a task counts for that task. A truncated scan never does, and no ack
+// covers it: the files it did not read may hold more.
 func (t *tasks) rescan(acct Account, ack int, firstTask bool) ([]secrets.Hit, reply) {
 	hits, err := t.cfg.SecretScan(acct)
-	if err != nil {
+	capped := errors.Is(err, errTooManyHits)
+	if err != nil && !capped {
 		log.Printf("secret scan %s: %v", acct.Name, err)
 		return nil, reply{"ok": false, "reason": SecretScanFailed, "error": "the workspace credential scan failed, so tasks stay blocked: " + err.Error()}
 	}
@@ -190,7 +203,7 @@ func (t *tasks) rescan(acct Account, ack int, firstTask bool) ([]secrets.Hit, re
 	if err != nil {
 		return nil, reply{"ok": false, "reason": SecretScanFailed, "error": err.Error()}
 	}
-	if ack > 0 {
+	if ack > 0 && !capped {
 		if ack != len(hits) {
 			return hits, reply{"ok": false, "reason": SecretsAckMismatch, "secrets": hits,
 				"error": fmt.Sprintf("--ack-secrets %d, but the scan found %d: %s", ack, len(hits), list(hits))}
@@ -198,9 +211,14 @@ func (t *tasks) rescan(acct Account, ack int, firstTask bool) ([]secrets.Hit, re
 		st.acked = hits
 	}
 	st.hits = hits
-	st.checked = firstTask && covered(hits, st.acked)
+	st.checked = firstTask && !capped && covered(hits, st.acked)
 	if err := t.saveScan(acct, st); err != nil {
 		return nil, reply{"ok": false, "reason": SecretScanFailed, "error": err.Error()}
+	}
+	if capped {
+		return hits, reply{"ok": false, "reason": SecretsTooMany, "secrets": hits,
+			"error": fmt.Sprintf("the workspace credential scan stopped at %d hits, so it did not read every file and tasks stay blocked; "+
+				"--ack-secrets can't acknowledge a partial list: remove credentials until the scan finds fewer: %s", secrets.MaxHits, list(hits))}
 	}
 	if !covered(hits, st.acked) {
 		return hits, reply{"ok": false, "reason": SecretsInWorkspace, "secrets": hits,
@@ -247,7 +265,7 @@ func (t *tasks) grantScan(agents []string, host string) (matching []map[string]a
 			continue
 		}
 		hits, rep := t.rescan(acct, 0, false)
-		if rep != nil && rep["reason"] == SecretScanFailed {
+		if rep != nil && (rep["reason"] == SecretScanFailed || rep["reason"] == SecretsTooMany) {
 			failed = append(failed, name)
 		}
 		for _, h := range hits {

@@ -85,3 +85,23 @@ func TestRulesCompileAndHaveKeywords(t *testing.T) {
 		}
 	}
 }
+
+// A scan that reaches MaxHits stops and says so: a credential in a file after the decoys is unread, so the report is
+// marked truncated (rootd refuses to acknowledge it).
+func TestScanTruncated(t *testing.T) {
+	ws := t.TempDir()
+	var b strings.Builder
+	for range MaxHits {
+		b.WriteString("token = " + tok("gh"+"p_", 36, alnum) + "\n")
+	}
+	os.WriteFile(filepath.Join(ws, "aaa-fixtures.txt"), []byte(b.String()), 0o644)
+	os.WriteFile(filepath.Join(ws, "zzz.env"), []byte(tok("gh"+"o_", 36, alnum)), 0o644)
+	r, err := Scan(ws)
+	if err != nil || !r.Truncated || len(r.Hits) != MaxHits || r.Files != 1 {
+		t.Fatalf("Scan = files %d, hits %d, truncated %v, %v", r.Files, len(r.Hits), r.Truncated, err)
+	}
+	os.Remove(filepath.Join(ws, "zzz.env"))
+	if r, err := Scan(ws); err != nil || r.Truncated || len(r.Hits) != MaxHits {
+		t.Fatalf("exactly MaxHits, nothing unread: truncated %v, hits %d, %v", r.Truncated, len(r.Hits), err)
+	}
+}
