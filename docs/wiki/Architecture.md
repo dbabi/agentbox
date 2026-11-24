@@ -379,12 +379,19 @@ Each service runs as its own Linux user, with only the access it needs.
   It runs in the agent's rootless podman with a task's hardening, but with loopback only instead of the brokers.
 - The session uses a persistent `session-home`, which may hold subscription logins.
   `session-home` is never mounted into automated tasks.
-- Hooks, MCP servers, git hooks and shell startup files don't run in a session.
+- Hooks, MCP servers and git hooks don't run in a session, and a bash session reads no shell startup file.
+  Claude's Bash tool still reads `~/.bashrc`, so the startup files are control files (below).
   The session can't change its own Claude settings.
-- An attach is refused while control files changed since the last accepted state, until you pass `--ack-control-changes`.
-  These are the workspace's control files and the instruction files in `session-home`: `~/.claude/CLAUDE.md`, rules, skills, agents and commands, Codex's skills and plugins in `~/.agents`, `~/.npmrc` and `~/.local/bin`.
-  The workspace's control files include every git dir, bare repos and the dir a `commondir` file names among them, and every Python venv, the workspace root included.
-  A `.git` file that names a git dir in `session-home` refuses the attach, since a session could change that dir unseen.
+- An attach is refused while control files changed since the last accepted state.
+  The refusal lists them and prints a digest of that list. Review them, then attach again with `--ack-control-changes=<digest>`.
+  If a control file changed after the refusal, the old digest no longer matches, and the attach is refused again with the new list.
+- The control files are the workspace's, and these files in `session-home`:
+  - the CLIs' instruction files: `~/.claude/CLAUDE.md`, rules, skills, agents and commands, Codex's skills and plugins in `~/.agents`, `~/.npmrc` and `~/.local/bin`;
+  - what the shells and tools in a session read at startup: bash's startup files, `~/.inputrc`, vim's, nano's, less's, tmux's and screen's config, the Python user site, `~/bin`, `~/.ssh`, `~/.config/git/attributes` and `~/.config/go/env`.
+- The workspace's control files include `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `AGENTS.override.md` at any depth, every git dir, bare repos and the dir a `commondir` file names among them, and every Python venv, the workspace root included.
+- What a control file leads to is a control file too: the target of a symlink at or under one, each symlink on the way, and each file a `CLAUDE.md` imports with `@path`.
+  A git dir in `session-home` refuses the attach, whether a `.git` file, a `.git` symlink or a relative path leads there, since a session could change it unseen.
+  So does a control file's symlink or import that leads through `/proc` or `/dev`.
   Tasks and sessions run git with `safe.bareRepository=explicit`, so git finds no bare repo by itself.
 - An attach and a task of the same agent never run at once.
 - rootd relays the session output through a filter.

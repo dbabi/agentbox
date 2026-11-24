@@ -30,8 +30,12 @@ const (
 	Home      = controlpaths.Home
 	Workspace = controlpaths.Workspace
 	Exports   = "/opt/agentbox/exports"
-	CodexHome = "/run/agentbox-attach/codex" // a fresh dir per session: Codex keeps no state in session-home but auth.json
+	CodexHome = Home + "/" + CodexDir // a fresh dir per session: Codex keeps nothing past it but auth.json, in ~/.codex
 )
+
+// CodexDir is the session's CODEX_HOME in session-home, so what Codex writes counts against the agent's own quota, not
+// the control-state reserve (§4.1). rootd removes it before and after each session.
+const CodexDir = ".agentbox-codex"
 
 // Root is /var/lib/agentbox on the box; tests pass a temp dir.
 const Root = "/var/lib/agentbox"
@@ -123,19 +127,18 @@ var agentRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
 // Paths of one agent's attach.
 type Paths struct {
-	SessionHome, Workspace, Exports, Run, Codex string
+	SessionHome, Workspace, Exports, Codex string
 }
 
-// AgentPaths: §4.1's subvolumes, the exports the task launcher mounts too, and a per-session dir (under control/:
-// rootd's ProtectSystem=strict leaves /run read-only).
+// AgentPaths: §4.1's subvolumes, the exports the task launcher mounts too, and the session's CODEX_HOME in
+// session-home. id names no path: one agent has at most one attach at a time.
 func AgentPaths(root, agent, id string) Paths {
-	run := filepath.Join(root, "control", "attach", id)
+	home := filepath.Join(root, "data", "agents", agent, "session-home")
 	return Paths{
-		SessionHome: filepath.Join(root, "data", "agents", agent, "session-home"),
+		SessionHome: home,
 		Workspace:   filepath.Join(root, "data", "workspaces", agent),
 		Exports:     filepath.Join(root, "control", "exports", agent),
-		Run:         run,
-		Codex:       filepath.Join(run, "codex"),
+		Codex:       filepath.Join(home, CodexDir),
 	}
 }
 
@@ -232,7 +235,6 @@ func Prepare(root, id, agent, cli string, extra []string, uid, gid int, tty, ter
 			{Src: filepath.Join(p.Exports, EmptyGitConfig), Dst: Home + "/" + GitConfigs[1], RO: true},
 			{Src: p.Workspace, Dst: Workspace},
 			{Src: p.Exports, Dst: Exports, RO: true},
-			{Src: p.Codex, Dst: CodexHome},
 		},
 	}, nil
 }
@@ -286,37 +288,45 @@ func fileMountpoint(home, rel string, uid, gid int) error {
 	return nil
 }
 
-// codexHome is the session's fresh CODEX_HOME: rootd's config, and auth.json from session-home through a symlink, so
-// a login or a token refresh lands in session-home (§4.2: only auth.json comes from session-home).
+// codexHome is the session's fresh CODEX_HOME in session-home: rootd's config, and auth.json from ~/.codex through a
+// symlink, so a login or a token refresh lands there (§4.2: only auth.json comes from session-home). Session-home is
+// agent-writable, so every step goes through an os.Root on it: a link a session left can't lead rootd outside.
 // shortcut: if Codex replaces auth.json by rename, the refresh stays in this dir and is lost at the end; copy it back
 // (with the token scan's version tracking) if the real CLI does that.
 func codexHome(p Paths, uid, gid int) error {
-	if err := os.MkdirAll(p.Run, 0o711); err != nil {
+	r, err := os.OpenRoot(p.SessionHome)
+	if err != nil {
 		return err
 	}
-	// the agent's rootless podman makes the binds, so it must traverse to CODEX_HOME (rootd's UMask=0077)
-	for _, d := range []string{filepath.Dir(p.Run), p.Run} {
-		if err := os.Chmod(d, 0o711); err != nil {
-			return err
-		}
-	}
-	if err := os.Mkdir(p.Codex, 0o700); err != nil {
+	defer r.Close()
+	if err := r.RemoveAll(CodexDir); err != nil { // one a session or a crashed rootd left
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(p.Codex, "config.toml"), []byte(CodexConfig), 0o444); err != nil {
+	if err := r.Mkdir(CodexDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(filepath.Join(p.Codex, "config.toml"), 0o444); err != nil {
+	cfg := CodexDir + "/config.toml"
+	if err := r.WriteFile(cfg, []byte(CodexConfig), 0o444); err != nil {
 		return err
 	}
-	if err := os.Symlink(Home+"/.codex/auth.json", filepath.Join(p.Codex, "auth.json")); err != nil {
+	if err := r.Chmod(cfg, 0o444); err != nil {
 		return err
 	}
-	return os.Chown(p.Codex, uid, gid)
+	if err := r.Symlink(Home+"/.codex/auth.json", CodexDir+"/auth.json"); err != nil {
+		return err
+	}
+	return r.Lchown(CodexDir, uid, gid)
 }
 
-// RemoveRun removes the session's own dir (its CODEX_HOME).
-func RemoveRun(p Paths) error { return os.RemoveAll(p.Run) }
+// RemoveRun removes the session's CODEX_HOME, through an os.Root on session-home.
+func RemoveRun(p Paths) error {
+	r, err := os.OpenRoot(p.SessionHome)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	return r.RemoveAll(CodexDir)
+}
 
 // Podman runs a session as the agent's rootless podman container, in a transient unit of the agent's user manager,
 // with a task's container flags (task.Argv: no network, no capabilities, a read-only root, the task seccomp profile).

@@ -12,11 +12,16 @@
 #          ~/.claude.json that trusts the workspace and enables the planted server, and ~/.profile, ~/.bashrc and a
 #          ~/.gitconfig with a pager, an alias and a filter. Markers go in the workspace, which the session shares; a
 #          file the session touches there shows on the host (the positive control inside attach). Outside attach each
-#          plant runs (the control). attach is refused, naming the changed control paths, until --ack-control-changes;
-#          then claude with its attach flags, claude started by hand in a bash attach, the bash shell itself and git
+#          plant runs (the control). attach is refused, naming the changed control paths and a digest of them, until
+#          --ack-control-changes quotes that digest; a change made after the refusal makes the old digest fail. Then
+#          claude with its attach flags, claude started by hand in a bash attach, the bash shell itself and git
 #          commit, log, add and the alias run none of them. A control path the session changes needs an ack in the
-#          next attach, and only that one is listed: AGENTS.md in the workspace, and a skill and a CLAUDE.md it left in
-#          session-home.
+#          next attach, and only that one is listed: AGENTS.md in the workspace, and a skill, a CLAUDE.md, a rewritten
+#          ~/.bashrc and the removed ~/.profile and ~/.bash_profile in session-home. The session's CODEX_HOME is in
+#          session-home (the agent's quota) and is gone after it. A .git link into session-home, and a relative
+#          gitdir: that climbs into it, each refuse the attach. A CLAUDE.md symlink, its target and the file that
+#          target imports, CLAUDE.local.md and AGENTS.override.md are each listed; once acked, an edit to the
+#          imported file alone refuses the next attach.
 #          The session can't write, remove or move session-home's settings, which stay byte-for-byte unchanged. The
 #          output filter drops OSC 52, DCS and CSI report requests and keeps SGR. Tasks are blocked while an attach is
 #          live, and task.start refuses. A session that copies its token into the workspace (into a file, a commit that
@@ -83,6 +88,7 @@ markers() { ls $M | tr '\n' ' '; }
 none() { [ -z "$(ls $M)" ]; }
 attach() { timeout 180 $B attach --agent at "$@"; }
 typed() { sleep 3; cat "$1"; } # after the prompt, as a human types: earlier bytes race the session's terminal setup
+digest() { sed -n 's/.*--ack-control-changes=\([0-9a-f]\{64\}\).*/\1/p' "$1" | head -1; } # the one a refusal printed
 hook() { printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch %s/%s"}]}]}}\n' $M "$1"; }
 
 check "agent add: ag-at, its workspace, and its user manager" '$B agent add --name at && U=$(id -u ag-at) &&
@@ -127,7 +133,11 @@ check "attach is refused while workspace control paths changed, naming them; no 
   grep -q "control paths changed" /tmp/gate-a0 && grep -q "\.mcp\.json" /tmp/gate-a0 && grep -q "\.claude/settings\.json" /tmp/gate-a0 &&
   grep -q "\.git/hooks/pre-commit" /tmp/gate-a0 && grep -q "\.git/config" /tmp/gate-a0 && $B attach status | grep -qF "\"blocks\":[]"'
 
-check "attach 1, with --ack-control-changes: claude with its attach flags starts (and stops at login), the token scan is clean" 'attach --cli claude --ack-control-changes -- -p hi </dev/null >/tmp/gate-a1 2>&1; cat /tmp/gate-a1;
+check "  ... with a digest of the list; a change made after the refusal makes that digest fail, naming the new path" 'D0=$(digest /tmp/gate-a0) && [ -n "$D0" ] &&
+  as sh -c "echo planted > $W/.envrc" && ! attach --cli bash --ack-control-changes=$D0 </dev/null >/tmp/gate-a0b 2>&1; cat /tmp/gate-a0b;
+  grep -q "digest does not match this list" /tmp/gate-a0b && grep -qE "[ :,]\.envrc[,;]" /tmp/gate-a0b && [ "$(digest /tmp/gate-a0b)" != "$D0" ] &&
+  ! attach --cli bash --ack-control-changes </dev/null >/tmp/gate-a0c 2>&1; cat /tmp/gate-a0c; grep -q "flag needs an argument" /tmp/gate-a0c'
+check "attach 1, with --ack-control-changes and that digest: claude with its attach flags starts (and stops at login), the token scan is clean" 'attach --cli claude --ack-control-changes=$(digest /tmp/gate-a0b) -- -p hi </dev/null >/tmp/gate-a1 2>&1; cat /tmp/gate-a1;
   grep -qF "[agentbox] session ended; token scan: clean, tasks may start" /tmp/gate-a1 && grep -q "Not logged in" /tmp/gate-a1'
 check "  ... and runs no SessionStart hook (project, local or user) and no .mcp.json server" 'sleep 2; none || { markers; false; }'
 check "  ... rootd ran it as cli claude in a session unit of ag-at's user manager; none is left" 'journalctl -b -u agentbox-rootd -o cat | grep -q "agent.attach at: session ses_[0-9A-Z]* on /dev/pts/[0-9]*, cli claude" &&
@@ -136,6 +146,7 @@ check "  ... rootd ran it as cli claude in a session unit of ag-at's user manage
 b64=Z2F0ZV9vc2M1Mg # base64 of gate_osc52, sent in two halves so the echoed command line never holds it whole
 cat > /tmp/gate-in2 <<IN
 cd /workspace
+[ "\$CODEX_HOME" = ~/.agentbox-codex ] && [ "\$(stat -c %d "\$CODEX_HOME")" = "\$(stat -c %d ~)" ] && head -c 1048576 /dev/zero > "\$CODEX_HOME/fill" && echo codexhome=ok
 touch $M/m-probe; echo planted >> AGENTS.md
 # git log pages through less (core.pager), which may stop at "Press RETURN": the empty line after it answers that
 git st; git log -1 --oneline
@@ -150,15 +161,20 @@ mv ~/.claude ~/.claude-moved; echo "mv=\$?"
 mv ~ /tmp/x 2>/dev/null; echo "mvhome=\$?"
 # after the mv: across filesystems mv copies, then deletes what it can of session-home
 mkdir -p ~/.claude/skills/gate ~/.agents/skills/gate && echo planted > ~/.claude/skills/gate/SKILL.md && echo planted > ~/.agents/skills/gate/SKILL.md && echo planted > ~/.claude/CLAUDE.md; echo "plant=\$?"
+# what Claude's Bash tool would source in every later session; the other startup files the mv may have removed
+echo "touch $M/m-bashrc2" > ~/.bashrc && rm -f ~/.profile ~/.bash_profile; echo "rc=\$?"
 h=${b64%??????}; printf '\033]52;c;%s%s\007\033P1\$r\033\\\\\033[6n\033[c\033[>c\033[14t\033[1mGATEBOLD\033[0m\n' "\$h" "${b64#????????}"
 sleep 1; exit
 IN
-check "attach 2: a bash session, input relayed, token scan clean (with --ack-control-changes: the claude session wrote its own)" 'typed /tmp/gate-in2 | attach --cli bash --ack-control-changes >/tmp/gate-a2 2>&1; cat -v /tmp/gate-a2;
-  grep -qF "[agentbox] session ended; token scan: clean" /tmp/gate-a2 && grep -q "commit=0" /tmp/gate-a2 && grep -q "plant=0" /tmp/gate-a2'
+attach --cli bash </dev/null >/tmp/gate-a1b 2>&1 # the claude session wrote its own: the digest of that
+check "attach 2: a bash session, input relayed, token scan clean (with the ack of what the claude session wrote)" 'typed /tmp/gate-in2 | attach --cli bash --ack-control-changes=$(digest /tmp/gate-a1b) >/tmp/gate-a2 2>&1; cat -v /tmp/gate-a2;
+  grep -qF "[agentbox] session ended; token scan: clean" /tmp/gate-a2 && grep -q "commit=0" /tmp/gate-a2 && grep -q "plant=0" /tmp/gate-a2 && grep -q "rc=0" /tmp/gate-a2'
 check "  ... the file it touched in the marker dir shows on the host (markers are live)" '[ -e $M/m-probe ] && rm $M/m-probe'
-check "  ... the next attach is refused naming only what the session changed: AGENTS.md, and the Claude and Codex skills and CLAUDE.md it left in session-home" '! attach --cli bash </dev/null >/tmp/gate-a2b 2>&1;
-  cat /tmp/gate-a2b; grep -qF "changed since the last accepted state: /home/agent/.agents/skills/gate/SKILL.md, /home/agent/.claude/CLAUDE.md, /home/agent/.claude/skills/gate/SKILL.md, AGENTS.md;" /tmp/gate-a2b ||
-  { find $H/.claude $H/.agents -maxdepth 3 -ls; false; }'
+check "  ... its CODEX_HOME was in session-home, on the same subvolume (the agent's quota), and is gone after it" 'grep -q "codexhome=ok" /tmp/gate-a2 && [ ! -e $H/.agentbox-codex ] &&
+  [ -z "$(ls -A /var/lib/agentbox/control/attach 2>/dev/null)" ]'
+check "  ... the next attach is refused naming only what the session changed: AGENTS.md, and the Claude and Codex skills, CLAUDE.md, ~/.bashrc, ~/.profile and ~/.bash_profile in session-home" '! attach --cli bash </dev/null >/tmp/gate-a2b 2>&1;
+  cat /tmp/gate-a2b; grep -qF "changed since the last accepted state: /home/agent/.agents/skills/gate/SKILL.md, /home/agent/.bash_profile, /home/agent/.bashrc, /home/agent/.claude/CLAUDE.md, /home/agent/.claude/skills/gate/SKILL.md, /home/agent/.profile, AGENTS.md;" /tmp/gate-a2b ||
+  { find $H/.claude $H/.agents -maxdepth 3 -ls; ls -la $H; false; }'
 check "  ... bash read no startup file; git used no ~/.gitconfig pager, alias or filter and no repo-local pager" 'none || { markers; false; }'
 check "  ... in a container: loopback only, the seccomp filter, no_new_privs and no capabilities" 'grep -q "^net=lo.\$" /tmp/gate-a2 &&
   grep -q "^Seccomp:2" /tmp/gate-a2 && grep -q "^NoNewPrivs:1" /tmp/gate-a2 && grep -q "^CapEff:0000000000000000" /tmp/gate-a2'
@@ -187,7 +203,7 @@ IN
 cat > /tmp/gate-blocked.sh <<'SH'
 $B attach status > /tmp/gate-st; cat /tmp/gate-st; grep -q "\"reason\":\"$1\"" /tmp/gate-st
 SH
-check "attach 3: tasks are blocked while it is live" '( typed /tmp/gate-in3 | attach --cli bash --ack-control-changes >/tmp/gate-a3 2>&1 & ); sleep 2;
+check "attach 3: tasks are blocked while it is live" '( typed /tmp/gate-in3 | attach --cli bash --ack-control-changes=$(digest /tmp/gate-a2b) >/tmp/gate-a3 2>&1 & ); sleep 2;
   B=$B sh /tmp/gate-blocked.sh attach_live'
 check "  ... and task.start refuses a task for its workspace" '! $B task new --agent at --cli claude </dev/null >/tmp/gate-tn 2>&1; cat /tmp/gate-tn; grep -q attach_blocked /tmp/gate-tn'
 check "  ... a second attach of the same agent is refused while it runs" '! attach --cli bash </dev/null >/tmp/gate-a3b 2>&1 && grep -q "an attach is live" /tmp/gate-a3b'
@@ -209,6 +225,26 @@ check "  ... after a rootd restart a clean rescan keeps the block: the rotated-a
   $B attach rescan --agent at > /tmp/gate-rs; cat /tmp/gate-rs; grep -q "\"blocked\":true" /tmp/gate-rs && grep -q -- "--ack-restart" /tmp/gate-rs'
 check "  ... and --ack-restart lifts it once the token is gone from files and objects" '$B attach rescan --agent at --ack-restart | grep -q "\"blocked\":false" &&
   $B attach status | grep -qF "\"blocks\":[]"'
+# #199, #201: a git dir in session-home, behind a .git link or a relative gitdir:, refuses the attach
+as sh -c "mkdir -p $W/gl && ln -s /home/agent/g $W/gl/.git"
+check "#199 a .git link into session-home refuses the attach, naming it" '! attach --cli bash </dev/null >/tmp/gate-g1 2>&1; cat /tmp/gate-g1;
+  grep -q "gl/.git\" leads into session-home" /tmp/gate-g1'
+as sh -c "rm $W/gl/.git && echo 'gitdir: ../../home/agent/g' > $W/gl/.git"
+check "#201 so does a relative gitdir: that climbs out of /workspace into it" '! attach --cli bash </dev/null >/tmp/gate-g2 2>&1; cat /tmp/gate-g2;
+  grep -q "gl/.git\" names \"../../home/agent/g\", a git dir in session-home" /tmp/gate-g2'
+as rm -rf $W/gl
+# #202, #210: what a control path leads to is one too
+as sh -c "cd $W && mkdir -p docs && echo 'Follow @docs/style.md' > docs/guide.md && echo tabs > docs/style.md && ln -s docs/guide.md CLAUDE.md &&
+  echo x > CLAUDE.local.md && echo x > AGENTS.override.md"
+printf 'exit\n' > /tmp/gate-l-in
+check "#202 #210 a CLAUDE.md link, its target, the file it imports, CLAUDE.local.md and AGENTS.override.md are each listed" '
+  ! attach --cli bash </dev/null >/tmp/gate-l1 2>&1; cat /tmp/gate-l1;
+  for p in CLAUDE.md docs/guide.md docs/style.md CLAUDE.local.md AGENTS.override.md; do grep -qE "(: |, )$p(, |;)" /tmp/gate-l1 || exit 1; done'
+check "  ... once acked, an edit to the imported file alone refuses the next attach, naming only it" '
+  typed /tmp/gate-l-in | attach --cli bash --ack-control-changes=$(digest /tmp/gate-l1) >/tmp/gate-l2 2>&1; cat -v /tmp/gate-l2;
+  grep -qF "[agentbox] session ended" /tmp/gate-l2 && as sh -c "echo spaces > $W/docs/style.md" && ! attach --cli bash </dev/null >/tmp/gate-l3 2>&1;
+  cat /tmp/gate-l3; grep -qF "changed since the last accepted state: docs/style.md;" /tmp/gate-l3'
+as rm -rf $W/CLAUDE.md $W/docs $W/CLAUDE.local.md $W/AGENTS.override.md
 # #107: a hostile workspace and session-home. Every root-side reader refuses or caps: none blocks or reads outside.
 # OTOK is only outside the tree, behind links, and in one plain workspace file: a reader that followed a link to it
 # would make the scan hit that file. The session touches the fixture, so the end-of-attach scan reads all of it, for
@@ -225,7 +261,7 @@ check "hostile workspace: attach is refused naming the .claude link, the FIFO .m
   grep -q "control paths changed" /tmp/gate-h0 && grep -qE "[ :,]\.claude[,;]" /tmp/gate-h0 && grep -qE "[ :,]sub/\.mcp\.json[,;]" /tmp/gate-h0 &&
   grep -qE "[ :,]CLAUDE\.md[,;]" /tmp/gate-h0 && ! grep -q "outside-only" /tmp/gate-h0'
 check "  ... with the ack the session touches it all, and the token scan is clean within 120 s: no link or FIFO was followed or blocked on, no 2 GiB file read whole" '
-  s=$(date +%s); typed /tmp/gate-h-in | attach --cli bash --ack-control-changes >/tmp/gate-h1 2>&1; e=$(( $(date +%s) - s )); cat -v /tmp/gate-h1; echo "took ${e}s";
+  s=$(date +%s); typed /tmp/gate-h-in | attach --cli bash --ack-control-changes=$(digest /tmp/gate-h0) >/tmp/gate-h1 2>&1; e=$(( $(date +%s) - s )); cat -v /tmp/gate-h1; echo "took ${e}s";
   grep -q "touched=0" /tmp/gate-h1 && grep -qF "[agentbox] session ended; token scan: clean, tasks may start" /tmp/gate-h1 && [ $e -lt 120 ]'
 (cd $W && rm -rf $HF) && rm -f $H/.claude/.credentials.json $H/.codex/auth.json && mv $W/.claude.gate $W/.claude && rm -rf $O
 check "the agent can't use rootd-admin.sock" 'grep -q "status-as-agent=1" /tmp/gate-a3'

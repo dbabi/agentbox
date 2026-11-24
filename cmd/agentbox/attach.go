@@ -38,7 +38,7 @@ func cmdAttach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	agent := fs.String("agent", "", "agent name")
 	cli := fs.String("cli", "claude", "claude, codex or bash")
-	ack := fs.Bool("ack-control-changes", false, "accept the workspace and session-home control-path changes rootd listed")
+	ack := fs.String("ack-control-changes", "", "accept the workspace and session-home control-path changes an attach refusal listed: pass the digest it printed")
 	if err := parse(fs, args); err != nil {
 		return err
 	}

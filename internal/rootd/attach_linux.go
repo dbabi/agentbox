@@ -78,14 +78,19 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 		changed, err = attach.ControlChanges(s.db, r.Name, cur)
 	}
 	if err == nil && len(changed) > 0 {
-		if !r.AckControlChanges {
+		// the ack quotes the digest of the list it accepts (#210): a change made after the refusal makes a new list
+		if d := attach.Digest(changed, cur); r.AckControlChanges != d {
 			unblock()
 			list := changed
 			if len(list) > 50 {
 				list = append(list[:50:50], fmt.Sprintf("... %d more", len(changed)-50))
 			}
-			refuse("workspace or session-home control paths changed since the last accepted state: %s; review them, then attach with --ack-control-changes",
-				strings.Join(list, ", "))
+			stale := ""
+			if r.AckControlChanges != "" {
+				stale = "; the --ack-control-changes digest does not match this list"
+			}
+			refuse("workspace or session-home control paths changed since the last accepted state: %s%s; review them, then attach with --ack-control-changes=%s",
+				strings.Join(list, ", "), stale, d)
 			return
 		}
 		err = attach.SaveBaseline(s.db, r.Name, cur)
