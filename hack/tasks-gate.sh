@@ -518,9 +518,13 @@ check "#205: a workspace file sharing extents outside 1/N: task new is refused B
 check "  ... rootd sent the ALERT, rescanned, and the fence is down again" 'for i in $(seq 120); do qfenced false && break; sleep 1; done; qfenced false &&
   [ "$(cat $Q/inconsistent)" = 0 ] && journalctl -b -u agentbox-rootd -o cat | grep -q "ALERT quota: qgroups are inconsistent"'
 # the refused task's snapshot holds the shared extent too: it goes with the file, or the next snapshot fences again
-rm -f $W/tg-shared && for s in $SN/*; do [ -e $s/tg-shared ] || continue; btrfs subvolume delete $s >/dev/null && sql "DELETE FROM workspace_snapshots WHERE id=?" ${s##*/} >/dev/null; done
-btrfs subvolume sync /var/lib/agentbox/data
-check "  ... with the file and its snapshot gone, the next task starts and completes, and qgroups stay consistent" 't=$(new 2m < /tmp/tg-p) && wait_end $t 60 &&
+ids= && rm -f $W/tg-shared && for s in $SN/*; do [ -e $s/tg-shared ] || continue; ids="$ids $(btrfs inspect-internal rootid $s)"
+  btrfs subvolume delete $s >/dev/null && sql "DELETE FROM workspace_snapshots WHERE id=?" ${s##*/} >/dev/null; done
+# this hand delete can itself mark qgroups inconsistent, when the kernel removes the dropped snapshot's qgroup, which
+# may come after the sync returns: wait for those qgroups to go, then let rootd repair before the next task
+btrfs subvolume sync /var/lib/agentbox/data && for id in $ids; do for i in $(seq 60); do [ -e $Q/0_$id ] || break; sleep 1; done; done
+for i in $(seq 120); do qfenced false && break; sleep 1; done
+check "  ... with the file and its snapshot gone, the next task starts and completes, and qgroups stay consistent" '[ -n "$ids" ] && t=$(new 2m < /tmp/tg-p) && wait_end $t 60 &&
   [ "$(field $t end_reason)" = completed ] && [ "$(cat $Q/inconsistent)" = 0 ] && qfenced false'
 
 # --- #104: the offline workspace credential scan ---

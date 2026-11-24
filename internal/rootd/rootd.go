@@ -207,7 +207,7 @@ func Run(cfg Config) error {
 	if cfg.Tasks.Btrfs != nil {
 		cfg.Tasks.Btrfs = checkedBtrfs{cfg.Tasks.Btrfs, s.fenceAfter}
 	}
-	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, fenced: s.fenced.Load, alert: cfg.Alert, nested: s.nested, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
+	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, fenced: s.fencedNow, alert: cfg.Alert, nested: s.nested, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
 	s.tasks.reopenWitnesses()
 	s.tasks.resume()
 	if s.cfg.Attach == nil {

@@ -23,6 +23,11 @@ func (s *server) checkQuota() (bool, error) {
 		return true, nil
 	}
 	defer s.fenceMu.Unlock()
+	return s.checkLocked()
+}
+
+// checkLocked is checkQuota with fenceMu held by the caller.
+func (s *server) checkLocked() (bool, error) {
 	bad, err := s.inconsistent()
 	if err != nil {
 		log.Printf("quota: qgroups/inconsistent: %v", err)
@@ -127,10 +132,20 @@ func (s *server) fenceAfter() {
 	}
 	s.fenced.Store(true)
 	go func() {
-		s.fenceMu.Lock()
-		s.fenceMu.Unlock()
-		s.checkQuota()
+		s.fenceMu.Lock() // waits out a check already running
+		defer s.fenceMu.Unlock()
+		s.checkLocked()
 	}()
+}
+
+// fencedNow is the fence a task launch checks after its start snapshot: up, or the flag set or unreadable now. A
+// check that read the flag before the snapshot can lower the fence fenceAfter raised, until the repair raises it again.
+func (s *server) fencedNow() bool {
+	if s.fenced.Load() {
+		return true
+	}
+	bad, err := s.inconsistent()
+	return bad || err != nil
 }
 
 // checkedBtrfs checks qgroups after each subvolume snapshot and delete rootd makes. A snapshot into 1/N marks qgroups
