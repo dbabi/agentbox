@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agentbox/internal/denial"
+	"agentbox/internal/ids"
 	"agentbox/internal/rootd/accounts"
 )
 
@@ -91,7 +92,7 @@ func (fakeDelete) Delete(string) error { return nil }
 // #79: a subvolume delete (a snapshot prune, an undo) is followed by a qgroup check.
 func TestCheckedDeleteChecks(t *testing.T) {
 	done := make(chan struct{})
-	d := checkedDelete{fakeDelete{}, func() (bool, error) { close(done); return false, nil }}
+	d := checkedBtrfs{fakeDelete{}, func() { close(done) }}
 	if err := d.Delete(filepath.Join(t.TempDir(), "snap")); err != nil {
 		t.Fatal(err)
 	}
@@ -99,5 +100,61 @@ func TestCheckedDeleteChecks(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("no check after the delete")
+	}
+}
+
+// #205: a task-start snapshot that leaves qgroups inconsistent (an agent reflinked a file from outside 1/N) raises the
+// fence before the snapshot call returns: the task is refused BUSY with no launch, and the background repair runs.
+// A flag that can't be read fences too, and so does a set flag whose fence a check that read the flag before the
+// snapshot lowered again before the repair queued behind it ran. The hold file keeps the repair from ending before the
+// launch looks.
+func TestSnapshotFences(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		readErr error
+		lowered bool
+	}{{"flag set", nil, false}, {"flag unreadable", errors.New("no uuid"), false}, {"fence lowered by a stale check", nil, true}} {
+		r, fb, _ := snapRig(t)
+		var flag atomic.Bool
+		rescanned := make(chan struct{}, 1)
+		hold := filepath.Join(t.TempDir(), "hold")
+		os.WriteFile(hold, nil, 0o600)
+		s := &server{db: r.db, tasks: r.t, cfg: Config{Tasks: TaskConfig{Cgroup: t.TempDir()}, QuotaHold: hold},
+			audit:        func(map[string]any) error { return nil },
+			inconsistent: func() (bool, error) { return flag.Load(), c.readErr },
+			qrescan:      func() error { flag.Store(false); rescanned <- struct{}{}; return nil }}
+		fence := s.fenceAfter
+		if c.lowered { // the stale check holds fenceMu, so the repair waits, and lowers the fence on its way out
+			s.fenceMu.Lock()
+			fence = func() { s.fenceAfter(); s.fenced.Store(false) }
+		}
+		r.t.fenced = s.fencedNow
+		r.t.cfg.Btrfs = checkedBtrfs{hookBtrfs{fb, func() { flag.Store(true) }}, fence}
+		req, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
+		rep := r.t.start(ids.New(ids.Task), "claude", "admin:"+req)
+		if c.lowered {
+			s.fenceMu.Unlock()
+		}
+		d, ok := rep["denial"].(denial.Denial)
+		if rep["ok"] != false || !ok || d.Code != denial.Busy || d.Rule != "floor.quota_fence" || len(r.launch) != 0 {
+			t.Fatalf("%s: start %v, launches %d", c.name, rep, len(r.launch))
+		}
+		os.Remove(hold)
+		if c.readErr == nil {
+			select {
+			case <-rescanned:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s: no repair after the snapshot", c.name)
+			}
+		}
+	}
+	// a consistent flag after the snapshot: the task launches
+	r, fb, _ := snapRig(t)
+	s := &server{inconsistent: func() (bool, error) { return false, nil }}
+	r.t.fenced = s.fencedNow
+	r.t.cfg.Btrfs = checkedBtrfs{fb, s.fenceAfter}
+	r.adminTask(t)
+	if len(r.launch) != 1 || s.fenced.Load() {
+		t.Fatalf("consistent: launches %d, fenced %v", len(r.launch), s.fenced.Load())
 	}
 }

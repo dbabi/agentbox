@@ -54,7 +54,7 @@ const (
 
 // plain names the syscalls Task takes out of the profile's one unconditional allow rule. socketcall and ipc stay out:
 // they take their real arguments from memory, which seccomp can't read, so the default ENOSYS is their only rule.
-var plain = []string{"ioctl", "clone", "clone3", "setns", "unshare", "socketcall", "ipc"}
+var plain = []string{"ioctl", "clone", "clone3", "setns", "unshare", "socketcall", "ipc", "copy_file_range"}
 
 // Path is where install.sh puts the profile and rootd's task launch reads it.
 const Path = "/var/lib/agentbox/control/seccomp-task.json"
@@ -168,6 +168,10 @@ func Task() ([]byte, error) {
 	}
 	// glibc and Go fall back to clone on ENOSYS; clone3's flags are in a struct seccomp can't read.
 	p.Syscalls = append(p.Syscalls, deny("clone3", enosys, "ENOSYS", "clone3: ENOSYS, so callers fall back to clone"))
+	// copy_file_range within one btrfs is a reflink, as FICLONE is: a task could share extents of a file outside its
+	// qgroup 1/N (the bind-mounted agentbox binary, /usr), and the next snapshot into 1/N then marks qgroups
+	// inconsistent (#205). cp, Go and Python fall back to read and write on ENOSYS.
+	p.Syscalls = append(p.Syscalls, deny("copy_file_range", enosys, "ENOSYS", "copy_file_range: ENOSYS, so callers copy the bytes"))
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetIndent("", "\t")

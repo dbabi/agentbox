@@ -23,6 +23,11 @@ func (s *server) checkQuota() (bool, error) {
 		return true, nil
 	}
 	defer s.fenceMu.Unlock()
+	return s.checkLocked()
+}
+
+// checkLocked is checkQuota with fenceMu held by the caller.
+func (s *server) checkLocked() (bool, error) {
 	bad, err := s.inconsistent()
 	if err != nil {
 		log.Printf("quota: qgroups/inconsistent: %v", err)
@@ -107,26 +112,67 @@ func (s *server) fenceDeny(op string) reply {
 	if !s.fenced.Load() {
 		return nil
 	}
+	return fenceReply(op)
+}
+
+func fenceReply(op string) reply {
 	d := denial.New(denial.Busy, "floor", "floor.quota_fence", op, "", "")
 	log.Printf("DENY by=floor op=%s code=%s rule=%s id=%s", d.Op, d.Code, d.Rule, d.ID)
 	return reply{"ok": false, "reason": "quota_fence", "error": "qgroups are inconsistent: writing ops wait for the rescan", "denial": d}
 }
 
-// checkedDelete runs a qgroup check after each subvolume delete (#79): the kernel drops the tree, and may mark qgroups
-// inconsistent, only after the delete returns, so the check waits for `btrfs subvolume sync` first.
-type checkedDelete struct {
-	Btrfs
-	check func() (bool, error)
+// fenceAfter is the qgroup check after a subvolume change rootd made (#79, #205). It reads the flag at once and, when
+// the flag is set or can't be read, raises the fence before it returns, so the caller's next step is refused. The
+// repair runs in the background, after any check already running: that one may have read the flag before the change.
+func (s *server) fenceAfter() {
+	if bad, err := s.inconsistent(); err == nil && !bad {
+		return
+	} else if err != nil {
+		log.Printf("quota: qgroups/inconsistent after a subvolume change: %v", err)
+	}
+	s.fenced.Store(true)
+	go func() {
+		s.fenceMu.Lock() // waits out a check already running
+		defer s.fenceMu.Unlock()
+		s.checkLocked()
+	}()
 }
 
-func (c checkedDelete) Delete(p string) error {
+// fencedNow is the fence a task launch checks after its start snapshot: up, or the flag set or unreadable now. A
+// check that read the flag before the snapshot can lower the fence fenceAfter raised, until the repair raises it again.
+func (s *server) fencedNow() bool {
+	if s.fenced.Load() {
+		return true
+	}
+	bad, err := s.inconsistent()
+	return bad || err != nil
+}
+
+// checkedBtrfs checks qgroups after each subvolume snapshot and delete rootd makes. A snapshot into 1/N marks qgroups
+// inconsistent when 1/N shares extents outside itself (Linux's qgroup_snapshot_quick_inherit fails), and the flag is
+// set when the snapshot returns, so the check runs at once (#205). For a delete the kernel drops the tree, and may mark
+// qgroups inconsistent, only after the delete returns, so the check waits for `btrfs subvolume sync` first (#79).
+type checkedBtrfs struct {
+	Btrfs
+	fence func()
+}
+
+func (c checkedBtrfs) Snapshot(src, dst, q string, ro bool) error {
+	err := c.Btrfs.Snapshot(src, dst, q, ro)
+	if err == nil {
+		c.fence()
+	}
+	return err
+}
+
+func (c checkedBtrfs) Delete(p string) error {
 	err := c.Btrfs.Delete(p)
 	if err == nil {
 		go func() {
 			if _, err := quota.Run("btrfs", "subvolume", "sync", filepath.Dir(p)); err != nil {
 				log.Printf("quota: subvolume sync after deleting %s: %v", p, err)
 			}
-			c.check()
+			c.fence()
 		}()
 	}
 	return err
