@@ -111,10 +111,12 @@ func (w *W) read() {
 	for {
 		line, err := br.ReadSlice('\n')
 		if errors.Is(err, bufio.ErrBufferFull) {
-			for errors.Is(err, bufio.ErrBufferFull) { // skip the rest of an over-long line
-				_, err = br.ReadSlice('\n')
+			n := len(line)
+			for errors.Is(err, bufio.ErrBufferFull) { // skip the rest of an over-long line, but count every byte of it
+				line, err = br.ReadSlice('\n')
+				n += len(line)
 			}
-			w.add(nil, maxLine)
+			w.add(nil, n)
 		} else if len(line) > 0 { // also a last line with no newline when Drain stops the read
 			w.add(line, len(line))
 		}
@@ -124,27 +126,34 @@ func (w *W) read() {
 	}
 }
 
-// add counts one line of n bytes; b is nil for an over-long line.
+// add counts one line of n bytes; b is nil for an over-long line. Every line counts against MaxKept but the first END,
+// so no stream of END lines or of bytes with no newline gets past the budget without raising Dropped.
 func (w *W) add(b []byte, n int) {
 	long := b == nil
 	line := strings.TrimSuffix(string(b), "\n")
 	e, err := ops.ParseWitness(line)
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !long && err == nil && e.End != "" {
+	end := !long && err == nil && e.End != ""
+	if end {
+		first := w.r.End == ""
 		w.r.End = e.End
-		return
+		if first {
+			return
+		}
 	}
 	if w.kept+n > MaxKept {
 		w.r.Dropped++
 		return
 	}
 	w.kept += n
-	if long || err != nil {
+	switch {
+	case end:
+	case long || err != nil:
 		w.r.Bad++
-		return
+	default:
+		w.r.Lines = append(w.r.Lines, line)
 	}
-	w.r.Lines = append(w.r.Lines, line)
 }
 
 // Drain reads what writers left in the pipe and stops reading. Call it once the task's cgroup is empty: with no writer

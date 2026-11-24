@@ -20,8 +20,8 @@
 #          its witness END is the sha256 of the result agentboxd got (#223); why --errno EOPNOTSUPP; a rootd crash mid-task
 #          restarts rootd alone, so the task completes (#218); the eight fixed lines,
 #          the same for two agents and in the CLIs' HOME files; the witness FIFO from task.start to task.stop
-#          (write-only for the task, closed to uid agentbox, 1 MiB kept at 64 KiB, removed at stop, incomplete after a
-#          rootd restart, with no alert).
+#          (write-only for the task, closed to uid agentbox, 1 MiB kept at 64 KiB, and 1 MiB of END lines or with no
+#          newline counted the same (#222), removed at stop, incomplete after a rootd restart, with no alert).
 # Stand-in until its area lands: stub brokers (python3, until the proxy and keys brokers of milestone 5) on
 # svc-proxy.sock and svc-keys.sock, which bind each task's proxy.sock and keys.sock on rootd's register.
 # PASS/FAIL lines go to .vm/taskenv-gate.txt, command output to .vm/taskenv-gate.log; exit 1 on any FAIL.
@@ -316,6 +316,14 @@ check "  ... task.stop: rootd kept at most 64 KiB, counted the rest, kept the fo
 import json,sys; w=json.loads(open(sys.argv[1]).read())[\"body\"]; kept=sum(len(l)+1 for l in w[\"lines\"])
 fw=[l for l in w[\"lines\"] if l.endswith(\" - BROKER_UNAVAILABLE forwarder\") and not l.startswith(\"dn_0000\")]
 print(kept, w[\"dropped\"], w[\"bad\"], len(fw), w[\"incomplete\"]); sys.exit(not (kept <= 65536 and w[\"dropped\"] > 0 and len(fw) >= 2 and not w[\"incomplete\"]))" $G/w2 && [ ! -e $W/$T2 ]'
+# #222: END lines after the first, and bytes with no newline, count against the 64 KiB like any line
+EA="END $(printf %064d 0 | tr 0 a)"
+task ga "yes '$EA' | head -c 1048576 > /run/agentbox/witness/witness" > /dev/null || :; T5=$(cat $G/last)
+task ga "yes x | tr -d '\n' | head -c 1048576 > /run/agentbox/witness/witness" > /dev/null || :; T6=$(cat $G/last)
+check "  ... #222: 1 MiB of END lines, and 1 MiB with no newline, each raise dropped; the END line is kept" '[ -n "$T5" ] && [ -n "$T6" ] &&
+  for t in $T5 $T6; do wrec $t > $G/w5 && python3 -c "
+import json,sys; w=json.loads(open(sys.argv[1]).read())[\"body\"]; print(w[\"dropped\"], w[\"bad\"], w[\"end\"][:8])
+sys.exit(not (w[\"dropped\"] > 0 and (sys.argv[2] != \"end\" or w[\"end\"] == \"a\" * 64)))" $G/w5 $([ $t = $T5 ] && echo end || echo raw) || exit 1; done'
 rm -f $WS/ga/wready $WS/ga/wgo $G/last
 task ga "touch /workspace/wready; while [ ! -e /workspace/wgo ]; do sleep 0.1; done
   echo dn_00000000000000000000000000 - BROKER_UNAVAILABLE forwarder > /run/agentbox/witness/witness" > $G/r4 2>&1 &

@@ -183,3 +183,26 @@ func TestEscaped(t *testing.T) {
 		t.Fatalf("escaped(%q) = %q, want %q", in, got, want)
 	}
 }
+
+// #222 R50: at stop rootd waits for the request lines in flight, holds new ones back, and gives up after its bound.
+func TestDrain(t *testing.T) {
+	var s server
+	s.reqs.RLock() // a request in flight
+	go func() { time.Sleep(100 * time.Millisecond); s.reqs.RUnlock() }()
+	if !s.drain(5 * time.Second) {
+		t.Fatal("drain gave up on a request that ended")
+	}
+	var s2 server
+	s2.reqs.RLock() // one that outlives the bound
+	t0 := time.Now()
+	if s2.drain(200*time.Millisecond) || time.Since(t0) < 200*time.Millisecond {
+		t.Fatal("drain did not wait out its bound")
+	}
+	held := make(chan struct{})
+	go func() { s2.reqs.RLock(); close(held) }() // a new request line while rootd stops
+	select {
+	case <-held:
+		t.Fatal("a new request ran during the drain")
+	case <-time.After(200 * time.Millisecond):
+	}
+}

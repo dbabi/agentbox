@@ -375,6 +375,7 @@ Each service runs as its own Linux user, with only the access it needs.
 - The scan stops at 1000 hits. Files after that are not read, so the list is not complete and `--ack-secrets` can't acknowledge it.
   Tasks stay blocked until the workspace holds fewer.
 - An `egress allow` reply names each credential that works against the host being allowed.
+  Each one blocks the agent's next task until it is removed or acknowledged again, even if it was acknowledged before.
 - A scan that fails, at a grant or before a task, leaves the agent's next task to scan again, so the failure blocks it.
 - The scan is a detection aid. See the residuals in the [threat model](../../docs/THREAT-MODEL.md).
 
