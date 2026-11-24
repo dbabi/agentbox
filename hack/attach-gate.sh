@@ -178,7 +178,7 @@ check "  ... the file it touched in the marker dir shows on the host (markers ar
 check "  ... its CODEX_HOME was in session-home, on the same subvolume (the agent's quota), and is gone after it" 'grep -q "codexhome=ok" /tmp/gate-a2 && [ ! -e $H/.agentbox-codex ] &&
   [ -z "$(ls -A /var/lib/agentbox/control/attach 2>/dev/null)" ]'
 check "  ... the next attach is refused naming only what the session changed: AGENTS.md, and the Claude and Codex skills, CLAUDE.md, ~/.bashrc, ~/.profile and ~/.bash_profile in session-home" '! attach --cli bash </dev/null >/tmp/gate-a2b 2>&1;
-  cat /tmp/gate-a2b; grep -qF "changed since the last accepted state: /home/agent/.agents/skills/gate/SKILL.md, /home/agent/.bash_profile, /home/agent/.bashrc, /home/agent/.claude/CLAUDE.md, /home/agent/.claude/skills/gate/SKILL.md, /home/agent/.profile, AGENTS.md;" /tmp/gate-a2b ||
+  cat /tmp/gate-a2b; grep -qF "changed since the last accepted state: \"/home/agent/.agents/skills/gate/SKILL.md\", \"/home/agent/.bash_profile\", \"/home/agent/.bashrc\", \"/home/agent/.claude/CLAUDE.md\", \"/home/agent/.claude/skills/gate/SKILL.md\", \"/home/agent/.profile\", \"AGENTS.md\";" /tmp/gate-a2b ||
   { find $H/.claude $H/.agents -maxdepth 3 -ls; ls -la $H; false; }'
 check "  ... bash read no startup file; git used no ~/.gitconfig pager, alias or filter and no repo-local pager" 'none || { markers; false; }'
 check "  ... in a container: loopback only, the seccomp filter, no_new_privs and no capabilities" 'grep -q "^net=lo.\$" /tmp/gate-a2 &&
