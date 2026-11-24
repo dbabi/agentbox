@@ -197,7 +197,7 @@ func Run(cfg Config) error {
 		audit: func(r map[string]any) error { return auditSend(cfg.AuditSocket, r) },
 		store: accounts.EnsureStore, nested: nestedIn,
 		applyOS:      func() error { _, err := quota.Run("systemctl", "start", accounts.Unit); return err },
-		inconsistent: quota.Inconsistent, qrescan: quota.Rescan}
+		inconsistent: quota.Inconsistent, qrescan: quota.Rescan, qlimit: quota.Refresh}
 	if cfg.Tasks.Accounts == nil {
 		cfg.Tasks.Accounts = idsAccounts{db}
 	}
@@ -291,6 +291,7 @@ type server struct {
 	alerted      bool
 	inconsistent func() (bool, error)
 	qrescan      func() error
+	qlimit       func() error // quota.Refresh, on each consistent check; nil: none
 }
 
 // refresh re-resolves ntfy.sh:443 into ntfy_dst (§6.1). A failure only logs: ntfy is down until the next try.

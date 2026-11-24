@@ -5,10 +5,11 @@
 # uefi (default) is the arm64 VM, bios the amd64 one (hack/gate.sh's boot modes); only install uses it.
 # install  hack/gate.sh none: the unattended install and the release pipeline; firstboot's install.sh puts in the
 #          ntfy package and agentbox-reconcile sets up quotas and ntfy.
-# quota    full-mode quotas, 2/0 limited to the file system size minus max(10%, 4 GiB) over every fillable store,
-#          control state and generations outside it, the CAS cap; reconcile is idempotent. An agent-data writer at its
-#          1/N quota gets EDQUOT while system state keeps writing; so does a writer that fills 2/0 itself (its limit
-#          lowered for the test), and the next reconcile restores the limit.
+# quota    full-mode quotas, 2/0 over every fillable store, limited so that max(10%, 4 GiB) stays free when it is full;
+#          control state and generations outside it, the CAS cap; reconcile is idempotent. 1 GiB written outside 2/0
+#          lowers its limit by 1 GiB at the next reconcile, and removing it gives the space back at rootd's next check
+#          (#209). An agent-data writer at its 1/N quota gets EDQUOT while system state keeps writing; so does a writer
+#          that fills 2/0 itself (its limit lowered for the test), and the next reconcile restores the limit.
 # ntfy     ntfy is up behind the release's agentbox-firewall.service. The gate enables the shipped agent stand-in
 #          (agentbox-agent-stub.service: Requires= the firewall and rootd, ExecStartPre=+fwcheck, as an agent's user@
 #          drop-in) and reboots: ntfy runs as _ntfy from the packaged unit with the drop-in, ss shows only its Unix
@@ -52,6 +53,10 @@ M=/var/lib/agentbox A=$M/current/bin/agentbox
 qg() { btrfs --format=json qgroup show -p -r -e $M | python3 -c "import json,sys; r=[q for q in json.load(sys.stdin)[\"qgroup-show\"] if q[\"qgroupid\"]==sys.argv[1]]; v=r[0][sys.argv[2]] if r else \"absent\"; print(\",\".join(v) if isinstance(v,list) else v)" "$1" "$2"; }
 qid() { echo "0/$(btrfs inspect-internal rootid "$1")"; }
 S=$(( $(stat -f -c %b $M) * $(stat -f -c %S $M) )); R=$((S / 10)); [ $R -ge 4294967296 ] || R=4294967296
+# leaves: the 2/0 limit leaves the reserve R free: at most its bound (free space + what 2/0 references - R), and
+# within 256 MiB of it (quota.Refresh sets it 64 MiB below and lets it drift 128 MiB more)
+leaves() { l=$(qg 2/0 max_referenced) b=$(( $(stat -f -c %a $M) * $(stat -f -c %S $M) + $(qg 2/0 referenced) - R )); echo "2/0 limit $l, bound $b"
+  [ "$l" -le $b ] && [ "$l" -ge $((b - (256 << 20))) ]; }
 limits() { btrfs --format=json qgroup show -p -r -e $M | python3 -c "import json,sys; [print(q[\"qgroupid\"], q[\"max_referenced\"], q[\"max_exclusive\"], sorted(q[\"parents\"])) for q in json.load(sys.stdin)[\"qgroup-show\"]]"; }
 '
 
@@ -63,13 +68,20 @@ quota)
   up
   { echo "$PRELUDE"; cat <<'EOF'; } | guest
 check "btrfs quotas on, full (qgroup) mode, not simple" 'btrfs quota status $M | grep -Eq "^ *Mode: *qgroup "'
-check "2/0 exists, max referenced = fs size - max(10%, 4 GiB) = $((S - R))" '[ "$(qg 2/0 max_referenced)" = $((S - R)) ]'
+check "2/0 exists; its max referenced leaves max(10%, 4 GiB) = $R bytes free, whatever lives outside 2/0" 'leaves && [ "$(qg 2/0 max_referenced)" -lt $((S - R)) ]'
 for p in state memory cas git data data/images /srv; do case $p in /*) ;; *) p=$M/$p ;; esac
   check "$p is a subvolume under 2/0" '[ "$(stat -c %i $p)" = 256 ] && qg "$(qid $p)" parents | tr , "\n" | grep -qx 2/0'
 done
 for p in $M /; do check "$p (control state / the generation) is outside 2/0" '! qg "$(qid $p)" parents | tr , "\n" | grep -qx 2/0'; done
 check "cas/ max exclusive = 10% of the pool ($((S / 10)))" '[ "$(qg "$(qid $M/cas)" max_exclusive)" = $((S / 10)) ]'
 check "reconcile is idempotent: a rerun changes no limit or parent" 'a=$(limits) && $A reconcile && [ "$(limits)" = "$a" ]'
+# #209: usage outside 2/0 comes out of 2/0's share, not out of the reserve
+mkdir -p $M/audit && L0=$(qg 2/0 max_referenced) && dd if=/dev/urandom of=$M/audit/gate-out bs=1M count=1024 conv=fsync 2>/dev/null && btrfs filesystem sync $M
+check "1 GiB written outside 2/0 (control state): the next reconcile lowers 2/0's limit by 1 GiB" '$A reconcile && leaves &&
+  d=$((L0 - $(qg 2/0 max_referenced))) && echo "lowered by $d" && [ $d -ge $(((1024 - 256) << 20)) ] && [ $d -le $(((1024 + 256) << 20)) ]'
+rm -f $M/audit/gate-out && btrfs filesystem sync $M
+check "  ... removed: rootd's next qgroup check (quota check, as on its timer) gives 2/0 the space back" 'for i in $(seq 10); do $A quota check >/dev/null; [ "$(qg 2/0 max_referenced)" -ge $((L0 - (256 << 20))) ] && break; sleep 1; done; leaves &&
+  [ "$(qg 2/0 max_referenced)" -ge $((L0 - (256 << 20))) ] && [ "$(qg 2/0 max_referenced)" -le $((L0 + (256 << 20))) ]'
 # an agent-data writer at its quota: a workspace subvolume in a 1/N under 2/0, as agent.add will make it
 W=$M/data/workspaces/gate
 mkdir -p $M/data/workspaces && btrfs subvolume create $W >/dev/null && chown nobody $W
@@ -78,11 +90,14 @@ mkdir -p $M/data/workspaces && btrfs subvolume create $W >/dev/null && chown nob
 check "an agent writer (uid nobody) at its 64 MiB 1/N quota gets EDQUOT" 'e=$(runuser -u nobody -- dd if=/dev/urandom of=$W/fill bs=1M count=200 conv=fsync 2>&1); echo "$e" | grep -aq "Disk quota exceeded" && [ $(stat -c %s $W/fill) -le $((64 << 20)) ]'
 check "  ... and keeps getting it" '! runuser -u nobody -- dd if=/dev/urandom of=$W/more bs=1M count=8 conv=fsync'
 check "  ... while system state (outside 2/0) still writes 100 MiB" 'mkdir -p $M/audit && dd if=/dev/urandom of=$M/audit/gate-fill bs=1M count=100 conv=fsync && [ $(stat -c %s $M/audit/gate-fill) = $((100 << 20)) ]'
-# the reserve itself: 2/0 lowered to 64 MiB above its current use, then filled by a store with no limit of its own
+# the reserve itself: 2/0 lowered to 64 MiB above its current use, then filled by a store with no limit of its own.
+# rootd is stopped meanwhile: its qgroup timer would give 2/0 its limit back (#209).
+systemctl stop agentbox-rootd.service
 r=$(qg 2/0 referenced); btrfs qgroup limit $((r + (64 << 20))) 2/0 $M
 check "a writer into data/images (no own limit) that fills 2/0 gets EDQUOT" 'e=$(dd if=/dev/urandom of=$M/data/images/gate-fill bs=1M count=200 conv=fsync 2>&1); echo "$e" | grep -aq "Disk quota exceeded"'
 check "  ... while system state still writes 128 MiB, more than 2/0 had left" 'dd if=/dev/urandom of=$M/audit/gate-fill2 bs=1M count=128 conv=fsync && [ $(stat -c %s $M/audit/gate-fill2) = $((128 << 20)) ]'
-check "the next reconcile restores 2/0's limit" '$A reconcile && [ "$(qg 2/0 max_referenced)" = $((S - R)) ]'
+check "the next reconcile restores 2/0's limit" '$A reconcile && leaves'
+systemctl start agentbox-rootd.service
 rm -f $M/audit/gate-fill $M/audit/gate-fill2 $M/data/images/gate-fill; rmdir $M/audit 2>/dev/null || :
 btrfs subvolume delete $W >/dev/null && btrfs subvolume sync $M && btrfs qgroup destroy 1/999 $M && rmdir $M/data/workspaces
 btrfs qgroup clear-stale $M >/dev/null 2>&1 || :
