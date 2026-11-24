@@ -174,3 +174,12 @@ func TestGoPrivateSet(t *testing.T) {
 		t.Fatalf("bad patterns: %v", rep)
 	}
 }
+
+// #198: an error that names an agent-made path reaches the admin with each terminal control escaped, and the quotes the
+// error already has kept.
+func TestEscaped(t *testing.T) {
+	in := "open \"a\x1b]52;c;eA==\a\u202eb\": é\u009b\xff"
+	if got, want := escaped(in), `open "a\x1b]52;c;eA==\a\u202eb": é\u009b`+"\ufffd"; got != want {
+		t.Fatalf("escaped(%q) = %q, want %q", in, got, want)
+	}
+}

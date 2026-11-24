@@ -140,7 +140,7 @@ check "  ... #198: each name is quoted: one with ESC, OSC 52 and a forged \", .m
 
 check "  ... with a digest of the list; a change made after the refusal makes that digest fail, naming the new path" 'D0=$(digest /tmp/gate-a0) && [ -n "$D0" ] &&
   as sh -c "echo planted > $W/.envrc" && ! attach --cli bash --ack-control-changes=$D0 </dev/null >/tmp/gate-a0b 2>&1; cat /tmp/gate-a0b;
-  grep -q "digest does not match this list" /tmp/gate-a0b && grep -qE "[ :,]\.envrc[,;]" /tmp/gate-a0b && [ "$(digest /tmp/gate-a0b)" != "$D0" ] &&
+  grep -q "digest does not match this list" /tmp/gate-a0b && grep -qE "[ :,]\"\.envrc\"[,;]" /tmp/gate-a0b && [ "$(digest /tmp/gate-a0b)" != "$D0" ] &&
   ! attach --cli bash --ack-control-changes </dev/null >/tmp/gate-a0c 2>&1; cat /tmp/gate-a0c; grep -q "flag needs an argument" /tmp/gate-a0c'
 check "attach 1, with --ack-control-changes and that digest: claude with its attach flags starts (and stops at login), the token scan is clean" 'attach --cli claude --ack-control-changes=$(digest /tmp/gate-a0b) -- -p hi </dev/null >/tmp/gate-a1 2>&1; cat /tmp/gate-a1;
   grep -qF "[agentbox] session ended; token scan: clean, tasks may start" /tmp/gate-a1 && grep -q "Not logged in" /tmp/gate-a1'
@@ -244,11 +244,11 @@ as sh -c "cd $W && mkdir -p docs && echo 'Follow @docs/style.md' > docs/guide.md
 printf 'exit\n' > /tmp/gate-l-in
 check "#202 #210 a CLAUDE.md link, its target, the file it imports, CLAUDE.local.md and AGENTS.override.md are each listed" '
   ! attach --cli bash </dev/null >/tmp/gate-l1 2>&1; cat /tmp/gate-l1;
-  for p in CLAUDE.md docs/guide.md docs/style.md CLAUDE.local.md AGENTS.override.md; do grep -qE "(: |, )$p(, |;)" /tmp/gate-l1 || exit 1; done'
+  for p in CLAUDE.md docs/guide.md docs/style.md CLAUDE.local.md AGENTS.override.md; do grep -qE "(: |, )\"$p\"(, |;)" /tmp/gate-l1 || exit 1; done'
 check "  ... once acked, an edit to the imported file alone refuses the next attach, naming only it" '
   typed /tmp/gate-l-in | attach --cli bash --ack-control-changes=$(digest /tmp/gate-l1) >/tmp/gate-l2 2>&1; cat -v /tmp/gate-l2;
   grep -qF "[agentbox] session ended" /tmp/gate-l2 && as sh -c "echo spaces > $W/docs/style.md" && ! attach --cli bash </dev/null >/tmp/gate-l3 2>&1;
-  cat /tmp/gate-l3; grep -qF "changed since the last accepted state: docs/style.md;" /tmp/gate-l3'
+  cat /tmp/gate-l3; grep -qF "changed since the last accepted state: \"docs/style.md\";" /tmp/gate-l3'
 as rm -rf $W/CLAUDE.md $W/docs $W/CLAUDE.local.md $W/AGENTS.override.md
 # #107: a hostile workspace and session-home. Every root-side reader refuses or caps: none blocks or reads outside.
 # OTOK is only outside the tree, behind links, and in one plain workspace file: a reader that followed a link to it

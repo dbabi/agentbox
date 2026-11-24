@@ -103,7 +103,7 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	}
 	if err != nil {
 		unblock()
-		refuse("control paths: %s", strconv.QuoteToASCII(err.Error())) // a walk error names a workspace path
+		refuse("control paths: %s", escaped(err.Error())) // a walk error names a workspace path
 		return
 	}
 	o, _ := ops.Lookup("agent.attach")
@@ -144,7 +144,7 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 		s.audit(map[string]any{"type": "WRITER_DEL", "holder": holder})
 		unblock()
 		result("failed", err.Error())
-		refuse("%s", strconv.QuoteToASCII(err.Error())) // it can name a session-home path
+		refuse("%s", escaped(err.Error())) // it can name a session-home path
 		return
 	}
 	defer master.Close()
@@ -205,7 +205,7 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	switch {
 	case serr != nil:
 		// the block stays attach_live: an unfinished scan must not let a task start
-		status = "token scan failed, tasks stay blocked: " + strconv.QuoteToASCII(serr.Error()) // it can name a workspace path
+		status = "token scan failed, tasks stay blocked: " + escaped(serr.Error()) // it can name a workspace path
 		log.Printf("agent.attach %s %s: %s", r.Name, id, status)
 		s.alert(r.Name, "token scan failed after an attach; tasks stay blocked")
 	case len(hits) > 0:
