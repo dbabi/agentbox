@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,9 +64,13 @@ func (s *server) rescan(agent string, ack bool) reply {
 	p := attach.AgentPaths(s.attachRoot(), agent, b.Session)
 	seen := s.agentSeen(agent)
 	seen.Add(attach.Tokens(p.SessionHome))
-	hits, err := attach.Scan(p.Workspace, time.Time{}, seen.All())
+	tokens, err := seen.All()
 	if err != nil {
-		return reply{"ok": false, "error": err.Error()}
+		return reply{"ok": false, "blocked": true, "error": err.Error()}
+	}
+	hits, err := attach.Scan(p.Workspace, time.Time{}, tokens)
+	if err != nil {
+		return reply{"ok": false, "error": strconv.QuoteToASCII(err.Error())} // it can name a workspace path
 	}
 	if w, _ := s.watched.Load(agent); len(hits) == 0 && w != b.Session && !ack {
 		log.Printf("attach.rescan %s: clean, but rootd restarted since session %s: block kept", agent, b.Session)

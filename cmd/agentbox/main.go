@@ -10,8 +10,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"agentbox/internal/ntfy"
 	"agentbox/internal/recovery"
@@ -71,8 +73,22 @@ func main() {
 	case errors.Is(err, errUsage):
 		os.Exit(2) // the flag package already printed the problem and the usage
 	}
-	fmt.Fprintln(os.Stderr, "agentbox:", err)
+	fmt.Fprintln(os.Stderr, "agentbox:", printable(err.Error()))
 	os.Exit(1)
+}
+
+// printable escapes every rune but newline and tab that a terminal would not print as is (C0, C1, bidi and other
+// format controls): a rootd error can carry names a task chose, and they must not drive the admin's terminal.
+func printable(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsPrint(r) || r == '\n' || r == '\t' {
+			b.WriteRune(r)
+		} else {
+			b.WriteString(strings.Trim(strconv.QuoteRune(r), "'"))
+		}
+	}
+	return b.String()
 }
 
 var errUsage = errors.New("usage")

@@ -323,8 +323,16 @@ const (
 // to it moves its ctime, and a session can't set ctime back, so a change still shows (a chmod or touch shows too).
 const hashCap = 64 << 20
 
+// maxEntries and maxBytes bound one walk's manifest (names and values): a session or task makes the tree, and rootd
+// holds the manifest in its heap and in rootd.db. Past either, the attach is refused.
+var maxEntries, maxBytes = 50_000, 32 << 20
+
+// ErrTooMany is a control-path manifest past maxEntries or maxBytes.
+var ErrTooMany = errors.New("more control-path entries than rootd records (50000 entries or 32 MiB): remove some, then attach again")
+
 func walk(root string, which func(rel string, d wsfs.Entry) sel) (map[string]string, error) {
 	m := map[string]string{}
+	size := 0
 	err := wsfs.Walk(root, func(e wsfs.Entry) error {
 		rel := e.Rel
 		if rel == "." {
@@ -338,6 +346,10 @@ func walk(root string, which func(rel string, d wsfs.Entry) sel) (map[string]str
 			return nil
 		case descend:
 			return nil
+		}
+		defer func() { size += len(rel) + len(m[rel]) }() // once this entry's value, if any, is in m
+		if len(m) >= maxEntries || size > maxBytes {
+			return ErrTooMany
 		}
 		switch t := e.Mode.Type(); {
 		case t&fs.ModeSymlink != 0:

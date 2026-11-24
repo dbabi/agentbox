@@ -3,6 +3,7 @@ package attach
 import (
 	"database/sql"
 	"errors"
+	"strconv"
 	"time"
 )
 
@@ -113,7 +114,7 @@ func End(db *sql.DB, agent, id string, hits []Hit) error {
 		if i > 0 {
 			detail += " "
 		}
-		detail += h.Path
+		detail += strconv.QuoteToASCII(h.Path) // the agent named it; attach status shows it
 	}
 	_, err := db.Exec(`UPDATE task_block SET reason=?, detail=? WHERE agent=? AND session=?`, Token, detail, agent, id)
 	return err

@@ -137,3 +137,12 @@ func TestEncodeLineCopiesArgs(t *testing.T) {
 		t.Fatalf("line of %d bytes for %d bytes of args", len(b), len(args))
 	}
 }
+
+// #198: an error rootd sends can carry names a task chose; the CLI prints it with every terminal control escaped.
+func TestPrintable(t *testing.T) {
+	in := "refused: \"a\\x1b[2K\" b\x1b]52;c;ZXZpbA==\x07 c\u202ed\u009b\nline 2\tx é"
+	want := "refused: \"a\\x1b[2K\" b\\x1b]52;c;ZXZpbA==\\a c\\u202ed\\u009b\nline 2\tx é"
+	if got := printable(in); got != want {
+		t.Fatalf("printable(%q) = %q, want %q", in, got, want)
+	}
+}

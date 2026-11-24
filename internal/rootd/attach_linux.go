@@ -81,9 +81,14 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 		// the ack quotes the digest of the list it accepts (#210): a change made after the refusal makes a new list
 		if d := attach.Digest(changed, cur); r.AckControlChanges != d {
 			unblock()
-			list := changed
-			if len(list) > 50 {
-				list = append(list[:50:50], fmt.Sprintf("... %d more", len(changed)-50))
+			// the agent picks these names: quoted, so no byte of one can drive the admin's terminal or pass for another
+			var list []string
+			for i, c := range changed {
+				if i == 50 {
+					list = append(list, fmt.Sprintf("... %d more", len(changed)-50))
+					break
+				}
+				list = append(list, strconv.QuoteToASCII(c))
 			}
 			stale := ""
 			if r.AckControlChanges != "" {
@@ -98,7 +103,7 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	}
 	if err != nil {
 		unblock()
-		refuse("control paths: %v", err)
+		refuse("control paths: %s", strconv.QuoteToASCII(err.Error())) // a walk error names a workspace path
 		return
 	}
 	o, _ := ops.Lookup("agent.attach")
@@ -139,7 +144,7 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 		s.audit(map[string]any{"type": "WRITER_DEL", "holder": holder})
 		unblock()
 		result("failed", err.Error())
-		refuse("%v", err)
+		refuse("%s", strconv.QuoteToASCII(err.Error())) // it can name a session-home path
 		return
 	}
 	defer master.Close()
@@ -191,12 +196,16 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	close(stop)
 	<-watched
 
-	hits, serr := attach.Scan(p.Workspace, start, seen.All())
+	tokens, serr := seen.All()
+	var hits []attach.Hit
+	if serr == nil {
+		hits, serr = attach.Scan(p.Workspace, start, tokens)
+	}
 	status := "token scan: clean, tasks may start"
 	switch {
 	case serr != nil:
 		// the block stays attach_live: an unfinished scan must not let a task start
-		status = "token scan failed, tasks stay blocked: " + serr.Error()
+		status = "token scan failed, tasks stay blocked: " + strconv.QuoteToASCII(serr.Error()) // it can name a workspace path
 		log.Printf("agent.attach %s %s: %s", r.Name, id, status)
 		s.alert(r.Name, "token scan failed after an attach; tasks stay blocked")
 	case len(hits) > 0:

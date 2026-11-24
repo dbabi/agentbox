@@ -137,7 +137,7 @@ func TestAgentOps(t *testing.T) {
 	if rep := call("agent.remove", `{"name":"b"}`); rep["ok"] != true || rep["agent"].(map[string]any)["active"] != false || applied != 3 {
 		t.Fatalf("remove b: %v, applied %d", rep, applied)
 	}
-	if _, on, _ := attach.Blocked(db, "b"); on || len(s.agentSeen("b").All()) != 0 {
+	if _, on, _ := attach.Blocked(db, "b"); on || func() bool { all, _ := s.agentSeen("b").All(); return len(all) != 0 }() {
 		t.Fatal("removing b left its task block or token versions")
 	}
 	c := call("agent.add", `{"name":"c"}`)["agent"].(map[string]any)

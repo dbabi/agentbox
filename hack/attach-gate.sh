@@ -112,6 +112,8 @@ printf '{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialog
 for f in .profile .bashrc .bash_profile; do printf 'touch %s/m-dot%s\n' $M "$f" > $H/$f; done
 printf '[core]\n\tpager = touch %s/m-gitpager; cat\n[alias]\n\tst = !touch %s/m-alias\n[filter "gx"]\n\tclean = touch %s/m-filter; cat\n' $M $M $M > $H/.gitconfig
 echo '*.txt filter=gx' > $W/.gitattributes
+# #198: a control path named with ESC, OSC 52, BEL and a forged ", .mcp.json"
+mkdir -p $W/.claude/rules && : > "$W/.claude/rules/x$(printf '\033]52;c;ZXZpbA==\007'), .mcp.json"
 chown -R ag-at:ag-at $H $W
 sum0=$(sha256sum < $H/.claude/settings.json)
 
@@ -132,6 +134,9 @@ check "  ... and session-home settings as planted" '[ "$(sha256sum < $H/.claude/
 check "attach is refused while workspace control paths changed, naming them; no block is left" '! attach --cli bash </dev/null >/tmp/gate-a0 2>&1; cat /tmp/gate-a0;
   grep -q "control paths changed" /tmp/gate-a0 && grep -q "\.mcp\.json" /tmp/gate-a0 && grep -q "\.claude/settings\.json" /tmp/gate-a0 &&
   grep -q "\.git/hooks/pre-commit" /tmp/gate-a0 && grep -q "\.git/config" /tmp/gate-a0 && $B attach status | grep -qF "\"blocks\":[]"'
+check "  ... #198: each name is quoted: one with ESC, OSC 52 and a forged \", .mcp.json\" reaches the terminal escaped, as one entry" '
+  grep -qF "\".claude/rules/x\\x1b]52;c;ZXZpbA==\\a, .mcp.json\"" /tmp/gate-a0 && grep -qF "\".mcp.json\"" /tmp/gate-a0 &&
+  ! grep -q "$(printf "\033")" /tmp/gate-a0 && ! grep -q "$(printf "\007")" /tmp/gate-a0'
 
 check "  ... with a digest of the list; a change made after the refusal makes that digest fail, naming the new path" 'D0=$(digest /tmp/gate-a0) && [ -n "$D0" ] &&
   as sh -c "echo planted > $W/.envrc" && ! attach --cli bash --ack-control-changes=$D0 </dev/null >/tmp/gate-a0b 2>&1; cat /tmp/gate-a0b;
@@ -258,8 +263,8 @@ mv $W/.claude $W/.claude.gate && (cd $W && ln -s /etc/shadow shadow && ln -s /va
   mkdir -p $H/.codex && printf '{"tokens":{"access_token":"%s"}}\n' $CTOK > $H/.codex/auth.json && chown -h ag-at:ag-at $H/.codex $H/.codex/auth.json $H/.claude/.credentials.json
 printf 'cd /workspace && touch go.sum CLAUDE.md out-copy package-lock.json sub/.mcp.json && touch -h shadow approvers approvers.db .claude; echo "touched=$?"\nexit\n' > /tmp/gate-h-in
 check "hostile workspace: attach is refused naming the .claude link, the FIFO .mcp.json and the 2 GiB CLAUDE.md, nothing behind the link" '! attach --cli bash </dev/null >/tmp/gate-h0 2>&1; cat /tmp/gate-h0;
-  grep -q "control paths changed" /tmp/gate-h0 && grep -qE "[ :,]\.claude[,;]" /tmp/gate-h0 && grep -qE "[ :,]sub/\.mcp\.json[,;]" /tmp/gate-h0 &&
-  grep -qE "[ :,]CLAUDE\.md[,;]" /tmp/gate-h0 && ! grep -q "outside-only" /tmp/gate-h0'
+  grep -q "control paths changed" /tmp/gate-h0 && grep -qE "[ :,]\"\.claude\"[,;]" /tmp/gate-h0 && grep -qE "[ :,]\"sub/\.mcp\.json\"[,;]" /tmp/gate-h0 &&
+  grep -qE "[ :,]\"CLAUDE\.md\"[,;]" /tmp/gate-h0 && ! grep -q "outside-only" /tmp/gate-h0'
 check "  ... with the ack the session touches it all, and the token scan is clean within 120 s: no link or FIFO was followed or blocked on, no 2 GiB file read whole" '
   s=$(date +%s); typed /tmp/gate-h-in | attach --cli bash --ack-control-changes=$(digest /tmp/gate-h0) >/tmp/gate-h1 2>&1; e=$(( $(date +%s) - s )); cat -v /tmp/gate-h1; echo "took ${e}s";
   grep -q "touched=0" /tmp/gate-h1 && grep -qF "[agentbox] session ended; token scan: clean, tasks may start" /tmp/gate-h1 && [ $e -lt 120 ]'
