@@ -626,6 +626,9 @@ func (s *server) taskAdmin(r request, p peer) reply {
 		return reply{"ok": false, "error": err.Error()}
 	}
 	rep, err := s.tasks.cfg.Svc("gate", map[string]any{"call": "dispatch", "request": req, "agent": r.Agent, "cli": r.CLI, "prompt": r.Prompt})
+	if err == nil && rep == nil {
+		err = errors.New("no reply object")
+	}
 	if err != nil {
 		return reply{"ok": false, "request": req, "error": "agentboxd: " + err.Error()}
 	}

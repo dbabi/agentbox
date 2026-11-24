@@ -207,14 +207,19 @@ func (t *tasks) start(id, agent, origin string) reply {
 			return rep
 		}
 	}
+	// held from the registry row through the launch: a task.stop that finds the row waits, then kills what started
+	m := t.stopLock(id)
+	m.Lock()
 	if why == "" {
 		why = t.register(id, acct, si)
 	}
 	if why != "" {
+		m.Unlock()
 		log.Printf("task.start %s: %s", id, why)
 		return fail(why)
 	}
 	tainted, err := t.launch(id, acct, si)
+	m.Unlock()
 	if err != nil {
 		log.Printf("task.start %s: %v; stopping it", id, err)
 		t.stop(id, "failed")
@@ -250,7 +255,10 @@ func (t *tasks) register(id string, acct Account, si startInfo) string {
 	}
 	if si.request != "" {
 		res, err := tx.Exec(`UPDATE task_requests SET task=? WHERE id=? AND task IS NULL`, id, si.request)
-		if n, _ := res.RowsAffected(); err != nil || n != 1 {
+		if err != nil {
+			return "no_unused_request" // the task id already used up another request (task UNIQUE)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
 			return "no_unused_request"
 		}
 	}
@@ -414,6 +422,21 @@ func (t *tasks) probeFailed(id, check string) {
 	}
 }
 
+// stopLock is id's task.stop mutex: one stop at a time, and none while task.start is between register and launch's end.
+func (t *tasks) stopLock(id string) *sync.Mutex {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stops == nil {
+		t.stops = map[string]*sync.Mutex{}
+	}
+	m := t.stops[id]
+	if m == nil {
+		m = &sync.Mutex{}
+		t.stops[id] = m
+	}
+	return m
+}
+
 // stop is task.stop{task, reason} (§4.2), each step idempotent and none waiting for auditd.
 func (t *tasks) stop(id, reason string) reply {
 	if !endReasons[reason] || !ids.Is(ids.Task, id) {
@@ -424,16 +447,7 @@ func (t *tasks) stop(id, reason string) reply {
 	if err := t.db.QueryRow(`SELECT agent, uid FROM task_registry WHERE task=?`, id).Scan(&agent, &uid); err != nil {
 		return fail("no_task")
 	}
-	t.mu.Lock()
-	if t.stops == nil {
-		t.stops = map[string]*sync.Mutex{}
-	}
-	m := t.stops[id]
-	if m == nil {
-		m = &sync.Mutex{}
-		t.stops[id] = m
-	}
-	t.mu.Unlock()
+	m := t.stopLock(id)
 	m.Lock()
 	defer m.Unlock()
 	t0 := time.Now()
@@ -450,7 +464,8 @@ func (t *tasks) stop(id, reason string) reply {
 		}
 	}
 	if !empty {
-		// in rootd.db, so a restart keeps it; attach.rescan lifts it once this cgroup is empty
+		// in rootd.db at once, so a restart keeps it; step 5 writes it again with ended_at. attach.rescan lifts it once
+		// this cgroup is empty.
 		if err := attach.BlockTask(t.db, agent, id, t.cfg.Now()); err != nil {
 			log.Printf("task %s: block agent %s: %v", id, agent, err)
 		}
@@ -484,14 +499,13 @@ func (t *tasks) stop(id, reason string) reply {
 		}
 	}
 	// 5: the registry and the task's own delegations; 6 (pending rows) comes with the pending table in weeks 9-10
-	now := t.now()
-	res, err := t.db.Exec(`UPDATE task_registry SET ended_at=?, end_reason=? WHERE task=? AND ended_at IS NULL`, now, reason, id)
+	n, err := t.end(id, agent, reason, !empty)
 	if err != nil {
+		// the row stays live: no attach starts, and a task.stop again (or resume after a restart) finishes the stop
 		log.Printf("task %s: registry: %v", id, err)
+		return reply{"ok": false, "reason": "registry", "task": id, "empty": empty}
 	}
-	t.db.Exec(`UPDATE delegations SET expires_at=? WHERE parent=? AND expires_at > ?`, now, id, now)
 	go t.audit(map[string]any{"type": "WRITER_DEL", "holder": "task:" + id}) // never waited for (§4.2)
-	n, _ := res.RowsAffected()
 	if n == 1 {
 		log.Printf("task %s stopped (%s) in %d ms", id, reason, time.Since(t0).Milliseconds())
 	}
@@ -511,6 +525,34 @@ func (t *tasks) stop(id, reason string) reply {
 		}
 	}
 	return reply{"ok": true, "task": id, "stopped": n == 1, "empty": empty}
+}
+
+// end is stop step 5 in one transaction: a leftover task's block, ended_at, and the task's delegations expired. It
+// reports whether this call ended the row.
+func (t *tasks) end(id, agent, reason string, leftover bool) (int64, error) {
+	tx, err := t.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	now := t.now()
+	if leftover {
+		if err := attach.BlockTask(tx, agent, id, t.cfg.Now()); err != nil {
+			return 0, err
+		}
+	}
+	res, err := tx.Exec(`UPDATE task_registry SET ended_at=?, end_reason=? WHERE task=? AND ended_at IS NULL`, now, reason, id)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`UPDATE delegations SET expires_at=? WHERE parent=? AND expires_at > ?`, now, id, now); err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
 }
 
 // liveRow is one task_registry row with ended_at IS NULL.

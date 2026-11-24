@@ -1,0 +1,168 @@
+package rootd
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+	"time"
+
+	"agentbox/internal/ids"
+	"agentbox/internal/rootd/attach"
+	"agentbox/internal/task"
+)
+
+// #197: a task.stop that lands while task.start is launching waits for the launch, then kills and revokes what it
+// started, so a stopped task never runs on after its stop.
+func TestTaskStopDuringLaunch(t *testing.T) {
+	r := newRig(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	r.t.cfg.Launch = func(a []string) error {
+		close(entered)
+		<-release
+		r.calls = append(r.calls, "launched")
+		return nil
+	}
+	id := ids.New(ids.Task)
+	started := make(chan reply)
+	go func() { started <- r.t.start(id, "claude", "daemon") }()
+	<-entered
+	stopped := make(chan reply)
+	go func() { stopped <- r.t.stop(id, "canceled") }()
+	select {
+	case rep := <-stopped:
+		t.Fatalf("task.stop returned during the launch: %v", rep)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	if rep := <-started; rep["ok"] != true {
+		t.Fatalf("start: %v", rep)
+	}
+	if rep := <-stopped; rep["ok"] != true || rep["stopped"] != true {
+		t.Fatalf("stop: %v", rep)
+	}
+	i, j := slices.Index(r.calls, "launched"), slices.Index(r.calls, "podman rm")
+	if i < 0 || j < i || !slices.Contains(r.calls[i:], "gate revoke") {
+		t.Fatalf("the stop did not come after the launch: %v", r.calls)
+	}
+	var reason string
+	r.db.QueryRow(`SELECT end_reason FROM task_registry WHERE task=?`, id).Scan(&reason)
+	if reason != "canceled" {
+		t.Fatalf("end_reason %q", reason)
+	}
+}
+
+// #222 R53: a task id that already used up one request is refused for a second one, and agentboxd's JSON null reply
+// to dispatch is an error, not a rootd crash.
+func TestTaskStartUntrustedInput(t *testing.T) {
+	r := newRig(t)
+	id := ids.New(ids.Task)
+	req1, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
+	req2, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
+	if rep := r.t.start(id, "claude", "admin:"+req1); rep["ok"] != true {
+		t.Fatalf("start: %v", rep)
+	}
+	if rep := r.t.start(id, "claude", "admin:"+req2); rep["ok"] != false || rep["reason"] != "no_unused_request" {
+		t.Fatalf("the same task id on a second request: %v", rep)
+	}
+	r.t.cfg.Svc = func(string, map[string]any) (map[string]any, error) { return nil, nil }
+	s := &server{db: r.db, tasks: r.t}
+	if rep := s.taskAdmin(request{Op: "task.new", Agent: "claude"}, peer{}); rep["ok"] != false || rep["error"] != "agentboxd: no reply object" {
+		t.Fatalf("null dispatch reply: %v", rep)
+	}
+}
+
+// #222 R54: task.stop writes a leftover task's block and ended_at in one transaction. When it fails, the row stays live
+// and task.stop says so.
+func TestTaskStopEndAtomic(t *testing.T) {
+	r := newRig(t)
+	id := ids.New(ids.Task)
+	r.t.start(id, "claude", "daemon")
+	if _, err := r.db.Exec(`CREATE TEMP TRIGGER no_leftover BEFORE INSERT ON task_leftover BEGIN SELECT RAISE(ABORT, 'disk I/O'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.t.end(id, "claude", "canceled", true); err == nil {
+		t.Fatal("end without its block succeeded")
+	}
+	if l := r.t.listLive()["tasks"].([]liveRow); len(l) != 1 {
+		t.Fatalf("the task ended without its block: %+v", l)
+	}
+	r.db.Exec(`DROP TRIGGER no_leftover`)
+	r.db.Exec(`CREATE TEMP TRIGGER no_end BEFORE UPDATE ON task_registry BEGIN SELECT RAISE(ABORT, 'disk I/O'); END`)
+	if rep := r.t.stop(id, "canceled"); rep["ok"] != false || rep["reason"] != "registry" {
+		t.Fatalf("stop with a failed registry write: %v", rep)
+	}
+	if _, err := r.t.end(id, "claude", "canceled", true); err == nil {
+		t.Fatal("end with a failed registry write succeeded")
+	}
+	if _, on, _ := attach.Blocked(r.db, "claude"); on {
+		t.Fatal("the failed transaction left its block")
+	}
+	r.db.Exec(`DROP TRIGGER no_end`)
+	if rep := r.t.stop(id, "canceled"); rep["ok"] != true || rep["stopped"] != true {
+		t.Fatalf("stop again: %v", rep)
+	}
+}
+
+// #222 R48: every task that left processes blocks its agent, and rescan lifts the block only once all their cgroups
+// are empty. A task_not_empty task_block row from an older rootd moves to task_leftover.
+func TestTaskLeftovers(t *testing.T) {
+	r := newRig(t)
+	t1, t2 := ids.New(ids.Task), ids.New(ids.Task)
+	cg := map[string]string{}
+	for _, id := range []string{t1, t2} { // two live tasks of one agent
+		if rep := r.t.start(id, "claude", "daemon"); rep["ok"] != true {
+			t.Fatal(rep)
+		}
+	}
+	for _, id := range []string{t1, t2} {
+		cg[id] = filepath.Join(r.t.cfg.Cgroup, task.CgroupDir(70001, id))
+		os.MkdirAll(cg[id], 0o755)
+		os.WriteFile(filepath.Join(cg[id], "cgroup.events"), []byte("populated 1\n"), 0o644)
+		if n, err := r.t.end(id, "claude", "canceled", true); n != 1 || err != nil {
+			t.Fatalf("end %s: %d %v", id, n, err)
+		}
+	}
+	if l, _ := attach.List(r.db); len(l) != 2 || !slices.Contains([]string{t1, t2}, l[0].Session) || !slices.Contains([]string{t1, t2}, l[1].Session) ||
+		l[0].Session == l[1].Session || l[1].Reason != attach.TaskNotEmpty {
+		t.Fatalf("blocks: %+v", l)
+	}
+	if err := attach.Begin(r.db, "claude", "ses_1", time.Now()); err != attach.ErrLive {
+		t.Fatalf("attach with leftover tasks: %v", err)
+	}
+	s := &server{db: r.db, tasks: r.t}
+	os.WriteFile(filepath.Join(cg[t1], "cgroup.events"), []byte("populated 0\n"), 0o644)
+	if rep := s.rescan("claude", false); rep["blocked"] != true {
+		t.Fatalf("rescan with %s still populated: %v", t2, rep)
+	}
+	if rep := r.t.start(ids.New(ids.Task), "claude", "daemon"); rep["reason"] != "agent_blocked" {
+		t.Fatalf("start with %s still populated: %v", t2, rep)
+	}
+	os.RemoveAll(cg[t2])
+	if rep := s.rescan("claude", false); rep["blocked"] != false {
+		t.Fatalf("rescan with both empty: %v", rep)
+	}
+	if rep := r.t.start(ids.New(ids.Task), "claude", "daemon"); rep["ok"] != true {
+		t.Fatalf("start after the block lifted: %v", rep)
+	}
+
+	// an older rootd's block row
+	dbPath := filepath.Join(t.TempDir(), "old.db")
+	old, err := OpenDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Exec(`INSERT INTO task_block(agent, session, reason, started_ms) VALUES('claude', ?, 'task_not_empty', 1)`, t1)
+	old.Close()
+	db, err := OpenDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if b, on, _ := attach.Blocked(db, "claude"); !on || b.Reason != attach.TaskNotEmpty || b.Session != t1 {
+		t.Fatalf("migrated block: %+v %v", b, on)
+	}
+	if left, _ := attach.Leftovers(db, "claude"); !slices.Equal(left, []string{t1}) {
+		t.Fatalf("leftovers: %v", left)
+	}
+}
