@@ -14,6 +14,7 @@ import (
 var procStart = time.Now()
 
 func fdatasync(f *os.File) error { return f.Sync() }
+func dropCache(string) error     { return nil }
 func bootTimeMs() int64          { return time.Since(procStart).Milliseconds() }
 func bootID() string             { return "test-boot" }
 

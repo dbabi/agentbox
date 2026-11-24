@@ -654,6 +654,149 @@ func TestCloseSyncFails(t *testing.T) {
 	}
 }
 
+// syncFault fails the fdatasync after the first write that contains match. With lose, zeros of the same length reach
+// the file instead: what a read from the disk finds when the failed writeback never got there.
+func syncFault(t *testing.T, match string, e error, lose bool) *bool {
+	pending, armed := false, true
+	fault(t, func(f *os.File, p []byte) (int, error, bool) {
+		if !armed || pending || !strings.Contains(string(p), match) {
+			return 0, nil, false
+		}
+		pending = true
+		if lose {
+			p = make([]byte, len(p))
+		}
+		n, err := f.Write(p)
+		return n, err, true
+	}, func(f *os.File) (error, bool) {
+		if armed && pending {
+			armed = false
+			return e, true
+		}
+		return nil, false
+	})
+	return &armed
+}
+
+// The new segment's open is written but its fdatasync fails: the next request must not write a second open.
+func TestOpenSyncFails(t *testing.T) {
+	for _, e := range []error{syscall.EIO, syscall.ENOSPC} {
+		for _, lose := range []bool{false, true} {
+			b := newBox(t)
+			armed := syncFault(t, `"type":"open"`, e, lose)
+			for i := 0; *armed; i++ {
+				if i > 200 {
+					t.Fatal("the fault never fired")
+				}
+				b.send("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+			}
+			b.avail = 1000 // disk-full mode: rootd's admin ops are still ACKed, onto a chain that verifies
+			b.ok(rootdProducer, `{"type":"INTENT","opId":"op-r","name":"agent.remove","origin":"admin","signer":"boxadmin:ssh","args":{"name":"bob"}}`)
+			b.ok(rootdProducer, `{"type":"RESULT","opId":"op-r","status":"executed"}`)
+			b.verify()
+			b.avail = 100 << 30
+			b.recovers()
+		}
+	}
+}
+
+// A record's fdatasync fails and its bytes never reach the disk: no record ACKed after it may chain to them.
+func TestSyncFailsRecordLost(t *testing.T) {
+	b := newBox(t)
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+	syncFault(t, "task:F", syscall.EIO, true)
+	b.nack("proxy", `{"type":"TAINT","subject":"task:F","source":"s"}`, CodeUnavailable)
+	b.wall += 5000 // and the clock steps: logged once, after the torn record
+	seqs := map[uint64]bool{}
+	for i := 0; i < 3; i++ {
+		seqs[b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`).Seq] = true
+	}
+	rep := b.verify()
+	torn, steps := 0, 0
+	for _, r := range rep {
+		torn, steps = torn+len(r.Torn), steps+r.ClockSteps
+	}
+	if rep[len(rep)-1].Undeclared != 0 || torn != 1 || steps != 1 {
+		t.Fatalf("want the lost record declared torn, one clock step and nothing undeclared, got %+v", rep)
+	}
+	b.start()
+	if r := b.ok("proxy", `{"type":"TAINT","subject":"task:T3","source":"s"}`); seqs[r.Seq] {
+		t.Fatalf("seq %d handed out again after the restart", r.Seq)
+	}
+	b.recovers()
+}
+
+// sealOnDisk fails the test when auditd asks rootd to seal a segment that does not end in close on the disk. A lost
+// write reaches these tests' files as zeros, so the file is the disk.
+type sealOnDisk struct {
+	t testing.TB
+	Sealer
+}
+
+func (s sealOnDisk) Seal(seg uint64, h string) error {
+	err := s.Sealer.Seal(seg, h)
+	if err != nil {
+		s.t.Errorf("seal of %s asked before its close was on the disk: %v", SegName(seg), err)
+	}
+	return err
+}
+
+// A new boot's close fails its fdatasync with its bytes lost, at start and again in the reread after it. Linux reports
+// the error once, so the fdatasync after it proves nothing: the seal waits for a close the reread finds on the disk.
+func TestCloseSyncFailsTwice(t *testing.T) {
+	b := newBox(t)
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+	// two lost closes: the one the new boot's start writes, and the one the reread writes again
+	syncFault(t, `"type":"close"`, syscall.EIO, true)
+	syncFault(t, `"type":"close"`, syscall.EIO, true)
+	b.bootID = "boot-2"
+	b.start()
+	b.s.Seal = sealOnDisk{t, b.s.Seal}
+	b.nack("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`, CodeUnavailable)
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`)
+	if rep := b.verify(); len(rep) != 2 || !rep[0].Closed || len(rep[0].Torn) != 2 {
+		t.Fatalf("want seg 1 sealed with both lost closes declared torn, got %+v", rep)
+	}
+	b.recovers()
+}
+
+// A record is cut short, then the wall clock steps before the next one: torn must come right after the bytes, and
+// clock_step only after it.
+func TestTornThenClockStep(t *testing.T) {
+	b := newBox(t)
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+	armed := true
+	fault(t, func(f *os.File, p []byte) (int, error, bool) {
+		if !armed || !strings.Contains(string(p), "task:F") {
+			return 0, nil, false
+		}
+		armed = false
+		n, _ := f.Write(p[:40])
+		return n, syscall.EIO, true
+	}, nil)
+	b.nack("proxy", `{"type":"TAINT","subject":"task:F","source":"s"}`, CodeUnavailable)
+	b.wall += 5000
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`)
+	rep := b.verify()
+	if last := rep[len(rep)-1]; last.ClockSteps != 1 || len(last.Torn) != 1 {
+		t.Fatalf("want the torn range and the step logged, got %+v", rep)
+	}
+	b.recovers()
+}
+
+// taint.get must not ACK the rows it read before SQLite failed: a missing tainted subject would read as clean.
+func TestTaintGetRowError(t *testing.T) {
+	b := newBox(t)
+	// the second row's json() fails after the first row is out, as a corrupt page would stop the read part-way
+	if _, err := b.s.db.Exec(`CREATE TABLE raw(task TEXT, subject TEXT, PRIMARY KEY(task, subject)) WITHOUT ROWID;
+		INSERT INTO raw VALUES ('task:T1', 'task:A'), ('task:T1', 'task:Zbad');
+		DROP TABLE task_subjects;
+		CREATE VIEW task_subjects AS SELECT task, subject FROM raw WHERE subject < 'task:Z' OR json(subject) IS NOT NULL`); err != nil {
+		t.Fatal(err)
+	}
+	b.nack("agentboxd", `{"type":"taint.get","holder":"task:T1"}`, CodeUnavailable)
+}
+
 // auditd killed right after the seal, then NTP steps the clock before it restarts: the new segment logs the step.
 func TestClockStepAcrossRestartOntoEmptySegment(t *testing.T) {
 	b := newBox(t)

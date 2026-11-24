@@ -11,6 +11,17 @@ import (
 
 func fdatasync(f *os.File) error { return unix.Fdatasync(int(f.Fd())) }
 
+// dropCache evicts the file's clean pages, so the next read comes from the disk. shortcut: a page some process has
+// mmap'd stays cached; nothing maps the segments.
+func dropCache(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+}
+
 func bootTimeMs() int64 {
 	var ts unix.Timespec
 	if unix.ClockGettime(unix.CLOCK_BOOTTIME, &ts) != nil {
