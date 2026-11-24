@@ -113,7 +113,7 @@ func cmdEgress(args []string) error {
 // adminCall sends one request on rootd-admin.sock, prints the reply line, and fails unless it says ok.
 func adminCall(req map[string]any, what string) error {
 	line, err := adminLine(req, what)
-	fmt.Print(string(line))
+	fmt.Print(printable(string(line))) // its fields can hold names a task chose (rescan hits, secret-scan paths)
 	return err
 }
 

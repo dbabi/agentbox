@@ -10,10 +10,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf16"
 
 	"agentbox/internal/ntfy"
 	"agentbox/internal/recovery"
@@ -78,14 +78,19 @@ func main() {
 }
 
 // printable escapes every rune but newline and tab that a terminal would not print as is (C0, C1, bidi and other
-// format controls): a rootd error can carry names a task chose, and they must not drive the admin's terminal.
+// format controls) as \uXXXX, which a JSON reply decodes back to the same string: a rootd reply or error can carry
+// names a task chose, and they must not drive the admin's terminal.
 func printable(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		if unicode.IsPrint(r) || r == '\n' || r == '\t' {
+		switch {
+		case unicode.IsPrint(r) || r == '\n' || r == '\t':
 			b.WriteRune(r)
-		} else {
-			b.WriteString(strings.Trim(strconv.QuoteRune(r), "'"))
+		case r > 0xffff:
+			r1, r2 := utf16.EncodeRune(r)
+			fmt.Fprintf(&b, `\u%04x\u%04x`, r1, r2)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
 		}
 	}
 	return b.String()

@@ -138,11 +138,18 @@ func TestEncodeLineCopiesArgs(t *testing.T) {
 	}
 }
 
-// #198: an error rootd sends can carry names a task chose; the CLI prints it with every terminal control escaped.
+// #198: an error or reply rootd sends can carry names a task chose; the CLI prints it with every terminal control
+// escaped, and a JSON reply still decodes to the same value.
 func TestPrintable(t *testing.T) {
-	in := "refused: \"a\\x1b[2K\" b\x1b]52;c;ZXZpbA==\x07 c\u202ed\u009b\nline 2\tx é"
-	want := "refused: \"a\\x1b[2K\" b\\x1b]52;c;ZXZpbA==\\a c\\u202ed\\u009b\nline 2\tx é"
+	in := "refused: \"a\\x1b[2K\" b\x1b]52;c;ZXZpbA==\x07 c\u202ed\u009b\nline 2\tx é\U000e0001"
+	want := `refused: "a\x1b[2K" b\u001b]52;c;ZXZpbA==\u0007 c\u202ed\u009b` + "\nline 2\tx é" + `\udb40\udc01`
 	if got := printable(in); got != want {
 		t.Fatalf("printable(%q) = %q, want %q", in, got, want)
+	}
+	hits := map[string]string{"path": "notes/a\u009b2J\u202eb\U000e0001"}
+	line, _ := json.Marshal(hits)
+	var back map[string]string
+	if out := printable(string(line)); strings.ContainsAny(out, "\u009b\u202e\U000e0001") || json.Unmarshal([]byte(out), &back) != nil || back["path"] != hits["path"] {
+		t.Fatalf("printable(%s) = %s: decodes to %q", line, out, back)
 	}
 }
