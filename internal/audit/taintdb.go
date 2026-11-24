@@ -238,7 +238,9 @@ func view(tx *sql.Tx, holder string) (*taintView, error) {
 		w.Kind, _, _ = strings.Cut(w.Holder, ":")
 		v.Writers = append(v.Writers, w)
 	}
-	rows.Close()
+	if err := closeRows(rows); err != nil { // a read that stops early is not a clean view
+		return nil, err
+	}
 	var subs []string
 	rows, err = tx.Query("SELECT subject FROM task_subjects WHERE task=? ORDER BY subject", holder)
 	if err != nil {
@@ -252,7 +254,9 @@ func view(tx *sql.Tx, holder string) (*taintView, error) {
 		}
 		subs = append(subs, s)
 	}
-	rows.Close()
+	if err := closeRows(rows); err != nil { // a read that stops early is not a clean view
+		return nil, err
+	}
 	for _, w := range v.Writers {
 		subs = append(subs, w.Workspace)
 	}
@@ -262,6 +266,15 @@ func view(tx *sql.Tx, holder string) (*taintView, error) {
 		}
 	}
 	return v, nil
+}
+
+// closeRows reports the error that ended a rows.Next loop, or the one closing it.
+func closeRows(rows *sql.Rows) error {
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	return rows.Close()
 }
 
 func epochsJSON(m map[string]int64) string {

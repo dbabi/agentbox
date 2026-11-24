@@ -654,6 +654,111 @@ func TestCloseSyncFails(t *testing.T) {
 	}
 }
 
+// syncFault fails the fdatasync after the first write that contains match. With lose, the write's bytes become zeros
+// first: what a later read finds when the failed writeback never reached the disk.
+func syncFault(t *testing.T, match string, e error, lose bool) *bool {
+	var off int64
+	pending, armed := false, true
+	fault(t, func(f *os.File, p []byte) (int, error, bool) {
+		if armed && strings.Contains(string(p), match) {
+			fi, _ := f.Stat()
+			off, pending = fi.Size(), true
+			n, err := f.Write(p)
+			if lose {
+				g, _ := os.OpenFile(f.Name(), os.O_WRONLY, 0)
+				g.WriteAt(make([]byte, n), off)
+				g.Close()
+			}
+			return n, err, true
+		}
+		return 0, nil, false
+	}, func(f *os.File) (error, bool) {
+		if armed && pending {
+			armed = false
+			return e, true
+		}
+		return nil, false
+	})
+	return &armed
+}
+
+// The new segment's open is written but its fdatasync fails: the next request must not write a second open.
+func TestOpenSyncFails(t *testing.T) {
+	for _, e := range []error{syscall.EIO, syscall.ENOSPC} {
+		for _, lose := range []bool{false, true} {
+			b := newBox(t)
+			armed := syncFault(t, `"type":"open"`, e, lose)
+			for i := 0; *armed; i++ {
+				if i > 200 {
+					t.Fatal("the fault never fired")
+				}
+				b.send("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+			}
+			b.ok(rootdProducer, `{"type":"TAINT","subject":"task:T9","source":"s"}`) // ACKed in disk-full mode too
+			b.recovers()
+		}
+	}
+}
+
+// A record's fdatasync fails and its bytes never reach the disk: no record ACKed after it may chain to them.
+func TestSyncFailsRecordLost(t *testing.T) {
+	b := newBox(t)
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+	syncFault(t, "task:F", syscall.EIO, true)
+	b.nack("proxy", `{"type":"TAINT","subject":"task:F","source":"s"}`, CodeUnavailable)
+	seqs := map[uint64]bool{}
+	for i := 0; i < 3; i++ {
+		seqs[b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`).Seq] = true
+	}
+	rep := b.verify()
+	if last := rep[len(rep)-1]; last.Undeclared != 0 || len(last.Torn) != 1 {
+		t.Fatalf("want the lost record declared torn and nothing undeclared, got %+v", rep)
+	}
+	b.start()
+	if r := b.ok("proxy", `{"type":"TAINT","subject":"task:T3","source":"s"}`); seqs[r.Seq] {
+		t.Fatalf("seq %d handed out again after the restart", r.Seq)
+	}
+	b.recovers()
+}
+
+// A record is cut short, then the wall clock steps before the next one: torn must come right after the bytes, and
+// clock_step only after it.
+func TestTornThenClockStep(t *testing.T) {
+	b := newBox(t)
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+	armed := true
+	fault(t, func(f *os.File, p []byte) (int, error, bool) {
+		if !armed || !strings.Contains(string(p), "task:F") {
+			return 0, nil, false
+		}
+		armed = false
+		n, _ := f.Write(p[:40])
+		return n, syscall.EIO, true
+	}, nil)
+	b.nack("proxy", `{"type":"TAINT","subject":"task:F","source":"s"}`, CodeUnavailable)
+	b.wall += 5000
+	b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`)
+	rep := b.verify()
+	if last := rep[len(rep)-1]; last.ClockSteps != 1 || len(last.Torn) != 1 {
+		t.Fatalf("want the torn range and the step logged, got %+v", rep)
+	}
+	b.recovers()
+}
+
+// taint.get must not ACK the rows it read before SQLite failed: a missing tainted subject would read as clean.
+func TestTaintGetRowError(t *testing.T) {
+	b := newBox(t)
+	b.ok(rootdProducer, `{"type":"SUBJECT_ADD","task":"task:T1","subject":"task:P0"}`)
+	// the second row's json() fails after the first row is out, as a corrupt page would stop the read part-way
+	if _, err := b.s.db.Exec(`CREATE TABLE raw(task TEXT, subject TEXT, PRIMARY KEY(task, subject)) WITHOUT ROWID;
+		INSERT INTO raw VALUES ('task:T1', 'task:A'), ('task:T1', 'task:Zbad');
+		DROP TABLE task_subjects;
+		CREATE VIEW task_subjects AS SELECT task, subject FROM raw WHERE subject < 'task:Z' OR json(subject) IS NOT NULL`); err != nil {
+		t.Fatal(err)
+	}
+	b.nack("agentboxd", `{"type":"taint.get","holder":"task:T1"}`, CodeUnavailable)
+}
+
 // auditd killed right after the seal, then NTP steps the clock before it restarts: the new segment logs the step.
 func TestClockStepAcrossRestartOntoEmptySegment(t *testing.T) {
 	b := newBox(t)

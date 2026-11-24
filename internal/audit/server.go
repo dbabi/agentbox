@@ -68,6 +68,7 @@ type Server struct {
 	sealing  bool // close is written; the segment still needs rootd's seal and its successor's open
 	needOpen bool // the open segment has no open record yet: nothing else may be appended first
 	torn     bool // a failed append may have left bytes past end
+	unsynced bool // an fdatasync of the segment failed: the head may name bytes that never reached the disk
 	diskFull bool
 }
 
@@ -225,12 +226,16 @@ func (s *Server) markTorn(tail []byte) error {
 	s.end = off + int64(len(tail)) // append counts the torn record from here
 	s.logf("audit: %s: torn tail of %d bytes at offset %d", SegName(s.seg), len(tail), off)
 	b, _ := json.Marshal(tornBody{off, int64(len(tail)), lineHash(tail)})
+	d := s.clockStep()
 	if _, err := s.append(TypeTorn, "auditd", uint32(os.Getuid()), 0, b); err != nil {
 		// undeclared again: the retry's tail runs from off, the "\n" and any partial torn bytes included
 		s.end, s.torn = off, true
 		return err
 	}
-	return nil
+	if s.needOpen {
+		return nil // writeOpen logs the step since the last close
+	}
+	return s.logClockStep(d) // only now: the first chained record after the torn bytes must be the torn record
 }
 
 // repairTail runs after a failed append: whatever reached the file past end is declared torn before the next record.
@@ -283,6 +288,7 @@ func (s *Server) rotate() error {
 func (s *Server) finishSeal() error {
 	if s.f != nil {
 		if err := syncFile(s.f); err != nil {
+			s.unsynced = true
 			return err
 		}
 		s.f.Close()
@@ -300,9 +306,33 @@ func (s *Server) finishSeal() error {
 	return s.writeOpen()
 }
 
-// ready brings the chain to a state that can take a record: a pending seal done, a torn tail declared, a full segment
-// rotated.
+// reopen rebuilds the head from what is on disk after a failed fdatasync. Linux reports a writeback error once and
+// marks the pages clean, so a later fdatasync succeeds without writing them: only a read from the disk shows whether
+// the record is there. Bytes that are not there are declared torn, and the chain goes on from the last record that is.
+func (s *Server) reopen() error {
+	if s.f != nil {
+		s.f.Close()
+		s.f = nil
+	}
+	if err := dropCache(filepath.Join(s.Dir, SegName(s.seg))); err != nil {
+		return err
+	}
+	s.torn, s.sealing, s.needOpen, s.unsynced = false, false, false, false
+	if err := s.openChain(); err != nil {
+		s.unsynced = true // the head is not known yet: read it again before the next record
+		return err
+	}
+	return nil
+}
+
+// ready brings the chain to a state that can take a record: the head reread after a failed fdatasync, a pending seal
+// done, a torn tail declared, a full segment rotated.
 func (s *Server) ready() error {
+	if s.unsynced {
+		if err := s.reopen(); err != nil {
+			return err
+		}
+	}
 	if s.sealing {
 		if err := s.finishSeal(); err != nil {
 			return err
@@ -327,8 +357,8 @@ func (s *Server) ready() error {
 // append writes one record with a single write on the O_APPEND fd, then fdatasync. A wall-clock step against
 // CLOCK_BOOTTIME since the previous record is logged first; it never rotates anything.
 func (s *Server) append(typ, producer string, uid uint32, pid int32, body json.RawMessage) (uint64, error) {
-	// rotate logs it before close, writeOpen after open; a torn record before open waits for open too
-	if typ != TypeClockStep && typ != TypeClose && typ != TypeOpen && !s.needOpen {
+	// rotate logs it before close, writeOpen after open, markTorn after torn; before open, everything waits for open
+	if typ != TypeClockStep && typ != TypeClose && typ != TypeOpen && typ != TypeTorn && !s.needOpen {
 		if err := s.noteClockStep(); err != nil {
 			return 0, err
 		}
@@ -350,8 +380,11 @@ func (s *Server) append(typ, producer string, uid uint32, pid int32, body json.R
 	if typ != TypeTorn || !s.needOpen { // a torn record before open leaves the step since the last close for writeOpen to log
 		s.lastWall, s.lastBoot = wall, boot
 	}
-	// the line is in the file even if fdatasync fails, so the chain goes on from it; the record is just not ACKed
-	return r.Seq, syncFile(s.f)
+	if err := syncFile(s.f); err != nil {
+		s.unsynced = true // not ACKed, and ready rereads the head from the disk before the next record
+		return r.Seq, err
+	}
+	return r.Seq, nil
 }
 
 // The segment fd's open, write and sync; tests replace them to inject faults.
@@ -436,7 +469,7 @@ func (s *Server) enterDiskFull(why string) {
 
 // alert writes a critical alert record when the chain can take it; the journal line above is the fallback.
 func (s *Server) alert(reason string) {
-	if s.f == nil || s.sealing || (s.torn && s.repairTail() != nil) || (s.needOpen && s.writeOpen() != nil) {
+	if (s.unsynced && s.reopen() != nil) || s.f == nil || s.sealing || (s.torn && s.repairTail() != nil) || (s.needOpen && s.writeOpen() != nil) {
 		return
 	}
 	b, _ := json.Marshal(map[string]string{"reason": reason})
