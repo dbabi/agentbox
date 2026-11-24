@@ -387,7 +387,7 @@ Each service runs as its own Linux user, with only the access it needs.
   If a control file changed after the refusal, the old digest no longer matches, and the attach is refused again with the new list.
 - The control files are the workspace's, and these files in `session-home`:
   - the CLIs' instruction files: `~/.claude/CLAUDE.md`, rules, skills, agents and commands, Codex's skills and plugins in `~/.agents`, `~/.npmrc` and `~/.local/bin`;
-  - what the shells and tools in a session read at startup: bash's startup files, `~/.inputrc`, vim's, nano's, less's, tmux's and screen's config, the Python user site, `~/bin`, `~/.ssh`, `~/.config/git` and `~/.config/go/env`.
+  - what the shells and tools in a session read at startup: bash's startup files, `~/.inputrc`, vim's, nano's, less's, tmux's and screen's config, the Python user site, `~/bin`, `~/.ssh`, `~/.config/git/attributes` and `~/.config/go/env`.
 - The workspace's control files include `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `AGENTS.override.md` at any depth, every git dir, bare repos and the dir a `commondir` file names among them, and every Python venv, the workspace root included.
 - What a control file leads to is a control file too: the target of a symlink at or under one, each symlink on the way, and each file a `CLAUDE.md` imports with `@path`.
   A git dir in `session-home` refuses the attach, whether a `.git` file, a `.git` symlink or a relative path leads there, since a session could change it unseen.

@@ -409,7 +409,9 @@ func TestHomeControls(t *testing.T) {
 	for _, d := range []string{".claude/skills/x", ".claude/projects", ".config"} {
 		os.MkdirAll(filepath.Join(h, d), 0o700)
 	}
-	for f, b := range map[string]string{".claude/.credentials.json": "{}", ".claude/projects/p.jsonl": "x", ".bash_history": "ls", ".claude.json": "{}"} {
+	for f, b := range map[string]string{".claude/.credentials.json": "{}", ".claude/projects/p.jsonl": "x", ".bash_history": "ls", ".claude.json": "{}",
+		".config/git/ignore": "**/.claude/settings.local.json", ".lesshst": "x"} { // Claude Code writes the git ignore file
+		os.MkdirAll(filepath.Join(h, filepath.Dir(f)), 0o700)
 		os.WriteFile(filepath.Join(h, f), []byte(b), 0o600)
 	}
 	if c := changes(); len(c) != 0 {

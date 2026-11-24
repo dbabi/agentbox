@@ -31,14 +31,14 @@ CREATE TABLE IF NOT EXISTS attach_baseline(agent TEXT PRIMARY KEY, manifest TEXT
 // read at startup and can run code from (#200): bash's startup files (Claude's Bash tool sources ~/.bashrc, Codex runs
 // a login shell) and what they pull in on Ubuntu, readline's, vim's, nano's, less's (lesskey can set LESSOPEN),
 // tmux's and screen's, the python user site, node's home module dirs, ~/bin (on the login PATH), ssh's config, git's
-// per-user attributes and go's env file (GOFLAGS; not its telemetry counters, which every go command updates).
-// Session-home persists and the session can write it, so a file planted there would steer every later attach: they are
-// control paths too, in the same baseline as the workspace's, keyed by their path in the session (/home/agent/...),
-// which no workspace-relative path can match.
+// per-user attributes and go's env file (GOFLAGS). Not git's ignore file, which Claude Code writes and which runs
+// nothing, nor go's telemetry counters, which every go command updates. Session-home persists and the session can
+// write it, so a file planted there would steer every later attach: they are control paths too, in the same baseline
+// as the workspace's, keyed by their path in the session (/home/agent/...), which no workspace-relative path can match.
 var HomePaths = []string{".claude/CLAUDE.md", ".claude/rules", ".claude/skills", ".claude/agents", ".claude/commands", ".agents", ".npmrc", ".local/bin",
 	".bashrc", ".bash_profile", ".bash_login", ".profile", ".bash_logout", ".bash_aliases", ".bash_completion", ".local/share/bash-completion",
 	".inputrc", ".vimrc", ".exrc", ".vim", ".config/vim", ".nanorc", ".config/nano", ".lesskey", ".config/lesskey", ".less", ".config/less",
-	".lessfilter", ".tmux.conf", ".config/tmux", ".screenrc", ".local/lib", ".node_modules", ".node_libraries", "bin", ".ssh", ".config/git", ".config/go/env"}
+	".lessfilter", ".tmux.conf", ".config/tmux", ".screenrc", ".local/lib", ".node_modules", ".node_libraries", "bin", ".ssh", ".config/git/attributes", ".config/go/env"}
 
 func homePath(rel string) bool {
 	return slices.ContainsFunc(HomePaths, func(hp string) bool { return rel == hp || under(rel, hp) })
