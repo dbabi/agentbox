@@ -22,11 +22,11 @@ func TestParentLimit(t *testing.T) {
 	size, rfer := uint64(64*G), uint64(20*G)
 	free := size - 9*G - rfer
 	b := Bound(size, free, rfer)
-	if r := Reserve(size); b != int64(free+rfer-r) || b >= int64(size-r) {
+	if r := Reserve(size); b != free+rfer-r || b >= size-r {
 		t.Fatalf("bound %d, want %d, under the old %d", b, free+rfer-r, size-r)
 	}
 	l := ParentLimit(size, free, rfer)
-	if l != uint64(b)-slack || l-rfer+Reserve(size)+slack != free {
+	if l != b-slack || l-rfer+Reserve(size)+slack != free {
 		t.Fatalf("limit %d, bound %d", l, b)
 	}
 	// a full 2/0 at that limit leaves the reserve (and the slack) free
@@ -37,13 +37,12 @@ func TestParentLimit(t *testing.T) {
 		t.Error("the limit is capped at size minus the reserve")
 	}
 	// usage outside 2/0 has eaten the reserve: 2/0 refuses every write, and 0 (no limit) never comes out
-	if ParentLimit(size, Reserve(size)/2, rfer/100) != 1 || Bound(size, Reserve(size)/2, 0) >= 0 {
+	if ParentLimit(size, Reserve(size)/2, rfer/100) != 1 || Bound(size, Reserve(size)/2, 0) != 0 {
 		t.Error("an eaten reserve must leave 2/0 a 1-byte limit")
 	}
 	for _, c := range []struct {
-		cur, want uint64
-		bound     int64
-		keep      bool
+		cur, want, bound uint64
+		keep             bool
 	}{
 		{l, l, b, true},
 		{0, l, b, false},               // no limit at all
@@ -51,9 +50,9 @@ func TestParentLimit(t *testing.T) {
 		{l + slack, l, b, true},        // at the bound: the reserve is still whole
 		{l - 2*slack, l, b, true},      // a little below: not worth a rewrite
 		{l - 2*slack - 1, l, b, false}, // outside usage shrank: give 2/0 the space back
-		{1, 1, -5, true},               // the reserve is gone and 2/0 already refuses writes
+		{1, 1, 0, true},                // the reserve is gone and 2/0 already refuses writes
 		{1, l, b, false},               // space came back
-		{l, 1, -5, false},              // the reserve went
+		{l, 1, 0, false},               // the reserve went
 	} {
 		if got := keep(c.cur, c.want, c.bound); got != c.keep {
 			t.Errorf("keep(%d, %d, %d) = %v", c.cur, c.want, c.bound, got)

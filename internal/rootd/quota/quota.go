@@ -41,18 +41,17 @@ func Reserve(size uint64) uint64 { return max(size/10, minReserve) }
 
 // Bound is the most 2/0 may reference and still leave the reserve free: what it references now plus the free space
 // above the reserve. Usage outside 2/0 (the OS generations, logs, control state) thus comes out of 2/0's share, not
-// out of the reserve (#209). Once that usage has eaten into the reserve, Bound is below what 2/0 references, and it
-// can go negative.
-func Bound(size, free, rfer uint64) int64 { return int64(free) + int64(rfer) - int64(Reserve(size)) }
+// out of the reserve (#209). Once that usage has eaten into the reserve, Bound is below what 2/0 references, down to 0.
+func Bound(size, free, rfer uint64) uint64 { return free + rfer - min(free+rfer, Reserve(size)) }
 
 // ParentLimit is 2/0's referenced limit: slack below Bound, at most size minus the reserve, and at least 1 byte (0
 // would mean no limit), which refuses every write once the reserve is gone.
 func ParentLimit(size, free, rfer uint64) uint64 {
-	b := Bound(size, free, rfer) - slack
-	if b < 1 {
+	b := Bound(size, free, rfer)
+	if b <= slack {
 		return 1
 	}
-	return min(uint64(b), size-min(size, Reserve(size)))
+	return min(b-slack, size-min(size, Reserve(size)))
 }
 
 // CASMax is budgets.toml cas.max_bytes' default: 10% of the pool. shortcut: budgets.toml isn't read yet; it lands
@@ -185,8 +184,8 @@ func Ensure() error {
 }
 
 // Refresh moves 2/0's limit to ParentLimit when it is above Bound (usage outside 2/0 grew into the reserve) or more
-// than 2×slack below ParentLimit (that usage shrank). Run it only while qgroups are consistent: 2/0's referenced count is wrong
-// otherwise. agentbox-reconcile runs it at boot (Ensure) and rootd on its qgroup timer.
+// than 2×slack below ParentLimit (that usage shrank). Run it only while qgroups are consistent: 2/0's referenced count
+// is wrong otherwise. agentbox-reconcile runs it at boot (Ensure) and rootd on its qgroup timer.
 func Refresh() error {
 	size, free, err := fsSpace(Agentbox)
 	if err != nil {
@@ -210,8 +209,8 @@ func Refresh() error {
 
 // keep says a 2/0 limit cur still holds: set, at most bound (or the 1-byte floor once bound is gone), and within
 // 2×slack of want, so a limit isn't rewritten for every byte written outside 2/0.
-func keep(cur, want uint64, bound int64) bool {
-	return cur != 0 && (int64(cur) <= bound || cur == 1) && cur+2*slack >= want
+func keep(cur, want, bound uint64) bool {
+	return cur != 0 && (cur <= bound || cur == 1) && cur+2*slack >= want
 }
 
 // Verify checks the §4.1 state without changing anything.
@@ -236,7 +235,7 @@ func Verify() error {
 		return err
 	}
 	// a limit that drifted (usage outside 2/0 changed since Refresh) is still fine while it leaves the reserve
-	if q := qs[Parent]; q.MaxRfer == 0 || (int64(q.MaxRfer) > Bound(size, free, q.Rfer) && q.MaxRfer != 1) {
+	if q := qs[Parent]; q.MaxRfer == 0 || (q.MaxRfer > Bound(size, free, q.Rfer) && q.MaxRfer != 1) {
 		return fmt.Errorf("quota: %s max referenced %d, but %d free and %d referenced leave the %d-byte reserve only below %d",
 			Parent, q.MaxRfer, free, q.Rfer, Reserve(size), Bound(size, free, q.Rfer))
 	}
