@@ -106,8 +106,11 @@ func runSecretScan(control string) func(Account) ([]secrets.Hit, error) {
 		if err := checkReport(rep); err != nil {
 			return nil, err
 		}
-		log.Printf("secret scan %s: %d files, %d hits (truncated %v), in %d ms, netdevs %v", acct.Name, rep.Files, len(rep.Hits), rep.Truncated,
-			time.Since(t0).Milliseconds(), rep.Netdevs)
+		cut := ""
+		if rep.Truncated {
+			cut = " (cut off, files after them unread)"
+		}
+		log.Printf("secret scan %s: %d files, %d hits%s, in %d ms, netdevs %v", acct.Name, rep.Files, len(rep.Hits), cut, time.Since(t0).Milliseconds(), rep.Netdevs)
 		if rep.Truncated {
 			return rep.Hits, errTooManyHits
 		}
