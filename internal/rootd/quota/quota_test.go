@@ -1,6 +1,11 @@
 package quota
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
 
 func TestLimits(t *testing.T) {
 	const G = 1 << 30
@@ -122,5 +127,24 @@ func TestParseUUID(t *testing.T) {
 		if u, err := parseUUID(bad); err == nil {
 			t.Errorf("%q: got %q", bad, u)
 		}
+	}
+}
+
+// #209: Dropped waits for each dropped subvolume's level-0 qgroup to leave sysfs, the step where Linux may mark
+// qgroups inconsistent; a qgroup that stays is an error once the wait is up.
+func TestQgroupsGone(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, "0_258"), 0o755)
+	go func() { time.Sleep(300 * time.Millisecond); os.Remove(filepath.Join(dir, "0_258")) }()
+	t0 := time.Now()
+	if err := qgroupsGone(dir, []string{"258", "300"}, 5*time.Second); err != nil || time.Since(t0) < 300*time.Millisecond {
+		t.Fatalf("after %v: %v", time.Since(t0), err)
+	}
+	os.Mkdir(filepath.Join(dir, "0_272"), 0o755)
+	if err := qgroupsGone(dir, []string{"272"}, 200*time.Millisecond); err == nil {
+		t.Fatal("a qgroup that stays must be an error")
+	}
+	if err := qgroupsGone(filepath.Join(dir, "none"), []string{"5"}, 0); err != nil { // quotas off: no qgroups dir
+		t.Fatal(err)
 	}
 }

@@ -426,9 +426,23 @@ func protectedGens() (booted int, committed int, prot []int, err error) {
 	return booted, committed, prot, nil
 }
 
+// AfterDelete runs once a prune or a failed build has deleted generation subvolumes, with their subvolume ids. Linux
+// drops them in the background and may mark qgroups inconsistent at the end, so agentbox os waits for that and has
+// rootd check qgroups (#209). Nil, as in tests, runs nothing.
+var AfterDelete func(ids []string) error
+
+// afterDelete hands the ids of the deleted subvolumes, skipping "" (none was there), to AfterDelete.
+func afterDelete(ids ...string) error {
+	ids = slices.DeleteFunc(ids, func(id string) bool { return id == "" })
+	if len(ids) == 0 || AfterDelete == nil {
+		return nil
+	}
+	return AfterDelete(ids)
+}
+
 // PruneGens applies retention (§3.3 step 7). It refuses, deleting nothing, if a kept generation's fstab still binds
 // a doomed generation's boot dir. Deleted generations leave grub.cfg in the same step; if that update-grub fails or
-// is cut, FixGrub repairs grub.cfg from the next health run.
+// is cut, FixGrub repairs grub.cfg from the next health run. The qgroup check after the deletes runs either way.
 func PruneGens(top string) error {
 	all, err := Generations(top)
 	if err != nil {
@@ -445,13 +459,16 @@ func PruneGens(top string) error {
 	if err := stillBound(top, all, drop); err != nil {
 		return err
 	}
+	var ids []string
 	for _, d := range drop {
 		logf("prune %s", Gen(d))
-		if err := discard(top, Gen(d)); err != nil {
-			return err
+		id, err := discard(top, Gen(d))
+		if err != nil {
+			return errors.Join(err, afterDelete(ids...))
 		}
+		ids = append(ids, id)
 	}
-	return UpdateGrub()
+	return errors.Join(UpdateGrub(), afterDelete(ids...))
 }
 
 // stillBound is the retention guard: an error if the fstab of a generation in all but not in drop binds the boot dir
@@ -499,17 +516,23 @@ func FixGrub() error {
 	return nil
 }
 
-// discard deletes a generation's boot dir, then its subvolume.
-func discard(top, gen string) error {
+// discard deletes a generation's boot dir, then its subvolume, and returns the subvolume's id ("" if it was gone).
+func discard(top, gen string) (string, error) {
 	if err := os.RemoveAll(filepath.Join(GensDir, gen)); err != nil {
-		return err
+		return "", err
 	}
 	sv := filepath.Join(top, "@"+gen)
 	if _, err := os.Lstat(sv); errors.Is(err, fs.ErrNotExist) {
-		return nil
+		return "", nil
 	}
-	_, err := run("btrfs", "subvolume", "delete", sv)
-	return err
+	id, err := run("btrfs", "inspect-internal", "rootid", sv)
+	if err != nil {
+		return "", err
+	}
+	if _, err := run("btrfs", "subvolume", "delete", sv); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(id)), nil
 }
 
 // Health is the week-1 skeleton of the §3.3 health check; it returns what is wrong.

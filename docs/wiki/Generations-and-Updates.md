@@ -402,6 +402,10 @@ Retention runs after every commit and at the start of every `os apply`. It keeps
 
 Everything else is deleted, including failed trials and builds that a power cut interrupted.
 A generation's boot directory and subvolume are deleted together. Then `grub.cfg` is regenerated.
+Linux frees a deleted subvolume in the background, and the last step can leave the disk quota counts inconsistent, so that no quota limits anything.
+So retention then waits until Linux has freed the deleted subvolumes, and asks rootd to check the quota counts at once (`agentbox quota check`).
+The journal shows `os: qgroups checked after deleting subvolumes <ids>: <rootd's reply>`.
+If rootd can't be reached, the command prints `agentbox: ALERT: qgroups not checked after deleting subvolumes ...` and fails; rootd's own check, every 5 minutes, still runs.
 For example, with generations 1 to 4 on disk, committing gen-4 deletes gen-1.
 After a commit, three generations normally remain. During a trial there is one more.
 

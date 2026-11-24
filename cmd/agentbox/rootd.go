@@ -112,28 +112,34 @@ func cmdEgress(args []string) error {
 
 // adminCall sends one request on rootd-admin.sock, prints the reply line, and fails unless it says ok.
 func adminCall(req map[string]any, what string) error {
+	line, err := adminLine(req, what)
+	fmt.Print(string(line))
+	return err
+}
+
+// adminLine is adminCall without the print: it returns the reply line.
+func adminLine(req map[string]any, what string) ([]byte, error) {
 	c, err := net.Dial("unix", AdminSocket)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(5 * time.Minute)) // agent.add and agent.remove wait for agentbox-accounts.service
 	b, _ := json.Marshal(req)
 	if _, err := c.Write(append(b, '\n')); err != nil {
-		return err
+		return nil, err
 	}
 	line, err := bufio.NewReader(c).ReadBytes('\n')
 	if err != nil {
-		return fmt.Errorf("rootd closed the connection: %v", err)
+		return nil, fmt.Errorf("rootd closed the connection: %v", err)
 	}
-	fmt.Print(string(line))
 	var rep struct {
 		OK bool `json:"ok"`
 	}
 	if json.Unmarshal(line, &rep) != nil || !rep.OK {
-		return errors.New(what + ": refused")
+		return line, errors.New(what + ": refused")
 	}
-	return nil
+	return line, nil
 }
 
 // cmdAgent is the admin CLI for agent accounts (§4.1), over rootd-admin.sock.
