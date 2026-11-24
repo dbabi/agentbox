@@ -60,6 +60,20 @@ func TestSecretGate(t *testing.T) {
 	if rep := start(); rep["reason"] != SecretScanFailed {
 		t.Fatalf("a failed scan must block: %v", rep)
 	}
+	// a scan cut off at MaxHits read only part of the workspace: tasks stay blocked, and no --ack-secrets passes it
+	hits, scanErr = []secrets.Hit{gh}, errTooManyHits
+	for _, ack := range []int{0, 1} {
+		if rep := r.t.secretGate(acct, ack); rep["reason"] != SecretsTooMany || !strings.Contains(rep["error"].(string), "stopped at") {
+			t.Fatalf("a truncated scan, --ack-secrets %d: %v", ack, rep)
+		}
+	}
+	if found, failed := r.t.grantScan([]string{"claude"}, "api.github.com"); !slices.Equal(failed, []string{"claude"}) || len(found) != 1 {
+		t.Fatalf("a truncated scan at a grant: %v %v", found, failed)
+	}
+	scanErr = nil
+	if rep := r.t.secretGate(acct, 1); rep != nil {
+		t.Fatalf("a whole scan again, acknowledged: %v", rep)
+	}
 }
 
 func TestCheckReport(t *testing.T) {

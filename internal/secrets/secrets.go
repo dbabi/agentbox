@@ -27,14 +27,16 @@ type Hit struct {
 func (h Hit) String() string { return fmt.Sprintf("%s:%d (%s)", h.Path, h.Line, h.Rule) }
 
 // Report is what `agentbox secretscan` prints: the network interfaces it saw (rootd refuses a report from a scan that
-// could reach a network), how many files it read, and the hits.
+// could reach a network), how many files it read, and the hits. Truncated means the scan reached MaxHits and stopped:
+// files after that were not read, so the list is not the whole set and can't be acknowledged.
 type Report struct {
-	Netdevs []string `json:"netdevs"`
-	Files   int      `json:"files"`
-	Hits    []Hit    `json:"hits"`
+	Netdevs   []string `json:"netdevs"`
+	Files     int      `json:"files"`
+	Hits      []Hit    `json:"hits"`
+	Truncated bool     `json:"truncated"`
 }
 
-// Limits: a file is scanned up to FileCap bytes, and a scan stops listing hits at MaxHits.
+// Limits: a file is scanned up to FileCap bytes, and a scan stops at MaxHits hits (the report is then Truncated).
 const (
 	FileCap = 16 << 20
 	MaxHits = 1000
@@ -49,8 +51,12 @@ func Scan(root string) (Report, error) {
 		if e.IsDir() && e.Name == "objects" && path.Base(path.Dir(e.Rel)) == ".git" {
 			return fs.SkipDir
 		}
-		if !e.Mode.IsRegular() || len(r.Hits) >= MaxHits {
+		if !e.Mode.IsRegular() {
 			return nil
+		}
+		if len(r.Hits) >= MaxHits {
+			r.Truncated = true
+			return fs.SkipAll
 		}
 		f, err := e.Open()
 		if err != nil {
@@ -68,8 +74,11 @@ func Scan(root string) (Report, error) {
 		r.Hits = append(r.Hits, Find(e.Rel, b)...)
 		return nil
 	})
+	if err == fs.SkipAll { // wsfs.Walk passes it back: the walk stopped at MaxHits
+		err = nil
+	}
 	if len(r.Hits) > MaxHits {
-		r.Hits = r.Hits[:MaxHits]
+		r.Hits, r.Truncated = r.Hits[:MaxHits], true
 	}
 	return r, err
 }
