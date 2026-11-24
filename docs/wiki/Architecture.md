@@ -284,6 +284,8 @@ Each service runs as its own Linux user, with only the access it needs.
 - rootd allocates N from its `ids` table and never reuses it, so a removed agent's uid and sub-id range never come back.
 - Each agent gets its own 65536-wide sub-uid range, its own disk quota (a btrfs qgroup) and its own CPU, memory and IO limits.
 - Its workspace, its podman storage and its session-home are subvolumes inside that quota.
+- If btrfs marks the quota counts inconsistent, for example after a snapshot delete, rootd freezes every running agent and refuses new tasks, attaches and task writes with `BUSY`.
+  It rescans the quotas, and thaws the agents only once the counts are consistent again. `agentbox quota check` runs this check at once.
 - `agentbox agent remove` deletes the account and moves its data to an archive. It refuses while the workspace holds a nested subvolume.
 
 ### One container per task
