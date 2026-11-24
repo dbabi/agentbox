@@ -17,7 +17,7 @@
 | Agent data | Its own subvolume, `@var_lib_agentbox_data` at `/var/lib/agentbox/data`, already in the seed. The week-2 old-PC install needs no reinstall for the week-3 qgroups. |
 
 
-## Where we are (2026-11-22)
+## Where we are (2026-11-23)
 **Weeks 5–6 (milestone row 5–6; milestone 4, "Isolated tasks", on the public roadmap) are built and merged on `main`. Every gate item passed; one clause (the SKILL.md frontmatter hook) is checked through the setting only, with the reason below.** The work landed as squash merges: `7ab881a` (PR #87: agent accounts, #12, with the fwcheck fix #84), `bb98735` (#88: one container per task and the task seccomp profile, #13 and #14), `a6897c0` (#91: session-home and attach, #15), `de608ee` (#96) and `deb0ef9` (#98) (the review fixes, #93, #97 and #89), `7394cd9` (#92: the v5.3 additions, #16) and `8b2a87c` (#151: `rootd.db` mode and STRICT tables, #150). A review of the merged task and attach code confirmed 16 findings; all are fixed in #96 and #98 except the name-keyed auditd taint, which fails closed (#95; LEDGER "Found in weeks 5–6"). Regression round 1 ran all 15 suites (4 weeks 5–6 VM gates, 3 week-4, 4 week-3 and 4 weeks 1–2 smoke suites): 13 passed, at `deb0ef9` (the weeks 5–6 gates and the smoke suites) and `7394cd9` (weeks 3–4). `m4-taskenv` could not start, because #92 had not merged yet, and `w3-rootd` failed 2 checks (#150). The fix merged as `8b2a87c`, and round 2 reran both at `8b2a87c`: both passed. `go vet ./...` and `go test ./...` pass at `8b2a87c` (`m4/docs/go-vet-test-8b2a87c.txt`). Evidence is in the maintainer's local evidence store, not in the repo.
 
 **Row 5–6 gate, item by item.** Every weeks 5–6 VM gate runs on a fresh `none`-mode install, arm64 UEFI, Secure Boot on, with the release installed by the real path.
@@ -49,9 +49,26 @@
 - Brokers are stand-ins until weeks 7–8: `agentbox broker-stub` in `m4-tasks`, a small svc stub in `m4-taskenv`. No task reaches a model or the internet.
 - No agent CLI is in the task image yet: the task image is a root skeleton plus the host's `/usr`, read-only, and the gates install the Claude Code and Codex CLIs on the host. `hack/cli-gate.sh` runs both in tasks and Codex in an attach, against stand-in brokers that answer every model request with an error. opencode is dropped (#77). Attach sessions don't get the task env.
 - Attach sessions have no network path (#90), so a real Claude login can't reach its servers from an attach.
-- Marked shortcuts, each with an issue: the token scan polls and skips packfiles (#154); session-home instruction files persist unreviewed (#153, a THREAT-MODEL residual); the task seccomp profile is podman's default minus btrfs ioctls (#155); auditd's `workspace:<name>` taint carries over to a re-added agent of the same name (#95, fail-closed). Not filed: a Codex token refreshed by rename is lost at the end of an attach (`session.go`).
+- Marked shortcuts: all four filed ones are fixed (#154, #153, #155, #95; below). Not filed: a Codex token refreshed by rename is lost at the end of an attach (`session.go`).
 - Other modes: the weeks 5–6 gates ran in `none` on arm64 UEFI only. The weeks 5–6 code doesn't touch unlock or boot.
 - The kill test (below) needs you: no real box has run agentbox.
+
+**Weeks 5–6 follow-ups (2026-11-23).** 27 issues merged after the row closed, each with gate checks on its own branch (Testing-and-Gates lists the suites and counts):
+- Podman setup (#163, closes #149, #125, #124): a pause-process check before every launch and attach (`PAUSE_PID_STALE`), setup through the user manager, `CONTAINERS_STORAGE_CONF` pinned.
+- Task seccomp (#161, #187; #155, #181): the pinned upstream baseline, a socket family allowlist, no namespace flags, native architecture only, `socketcall` and `ipc` out.
+- Isolation probe (#167, #188; #106, #183): six in-task checks before the CLI; `task.probed` ends the probe phase, and IPv6 off passes.
+- CLI lockdown (#166; #77, #120, #121, #123): system policy files, quiet CLIs, no `--bare` with a canary, more control paths; opencode dropped (#164). Control-path follow-ups: #192 (#182) and #191 (#186).
+- Attach (#160, #162, #159, #158; #153, #154, #95, #157): session-home instruction files are control paths, inotify and packfile token scan, `workspace:<agent>#<N>` subjects.
+- Workspace (#174, #176, #189; #107, #103, #184): one openat2 walker, task-start snapshots and `task undo`, the snapshot taint and nested-subvolume fixes.
+- Quotas (#175; #79): the inconsistent-qgroup fence, rescan and thaw (`BUSY`).
+- CI and fuzz (#177, #180, #178, #190; #112, #129, #148, #78, #100, #185): the skip allowlist, the Go cache, Dependabot, bounded fuzz jobs with a kept corpus and the 24 h rule, the weekly amd64 host-gates job.
+
+**Follow-ups still open:**
+- #80 inbound firewall: PR #172 passed its gates and CI, but now conflicts with `main` and needs a rebase. `gates-none` did not finish on its own (host load, then a host sleep).
+- #104 credential scan: coded on an unpushed branch; the `m4-tasks` rerun after two fixes (the scan unit's `200/CHDIR`, and `openat2` `ENOSYS` under `RestrictSUIDSGID`) has not finished.
+- #102 and #109 image checks: coded on an unpushed branch; the new `m4-image` gate still fails. App images moved to #173.
+- New, from the follow-ups: #193 (git include targets, a THREAT-MODEL residual), #165 (taint clear and control paths), #164 (opencode), and test flakes #168, #169, #170, #171.
+- Evidence is in the maintainer's local evidence store, under `m4h/`.
 
 **Week 4 (milestone row 4) is built and merged on `main`. Every gate item passed except 24 h of fuzzing, which is pending.** The work landed as squash merges: `d07154e` (PR #53: the op registry, #7, plus the v5.3 week-4 items, #11), `d256bc6` (#9, socket inventory), `3b4c438` (#47, the chattr audit tests as root in CI), `19d65a3` (#8, the agentboxd gate) and `ac68bc8` (#10, 45 fuzz targets, `hack/fuzz-all.sh` and the nightly `fuzz` workflow). Regression round 1 ran all 11 suites (the 3 week-4 VM gates, the 4 week-3 gates and the 4 weeks 1–2 smoke suites) at `ac68bc8`: 10 passed, and `w4-registry` failed one check because the gate's own file list was stale (#66). The fix merged as `8c9a5fc` (#67), and the rerun passed. `go vet ./...` and `go test ./...` pass at `ac68bc8` (`week4/regress-r1/go-vet-test-ac68bc8.txt`). Regression round 2, all 11 suites at `8c9a5fc`, was started on 2026-11-21 and has no results yet (`week4/regress-r2/results.txt`). Evidence is in the maintainer's local evidence store, not in the repo.
 

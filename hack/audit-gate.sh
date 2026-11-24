@@ -1,6 +1,7 @@
 #!/bin/sh
 # agentbox-auditd gates (PLAN.md milestone row 3, ARCHITECTURE.md §9, §5.2 taint fence) on the local QEMU VM.
-#   hack/audit-gate.sh [install] [audit]   default: both, in order
+#   hack/audit-gate.sh [uefi|bios] [install] [audit]   default: both, in order
+# uefi (default) is the arm64 VM, bios the amd64 one (hack/gate.sh's boot modes); only install uses it.
 # install  hack/gate.sh none: the unattended install, then firstboot installs the release that ships auditd, its
 #          producer sockets and rootd, which seals (make release, install.sh, systemd/), from --dev release URLs.
 # audit    on that box, as root: socket owners and modes, SO_PEERCRED; auditd down (stopped, or hung with a producer
@@ -17,6 +18,8 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 VM="$ROOT/.vm"
+BOOT=uefi; case ${1:-} in uefi|bios) BOOT=$1; shift ;; esac
+G=none; [ "$BOOT" = uefi ] || G=none-bios # gate.sh writes .vm/gate-$G.txt
 [ $# -gt 0 ] || set -- install audit
 OUT="$VM/audit-gate.txt" LOG="$VM/audit-gate.log"
 mkdir -p "$VM"
@@ -53,8 +56,8 @@ SOCKS="agentbox-auditd-rootd.socket agentbox-auditd-agentboxd.socket agentbox-au
 
 sc_install() {
   log "install: hack/gate.sh none (about 30 min)"
-  hack/gate.sh none uefi >>"$LOG" 2>&1 || die "install gate failed (see $LOG and $VM/gate-none.txt)"
-  cat "$VM/gate-none.txt" >>"$OUT"
+  hack/gate.sh none "$BOOT" >>"$LOG" 2>&1 || die "install gate failed (see $LOG and $VM/gate-$G.txt)"
+  cat "$VM/gate-$G.txt" >>"$OUT"
 }
 
 sc_audit() {
@@ -196,7 +199,7 @@ done
 rm -f /run/systemd/system/agentbox-auditd.service.d/gate.conf /run/systemd/system/agentbox-rootd.service.d/gate.conf $D/.gate-crash-*
 systemctl daemon-reload; systemctl reset-failed agentbox-rootd.service agentbox-auditd.service; systemctl restart agentbox-rootd.service agentbox-auditd.service
 check "back on the shipped units: ACK" 'send "{\"type\":\"TAINT\",\"subject\":\"task:after\",\"source\":\"s\"}"'
-check "no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
+check "no failed units" 'f=$(systemctl --failed --no-legend --plain); echo "$f"; [ -z "$f" ]'
 nsegs > /var/tmp/gate-nsegs
 cp /run/audit-gate.log /var/tmp/audit-gate-1.log; journalctl -b -u agentbox-auditd.service -u agentbox-rootd.service -o short-precise > /var/tmp/audit-gate-1.journal
 echo "audit-fails=$fails"
@@ -210,7 +213,7 @@ check "after a reboot: auditd ACKs, and its first start in the new boot rotated 
   send "{\"type\":\"TAINT\",\"subject\":\"task:reboot\",\"source\":\"s\"}" && [ $(nsegs) -gt $(cat /var/tmp/gate-nsegs) ] &&
   head -n 1 $D/$(newest) | grep -qF "\"boot_id\":\"$(cat /proc/sys/kernel/random/boot_id)\""'
 check "audit verify after the reboot" verify
-check "no failed units after the reboot" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
+check "no failed units after the reboot" 'f=$(systemctl --failed --no-legend --plain); echo "$f"; [ -z "$f" ]'
 cat /run/audit-verify.txt; rm -f /var/tmp/gate-nsegs
 echo "audit-fails=$fails"
 EOF

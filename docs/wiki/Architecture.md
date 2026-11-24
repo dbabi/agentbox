@@ -284,6 +284,8 @@ Each service runs as its own Linux user, with only the access it needs.
 - rootd allocates N from its `ids` table and never reuses it, so a removed agent's uid and sub-id range never come back.
 - Each agent gets its own 65536-wide sub-uid range, its own disk quota (a btrfs qgroup) and its own CPU, memory and IO limits.
 - Its workspace, its podman storage and its session-home are subvolumes inside that quota.
+- If btrfs marks the quota counts inconsistent, for example after a snapshot delete, rootd freezes every running agent and refuses new tasks, attaches and task writes with `BUSY`.
+  It rescans the quotas, and thaws the agents only once the counts are consistent again. `agentbox quota check` runs this check at once.
 - `agentbox agent remove` deletes the account and moves its data to an archive. It refuses while the workspace holds a nested subvolume.
 
 ### One container per task
@@ -349,7 +351,9 @@ Each service runs as its own Linux user, with only the access it needs.
 ### Undoing a task
 
 - Before each task's container starts, rootd takes a read-only btrfs snapshot of the workspace.
-  The snapshot counts against the agent's disk quota and carries the workspace's taint.
+  The snapshot counts against the agent's disk quota and carries the workspace's taint, including taint another task adds while the snapshot runs.
+  If the workspace holds a nested subvolume, the task does not start (`NESTED_SUBVOLUME`).
+  A snapshot whose audit records fail is deleted, so undo never restores it.
 - rootd keeps the last 5 of these per agent and deletes older ones.
   It never deletes other snapshots, such as the one an undo takes.
 - `agentbox task undo --task <id>` puts the workspace back as it was when that task started.
@@ -366,7 +370,10 @@ Each service runs as its own Linux user, with only the access it needs.
 - Hooks, MCP servers, git hooks and shell startup files don't run in a session.
   The session can't change its own Claude settings.
 - An attach is refused while control files changed since the last accepted state, until you pass `--ack-control-changes`.
-  These are the workspace's control files and the instruction files in `session-home`: `~/.claude/CLAUDE.md`, rules, skills, agents and commands, `~/.npmrc` and `~/.local/bin`.
+  These are the workspace's control files and the instruction files in `session-home`: `~/.claude/CLAUDE.md`, rules, skills, agents and commands, Codex's skills and plugins in `~/.agents`, `~/.npmrc` and `~/.local/bin`.
+  The workspace's control files include every git dir, bare repos and the dir a `commondir` file names among them, and every Python venv, the workspace root included.
+  A `.git` file that names a git dir in `session-home` refuses the attach, since a session could change that dir unseen.
+  Tasks and sessions run git with `safe.bareRepository=explicit`, so git finds no bare repo by itself.
 - An attach and a task of the same agent never run at once.
 - rootd relays the session output through a filter.
   The filter drops terminal escape sequences that could write to your clipboard or inject input.

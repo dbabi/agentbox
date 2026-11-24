@@ -1,6 +1,7 @@
 package rootd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -195,5 +196,95 @@ func TestUndo(t *testing.T) {
 	}
 	if rep := r.t.undo(ids.New(ids.Task), "x"); rep["ok"] != false {
 		t.Fatalf("undo of an unknown task: %v", rep)
+	}
+}
+
+// hookBtrfs runs during each snapshot, after the tree is taken.
+type hookBtrfs struct {
+	*fakeBtrfs
+	during func()
+}
+
+func (h hookBtrfs) Snapshot(src, dst, q string, ro bool) error {
+	err := h.fakeBtrfs.Snapshot(src, dst, q, ro)
+	h.during()
+	return err
+}
+
+// #184: a task that taints the workspace while the snapshot runs (the bytes it wrote are in the tree) taints
+// snap:<id>, though the INTENT saw a clean workspace.
+func TestTaskStartSnapshotTaintedDuring(t *testing.T) {
+	r, fb, _ := snapRig(t)
+	r.t.cfg.Btrfs = hookBtrfs{fb, func() { r.wsTaint = true }}
+	r.adminTask(t)
+	snap := r.snaps("task-start")
+	if len(snap) != 1 || !slices.ContainsFunc(r.records, func(m map[string]any) bool { return m["type"] == "TAINT" && m["subject"] == "snap:"+snap[0] }) {
+		t.Fatalf("rows %v: snap: not tainted: %v", snap, r.records)
+	}
+}
+
+// #184: when the TAINT of a tainted snapshot is not ACKed, the task fails and neither the row nor the subvolume is
+// left for undo to restore with a clean label.
+func TestTaskStartSnapshotTaintNotACKed(t *testing.T) {
+	r, _, d := snapRig(t)
+	r.wsTaint = true
+	audit := r.t.audit
+	r.t.audit = func(m map[string]any) error {
+		if m["type"] == "TAINT" {
+			return errors.New("auditd disk full")
+		}
+		return audit(m)
+	}
+	req, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
+	if rep := r.t.start(ids.New(ids.Task), "claude", "admin:"+req); rep["ok"] != false || rep["reason"] != "snapshot_failed" || len(r.launch) != 0 {
+		t.Fatalf("start: %v, launches %d", rep, len(r.launch))
+	}
+	if rows := r.snaps("task-start"); len(rows) != 0 {
+		t.Fatalf("rows %v left", rows)
+	}
+	if es, _ := os.ReadDir(d.snaps); len(es) != 0 {
+		t.Fatalf("subvolumes %v left", es)
+	}
+	var op string
+	for _, m := range r.records {
+		if m["name"] == "workspace.snapshot" {
+			op, _ = m["opId"].(string)
+		}
+	}
+	if !slices.ContainsFunc(r.records, func(m map[string]any) bool {
+		return m["type"] == "RESULT" && m["opId"] == op && m["status"] == "failed"
+	}) {
+		t.Fatalf("no failed RESULT for %s: %v", op, r.records)
+	}
+}
+
+// #184: a nested subvolume refuses the task-start snapshot with NESTED_SUBVOLUME before its INTENT; the task fails.
+func TestTaskStartSnapshotNested(t *testing.T) {
+	r, fb, _ := snapRig(t)
+	r.t.nested = func(string) ([]string, error) { return []string{"workspaces/claude/sub"}, nil }
+	req, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
+	rep := r.t.start(ids.New(ids.Task), "claude", "admin:"+req)
+	if rep["ok"] != false || rep["reason"] != "snapshot_failed" || !strings.Contains(rep["error"].(string), "NESTED_SUBVOLUME") || len(r.launch) != 0 || len(fb.calls) != 0 {
+		t.Fatalf("start: %v, launches %d, btrfs %v", rep, len(r.launch), fb.calls)
+	}
+	if slices.ContainsFunc(r.records, func(m map[string]any) bool { return m["name"] == "workspace.snapshot" }) {
+		t.Fatalf("an INTENT was sent: %v", r.records)
+	}
+}
+
+// #184: a rootd that died between the swap and the delete left <ws>.undo-<snap>; the retried undo deletes it first.
+func TestUndoLeftover(t *testing.T) {
+	r, fb, d := snapRig(t)
+	id := r.adminTask(t)
+	snap := r.snaps("task-start")[0]
+	if err := os.Mkdir(d.ws+".undo-"+snap, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fb.calls = nil
+	if rep := r.t.undo(id, "rootd-admin:root"); rep["ok"] != true {
+		t.Fatalf("undo: %v", rep)
+	}
+	if fb.calls[0] != "delete claude.undo-"+snap {
+		t.Fatalf("calls %v", fb.calls)
 	}
 }

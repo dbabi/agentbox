@@ -3,7 +3,8 @@
 // refusal, and forwarding to rootd, which runs nothing before auditd ACKs its INTENT.
 //
 // It also dispatches tasks (rootd's dispatch call, §4.2): it picks the task id, keeps the prompt, and serves it to the
-// task's taskrun (task.fetch); task.result ends the task through rootd's task.stop. At start, agentboxd re-registers
+// task's taskrun (task.fetch); task.probed marks the end of its isolation probe, and task.result ends the task through
+// rootd's task.stop. At start, agentboxd re-registers
 // rootd's live tasks (task.list_live), so a running task survives an agentboxd restart (§2.1).
 //
 // shortcut: no Cedar pass (weeks 9-10) and no agentboxd-executed ops (bus, memory, ask.status: weeks 7-8). Prompts
@@ -77,6 +78,9 @@ type task struct {
 	mu        sync.Mutex
 	conns     map[net.Conn]bool
 	ended     bool
+	// probed: taskrun said the isolation probe passed, so the CLI may be running and a probe failure now is forged.
+	// A task rebound after an agentboxd restart starts false: an alert is not lost to a restart mid-probe.
+	probed bool
 }
 
 // Control is one request from rootd on svc-gate.sock (the caller checked SO_PEERCRED uid 0): register{task, agent,
@@ -283,7 +287,7 @@ func (s *Server) call(t *task, line []byte) []byte {
 		return gd(denial.TaskEnded, "gate.task_ended", "", "")
 	}
 	switch r.Method {
-	case "task.fetch", "task.result":
+	case "task.fetch", "task.probed", "task.result":
 		return s.taskCall(t, r)
 	}
 	o, ok := ops.Lookup(r.Method)
@@ -333,9 +337,10 @@ func (s *Server) call(t *task, line []byte) []byte {
 	return b
 }
 
-// taskCall is taskrun's own two calls, outside the op registry (§4.2): task.fetch returns the job, task.result ends the
-// task through rootd's task.stop (completed for exit 0, failed otherwise) before it answers. A failed isolation probe
-// goes on to rootd, which audits it and alerts.
+// taskCall is taskrun's own calls, outside the op registry (§4.2): task.fetch returns the job, task.probed says the
+// isolation probe passed, just before the CLI starts, and task.result ends the task through rootd's task.stop
+// (completed for exit 0, failed otherwise) before it answers. A failed isolation probe goes on to rootd, which audits it
+// and alerts, unless it comes after task.probed: then the CLI sent it, and the task just fails.
 func (s *Server) taskCall(t *task, r rpcReq) []byte {
 	ok := func(v any) []byte {
 		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": r.ID, "result": v})
@@ -351,6 +356,15 @@ func (s *Server) taskCall(t *task, r rpcReq) []byte {
 			return rpcError(r.ID, -32001, "no prompt for this task", nil)
 		}
 		return ok(map[string]any{"task": t.id, "cli": j.cli, "prompt": j.prompt})
+	}
+	if r.Method == "task.probed" {
+		if r.Params == nil || d.Decode(&struct{}{}) != nil {
+			return rpcError(r.ID, -32602, "invalid params", nil)
+		}
+		t.mu.Lock()
+		t.probed = true
+		t.mu.Unlock()
+		return ok(map[string]any{})
 	}
 	var res struct {
 		Exit      int    `json:"exit"`
@@ -368,7 +382,15 @@ func (s *Server) taskCall(t *task, r rpcReq) []byte {
 	}
 	stop := map[string]any{"op": "task.stop", "task": t.id, "reason": reason}
 	if res.Probe != "" {
-		reason, stop["reason"], stop["probe"] = "failed", "failed", res.Probe
+		reason, stop["reason"] = "failed", "failed"
+		t.mu.Lock()
+		forged := t.probed
+		t.mu.Unlock()
+		if forged {
+			log.Printf("task %s: a probe failure %q after task.probed: not forwarded", t.id, res.Probe)
+		} else {
+			stop["probe"] = res.Probe
+		}
 	}
 	log.Printf("task %s result: exit %d, %d output bytes, isolation probe %d ms %q", t.id, res.Exit, res.OutputLen, res.ProbeMS, res.Probe)
 	if _, err := s.Forward(stop); err != nil {

@@ -38,7 +38,8 @@ func TestArgv(t *testing.T) {
 		"-v /run/agentbox-keys/t/" + id + ":/run/agentbox/llm:ro -v /run/agentbox-git/t/" + id + ":/run/agentbox/git:ro",
 		"-v /run/agentbox-witness/t/" + id + ":/run/agentbox/witness:ro -v /var/lib/agentbox/control/exports/claude:/opt/agentbox/exports:ro -v /var/lib/agentbox/current/bin/agentbox:/usr/local/bin/agentbox:ro",
 		"-v /usr/bin:/usr/bin:ro",
-		"-e GIT_CONFIG_KEY_0=core.hooksPath -e GIT_CONFIG_VALUE_0=/opt/agentbox/exports/nohooks -e GIT_CONFIG_KEY_1=core.fsmonitor -e GIT_CONFIG_VALUE_1=false",
+		"-e GIT_CONFIG_COUNT=3 -e GIT_CONFIG_KEY_0=core.hooksPath -e GIT_CONFIG_VALUE_0=/opt/agentbox/exports/nohooks -e GIT_CONFIG_KEY_1=core.fsmonitor -e GIT_CONFIG_VALUE_1=false",
+		"-e GIT_CONFIG_KEY_2=safe.bareRepository -e GIT_CONFIG_VALUE_2=explicit",
 		"-e AGENTBOX_DEADLINE=1800000000000",
 		"-e GOPROXY=off localhost/agentbox-task:x /usr/local/bin/agentbox taskrun",
 	} {

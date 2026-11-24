@@ -1,7 +1,7 @@
 // Package seccomp builds seccomp-task.json, the profile every task and attach session runs with (ARCHITECTURE.md §4.2
 // "No btrfs ioctls", §10). It starts from podman's default profile, takes the btrfs ioctls out, allows only the socket
-// families tasks need and keeps tasks from making namespaces: the release ships the result and install.sh puts it at
-// /var/lib/agentbox/control/seccomp-task.json.
+// families tasks need, keeps tasks from making namespaces and allows the native architecture only: the release ships
+// the result and install.sh puts it at /var/lib/agentbox/control/seccomp-task.json.
 //
 // common.json is common/pkg/seccomp/seccomp.json from github.com/podman-container-tools/container-libs at commit
 // dadba8bfe851c24bc9ee712398fc3406a4e5673f (Apache-2.0), copied unchanged; commonSHA256 pins it. That commit masks the
@@ -52,8 +52,9 @@ const (
 	netlinkRoute = 0
 )
 
-// plain names the syscalls Task takes out of the profile's one unconditional allow rule.
-var plain = []string{"ioctl", "clone", "clone3", "setns", "unshare"}
+// plain names the syscalls Task takes out of the profile's one unconditional allow rule. socketcall and ipc stay out:
+// they take their real arguments from memory, which seccomp can't read, so the default ENOSYS is their only rule.
+var plain = []string{"ioctl", "clone", "clone3", "setns", "unshare", "socketcall", "ipc"}
 
 // Path is where install.sh puts the profile and rootd's task launch reads it.
 const Path = "/var/lib/agentbox/control/seccomp-task.json"
@@ -93,6 +94,9 @@ func Task() ([]byte, error) {
 	if err := d.Decode(&p); err != nil {
 		return nil, fmt.Errorf("common.json: %v", err)
 	}
+	// Upstream's archMap adds x86 and x32 on x86_64 and ARM on arm64. Their syscall numbers differ from the native
+	// ones, and 32-bit x86 has socketcall; without them every compat syscall gets the bad-arch action, as in the services.
+	p.ArchMap = nil
 	for _, name := range plain {
 		removed := 0
 		for n, s := range p.Syscalls {

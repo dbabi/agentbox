@@ -2,7 +2,7 @@ agentbox is early alpha. It is not for production use.
 
 Milestones 1 and 2 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon, the root daemon's skeleton and resolver, disk quotas and packaged ntfy). Milestone 3, the operation registry and the request gate, is built and its VM gates passed. Its 24-hour fuzz run is pending, so it stays in progress. Milestone 4 is done: agent accounts, one sealed container per task, and interactive sessions. The brokers, policy and approvals are designed but not built. So a task can start an agent CLI, but it can't reach a model yet.
 
-The full design is in [`docs/design/`](../design/). Status is as of the time of writing (2026-11-22).
+The full design is in [`docs/design/`](../design/). Status is as of the time of writing (2026-11-23).
 
 Two terms used below:
 
@@ -64,7 +64,7 @@ Every milestone 2 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 
 | Item | State |
 |---|---|
-| The milestone 2 gates in `tpm2`, `tpm2+tang` and on amd64 BIOS | Not run. The milestone 2 code doesn't touch unlock or boot, and the milestone 1 smoke suites still pass in `tpm2` and `tpm2+tang`. |
+| The milestone 2 gates in `tpm2` and `tpm2+tang` | Not run. The milestone 2 code doesn't touch unlock or boot, and the milestone 1 smoke suites still pass in `tpm2` and `tpm2+tang`. On amd64 BIOS they pass in a weekly CI job. |
 | Hiding systemd-resolved's Unix interfaces from the broker users | Not built: the broker units don't exist yet. A residual in the threat model until they land (milestone 5). |
 | The resolver's `unavailable` reason when systemd-resolved is down | No gate check. |
 
@@ -85,7 +85,7 @@ Every milestone 3 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 |---|---|
 | 24 hours of fuzzing with no crash | Pending. Each fuzz test has run for at least 12 minutes so far. The nightly fuzz job, or one `hack/fuzz-all.sh` run, will cover it. |
 | Fuzzing on Linux | Not run yet. The short runs were on macOS, so Linux-only code waits for the nightly job. |
-| The milestone 3 gates in `tpm2`, `tpm2+tang` and on amd64 BIOS | Not run. The milestone 3 code doesn't touch unlock or boot. |
+| The milestone 3 gates in `tpm2` and `tpm2+tang` | Not run. The milestone 3 code doesn't touch unlock or boot. On amd64 BIOS they pass in a weekly CI job. |
 | The `agentbox mcp` command for agent CLIs | Not built. The error mapping it will use is built and tested. |
 
 ## Milestone 4: what passed
@@ -97,13 +97,19 @@ Every milestone 4 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 - A task's leftover processes are gone within 20 s of its timeout or of `agentbox task stop`. Canceling a task removes its container and sockets within 5 s, also with the audit daemon stopped. btrfs ioctls from a task fail with `EOPNOTSUPP`.
 - Each task gets a fixed environment: no DNS, quiet npm and pip, Go settings that follow the agent's allowlist, and local forwarders that retry while a broker restarts. `agentbox why` explains a recent denial.
 - `agentbox attach` opens an interactive session with a separate, persistent home. Planted hooks, MCP servers and shell startup files don't run in it. Its output is filtered, and tasks stay blocked until a scan finds no copy of its login token in the workspace.
+- More landed after the milestone closed, each with gate checks:
+  - `agentbox task undo` restores a workspace from the snapshot taken when a task started.
+  - Each task checks its own network boundary from inside before the agent CLI starts.
+  - The seccomp profile allows only the socket families tasks need.
+  - System policy files keep Claude Code and Codex from running workspace hooks, MCP servers and plugins.
+  - rootd pauses the agents while btrfs repairs its quota counts.
 
 ## Milestone 4: what has not run
 
 | Item | State |
 |---|---|
 | Brokers | Not built (milestone 5). The gates use stand-ins that bind the same per-task sockets. |
-| The full task image, with Go and the agent CLIs | Not built into the box yet (milestone 7). By default a task runs a small root file system with the host's `/usr`, read-only. The task env gate builds a test image with Go. The gates run the Claude Code CLI from the host. Codex and opencode have not run. |
+| The full task image, with Go and the agent CLIs | Not built into the box yet (milestone 7). By default a task runs a small root file system with the host's `/usr`, read-only. The task env gate builds a test image with Go. The gates run Claude Code and Codex from the host. opencode is not supported: its current release can't stop a workspace plugin (issue #164). |
 | A skill's frontmatter hook in a task | Not provable yet: it needs a model reply. The gate checks only the setting that turns hooks off. |
 | A network path for attach sessions | Not built (issue #90). A real Claude login can't reach its servers from an attach yet. |
 | The milestone 4 gates in `tpm2`, `tpm2+tang` and on amd64 BIOS | Not run. The milestone 4 code doesn't touch unlock or boot. |

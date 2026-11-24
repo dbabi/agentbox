@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"agentbox/internal/ids"
+	"agentbox/internal/ops"
 	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/attach"
 	"agentbox/internal/rootd/quota"
@@ -71,10 +72,17 @@ func (t *tasks) wsTaint(holder, ws string) (taintSubject, error) {
 }
 
 // snapshot takes a read-only snapshot of acct's workspace into its qgroup 1/N and records it (§5.3 Snapshots carry
-// taint). The INTENT binds the workspace epoch, so it is ACKed only if the taint is unchanged; snap:<id> then gets the
-// taint the workspace had. holder is a task whose auditd view holds the workspace.
+// taint). It refuses NESTED_SUBVOLUME first (§4.1): a nested subvolume would be an empty dir in the snapshot. The
+// INTENT binds the workspace epoch, so it is ACKed only if the taint is unchanged; snap:<id> then gets the taint the
+// workspace had before or after the snapshot. Only a snapshot whose TAINT, row and RESULT all went through is kept, so
+// undo never restores one with a wrong label. holder is a task whose auditd view holds the workspace.
 func (t *tasks) snapshot(acct Account, holder, task, kind string) (string, error) {
 	ws := accounts.WorkspaceSubject(acct.Name, int(acct.UID))
+	if n, err := t.nested(acct.Workspace); err != nil {
+		return "", fmt.Errorf("nested subvolume check: %v", err)
+	} else if len(n) > 0 {
+		return "", fmt.Errorf("%s: the workspace holds nested subvolumes %q; remove them by hand first", ops.NestedSubvolume, n)
+	}
 	cur, err := t.wsTaint(holder, ws)
 	if err != nil {
 		return "", err
@@ -84,16 +92,26 @@ func (t *tasks) snapshot(acct Account, holder, task, kind string) (string, error
 		"task": task, "taintEpochs": map[string]int64{ws: cur.Epoch}}); err != nil {
 		return "", fmt.Errorf("audit: the snapshot INTENT was not ACKed: %v", err)
 	}
+	dst, snapped := filepath.Join(acct.Snaps, id), false
 	err = os.MkdirAll(acct.Snaps, 0o700)
 	if err == nil {
-		err = t.cfg.Btrfs.Snapshot(acct.Workspace, filepath.Join(acct.Snaps, id), quota.AgentQgroup(int(acct.UID)-accounts.UIDBase), true)
+		err = t.cfg.Btrfs.Snapshot(acct.Workspace, dst, quota.AgentQgroup(int(acct.UID)-accounts.UIDBase), true)
+		snapped = err == nil
+	}
+	tainted := cur.Tainted
+	if err == nil && !tainted {
+		// a concurrent task may have tainted the workspace and written to it during the snapshot. Taint only goes up
+		// between the two reads (a clear is its own signed op), so this read bounds what the snapshot holds.
+		var after taintSubject
+		after, err = t.wsTaint(holder, ws)
+		tainted = after.Tainted
+	}
+	if err == nil && tainted {
+		err = t.audit(map[string]any{"type": "TAINT", "subject": "snap:" + id, "source": ws})
 	}
 	if err == nil {
 		_, err = t.db.Exec(`INSERT INTO workspace_snapshots(id, workspace, agent, task, kind, created_at) VALUES(?,?,?,?,?,?)`,
 			id, ws, acct.Name, task, kind, t.now())
-	}
-	if err == nil && cur.Tainted {
-		err = t.audit(map[string]any{"type": "TAINT", "subject": "snap:" + id, "source": ws})
 	}
 	status, detail := "executed", ""
 	if err != nil {
@@ -101,6 +119,14 @@ func (t *tasks) snapshot(acct Account, holder, task, kind string) (string, error
 	}
 	if aerr := t.audit(map[string]any{"type": "RESULT", "opId": id, "status": status, "detail": detail}); err == nil && aerr != nil {
 		err = fmt.Errorf("audit: the snapshot RESULT was not ACKed: %v", aerr)
+	}
+	if err != nil && snapped {
+		if _, derr := t.db.Exec(`DELETE FROM workspace_snapshots WHERE id=?`, id); derr != nil {
+			log.Printf("snapshot %s: the row of a failed snapshot: %v", id, derr)
+		}
+		if derr := t.cfg.Btrfs.Delete(dst); derr != nil {
+			log.Printf("snapshot %s: the subvolume of a failed snapshot, %s: %v", id, dst, derr)
+		}
 	}
 	return id, err
 }
@@ -160,8 +186,14 @@ func (t *tasks) undo(task, signer string) reply {
 		return reply{"ok": false, "error": "undo: " + err.Error()}
 	}
 	defer attach.End(t.db, agent, hold, nil)
-	if n, err := t.nested(acct.Workspace); err != nil || len(n) > 0 {
-		return reply{"ok": false, "error": fmt.Sprintf("undo: nested subvolumes in the workspace %q: %v", n, err)}
+	next := acct.Workspace + ".undo-" + snap
+	// a rootd that died mid-undo left it: before the swap it is a copy of snap, after it the tree the pre-restore
+	// snapshot holds, so neither is lost
+	if _, err := os.Lstat(next); err == nil {
+		if err := t.cfg.Btrfs.Delete(next); err != nil {
+			return reply{"ok": false, "error": "undo: a leftover " + next + " from an earlier undo: " + err.Error()}
+		}
+		log.Printf("task undo %s: deleted %s, left by an earlier undo", task, next)
 	}
 	holder := "task:" + task
 	if err := t.audit(map[string]any{"type": "SUBJECT_ADD", "task": holder, "subject": ws}); err != nil {
@@ -176,7 +208,6 @@ func (t *tasks) undo(task, signer string) reply {
 		"agent": agent, "workspace": ws, "args": map[string]string{"id": snap}}); err != nil {
 		return reply{"ok": false, "error": "audit: the restore INTENT was not ACKed, nothing changed: " + err.Error()}
 	}
-	next := acct.Workspace + ".undo-" + snap
 	err = t.cfg.Btrfs.Snapshot(filepath.Join(acct.Snaps, snap), next, quota.AgentQgroup(int(acct.UID)-accounts.UIDBase), false)
 	if err == nil {
 		if err = t.cfg.Btrfs.Exchange(next, acct.Workspace); err != nil {

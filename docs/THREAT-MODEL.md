@@ -58,6 +58,7 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | Until the broker units land, nothing hides resolved's AF_UNIX interfaces (Varlink socket mode 0666, D-Bus `ResolveHostname`) from the broker uids: nft sees only IP, so a broker process could resolve, and leak data in query names, there | Each broker unit sets `InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket` (§6.1); `TestBrokerUnitsHideResolved` and the rootd gate check it per unit |
 | While the disk is full (below the audit reserve), auditd refuses DENY and other best-effort records with `DISK_FULL`: denials in that window leave no audit record, only the critical disk-full alert | Ship audit off-box |
 | The post-attach token scan finds a token as written, not encoded, and reads a packed git delta's inserted bytes without rebuilding it from its base: an agent that encodes the token or splices it from copies evades it | The review diff (§7) |
+| A file that a workspace git config pulls in with `include.path` or `includeIf` is not a control path: once the include line is acknowledged, the included file can change with no new acknowledgement | Issue #193: treat include targets as control paths |
 | Root can always remove confinement: after a root-level flush, brokers are unconfined for up to 60 s, until the next `fwcheck` | |
 | One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late | |
 | Jev egress when enabled | |

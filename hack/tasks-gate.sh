@@ -37,11 +37,12 @@
 #          - taskrun's isolation probe: a network interface, a default route, a sibling task's socket dir and an
 #            abstract socket, each added on its own through a wrapper over podman, stop the task with
 #            TASK_ISOLATION_PROBE before the CLI runs, with an audit ALERT and an ntfy alert; a normal task passes it in
-#            under 100 ms (#106);
+#            under 100 ms (#106); a probe failure the CLI posts itself fails its task with no alert (#183);
 #          - every task start takes a read-only snapshot of the workspace in qgroup 1/N; after a task runs
 #            rm -rf /workspace/*, agentbox task undo restores a tree with the same digest, keeping the taint the
 #            snapshot had; 7 tasks later 5 task-start snapshots are left, and no clean-baseline or pre-restore one is
-#            pruned (#103).
+#            pruned (#103); a nested subvolume made on the host refuses the task-start snapshot with
+#            NESTED_SUBVOLUME (#184).
 # PASS/FAIL lines go to .vm/tasks-gate.txt, command output to .vm/tasks-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -381,6 +382,12 @@ check "  ... each one is an ALERT in auditd's chain naming its check, and an ntf
   python3 -c "import sqlite3,sys; c=sqlite3.connect(\"file:/var/lib/ntfy/cache.db?mode=ro\",uri=True); sys.exit(0 if c.execute(\"select count(*) from messages where topic=\x27agentbox-alerts\x27 and message like \x27%TASK_ISOLATION_PROBE%\x27\").fetchone()[0] >= 4 else 1)"'
 check "  ... with the wrapper gone, a normal task passes the probe and runs its prompt" 'rm -f $W/tb-ran && echo "touch /workspace/tb-ran" > /tmp/tg-p && T=$(new 2m < /tmp/tg-p) && wait_end $T 60 &&
   [ "$(field $T end_reason)" = completed ] && [ -e $W/tb-ran ]'
+cat > /tmp/tg-p <<'P'
+agentbox gate call --socket /run/agentbox/gate/gate.sock '{"jsonrpc":"2.0","id":1,"method":"task.result","params":{"exit":0,"output":"","outputLen":0,"probe":"netdev","probeMs":1}}'
+P
+check "  ... a probe failure the CLI posts itself, after the probe passed, fails the task with no ALERT (#183)" 'T=$(new 2m < /tmp/tg-p) && wait_end $T 60 &&
+  [ "$(field $T end_reason)" = failed ] && journalctl -b -u agentboxd -o cat | grep -q "task $T: a probe failure \"netdev\" after task.probed: not forwarded" &&
+  sleep 2 && ! journalctl -b -u agentbox-rootd -o cat | grep -q "ALERT task $T" && ! grep -h "\"task\":\"$T\"" /var/lib/agentbox/audit/seg-*.jsonl | grep -q TASK_ISOLATION_PROBE'
 check "  ... and every task that passed it took under 100 ms in the probe" 'journalctl -b -u agentboxd -o cat | sed -n "s/.* result: .*isolation probe \([0-9]*\) ms \"\"$/\1/p" > /tmp/tg-pms &&
   cat /tmp/tg-pms | tr "\n" " " && [ "$(wc -l < /tmp/tg-pms)" -ge 10 ] && [ "$(sort -n /tmp/tg-pms | tail -1)" -lt 100 ]'
 
@@ -468,6 +475,12 @@ check "  ... after 7 more tasks 5 task-start snapshots are left; the clean-basel
   sql "SELECT kind, count(*) FROM workspace_snapshots WHERE workspace=? GROUP BY kind ORDER BY kind" "$WS" | tee /tmp/tg-kinds &&
   [ "$(cat /tmp/tg-kinds | tr "\n" " ")" = "clean-baseline|1 pre-restore|1 task-start|5 " ] && [ "$(ls $SN | wc -l)" = 7 ] && [ -d $SN/$BASE ]'
 check "  ... and undo of the pruned task now says so" '! $B task undo --task $T > /tmp/tg-undo2 2>&1; cat /tmp/tg-undo2; grep -q pruned /tmp/tg-undo2'
+btrfs subvolume create $W/tg-nested >/dev/null
+check "  ... a nested subvolume made on the host: task new fails with snapshot_failed and NESTED_SUBVOLUME, before any launch (#184)" '
+  ! $B task new --agent gt --cli sh --deadline 2m < /tmp/tg-p > /tmp/tg-nest 2>&1; cat /tmp/tg-nest;
+  grep -q "\"reason\":\"snapshot_failed\"" /tmp/tg-nest && grep -q NESTED_SUBVOLUME /tmp/tg-nest && [ -z "$(pod ps -a --format "{{.Names}}" | grep task-)" ]'
+btrfs subvolume delete $W/tg-nested >/dev/null
+check "  ... with it deleted by hand, the next task starts and completes" 't=$(new 2m < /tmp/tg-p) && wait_end $t 60 && [ "$(field $t end_reason)" = completed ]'
 
 # --- the box afterwards ---
 check "sockets check: the live per-task dirs and sockets match the inventory" '$B sockets check'

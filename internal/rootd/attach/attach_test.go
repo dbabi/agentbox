@@ -392,12 +392,14 @@ func TestHomeControls(t *testing.T) {
 	os.WriteFile(filepath.Join(h, ".claude", "CLAUDE.md"), []byte("obey"), 0o600)
 	os.WriteFile(filepath.Join(h, ".claude", "skills", "x", "SKILL.md"), []byte("---\n"), 0o600)
 	os.WriteFile(filepath.Join(h, ".npmrc"), []byte("x"), 0o600)
+	os.MkdirAll(filepath.Join(h, ".agents", "skills", "y"), 0o700) // Codex's user skills (#186)
+	os.WriteFile(filepath.Join(h, ".agents", "skills", "y", "SKILL.md"), []byte("---\n"), 0o600)
 	os.Symlink("/workspace/bin", filepath.Join(h, ".local"))
 	os.WriteFile(filepath.Join(p.Workspace, "AGENTS.md"), []byte("x"), 0o644)
 	// a workspace dir named ~ can't stand in for session-home
 	os.MkdirAll(filepath.Join(p.Workspace, "~", ".claude"), 0o755)
 	os.WriteFile(filepath.Join(p.Workspace, "~", ".claude", "CLAUDE.md"), []byte("obey"), 0o644)
-	want := []string{"/home/agent/.claude/CLAUDE.md", "/home/agent/.claude/skills/x/SKILL.md", "/home/agent/.local", "/home/agent/.npmrc",
+	want := []string{"/home/agent/.agents/skills/y/SKILL.md", "/home/agent/.claude/CLAUDE.md", "/home/agent/.claude/skills/x/SKILL.md", "/home/agent/.local", "/home/agent/.npmrc",
 		"AGENTS.md", "~/.claude/CLAUDE.md"}
 	if c := changes(); !slices.Equal(c, want) {
 		t.Fatalf("planted:\n got %q\nwant %q", c, want)
@@ -498,5 +500,28 @@ func TestManifestRoots(t *testing.T) {
 	got := slices.Sorted(maps.Keys(m))
 	if want := []string{".vscode/tasks.json", "env/bin/python", "env/pyvenv.cfg", "meta/hooks/pre-commit", "sub/.git/config", "wt/.git"}; !slices.Equal(got, want) {
 		t.Fatalf("manifest %q, want %q", got, want)
+	}
+}
+
+// #182: a root venv, a commondir target and a bare repo need an ack, their objects don't; a git dir in session-home
+// refuses the attach.
+func TestManifestContentRoots(t *testing.T) {
+	ws := t.TempDir()
+	for f, b := range map[string]string{"pyvenv.cfg": "", "bin/python": "", "lib/m.py": "", "wt/.git": "gitdir: ../meta\n", "meta/commondir": "../common",
+		"meta/HEAD": "", "common/config": "", "common/objects/ab": "o", "b/HEAD": "", "b/config": "", "b/objects/cd": "o", "b/refs/heads/main": ""} {
+		os.MkdirAll(filepath.Join(ws, filepath.Dir(f)), 0o755)
+		os.WriteFile(filepath.Join(ws, f), []byte(b), 0o644)
+	}
+	m, err := Manifest(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := slices.Sorted(maps.Keys(m))
+	if want := []string{"b/config", "bin/python", "common/config", "meta/commondir", "pyvenv.cfg", "wt/.git"}; !slices.Equal(got, want) {
+		t.Fatalf("manifest %q, want %q", got, want)
+	}
+	os.WriteFile(filepath.Join(ws, "wt", ".git"), []byte("gitdir: /home/agent/g\n"), 0o644)
+	if _, err := Controls(Paths{Workspace: ws, SessionHome: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "session-home") {
+		t.Fatalf("a gitdir in session-home: %v", err)
 	}
 }

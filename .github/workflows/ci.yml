@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with: {go-version-file: go.mod} # caches modules and builds, keyed on go.sum
       # GitHub sets CI=true, so the tests that need these tools fail instead of skipping
-      - run: sudo apt-get update && sudo apt-get install -y minisign xorriso python3-yaml qemu-utils
+      - run: sudo apt-get update && sudo apt-get install -y minisign xorriso python3-yaml qemu-utils podman # podman: the amd64 seccomp compat test
       # a skip fails the step unless hack/testdata/ci-skips.txt lists it, so a tool missing from the runner shows up
       - run: go vet ./... && go test -json ./... | go run ./hack/ciskips hack/testdata/ci-skips.txt
         shell: bash # bash, not the default bash -e: -o pipefail, so a failing go test fails the step

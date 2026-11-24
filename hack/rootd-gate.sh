@@ -1,7 +1,8 @@
 #!/bin/sh
 # rootd gates (PLAN.md milestone row 3: rootd skeleton, resolver, log sealing; ARCHITECTURE.md §2, §2.1, §6.1, §6.3, §9,
 # Appendix B) on the local arm64 QEMU VM.
-#   hack/rootd-gate.sh [install] [release] [checks]   default: install checks
+#   hack/rootd-gate.sh [uefi|bios] [install] [release] [checks]   default: install checks
+# uefi (default) is the arm64 VM, bios the amd64 one (hack/gate.sh's boot modes); only install uses it.
 # install  hack/gate.sh none: make release, an unattended install and firstboot, so rootd's units, sysusers.d and
 #          tmpfiles.d files reach the box by the real path (install.sh). Then boots the VM.
 # release  installs this checkout as a new release version on the running VM with that release's own install.sh (for
@@ -20,6 +21,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 VM="$ROOT/.vm"
 mkdir -p "$VM"
+BOOT=uefi; case ${1:-} in uefi|bios) BOOT=$1; shift ;; esac
 [ $# -gt 0 ] || set -- install checks
 OUT="$VM/rootd-gate.txt" LOG="$VM/rootd-gate.log"
 FLOW=${FLOW:-example.com:80}
@@ -40,7 +42,7 @@ phase() { { printf 'FLOW=%s\n' "$FLOW"; echo "export FLOW"; echo "sh /run/rg/che
 for stage; do
   case $stage in
   install)
-    hack/gate.sh none
+    hack/gate.sh none "$BOOT"
     up
     ;;
   release)

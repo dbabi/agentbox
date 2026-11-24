@@ -94,8 +94,9 @@ func Argv(s Spec) []string {
 		a = append(a, "-e", e)
 	}
 	a = append(a, "-e", "AGENTBOX_DEADLINE="+strconv.FormatInt(s.Deadline.UnixMilli(), 10),
-		"-e", "GIT_CONFIG_COUNT=2", "-e", "GIT_CONFIG_KEY_0=core.hooksPath", "-e", "GIT_CONFIG_VALUE_0=/opt/agentbox/exports/nohooks",
-		"-e", "GIT_CONFIG_KEY_1=core.fsmonitor", "-e", "GIT_CONFIG_VALUE_1=false")
+		"-e", "GIT_CONFIG_COUNT=3", "-e", "GIT_CONFIG_KEY_0=core.hooksPath", "-e", "GIT_CONFIG_VALUE_0=/opt/agentbox/exports/nohooks",
+		"-e", "GIT_CONFIG_KEY_1=core.fsmonitor", "-e", "GIT_CONFIG_VALUE_1=false",
+		"-e", "GIT_CONFIG_KEY_2=safe.bareRepository", "-e", "GIT_CONFIG_VALUE_2=explicit")
 	return append(append(a, s.Env...), s.Image, "/usr/local/bin/agentbox", "taskrun")
 }
 
