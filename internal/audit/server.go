@@ -144,7 +144,11 @@ func (s *Server) openChain() error {
 		ns = []uint64{1}
 	}
 	n := ns[len(ns)-1]
-	data, err := os.ReadFile(filepath.Join(s.Dir, SegName(n)))
+	path := filepath.Join(s.Dir, SegName(n))
+	if err := dropCache(path); err != nil { // read what is on the disk: after a failed fdatasync, the cache may differ
+		return err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -175,7 +179,7 @@ func (s *Server) openChain() error {
 	}
 	// a closed segment may already be +i, which refuses any open for write; finishSeal opens its successor
 	if !sc.Closed {
-		if s.f, err = openFile(filepath.Join(s.Dir, SegName(n)), os.O_WRONLY|os.O_APPEND, 0); err != nil {
+		if s.f, err = openFile(path, os.O_WRONLY|os.O_APPEND, 0); err != nil {
 			return err
 		}
 	}
@@ -308,16 +312,14 @@ func (s *Server) finishSeal() error {
 
 // reopen rebuilds the head from what is on disk after a failed fdatasync. Linux reports a writeback error once and
 // marks the pages clean, so a later fdatasync succeeds without writing them: only a read from the disk shows whether
-// the record is there. Bytes that are not there are declared torn, and the chain goes on from the last record that is.
+// the record is there. openChain declares bytes that are not there torn and goes on from the last record that is.
 func (s *Server) reopen() error {
 	if s.f != nil {
 		s.f.Close()
 		s.f = nil
 	}
-	if err := dropCache(filepath.Join(s.Dir, SegName(s.seg))); err != nil {
-		return err
-	}
 	s.torn, s.sealing, s.needOpen, s.unsynced = false, false, false, false
+	s.lastWall, s.lastBoot = 0, 0 // as at start: openChain takes them from the last record on disk, after any torn
 	if err := s.openChain(); err != nil {
 		s.unsynced = true // the head is not known yet: read it again before the next record
 		return err

@@ -654,24 +654,20 @@ func TestCloseSyncFails(t *testing.T) {
 	}
 }
 
-// syncFault fails the fdatasync after the first write that contains match. With lose, the write's bytes become zeros
-// first: what a later read finds when the failed writeback never reached the disk.
+// syncFault fails the fdatasync after the first write that contains match. With lose, zeros of the same length reach
+// the file instead: what a read from the disk finds when the failed writeback never got there.
 func syncFault(t *testing.T, match string, e error, lose bool) *bool {
-	var off int64
 	pending, armed := false, true
 	fault(t, func(f *os.File, p []byte) (int, error, bool) {
-		if armed && strings.Contains(string(p), match) {
-			fi, _ := f.Stat()
-			off, pending = fi.Size(), true
-			n, err := f.Write(p)
-			if lose {
-				g, _ := os.OpenFile(f.Name(), os.O_WRONLY, 0)
-				g.WriteAt(make([]byte, n), off)
-				g.Close()
-			}
-			return n, err, true
+		if !armed || pending || !strings.Contains(string(p), match) {
+			return 0, nil, false
 		}
-		return 0, nil, false
+		pending = true
+		if lose {
+			p = make([]byte, len(p))
+		}
+		n, err := f.Write(p)
+		return n, err, true
 	}, func(f *os.File) (error, bool) {
 		if armed && pending {
 			armed = false
@@ -694,7 +690,11 @@ func TestOpenSyncFails(t *testing.T) {
 				}
 				b.send("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
 			}
-			b.ok(rootdProducer, `{"type":"TAINT","subject":"task:T9","source":"s"}`) // ACKed in disk-full mode too
+			b.avail = 1000 // disk-full mode: rootd's admin ops are still ACKed, onto a chain that verifies
+			b.ok(rootdProducer, `{"type":"INTENT","opId":"op-r","name":"agent.remove","origin":"admin","signer":"boxadmin:ssh","args":{"name":"bob"}}`)
+			b.ok(rootdProducer, `{"type":"RESULT","opId":"op-r","status":"executed"}`)
+			b.verify()
+			b.avail = 100 << 30
 			b.recovers()
 		}
 	}
@@ -706,13 +706,18 @@ func TestSyncFailsRecordLost(t *testing.T) {
 	b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
 	syncFault(t, "task:F", syscall.EIO, true)
 	b.nack("proxy", `{"type":"TAINT","subject":"task:F","source":"s"}`, CodeUnavailable)
+	b.wall += 5000 // and the clock steps: logged once, after the torn record
 	seqs := map[uint64]bool{}
 	for i := 0; i < 3; i++ {
 		seqs[b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`).Seq] = true
 	}
 	rep := b.verify()
-	if last := rep[len(rep)-1]; last.Undeclared != 0 || len(last.Torn) != 1 {
-		t.Fatalf("want the lost record declared torn and nothing undeclared, got %+v", rep)
+	torn, steps := 0, 0
+	for _, r := range rep {
+		torn, steps = torn+len(r.Torn), steps+r.ClockSteps
+	}
+	if rep[len(rep)-1].Undeclared != 0 || torn != 1 || steps != 1 {
+		t.Fatalf("want the lost record declared torn, one clock step and nothing undeclared, got %+v", rep)
 	}
 	b.start()
 	if r := b.ok("proxy", `{"type":"TAINT","subject":"task:T3","source":"s"}`); seqs[r.Seq] {
@@ -748,7 +753,6 @@ func TestTornThenClockStep(t *testing.T) {
 // taint.get must not ACK the rows it read before SQLite failed: a missing tainted subject would read as clean.
 func TestTaintGetRowError(t *testing.T) {
 	b := newBox(t)
-	b.ok(rootdProducer, `{"type":"SUBJECT_ADD","task":"task:T1","subject":"task:P0"}`)
 	// the second row's json() fails after the first row is out, as a corrupt page would stop the read part-way
 	if _, err := b.s.db.Exec(`CREATE TABLE raw(task TEXT, subject TEXT, PRIMARY KEY(task, subject)) WITHOUT ROWID;
 		INSERT INTO raw VALUES ('task:T1', 'task:A'), ('task:T1', 'task:Zbad');
