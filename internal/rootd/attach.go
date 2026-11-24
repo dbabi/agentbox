@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"agentbox/internal/rootd/attach"
@@ -78,19 +79,38 @@ func (s *server) rescan(agent string, ack bool) reply {
 	return reply{"ok": true, "blocked": len(hits) > 0, "hits": hits}
 }
 
-// rescanTask lifts a TaskNotEmpty block only once the old task's unit cgroup is gone or empty (§4.2 Stop step 2).
+// rescanTask lifts the TaskNotEmpty block once every leftover task's unit cgroup is gone or empty (§4.2 Stop step 2):
+// each task.stop that left processes recorded its own row.
 func (s *server) rescanTask(b attach.BlockRow) reply {
-	var uid uint32
-	if s.tasks == nil || s.db.QueryRow(`SELECT uid FROM task_registry WHERE task=?`, b.Session).Scan(&uid) != nil {
-		return reply{"ok": false, "blocked": true, "error": "no registry row for task " + b.Session}
+	if s.tasks == nil {
+		return reply{"ok": false, "blocked": true, "error": "no task registry"}
 	}
-	if populated(filepath.Join(s.tasks.cfg.Cgroup, task.CgroupDir(uid, b.Session))) {
-		return reply{"ok": true, "blocked": true, "error": "task " + b.Session + " still has processes in its unit cgroup"}
+	left, err := attach.Leftovers(s.db, b.Agent)
+	if err != nil {
+		return reply{"ok": false, "blocked": true, "error": err.Error()}
 	}
-	if err := attach.Clear(s.db, b.Agent); err != nil {
-		return reply{"ok": false, "error": err.Error()}
+	var still []string
+	for _, id := range left {
+		var uid uint32
+		if err := s.db.QueryRow(`SELECT uid FROM task_registry WHERE task=?`, id).Scan(&uid); err != nil {
+			return reply{"ok": false, "blocked": true, "error": "no registry row for task " + id}
+		}
+		if populated(filepath.Join(s.tasks.cfg.Cgroup, task.CgroupDir(uid, id))) {
+			still = append(still, id)
+			continue
+		}
+		if err := attach.ClearTask(s.db, id); err != nil {
+			return reply{"ok": false, "blocked": true, "error": err.Error()}
+		}
+		log.Printf("attach.rescan %s: task %s left no process", b.Agent, id)
 	}
-	log.Printf("attach.rescan %s: task %s left no process: block lifted", b.Agent, b.Session)
+	if len(still) > 0 {
+		return reply{"ok": true, "blocked": true, "error": "task(s) " + strings.Join(still, ", ") + " still have processes in their unit cgroups"}
+	}
+	if _, on, err := attach.Blocked(s.db, b.Agent); on || err != nil {
+		return reply{"ok": err == nil, "blocked": true, "error": "another block stands: agentbox attach status"}
+	}
+	log.Printf("attach.rescan %s: no leftover task: block lifted", b.Agent)
 	return reply{"ok": true, "blocked": false}
 }
 
