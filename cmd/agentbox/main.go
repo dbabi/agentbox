@@ -17,6 +17,7 @@ import (
 
 	"agentbox/internal/ntfy"
 	"agentbox/internal/recovery"
+	"agentbox/internal/rootd"
 	"agentbox/internal/rootd/quota"
 	"agentbox/internal/rootd/resolve"
 	"agentbox/internal/seed"
@@ -75,7 +76,15 @@ func main() {
 		os.Exit(2) // the flag package already printed the problem and the usage
 	}
 	fmt.Fprintln(os.Stderr, "agentbox:", printable(err.Error()))
-	os.Exit(1)
+	os.Exit(exitStatus(err))
+}
+
+// exitStatus is 1, or rootd.ExitRefused for a rootd start refusal, which agentbox-rootd.service never restarts.
+func exitStatus(err error) int {
+	if errors.Is(err, rootd.ErrRefused) {
+		return rootd.ExitRefused
+	}
+	return 1
 }
 
 // printable escapes every rune but newline and tab that a terminal would not print as is (C0, C1, bidi and other
