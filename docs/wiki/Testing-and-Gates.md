@@ -296,7 +296,7 @@ The first argument is the encryption mode. `uefi` or `bios` may come next. Then 
 | `install` | Runs the install gate (`hack/gate.sh`) for the same mode and VM. Copies its check lines. |
 | `setup` | Sets the commit deadline to `DEADLINE` seconds for later boots. Then checks the boot mode and what firstboot left: the release, the health timer, the committed generation, the armed deadline. |
 | `cycles` | Three real applies. Generation 2 removes the newest kernel. Generation 3 brings it back with systemd upgraded, and its initrd is built inside the offline container. Generation 4 prunes generation 1. Once Linux has freed it, health has rootd check the disk quota counts, and a writer in a test quota group gets `EDQUOT` at its limit right away. Then the current generation cold-boots, the previous one boots once, and the deadline returns the box to current. Health prints its alert at each run on the previous generation, and sends it to ntfy once. |
-| `breaks` | Five broken trials and an emptied grubenv (list below). Each must fall back with no console input. |
+| `breaks` | Six broken trials and an emptied grubenv (list below). Each must fall back with no console input. |
 | `cuts` | Power cuts during an apply, a split grubenv, a failed `next_entry` write, then one apply replayed write by write (list below). Needs the podman machine. |
 
 Every `os plan` in these gates also checks that apt ran none of the box's update hooks.
@@ -310,6 +310,7 @@ The `breaks` scenario builds each trial with `os apply`, then breaks it:
 3. **fstab, wrong `/boot`.** The trial's `/boot` points at the parent generation's boot directory. The boot succeeds, health refuses it, and the commit deadline falls back.
 4. **fstab, missing `/boot` device.** Emergency mode reboots after 120 s.
 5. **A unit that blocks boot forever.** Health does not commit, and the commit deadline falls back.
+6. **GRUB settings.** A file in the trial's `/etc/default/grub.d` adds a kernel argument. The trial boots without it, with the running generation's settings. Health must refuse to commit it at each run and alert ntfy once. `grub.cfg` must never get the argument, and the commit deadline falls back.
 
 Each failed trial must be recorded as failed. Then a clean apply commits. An emptied grubenv must boot the committed entry, not entry 0. `os mark-last-good` must restore `saved_entry`.
 

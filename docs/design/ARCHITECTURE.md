@@ -262,7 +262,7 @@ Its phases:
    - Nothing touches the ESP or `/bootpart/grub`.
 4. **Initrd gate (host, read-only).** For each `K` with a `vmlinuz-K` in `gens/gen-M/`, rootd runs `lsinitrd` on `initrd.img-K`:
    - `-f etc/crypttab` has a `croot ` line.
-   - The file list has `clevis-luks-askpass`, `/systemd-cryptsetup`, `btrfs.ko` and each pin's `clevis-decrypt-*` binary: `tpm2`, plus `sss` and `tang` in `tpm2+tang` mode. `none` mode checks only `btrfs.ko`.
+   - The file list has `clevis-luks-askpass`, `/systemd-cryptsetup`, `btrfs.ko` and each pin's `clevis-decrypt-*` binary: `tpm2`, plus `sss` and `tang` in `tpm2+tang` mode. `none` mode checks only `btrfs.ko`. Each must be a regular file of that name, a module with any compression suffix: a unit, a generator, a link or a name in dracut's module list doesn't count (#215).
    - Every mode also checks each recorded `add_drivers` and `force_drivers` module, unless it is built into K (`modules.builtin`). A recorded driver that K lacks fails the gate, as does an unreadable `90-agentbox.conf` or `modules.builtin`. There is no `modules.alias` lookup, so a renamed driver fails too.
    - The gate doesn't check K's Secure Boot signature. §3.1's signed-kernel step keeps every installed kernel signed.
    - A missing `initrd.img-K` or any failed check discards gen-M and alerts. There is no `update-grub` and no reboot.
@@ -272,7 +272,9 @@ Its phases:
    - Set `next_entry=agentbox-gen-M-K` with a GRUB-safe grubenv write (step 8). If that write fails, read grubenv again: if `next_entry` names the trial, or grubenv can't be read, gen-M stays pending (the state a cut there leaves), and apply reports the error without rebooting.
    - Reboot now for approved ops, or at 04:00 for updates.
 6. **Commit or fall back.**
-   - **Commit only if gen-M really booted:** health OK within 15 minutes, `grep -qw rootflags=subvol=@gen-M /proc/cmdline`, and `uname -r` = K. Then, in order:
+   - **Commit only if gen-M really booted:** health OK within 15 minutes, `grep -qw rootflags=subvol=@gen-M /proc/cmdline`, and `uname -r` = K.
+   - **And only with the command line it booted:** `grub-mkconfig` on gen-M, to stdout, must list `agentbox-gen-M-K` with the `linux` arguments of `/proc/cmdline`, less GRUB's `BOOT_IMAGE=`. Step 5's `update-grub` ran gen-N's GRUB settings, so the trial booted those. The `update-grub` below runs gen-M's own, for every entry: a `/etc/default/grub.d` file from the closure would reach every entry untested. On a mismatch health alerts once and doesn't commit, and the deadline falls back (#215). Settings outside the entry, such as `GRUB_DEFAULT`, aren't compared.
+   - Then, in order:
      1. Set `saved_entry=agentbox-gen-M-K` (GRUB-safe, step 8); `grub-editenv list` must then show it.
      2. Write the same id to `/bootpart/agentbox/committed` (temp file, fsync, rename) and run `update-grub`, so the empty-env fallback names gen-M.
      3. If the closure contained boot-chain packages, run the post-commit boot-chain step on the host (below).

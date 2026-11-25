@@ -9,32 +9,51 @@ import (
 // Mode is what the initrd gate requires of every initrd in a new generation (§3.3 step 4).
 type Mode struct {
 	Encrypted bool     // root on LUKS (crypttab has croot)
-	Tang      bool     // the clevis binding has a tang pin
+	Tang      bool     // the clevis binding has a tang pin, under sss with the tpm2 pin (tpm2+tang mode)
 	Drivers   []string // add_drivers and force_drivers recorded at install, unless built into this kernel (file base names)
 }
 
 // InitrdProblems returns what one initrd lacks, given `lsinitrd` (its file list) and `lsinitrd -f etc/crypttab`.
 func InitrdProblems(list, crypttab string, m Mode) []string {
 	var miss []string
-	need := []string{"/btrfs.ko"}
+	need := []string{"btrfs.ko"}
 	if m.Encrypted {
 		if !hasLinePrefix(crypttab, "croot ") {
 			miss = append(miss, "etc/crypttab has no croot line")
 		}
-		need = append(need, "clevis-luks-askpass", "/systemd-cryptsetup")
+		// both encrypted modes bind a tpm2 pin: alone, or with a tang pin under sss
+		need = append(need, "clevis-luks-askpass", "systemd-cryptsetup", "clevis-decrypt-tpm2")
 	}
 	if m.Tang {
-		need = append(need, "clevis-decrypt-tang")
+		need = append(need, "clevis-decrypt-sss", "clevis-decrypt-tang")
 	}
-	for _, d := range m.Drivers {
-		need = append(need, "/"+d)
-	}
+	need = append(need, m.Drivers...)
+	have := initrdFiles(list)
 	for _, n := range need {
-		if !strings.Contains(list, n) {
-			miss = append(miss, "no "+strings.TrimPrefix(n, "/"))
+		if !have[n] {
+			miss = append(miss, "no "+n)
 		}
 	}
 	return miss
+}
+
+// initrdFiles returns the name of every regular file in an lsinitrd list, a module's compression suffix dropped
+// (btrfs.ko.zst is btrfs.ko). Only ls -l lines of regular files count: a unit, a generator or a link of the same name,
+// or a name in dracut's module list, is not the file (#215).
+func initrdFiles(list string) map[string]bool {
+	have := map[string]bool{}
+	for _, l := range strings.Split(list, "\n") {
+		f := strings.Fields(l)
+		if len(f) < 2 || !strings.HasPrefix(f[0], "-") {
+			continue
+		}
+		n := path.Base(f[len(f)-1])
+		if mod, ext, ok := strings.Cut(n, ".ko."); ok && ext != "" && strings.Trim(ext, "abcdefghijklmnopqrstuvwxyz") == "" {
+			n = mod + ".ko"
+		}
+		have[n] = true
+	}
+	return have
 }
 
 func hasLinePrefix(s, p string) bool {

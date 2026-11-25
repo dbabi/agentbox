@@ -109,7 +109,7 @@ func TestStillBound(t *testing.T) {
 			os.WriteFile(filepath.Join(etc, "fstab"), []byte(fstab), 0o644)
 		}
 		alerted := false
-		Alert = func(string, string) { alerted = true }
+		Alert = func(string, string, string) { alerted = true }
 		err := stillBound(top, tc.all, tc.drop)
 		Alert = nil
 		if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {

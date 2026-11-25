@@ -358,7 +358,7 @@ func Settle() (*Pending, error) {
 		return nil, err
 	}
 	fmt.Fprintf(os.Stderr, "agentbox: ALERT: trial %s failed: the box booted %s instead; it stays uncommitted\n", p.Entry, Entry(gen, k))
-	alert("agentbox: os apply", "an os apply trial failed: the box booted another entry, and the trial stays uncommitted")
+	alert("", "agentbox: os apply", "an os apply trial failed: the box booted another entry, and the trial stays uncommitted")
 	return nil, nil
 }
 
@@ -433,12 +433,13 @@ func protectedGens() (booted int, committed int, prot []int, err error) {
 var AfterDelete func(ids []string) error
 
 // Alert, if set, sends an ALERT on to the human with fixed text (agentbox os: ntfy). The ALERT line on stderr keeps the
-// details. Nil, as in tests, sends nothing.
-var Alert func(title, msg string)
+// details. A key names a condition that each health run sees again: it alerts once per boot. Nil, as in tests, sends
+// nothing.
+var Alert func(key, title, msg string)
 
-func alert(title, msg string) {
+func alert(key, title, msg string) {
 	if Alert != nil {
-		Alert(title, msg)
+		Alert(key, title, msg)
 	}
 }
 
@@ -498,7 +499,7 @@ func stillBound(top string, all, drop []int) error {
 		}
 		for _, d := range drop {
 			if References(fstab, filepath.Join(GensDir, Gen(d))) {
-				alert("agentbox: os apply", "retention deleted nothing: a kept generation's fstab still binds the boot dir of one it would delete")
+				alert("", "agentbox: os apply", "retention deleted nothing: a kept generation's fstab still binds the boot dir of one it would delete")
 				return fmt.Errorf("ALERT: retention refused: kept %s's fstab still binds %s", Gen(k), filepath.Join(GensDir, Gen(d)))
 			}
 		}
@@ -602,7 +603,8 @@ func mountRoot(mp string) (string, error) {
 	return root, nil
 }
 
-// Commit makes the booted trial the default (§3.3 step 6), after checking that it really booted.
+// Commit makes the booted trial the default (§3.3 step 6), after checking that it really booted, with the command
+// line that its own GRUB settings give it.
 func Commit(p *Pending, top string) error {
 	gen, k, err := Booted()
 	if err != nil {
@@ -610,6 +612,21 @@ func Commit(p *Pending, top string) error {
 	}
 	if gen != p.Gen || k != p.Kernel {
 		return fmt.Errorf("booted %s, not the trial %s: not committing", Entry(gen, k), p.Entry)
+	}
+	// The trial booted the entry that the build's update-grub made from its parent's GRUB settings. The update-grub
+	// below runs the trial's own settings, for every entry, so they must give it the command line it booted with (#215).
+	// This comes before the saved_entry write: the boot deadline leaves up any boot that saved_entry names.
+	cfg, err := run("grub-mkconfig")
+	if err != nil {
+		return err
+	}
+	cmdline, err := readTrim("/proc/cmdline")
+	if err != nil {
+		return err
+	}
+	if err := CheckEntryArgs(cfg, p.Entry, cmdline); err != nil {
+		alert("trial-grub", "agentbox: os apply", "os apply did not commit the trial: its own GRUB settings make a different boot entry for it than the one it booted, and the boot deadline falls back")
+		return fmt.Errorf("ALERT: not committing %s: with its own GRUB settings, %v; the boot deadline falls back", p.Entry, err)
 	}
 	if err := SetGrubEnv("saved_entry", p.Entry); err != nil {
 		return err
