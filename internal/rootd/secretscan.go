@@ -264,8 +264,8 @@ func (t *tasks) secretGate(acct Account, ack int) reply {
 }
 
 // grantScan is the scan at an egress grant for host: every active agent's workspace is scanned again, and the reply
-// names each credential that works against host. Each one blocks that agent's next task until it is acknowledged
-// (again, if it was before the grant) or removed.
+// names each credential that works against host (grantRefusal). Each one blocks that agent's next task until it is
+// acknowledged (again, if it was before the grant: dropAcks) or removed.
 func (t *tasks) grantScan(agents []string, host string) (matching []map[string]any, failed []string) {
 	if t.cfg.SecretScan == nil {
 		return nil, nil
@@ -284,30 +284,53 @@ func (t *tasks) grantScan(agents []string, host string) (matching []map[string]a
 				matching = append(matching, map[string]any{"agent": name, "path": h.Path, "line": h.Line, "type": h.Rule})
 			}
 		}
-		if err := t.dropAcks(acct, host); err != nil {
-			log.Printf("secret scan %s: acks for %s: %v", name, host, err)
-			if !slices.Contains(failed, name) {
-				failed = append(failed, name)
-			}
-		}
 	}
 	return matching, failed
 }
 
-// dropAcks forgets every acknowledged hit that works against host. The admin acked it while host was not allowed, so
-// with host allowed it blocks the agent's next task until an --ack-secrets again.
-func (t *tasks) dropAcks(acct Account, host string) error {
-	st, ok, err := t.loadScan(accounts.WorkspaceSubject(acct.Name, int(acct.UID)))
-	if err != nil || !ok {
-		return err
+// grantRefusal refuses the egress grant for host while an agent's scan failed, or while the scans found a credential
+// that works against host and ack is not their count: the grant reaches running tasks at once (#222).
+func grantRefusal(found []map[string]any, failed []string, ack int, host string) reply {
+	switch {
+	case len(failed) > 0:
+		return reply{"ok": false, "reason": SecretScanFailed, "secretScanFailed": failed, "error": "nothing changed: the workspace credential scan of " +
+			strings.Join(failed, ", ") + " failed, so a task there might use a credential against " + host + "; fix the scan (agentbox task new names its error), then grant again"}
+	case ack > 0 && ack != len(found):
+		return reply{"ok": false, "reason": SecretsAckMismatch, "secrets": found,
+			"error": fmt.Sprintf("nothing changed: --ack-secrets %d, but the scan found %d credential(s) that work against %s", ack, len(found), host)}
+	case len(found) > 0 && ack == 0:
+		return reply{"ok": false, "reason": SecretsInWorkspace, "secrets": found, "error": "nothing changed: with " + host + " allowed, a task could use " +
+			grantWarning(found) + ", and tasks running now would get the host at once; remove them, or grant with --ack-secrets " + strconv.Itoa(len(found))}
 	}
-	n := len(st.acked)
-	st.acked = slices.DeleteFunc(st.acked, func(h secrets.Hit) bool { return secrets.ForHost(h.Rule, host) })
-	if len(st.acked) == n {
+	return nil
+}
+
+// dropAcks forgets, in each agent's scan, every acknowledged hit that works against host. The admin acked it while host
+// was not allowed, so with host allowed it blocks the agent's next task until an --ack-secrets again.
+func (t *tasks) dropAcks(agents []string, host string) error {
+	if t.cfg.SecretScan == nil {
 		return nil
 	}
-	st.checked = false
-	return t.saveScan(acct, st)
+	for _, name := range agents {
+		acct, err := t.cfg.Accounts.Lookup(name)
+		if err != nil {
+			continue
+		}
+		st, ok, err := t.loadScan(accounts.WorkspaceSubject(acct.Name, int(acct.UID)))
+		if err != nil {
+			return fmt.Errorf("%s: %v", name, err)
+		}
+		n := len(st.acked)
+		st.acked = slices.DeleteFunc(st.acked, func(h secrets.Hit) bool { return secrets.ForHost(h.Rule, host) })
+		if !ok || len(st.acked) == n {
+			continue
+		}
+		st.checked = false
+		if err := t.saveScan(acct, st); err != nil {
+			return fmt.Errorf("%s: %v", name, err)
+		}
+	}
+	return nil
 }
 
 func (s *server) activeAgents() []string {
@@ -324,12 +347,11 @@ func (s *server) activeAgents() []string {
 	return out
 }
 
-// grantWarning is the line the admin reads at the grant: each credential, by type and file, that the grant lets a
-// task use.
-func grantWarning(found []map[string]any, host string) string {
+// grantWarning names, for the admin at the grant, each credential by type and file that the grant lets a task use.
+func grantWarning(found []map[string]any) string {
 	var s []string
 	for _, f := range found {
 		s = append(s, fmt.Sprintf("a %s in %s's workspace (%s:%d)", f["type"], f["agent"], f["path"], f["line"]))
 	}
-	return "with " + host + " allowed, a task can use " + strings.Join(s, ", ") + "; that agent's tasks are blocked until it is removed or acknowledged (--ack-secrets)"
+	return strings.Join(s, ", ")
 }

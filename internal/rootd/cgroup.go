@@ -2,15 +2,20 @@ package rootd
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
 )
 
-// populated reads the unit cgroup's cgroup.events; a cgroup that is gone has no processes.
-func populated(cg string) bool {
+// populated reads the unit cgroup's cgroup.events: a cgroup that is gone has no processes. Any other read error counts
+// as populated and is returned, so no caller ends a task or lifts its block on a cgroup it could not read (#222).
+func populated(cg string) (bool, error) {
 	b, err := os.ReadFile(filepath.Join(cg, "cgroup.events"))
-	return err == nil && bytes.Contains(b, []byte("populated 1"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err != nil || bytes.Contains(b, []byte("populated 1")), err
 }
 
 // waitEmpty blocks until cg has no processes ("") or until backstop ("deadline"). watchEvents, when it works, wakes it on
@@ -18,7 +23,7 @@ func populated(cg string) bool {
 func waitEmpty(cg string, backstop time.Time) string {
 	wake := watchEvents(filepath.Join(cg, "cgroup.events"))
 	for {
-		if !populated(cg) {
+		if p, _ := populated(cg); !p {
 			return ""
 		}
 		if !time.Now().Before(backstop) {

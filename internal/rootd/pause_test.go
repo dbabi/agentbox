@@ -54,6 +54,26 @@ func TestCheckPause(t *testing.T) {
 			}
 		})
 	}
+	// #222: a /proc read that fails, but not because the process is gone, may hide a live pause process: pause.pid
+	// stays, and the check fails (a directory gives EISDIR, also as root)
+	for _, f := range []string{"status", "uid_map", "cgroup"} {
+		dir := t.TempDir()
+		run, proc := filepath.Join(dir, "run"), filepath.Join(dir, "proc")
+		tmp := filepath.Join(run, "70001", "libpod", "tmp")
+		must(t, os.MkdirAll(tmp, 0o700), os.MkdirAll(filepath.Join(proc, "4242", f), 0o755))
+		for g, s := range good {
+			if g != f {
+				must(t, os.WriteFile(filepath.Join(proc, "4242", g), []byte(s), 0o644))
+			}
+		}
+		must(t, os.WriteFile(filepath.Join(tmp, "pause.pid"), []byte("4242"), 0o644))
+		if why, err := checkPause(run, proc, a); err == nil {
+			t.Errorf("unreadable %s: %q, no error", f, why)
+		}
+		if _, err := os.Stat(filepath.Join(tmp, "pause.pid")); err != nil {
+			t.Errorf("unreadable %s: pause.pid removed", f)
+		}
+	}
 	dir := t.TempDir()
 	if why, err := checkPause(filepath.Join(dir, "run"), dir, a); why != PauseAbsent || err != nil {
 		t.Errorf("no runtime dir: %q, %v", why, err)

@@ -56,6 +56,9 @@ func (s *server) rescan(agent string, ack bool) reply {
 	if err != nil || !ok {
 		return reply{"ok": err == nil, "blocked": false}
 	}
+	if h := s.undoing(agent); h != "" && h == b.Session { // read after the block: the mark outlives the hold
+		return reply{"ok": false, "blocked": true, "error": "a task undo of this agent is running: rescan after it ends"}
+	}
 	if b.Reason == attach.TaskNotEmpty {
 		return s.rescanTask(b, ack)
 	}
@@ -109,7 +112,11 @@ func (s *server) rescanTask(b attach.BlockRow, ack bool) reply {
 		if err := s.db.QueryRow(`SELECT uid FROM task_registry WHERE task=?`, id).Scan(&uid); err != nil {
 			return reply{"ok": false, "blocked": true, "error": "no registry row for task " + id}
 		}
-		if populated(filepath.Join(s.tasks.cfg.Cgroup, task.CgroupDir(uid, id))) {
+		p, err := populated(filepath.Join(s.tasks.cfg.Cgroup, task.CgroupDir(uid, id)))
+		if err != nil {
+			return reply{"ok": false, "blocked": true, "error": "task " + id + ": " + err.Error()}
+		}
+		if p {
 			still = append(still, id)
 		} else {
 			empty = append(empty, id)
@@ -178,6 +185,16 @@ func escaped(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// undoing is the hold of the undo of agent that runs in this process, or "".
+func (s *server) undoing(agent string) string {
+	if s.tasks != nil {
+		if h, ok := s.tasks.undos.Load(agent); ok {
+			return h.(string)
+		}
+	}
+	return ""
 }
 
 func (s *server) attachRoot() string {

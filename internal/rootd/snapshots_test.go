@@ -2,6 +2,7 @@ package rootd
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -287,5 +288,38 @@ func TestUndoLeftover(t *testing.T) {
 	}
 	if fb.calls[0] != "delete claude.undo-"+snap {
 		t.Fatalf("calls %v", fb.calls)
+	}
+}
+
+type stopOnly struct{ attach.Runner }
+
+func (stopOnly) Stop(string, string) error { return nil }
+
+// #222: attach rescan, even with --ack-restart, keeps the hold of an undo that runs, so no task starts and no second
+// undo runs mid-restore; once the undo ends, nothing is held.
+func TestUndoHoldKept(t *testing.T) {
+	r, fb, _ := snapRig(t)
+	id := r.adminTask(t)
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "data", "workspaces", "claude"), 0o755) // a clean scan, if rescan got that far
+	s := &server{db: r.db, tasks: r.t, audit: r.t.audit, cfg: Config{AttachRoot: root, Attach: stopOnly{}}}
+	var during []reply
+	hooked := false
+	r.t.cfg.Btrfs = hookBtrfs{fb, func() {
+		if !hooked { // once: in the first snapshot, the pre-restore one
+			hooked = true
+			req, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
+			during = append(during, s.rescan("claude", true), r.t.start(ids.New(ids.Task), "claude", "admin:"+req), r.t.undo(id, "rootd-admin:root"))
+		}
+	}}
+	if rep := r.t.undo(id, "rootd-admin:root"); rep["ok"] != true {
+		t.Fatalf("undo: %v", rep)
+	}
+	if len(during) != 3 || during[0]["blocked"] != true || !strings.Contains(fmt.Sprint(during[0]["error"]), "undo of this agent is running") ||
+		during[1]["reason"] != "attach_blocked" || !strings.Contains(fmt.Sprint(during[2]["error"]), "another undo") {
+		t.Fatalf("rescan, task start and undo during the undo: %v", during)
+	}
+	if rep := s.rescan("claude", false); rep["blocked"] != false || s.undoing("claude") != "" {
+		t.Fatalf("after the undo: %v, undoing %q", rep, s.undoing("claude"))
 	}
 }

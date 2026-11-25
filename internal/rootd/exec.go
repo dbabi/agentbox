@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"slices"
 	"time"
 
 	"agentbox/internal/audit"
@@ -20,7 +21,12 @@ type Effect func(opID string, args map[string]any) (outputs map[string]any, err 
 var (
 	taskRe  = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	agentRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	// a chain member is an ancestor task id or rootd's provenance: human:<name>, agent:<agent> (§4.2), as the gate checks
+	chainRe = regexp.MustCompile(`^([A-Za-z0-9_-]{1,64}|(human|agent):[a-z_][a-z0-9_.-]{0,31})$`)
 )
+
+// maxChain is the longest chain rootd derives: the human, the first agent and one agent per hop, at most 4 (§7 Limits).
+const maxChain = 6
 
 // deny logs and returns a floor denial (§5.6). rule says why, for the journal only: an agent sees a rule only from
 // Cedar (leak rule 5), and a BUSY never names its reason (leak rule 6).
@@ -48,7 +54,9 @@ func (s *server) taskOp(r request) reply {
 	if !ok || !o.AgentCallable() || !o.Rootd {
 		return deny(floor(ops.FloorNever, "never_available", ""), "floor.unknown_op")
 	}
-	if !taskRe.MatchString(r.Task) || !agentRe.MatchString(r.Agent) {
+	// the chain goes into the INTENT next to them (#222)
+	badMember := func(m string) bool { return !chainRe.MatchString(m) }
+	if !taskRe.MatchString(r.Task) || !agentRe.MatchString(r.Agent) || len(r.Chain) > maxChain || slices.ContainsFunc(r.Chain, badMember) {
 		return deny(floor(ops.InvalidArgs, "", o.Name), "floor.provenance")
 	}
 	args, aerr := o.ValidateArgs(r.Args)

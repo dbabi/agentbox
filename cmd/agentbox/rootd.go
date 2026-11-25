@@ -92,6 +92,10 @@ func cmdEgress(args []string) error {
 	case "allow", "remove":
 		svc := fs.String("svc", "", "broker: keys or git (service.list), or proxy (common.list)")
 		entry := fs.String("entry", "", "host:port")
+		ack := new(int)
+		if args[0] == "allow" {
+			fs.IntVar(ack, "ack-secrets", 0, "grant although the workspace scans found this many credentials for the host (the count the refusal reported)")
+		}
 		if err := parse(fs, args[1:]); err != nil {
 			return err
 		}
@@ -99,6 +103,9 @@ func cmdEgress(args []string) error {
 			return fmt.Errorf("egress %s: --svc and --entry are required", args[0])
 		}
 		req = map[string]any{"op": "egress." + args[0], "svc": *svc, "entry": *entry}
+		if *ack > 0 {
+			req["ackSecrets"] = *ack
+		}
 	case "list", "refill":
 		if err := parse(fs, args[1:]); err != nil {
 			return err
