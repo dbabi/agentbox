@@ -219,3 +219,48 @@ func TestRootsNested(t *testing.T) {
 		t.Errorf("a gitdir: through /proc: %v", err)
 	}
 }
+
+// #206: a .git or commondir file is read as git reads it, up to git's 1 MiB limit for a .git file. One FindRoots can't
+// read in full, or whose path git and other readers could take differently, fails it. A bare repo can keep its
+// objects and refs in the dir its commondir names.
+func TestRootsGitFiles(t *testing.T) {
+	write := func(files map[string]string) string {
+		ws := t.TempDir()
+		for f, b := range files {
+			os.MkdirAll(filepath.Join(ws, filepath.Dir(f)), 0o755)
+			os.WriteFile(filepath.Join(ws, f), []byte(b), 0o644)
+		}
+		return ws
+	}
+	pad := strings.Repeat("\n", 5000)
+	for _, c := range []struct {
+		name  string
+		files map[string]string
+		git   []string
+	}{
+		{"a .git file padded past 4 KiB", map[string]string{"p/.git": "gitdir: ../gd" + pad, "gd/HEAD": "", "gd/commondir": "../gd2\r\n", "gd2/config": ""}, []string{"gd", "gd2"}},
+		{"a commondir padded past 4 KiB", map[string]string{"r/.git/HEAD": "", "r/.git/commondir": "../../shared" + pad, "shared/config": ""}, []string{"shared"}},
+		{"a bare repo with its objects and refs in its commondir's dir", map[string]string{"x/HEAD": "", "x/commondir": "../y\n", "y/objects/ab": "", "y/refs/heads/main": "",
+			"y/config": ""}, []string{"x", "y"}},
+		{"a path with a space in it", map[string]string{"p/.git": "gitdir: ../my repo\n", "my repo/config": ""}, []string{"my repo"}},
+		{"a .git file that is not a gitfile", map[string]string{"p/.git": "not a gitfile\n"}, nil},
+	} {
+		r, err := FindRoots(write(c.files))
+		slices.Sort(r.GitDirs)
+		if err != nil || !slices.Equal(r.GitDirs, c.git) {
+			t.Errorf("%s: %q %v, want %q", c.name, r.GitDirs, err, c.git)
+		}
+	}
+	over := strings.Repeat("\n", gitFileCap)
+	for name, files := range map[string]map[string]string{
+		"a .git file over 1 MiB": {"p/.git": "gitdir: ../gd" + over}, "a commondir over 1 MiB": {"r/.git/HEAD": "", "r/.git/commondir": "../../shared" + over},
+		// git reads "gd " and " ../gd", libgit2 "gd" and "../gd"; git refuses "gitdir:../gd", which libgit2 reads; C stops at a NUL
+		"a trailing space": {"p/.git": "gitdir: ../gd \n"}, "two spaces": {"p/.git": "gitdir:  ../gd\n"}, "no space": {"p/.git": "gitdir:../gd\n"},
+		"a NUL": {"p/.git": "gitdir: ../gd\x00x\n"}, "only a NUL": {"p/.git": "gitdir: \x00\n"}, "two lines": {"p/.git": "gitdir: ../a\n../b\n"},
+		"a commondir with a trailing space": {"r/.git/HEAD": "", "r/.git/commondir": "../../shared \n"},
+	} {
+		if _, err := FindRoots(write(files)); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+}

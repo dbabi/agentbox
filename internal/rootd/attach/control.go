@@ -232,8 +232,8 @@ func controls(ws, home string) (map[string]string, error) {
 			return record // what a link or import leads to, with everything under it; git's objects only if it names them
 		case !linked && !roots.Is(rel):
 			return descend
-		case roots.Inert(rel) && extra[0].below(rel):
-			return descend
+		case roots.Inert(rel) && (extra[0].below(rel) || slices.ContainsFunc(roots.GitDirs, func(g string) bool { return g == rel || under(g, rel) })):
+			return descend // a link or import target is below, or a git dir planted in git's objects or refs
 		case roots.Inert(rel):
 			return skip
 		}

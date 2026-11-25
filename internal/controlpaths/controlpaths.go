@@ -5,7 +5,7 @@
 package controlpaths
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
@@ -59,9 +59,9 @@ func Changed(changed []string) []string {
 
 // Roots are the dirs that are control paths by content, not by name: each venv (a dir holding pyvenv.cfg, whatever its
 // name, the workspace root included), each git dir a .git file or link or a commondir file leads to, and each bare repo
-// (a dir holding HEAD, objects and refs, links counted). They are workspace-relative; "." is the root. Links is every
-// symlink in the workspace (path: target) and Docs every regular .md file, for the callers that follow links and
-// imports from control paths.
+// (a dir holding HEAD and either objects and refs or a commondir, links counted). They are workspace-relative; "." is
+// the root. Links is every symlink in the workspace (path: target) and Docs every regular .md file, for the callers
+// that follow links and imports from control paths.
 type Roots struct {
 	Venvs, GitDirs []string
 	Links          map[string]string
@@ -127,9 +127,10 @@ func Under(p, root string) (string, bool) {
 // one, and every gitdir: or commondir path, is resolved as a session's git or kernel would (Resolve), through the
 // workspace's links. A git dir outside the workspace is not one (the task can't write there, or it doesn't persist),
 // except in session-home, /proc or /dev: FindRoots fails on one there, and on any path to one that passes through them.
+// It also fails on a .git or commondir file it can't read in full (gitFileCap) or whose path is not plain (gitPath).
 func FindRoots(ws string) (Roots, error) {
 	r := Roots{Links: map[string]string{}}
-	common := map[string][]byte{} // dir: the commondir file in it
+	common := map[string]string{} // dir: the path the commondir file in it names
 	head, objects, refs := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	type gitfile struct{ g, file, dir string } // a gitdir: line g in file, in the workspace dir dir
 	var gitfiles []gitfile
@@ -140,7 +141,7 @@ func FindRoots(ws string) (Roots, error) {
 			return nil, err
 		}
 		defer f.Close()
-		return f.ReadAll(4096)
+		return f.ReadAll(gitFileCap)
 	}
 	err := wsfs.Walk(ws, func(e wsfs.Entry) error {
 		dir, link := path.Dir(e.Rel), e.Mode&fs.ModeSymlink != 0
@@ -165,14 +166,19 @@ func FindRoots(ws string) (Roots, error) {
 			r.Docs = append(r.Docs, e.Rel)
 		case e.Name == "pyvenv.cfg":
 			r.Venvs = append(r.Venvs, dir)
-		case e.Name == ".git":
+		case e.Name == ".git" || e.Name == "commondir":
 			b, err := read(e)
-			if t, ok := bytes.CutPrefix(bytes.TrimSpace(b), []byte("gitdir:")); err == nil && ok {
-				gitfiles = append(gitfiles, gitfile{string(t), e.Rel, dir})
+			if err != nil {
+				return fmt.Errorf("%q can't be read in full, so the git dir it names is not known: %v", e.Rel, err)
 			}
-		case e.Name == "commondir":
-			if b, err := read(e); err == nil {
-				common[dir] = b
+			g, ok, err := gitPath(b, e.Name == ".git")
+			switch {
+			case err != nil:
+				return fmt.Errorf("%q: %v", e.Rel, err)
+			case ok && e.Name == ".git":
+				gitfiles = append(gitfiles, gitfile{g, e.Rel, dir})
+			case ok:
+				common[dir] = g
 			}
 		}
 		return nil
@@ -202,30 +208,39 @@ func FindRoots(ws string) (Roots, error) {
 			r.Venvs = append(r.Venvs, dir)
 			continue
 		}
-		b, _ := wsfs.ReadFile(ws, rel, 4096)
-		g, ok := bytes.CutPrefix(bytes.TrimSpace(b), []byte("gitdir:"))
+		b, err := wsfs.ReadFile(ws, rel, gitFileCap)
 		switch {
-		case name == "commondir":
-			common[dir] = b
-		case ok:
-			if err := r.add(trees, string(g), l, dir); err != nil {
+		case errors.Is(err, wsfs.ErrNotRegular) || errors.Is(err, fs.ErrNotExist):
+			if name == ".git" {
+				r.GitDirs = append(r.GitDirs, rel) // a dir: the git dir itself
+			}
+			continue // a commondir git can't read: git fails
+		case err != nil:
+			return r, fmt.Errorf("%q can't be read in full, so the git dir it names is not known: %v", l, err)
+		}
+		g, ok, err := gitPath(b, name == ".git")
+		switch {
+		case err != nil:
+			return r, fmt.Errorf("%q: %v", l, err)
+		case ok && name == ".git":
+			if err := r.add(trees, g, l, dir); err != nil {
 				return r, err
 			}
-		default:
-			r.GitDirs = append(r.GitDirs, rel)
+		case ok:
+			common[dir] = g
 		}
 	}
-	// a bare repo: git finds it from a cwd inside it (safe.bareRepository is explicit only in tasks and attach); a
-	// .git dir is a control path by name already
+	// a bare repo: git finds it from a cwd inside it (safe.bareRepository is explicit only in tasks and attach), with
+	// its objects and refs in it or in the dir its commondir names; a .git dir is a control path by name already
 	for d := range head {
-		if objects[d] && refs[d] && path.Base(d) != ".git" {
+		if _, c := common[d]; (objects[d] && refs[d] || c) && path.Base(d) != ".git" {
 			r.GitDirs = append(r.GitDirs, d)
 		}
 	}
 	// git reads config, hooks and info from the dir a git dir's commondir names
-	for d, b := range common {
+	for d, g := range common {
 		if Is(d) || slices.Contains(r.GitDirs, d) || r.GitDir(d) != "" {
-			if err := r.add(trees, string(b), path.Join(d, "commondir"), d); err != nil {
+			if err := r.add(trees, g, path.Join(d, "commondir"), d); err != nil {
 				return r, err
 			}
 		}
@@ -237,10 +252,6 @@ func FindRoots(ws string) (Roots, error) {
 
 // add records the git dir that g, a path the git file file in the workspace dir dir names, leads to in a session.
 func (r *Roots) add(trees []Tree, g, file, dir string) error {
-	g = strings.TrimSpace(g)
-	if g == "" {
-		return nil
-	}
 	p := g
 	if !path.IsAbs(g) {
 		p = Workspace + "/" + dir + "/" + g // not path.Join: git resolves a ".." after a link from the link's target
@@ -255,6 +266,35 @@ func (r *Roots) add(trees []Tree, g, file, dir string) error {
 		r.GitDirs = append(r.GitDirs, rel)
 	}
 	return nil // t < 0: the session's image, where nothing a session writes persists
+}
+
+// gitFileCap is the largest .git or commondir file FindRoots reads: git's own limit for a .git file. A larger one fails
+// FindRoots, as one it can't read does: the git dir it names would be no control path.
+const gitFileCap = 1 << 20
+
+// errGitPath is a .git or commondir file whose path git and other readers could read differently: git keeps all of
+// the line but its trailing CRs and LFs, libgit2 and go-git trim spaces or take the first line, and C code stops at a
+// NUL.
+var errGitPath = errors.New(`not one line "gitdir: <path>" (.git) or "<path>" (commondir) with no space at either end and no NUL, ` +
+	"as git writes them: git and other readers could take different git dirs from it")
+
+// gitPath is the path a .git file (gitfile) or a commondir file with content b names, as git reads it. ok is false
+// for a .git file that does not start "gitdir:": git refuses it.
+func gitPath(b []byte, gitfile bool) (string, bool, error) {
+	p := strings.TrimRight(string(b), "\r\n")
+	if gitfile {
+		rest, ok := strings.CutPrefix(p, "gitdir:")
+		if !ok {
+			return "", false, nil
+		}
+		if p, ok = strings.CutPrefix(rest, " "); !ok {
+			return "", false, errGitPath
+		}
+	}
+	if p == "" || strings.ContainsAny(p, "\x00\r\n") || strings.TrimSpace(p) != p {
+		return "", false, errGitPath
+	}
+	return p, true, nil
 }
 
 // Tree is a tree as a session sees it: mounted at Mount, with its symlinks (path in the tree: target). Resolve stops

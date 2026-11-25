@@ -393,6 +393,7 @@ Each service runs as its own Linux user, with only the access it needs.
 - The workspace's control files include `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `AGENTS.override.md` at any depth, every git dir, bare repos and the dir a `commondir` file names among them, and every Python venv, the workspace root included.
 - What a control file leads to is a control file too: the target of a symlink at or under one, each symlink on the way, and each file a `CLAUDE.md` imports with `@path`.
   A git dir in `session-home` refuses the attach, whether a `.git` file, a `.git` symlink or a relative path leads there, since a session could change it unseen.
+  So does a `.git` or `commondir` file over 1 MiB, or one whose path git and other tools could read differently, such as one with a space at either end.
   So does a control file's symlink or import that leads through `/proc` or `/dev`.
   Tasks and sessions run git with `safe.bareRepository=explicit`, so git finds no bare repo by itself.
 - An attach and a task of the same agent never run at once.
