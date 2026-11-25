@@ -248,7 +248,8 @@ check "  ... each rescan that changed the block is an INTENT with the ack and a 
   grep "\"type\":\"RESULT\"" /tmp/gate-audit | grep -q "\"outputs\":{\"hits\":[1-9]" && ! grep -q -e notes.json -e mid.json /tmp/gate-audit'
 # #224: a credential file the token scan can't read is not "no login": a CLI still follows a link
 printf 'cd ~/.claude && mv .credentials.json c2.json && ln -s c2.json .credentials.json; echo "linked=$?"\nexit\n' > /tmp/gate-in5
-attach --cli bash </dev/null >/tmp/gate-a5b 2>&1 # what attach 3 changed, if anything: the digest of that
+printf 'exit\n' > /tmp/gate-in5b
+typed /tmp/gate-in5b | attach --cli bash >/tmp/gate-a5b 2>&1 # a refusal's digest, if attach 3 changed a control path
 check "#224 a session that leaves its credential file a symlink fails the token scan: tasks stay blocked, with an alert" '
   typed /tmp/gate-in5 | attach --cli bash --ack-control-changes=$(digest /tmp/gate-a5b) >/tmp/gate-a5 2>&1; cat -v /tmp/gate-a5;
   grep -q "linked=0" /tmp/gate-a5 && grep -qF "token scan failed, tasks stay blocked" /tmp/gate-a5 && B=$B sh /tmp/gate-blocked.sh attach_live &&
