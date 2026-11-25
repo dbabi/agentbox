@@ -55,14 +55,21 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | A compromised agentboxd acts as any untainted agent for unsigned floor ops, and can skip READ-INTENT on bus and memory reads | v2: an `agentbox-gate` service (own uid) serves the per-task gate sockets; rootd issues per-task gate MAC keys and applies bus and memory READ-INTENT itself |
 | A compromised proxy, keys or git can omit taint for content it delivers | v2: a second taint check at the task gate on response classes |
 | A compromised auditd can forge ACKs and mask taint until off-box verification catches it | v2: rootd keeps its own append-only taint record and refuses on regression |
+| A compromised agentboxd or broker can write audit records that pass for rootd's, such as an ALERT, or the INTENT and RESULT of an admin op: auditd ties only two ops, `taint.clear` and `workspace.restore`, to rootd | Issue #211: tie each op and record type to the producer that writes it |
+| A rootd stop or restart in the middle of an admin op, such as `task undo` or `egress allow`, can end it after its INTENT is ACKed: no RESULT says whether the effect ran, and the next start doesn't reconcile it | Pull request #234: rootd waits up to 60 s for running requests before it stops (#222) |
+| A task can flood its witness, the denial log rootd reads from each task, with lines the 64 KiB budget doesn't count (repeated END lines, or bytes with no newline): its audit record then shows nothing dropped | Pull request #234 counts every byte (#222) |
 | Until the broker units land, nothing hides resolved's AF_UNIX interfaces (Varlink socket mode 0666, D-Bus `ResolveHostname`) from the broker uids: nft sees only IP, so a broker process could resolve, and leak data in query names, there | Each broker unit sets `InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket` (§6.1); `TestBrokerUnitsHideResolved` and the rootd gate check it per unit |
 | While the disk is full (below the audit reserve), auditd refuses DENY and other best-effort records with `DISK_FULL`: denials in that window leave no audit record, only the critical disk-full alert | Ship audit off-box |
 | The workspace credential scan runs before an agent's first task and at each egress grant. A credential written after it, encoded, only in git history or past a file's first 16 MiB is missed, and so is one that no vendored rule describes | |
 | A credential in the workspace that works against a host allowed before the credential was written stays usable until the next grant or first-task scan finds it | |
-| The post-attach token scan finds a token as written, not encoded, and reads a packed git delta's inserted bytes without rebuilding it from its base: an agent that encodes the token or splices it from copies evades it | The review diff (§7) |
+| An egress grant takes effect at once, even when its scan finds a credential for the new host, so a running task can use it. A hit acknowledged with `--ack-secrets` stays acknowledged after a later grant, though the grant's warning says tasks are blocked. The acknowledgement covers a file, line and rule, not the credential. A grant never names a private key | Issues #222 and #224; pull request #234 drops the acknowledgements a grant matches |
+| The post-attach token scan finds a token as written, not encoded. It reads the first 256 MiB of a file and 1 GiB of what its git objects inflate to, and a packed git delta's inserted bytes without rebuilding it from its base: an agent that encodes the token, splices it from copies or puts it past those limits evades it | The review diff (§7) |
 | A file that a workspace git config pulls in with `include.path` or `includeIf` is not a control path: once the include line is acknowledged, the included file can change with no new acknowledgement | Issue #193: treat include targets as control paths |
 | In session-home, only the CLIs' instruction files and what the shells, editors, pagers, Python, ssh, git and go read at startup are control paths: another tool's per-user config, or a cache a tool trusts, can carry code from one attach to a later one | Give each session a fresh HOME that holds only the CLIs' own state from session-home |
+| The attach output filter passes a charset switch (`ESC %`), after which some terminals obey control codes it doesn't see, such as a clipboard write. Of the terminal report requests, it drops only `CSI c`, `n` and `t`: a version query still gets an answer | Issue #210 |
 | Root can always remove confinement: after a root-level flush, brokers are unconfined for up to 60 s, until the next `fwcheck` | |
+| The host firewall accepts everything on `tailscale0`: once Tailscale runs, every listener on the box is open to every device on the tailnet | |
+| With no `--ssh-from`, SSH is open on every interface to the private ranges, `100.64.0.0/10` and IPv6 link-local. ISPs also use `100.64.0.0/10` for carrier-grade NAT, so on such an uplink other customers can reach SSH | `--ssh-from` with your LAN only; issue #219 |
 | One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late | |
 | Jev egress when enabled | |
 | Approximate metering for subscription sessions | |
@@ -70,6 +77,7 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | The stock `10_linux` entries stay in `grub.cfg`: nothing selects them unattended, but one booted by hand runs the btrfs top level without `rootflags` and leaves `recordfail` set | |
 | `ua-timer`, `motd-news`, `apport-autoreport` and `update-notifier-download` stay enabled and contact the network (they change no packages) | |
 | Ubuntu's podman 5.7 lacks the fix for GHSA-pggw-qqjf-6cxw (podman 5.8.10), where a crafted image matches another image's digest with other layers and config. rootd checks every blob of the task image itself before `podman load` and pins it by its config digest. App images are not built yet, so nothing checks them | Ubuntu's podman with the fix; app images through the same check (#173) |
+| The low-severity findings of the November 2026 code review that are still open: hardening, test and docs gaps, listed by area | Issues #209 to #224 |
 
 ## Test-model limits (what the gates can't show)
 | Limit | Effect |
@@ -81,4 +89,5 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | The arm64 VM has no hardware watchdog | arm64 tests softdog only; the i6300esb path runs on amd64. Watchdog detection on real x86 hardware is unit-tested only (the old-PC gate checks it). |
 | The milestone 4 gates use stand-in brokers | Broker restart, outage and retry checks run against stubs that bind the same per-task sockets. No task reaches a model or the internet in a gate. |
 | A skill's frontmatter hook needs a model reply to fire | The tasks gate checks only the setting that turns hooks off. |
+| rootd's request fuzzer refuses every broker-socket request before the resolver | Nothing fuzzes the resolve request path until pull request #234 (#222) |
 | HVF guests stop while the Mac sleeps | Long gates need AC power and an open lid; `vm.sh` does not count sleep against the install timeout. |
