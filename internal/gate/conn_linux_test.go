@@ -141,3 +141,33 @@ func TestAcceptRetry(t *testing.T) {
 		t.Fatalf("ServeControl returned %v, want the listener closed", err)
 	}
 }
+
+// #221: a read that fails, at the idle deadline or because revoke closed the connection, ends that connection only.
+// ReadMsgUnix returns n = -1 with such an error, which lines once sliced with, so agentboxd panicked.
+func TestReadErrorEndsConnection(t *testing.T) {
+	l, p := listen(t)
+	dial(t, p) // open and silent until the test ends, past the server's deadline
+	c, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan bool)
+	go func() { lines(c.(*net.UnixConn), 50*time.Millisecond, func([]byte) []byte { return nil }); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lines did not end at its idle deadline")
+	}
+
+	s, tk := newServer(t, nil)
+	held := dial(t, tk.path)
+	if !served(t, held, 5*time.Second) {
+		t.Fatal("not served")
+	}
+	time.Sleep(100 * time.Millisecond) // the server is back in its read
+	s.revoke("T1")
+	held.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := held.Read(make([]byte, 1)); err == nil {
+		t.Fatal("the connection outlived revoke")
+	}
+}

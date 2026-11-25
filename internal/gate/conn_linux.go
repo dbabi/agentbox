@@ -39,6 +39,7 @@ func lines(c *net.UnixConn, idle time.Duration, f func([]byte) []byte) {
 	for {
 		c.SetReadDeadline(time.Now().Add(idle))
 		n, oobn, flags, _, err := c.ReadMsgUnix(b, oob)
+		n = max(n, 0) // with an error (a deadline, a revoke's close), ReadMsgUnix can return n = -1
 		if oobn > 0 || flags&unix.MSG_CTRUNC != 0 {
 			if msgs, perr := unix.ParseSocketControlMessage(oob[:oobn]); perr == nil {
 				for _, m := range msgs {
