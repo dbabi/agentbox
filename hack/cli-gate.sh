@@ -370,7 +370,7 @@ check "#123 a task writes .vscode/tasks.json, a nested repo sub/.git and a venv 
 check "  ... git in the task finds no bare repo by itself (safe.bareRepository=explicit)" 'cat $W/.gate-bare; [ "$(tail -1 $W/.gate-bare)" != 0 ] && grep -q "cannot use bare repository" $W/.gate-bare'
 check "  ... the next attach is refused, naming each" '! attach --cli bash </dev/null > $G/a2 2>&1; cat $G/a2; grep -q "control paths changed" $G/a2 &&
   for p in .vscode/tasks.json sub/.git/config env/pyvenv.cfg env/bin/python pyvenv.cfg bin/evil.pth bare.git/config common/config; do
-    grep -qE "(: |, )$p(, |;)" $G/a2 || exit 1; done && ! grep -q "sub/.git/objects\|bare.git/objects\|\.gate" $G/a2'
+    grep -qE "(: |, )\"$p\"(, |;)" $G/a2 || exit 1; done && ! grep -q "sub/.git/objects\|bare.git/objects\|\.gate" $G/a2'
 check "  ... and passes with --ack-control-changes and the digest it printed" '{ sleep 3; echo "sleep 1; exit"; } | attach --cli bash --ack-control-changes=$(digest $G/a2) > $G/a3 2>&1;
   cat $G/a3; grep -qF "[agentbox] session ended" $G/a3'
 

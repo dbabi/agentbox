@@ -6,8 +6,10 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
+	"maps"
 	"math/bits"
 	"path"
 	"regexp"
@@ -61,26 +63,49 @@ func collect(v any, keyed bool, out *[]string) {
 }
 
 // Seen is every token version a session-home held during one attach (the issue's rotation case: a CLI refreshes its
-// token mid-session, and the scan must still find the older one). It lives in rootd's memory only.
+// token mid-session, and the scan must still find the older one). It lives in rootd's memory only, at most maxSeen
+// bytes of it per agent.
 type Seen struct {
 	mu     sync.Mutex
-	tokens []string
+	tokens map[string]bool
+	size   int
+	full   bool // a version did not fit: the history is incomplete
 }
+
+// maxSeen bounds one agent's token history: the session writes its credential files, so it picks how many versions
+// there are.
+var maxSeen = 8 << 20
+
+// ErrSeenFull is a token history past maxSeen. A scan against it could miss a version, so it counts as failed.
+var ErrSeenFull = errors.New("the session-home token versions since rootd started passed 8 MiB, so a token scan can't be complete: " +
+	"check the workspace by hand, restart agentbox-rootd, then agentbox attach rescan --ack-restart")
 
 func (s *Seen) Add(ts []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.tokens == nil {
+		s.tokens = map[string]bool{}
+	}
 	for _, t := range ts {
-		if !slices.Contains(s.tokens, t) {
-			s.tokens = append(s.tokens, t)
+		switch {
+		case s.tokens[t]:
+		case s.size+len(t) > maxSeen:
+			s.full = true
+		default:
+			s.tokens[t] = true
+			s.size += len(t)
 		}
 	}
 }
 
-func (s *Seen) All() []string {
+// All is every version seen, or ErrSeenFull.
+func (s *Seen) All() ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return slices.Clone(s.tokens)
+	if s.full {
+		return nil, ErrSeenFull
+	}
+	return slices.Collect(maps.Keys(s.tokens)), nil
 }
 
 // Watch re-reads the credential files on each inotify event in their dirs, and every interval as a backstop, until

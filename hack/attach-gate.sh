@@ -112,6 +112,8 @@ printf '{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialog
 for f in .profile .bashrc .bash_profile; do printf 'touch %s/m-dot%s\n' $M "$f" > $H/$f; done
 printf '[core]\n\tpager = touch %s/m-gitpager; cat\n[alias]\n\tst = !touch %s/m-alias\n[filter "gx"]\n\tclean = touch %s/m-filter; cat\n' $M $M $M > $H/.gitconfig
 echo '*.txt filter=gx' > $W/.gitattributes
+# #198: a control path named with ESC, OSC 52, BEL and a forged ", .mcp.json"
+mkdir -p $W/.claude/rules && : > "$W/.claude/rules/x$(printf '\033]52;c;ZXZpbA==\007'), .mcp.json"
 chown -R ag-at:ag-at $H $W
 sum0=$(sha256sum < $H/.claude/settings.json)
 
@@ -132,10 +134,13 @@ check "  ... and session-home settings as planted" '[ "$(sha256sum < $H/.claude/
 check "attach is refused while workspace control paths changed, naming them; no block is left" '! attach --cli bash </dev/null >/tmp/gate-a0 2>&1; cat /tmp/gate-a0;
   grep -q "control paths changed" /tmp/gate-a0 && grep -q "\.mcp\.json" /tmp/gate-a0 && grep -q "\.claude/settings\.json" /tmp/gate-a0 &&
   grep -q "\.git/hooks/pre-commit" /tmp/gate-a0 && grep -q "\.git/config" /tmp/gate-a0 && $B attach status | grep -qF "\"blocks\":[]"'
+check "  ... #198: each name is quoted: one with ESC, OSC 52 and a forged \", .mcp.json\" reaches the terminal escaped, as one entry" '
+  grep -qF "\".claude/rules/x\\x1b]52;c;ZXZpbA==\\a, .mcp.json\"" /tmp/gate-a0 && grep -qF "\".mcp.json\"" /tmp/gate-a0 &&
+  ! grep -q "$(printf "\033")" /tmp/gate-a0 && ! grep -q "$(printf "\007")" /tmp/gate-a0'
 
 check "  ... with a digest of the list; a change made after the refusal makes that digest fail, naming the new path" 'D0=$(digest /tmp/gate-a0) && [ -n "$D0" ] &&
   as sh -c "echo planted > $W/.envrc" && ! attach --cli bash --ack-control-changes=$D0 </dev/null >/tmp/gate-a0b 2>&1; cat /tmp/gate-a0b;
-  grep -q "digest does not match this list" /tmp/gate-a0b && grep -qE "[ :,]\.envrc[,;]" /tmp/gate-a0b && [ "$(digest /tmp/gate-a0b)" != "$D0" ] &&
+  grep -q "digest does not match this list" /tmp/gate-a0b && grep -qE "[ :,]\"\.envrc\"[,;]" /tmp/gate-a0b && [ "$(digest /tmp/gate-a0b)" != "$D0" ] &&
   ! attach --cli bash --ack-control-changes </dev/null >/tmp/gate-a0c 2>&1; cat /tmp/gate-a0c; grep -q "flag needs an argument" /tmp/gate-a0c'
 check "attach 1, with --ack-control-changes and that digest: claude with its attach flags starts (and stops at login), the token scan is clean" 'attach --cli claude --ack-control-changes=$(digest /tmp/gate-a0b) -- -p hi </dev/null >/tmp/gate-a1 2>&1; cat /tmp/gate-a1;
   grep -qF "[agentbox] session ended; token scan: clean, tasks may start" /tmp/gate-a1 && grep -q "Not logged in" /tmp/gate-a1'
@@ -173,7 +178,7 @@ check "  ... the file it touched in the marker dir shows on the host (markers ar
 check "  ... its CODEX_HOME was in session-home, on the same subvolume (the agent's quota), and is gone after it" 'grep -q "codexhome=ok" /tmp/gate-a2 && [ ! -e $H/.agentbox-codex ] &&
   [ -z "$(ls -A /var/lib/agentbox/control/attach 2>/dev/null)" ]'
 check "  ... the next attach is refused naming only what the session changed: AGENTS.md, and the Claude and Codex skills, CLAUDE.md, ~/.bashrc, ~/.profile and ~/.bash_profile in session-home" '! attach --cli bash </dev/null >/tmp/gate-a2b 2>&1;
-  cat /tmp/gate-a2b; grep -qF "changed since the last accepted state: /home/agent/.agents/skills/gate/SKILL.md, /home/agent/.bash_profile, /home/agent/.bashrc, /home/agent/.claude/CLAUDE.md, /home/agent/.claude/skills/gate/SKILL.md, /home/agent/.profile, AGENTS.md;" /tmp/gate-a2b ||
+  cat /tmp/gate-a2b; grep -qF "changed since the last accepted state: \"/home/agent/.agents/skills/gate/SKILL.md\", \"/home/agent/.bash_profile\", \"/home/agent/.bashrc\", \"/home/agent/.claude/CLAUDE.md\", \"/home/agent/.claude/skills/gate/SKILL.md\", \"/home/agent/.profile\", \"AGENTS.md\";" /tmp/gate-a2b ||
   { find $H/.claude $H/.agents -maxdepth 3 -ls; ls -la $H; false; }'
 check "  ... bash read no startup file; git used no ~/.gitconfig pager, alias or filter and no repo-local pager" 'none || { markers; false; }'
 check "  ... in a container: loopback only, the seccomp filter, no_new_privs and no capabilities" 'grep -q "^net=lo.\$" /tmp/gate-a2 &&
@@ -239,11 +244,11 @@ as sh -c "cd $W && mkdir -p docs && echo 'Follow @docs/style.md' > docs/guide.md
 printf 'exit\n' > /tmp/gate-l-in
 check "#202 #210 a CLAUDE.md link, its target, the file it imports, CLAUDE.local.md and AGENTS.override.md are each listed" '
   ! attach --cli bash </dev/null >/tmp/gate-l1 2>&1; cat /tmp/gate-l1;
-  for p in CLAUDE.md docs/guide.md docs/style.md CLAUDE.local.md AGENTS.override.md; do grep -qE "(: |, )$p(, |;)" /tmp/gate-l1 || exit 1; done'
+  for p in CLAUDE.md docs/guide.md docs/style.md CLAUDE.local.md AGENTS.override.md; do grep -qE "(: |, )\"$p\"(, |;)" /tmp/gate-l1 || exit 1; done'
 check "  ... once acked, an edit to the imported file alone refuses the next attach, naming only it" '
   typed /tmp/gate-l-in | attach --cli bash --ack-control-changes=$(digest /tmp/gate-l1) >/tmp/gate-l2 2>&1; cat -v /tmp/gate-l2;
   grep -qF "[agentbox] session ended" /tmp/gate-l2 && as sh -c "echo spaces > $W/docs/style.md" && ! attach --cli bash </dev/null >/tmp/gate-l3 2>&1;
-  cat /tmp/gate-l3; grep -qF "changed since the last accepted state: docs/style.md;" /tmp/gate-l3'
+  cat /tmp/gate-l3; grep -qF "changed since the last accepted state: \"docs/style.md\";" /tmp/gate-l3'
 as rm -rf $W/CLAUDE.md $W/docs $W/CLAUDE.local.md $W/AGENTS.override.md
 # #107: a hostile workspace and session-home. Every root-side reader refuses or caps: none blocks or reads outside.
 # OTOK is only outside the tree, behind links, and in one plain workspace file: a reader that followed a link to it
@@ -258,8 +263,8 @@ mv $W/.claude $W/.claude.gate && (cd $W && ln -s /etc/shadow shadow && ln -s /va
   mkdir -p $H/.codex && printf '{"tokens":{"access_token":"%s"}}\n' $CTOK > $H/.codex/auth.json && chown -h ag-at:ag-at $H/.codex $H/.codex/auth.json $H/.claude/.credentials.json
 printf 'cd /workspace && touch go.sum CLAUDE.md out-copy package-lock.json sub/.mcp.json && touch -h shadow approvers approvers.db .claude; echo "touched=$?"\nexit\n' > /tmp/gate-h-in
 check "hostile workspace: attach is refused naming the .claude link, the FIFO .mcp.json and the 2 GiB CLAUDE.md, nothing behind the link" '! attach --cli bash </dev/null >/tmp/gate-h0 2>&1; cat /tmp/gate-h0;
-  grep -q "control paths changed" /tmp/gate-h0 && grep -qE "[ :,]\.claude[,;]" /tmp/gate-h0 && grep -qE "[ :,]sub/\.mcp\.json[,;]" /tmp/gate-h0 &&
-  grep -qE "[ :,]CLAUDE\.md[,;]" /tmp/gate-h0 && ! grep -q "outside-only" /tmp/gate-h0'
+  grep -q "control paths changed" /tmp/gate-h0 && grep -qE "[ :,]\"\.claude\"[,;]" /tmp/gate-h0 && grep -qE "[ :,]\"sub/\.mcp\.json\"[,;]" /tmp/gate-h0 &&
+  grep -qE "[ :,]\"CLAUDE\.md\"[,;]" /tmp/gate-h0 && ! grep -q "outside-only" /tmp/gate-h0'
 check "  ... with the ack the session touches it all, and the token scan is clean within 120 s: no link or FIFO was followed or blocked on, no 2 GiB file read whole" '
   s=$(date +%s); typed /tmp/gate-h-in | attach --cli bash --ack-control-changes=$(digest /tmp/gate-h0) >/tmp/gate-h1 2>&1; e=$(( $(date +%s) - s )); cat -v /tmp/gate-h1; echo "took ${e}s";
   grep -q "touched=0" /tmp/gate-h1 && grep -qF "[agentbox] session ended; token scan: clean, tasks may start" /tmp/gate-h1 && [ $e -lt 120 ]'

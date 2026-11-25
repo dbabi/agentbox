@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"log"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"agentbox/internal/rootd/attach"
 	"agentbox/internal/task"
@@ -63,9 +65,13 @@ func (s *server) rescan(agent string, ack bool) reply {
 	p := attach.AgentPaths(s.attachRoot(), agent, b.Session)
 	seen := s.agentSeen(agent)
 	seen.Add(attach.Tokens(p.SessionHome))
-	hits, err := attach.Scan(p.Workspace, time.Time{}, seen.All())
+	tokens, err := seen.All()
 	if err != nil {
-		return reply{"ok": false, "error": err.Error()}
+		return reply{"ok": false, "blocked": true, "error": err.Error()}
+	}
+	hits, err := attach.Scan(p.Workspace, time.Time{}, tokens)
+	if err != nil {
+		return reply{"ok": false, "error": escaped(err.Error())} // it can name a workspace path
 	}
 	if w, _ := s.watched.Load(agent); len(hits) == 0 && w != b.Session && !ack {
 		log.Printf("attach.rescan %s: clean, but rootd restarted since session %s: block kept", agent, b.Session)
@@ -112,6 +118,21 @@ func (s *server) rescanTask(b attach.BlockRow) reply {
 	}
 	log.Printf("attach.rescan %s: no leftover task: block lifted", b.Agent)
 	return reply{"ok": true, "blocked": false}
+}
+
+// escaped is s with each rune a terminal would not print as is (C0, C1, bidi and other format controls) written as a Go
+// escape: an error can carry a name the agent chose, and the admin's terminal must show it, not act on it. A list of
+// names is quoted instead, so no name can pass for two.
+func escaped(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteString(strings.Trim(strconv.QuoteRuneToASCII(r), "'"))
+		}
+	}
+	return b.String()
 }
 
 func (s *server) attachRoot() string {

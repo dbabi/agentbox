@@ -65,8 +65,47 @@ func TestSeenKeepsRotatedTokens(t *testing.T) {
 	creds(t, home, "gate-oauth-at-rotated-EEEEEEEEEEEEEEEEEEE")
 	close(stop)
 	<-done
-	if all := s.All(); !slices.Contains(all, access) || !slices.Contains(all, "gate-oauth-at-rotated-EEEEEEEEEEEEEEEEEEE") {
-		t.Fatalf("seen %q", all)
+	if all, err := s.All(); err != nil || !slices.Contains(all, access) || !slices.Contains(all, "gate-oauth-at-rotated-EEEEEEEEEEEEEEEEEEE") {
+		t.Fatalf("seen %q %v", all, err)
+	}
+}
+
+// #222 R49: a session that rotates its token past maxSeen leaves an incomplete history, and a scan against it fails.
+func TestSeenCap(t *testing.T) {
+	defer func(n int) { maxSeen = n }(maxSeen)
+	maxSeen = 3 * len(access)
+	var s Seen
+	s.Add([]string{access, access, access})
+	if all, err := s.All(); err != nil || len(all) != 1 {
+		t.Fatalf("one version: %q %v", all, err)
+	}
+	s.Add([]string{access + "1", access + "2"})
+	s.Add([]string{access + "3"})
+	if all, err := s.All(); err != ErrSeenFull || all != nil {
+		t.Fatalf("past the cap: %q %v", all, err)
+	}
+}
+
+// #222 R49: a control-path tree past maxEntries or maxBytes is refused, not held in rootd's heap.
+func TestManifestCap(t *testing.T) {
+	defer func(n, b int) { maxEntries, maxBytes = n, b }(maxEntries, maxBytes)
+	ws := t.TempDir()
+	os.MkdirAll(filepath.Join(ws, ".claude", "rules"), 0o755)
+	for i := range 4 {
+		os.WriteFile(filepath.Join(ws, ".claude", "rules", fmt.Sprint(i)), nil, 0o644)
+	}
+	maxEntries = 4
+	if m, err := Manifest(ws); err != nil || len(m) != 4 {
+		t.Fatalf("at the cap: %d %v", len(m), err)
+	}
+	maxEntries = 3
+	if _, err := Manifest(ws); err != ErrTooMany {
+		t.Fatalf("past the entry cap: %v", err)
+	}
+	maxEntries, maxBytes = 100, 100
+	os.Symlink(strings.Repeat("x", 200), filepath.Join(ws, ".claude", "rules", "long"))
+	if _, err := Manifest(ws); err != ErrTooMany {
+		t.Fatalf("past the byte cap: %v", err)
 	}
 }
 
@@ -227,8 +266,8 @@ func TestBlock(t *testing.T) {
 	if b, ok, _ := Blocked(db, "a"); !ok || b.Reason != Live {
 		t.Fatalf("live attach must block tasks: %+v", b)
 	}
-	End(db, "a", "ses_1", []Hit{{"x"}})
-	if b, ok, _ := Blocked(db, "a"); !ok || b.Reason != Token || b.Detail != "x" {
+	End(db, "a", "ses_1", []Hit{{"x"}, {"y\x1b[2K z"}}) // #198: the agent names the files, so the detail quotes them
+	if b, ok, _ := Blocked(db, "a"); !ok || b.Reason != Token || b.Detail != `"x" "y\x1b[2K z"` {
 		t.Fatalf("a hit must keep tasks blocked: %+v", b)
 	}
 	End(db, "a", "ses_1", nil)

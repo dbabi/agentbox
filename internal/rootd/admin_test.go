@@ -137,7 +137,7 @@ func TestAgentOps(t *testing.T) {
 	if rep := call("agent.remove", `{"name":"b"}`); rep["ok"] != true || rep["agent"].(map[string]any)["active"] != false || applied != 3 {
 		t.Fatalf("remove b: %v, applied %d", rep, applied)
 	}
-	if _, on, _ := attach.Blocked(db, "b"); on || len(s.agentSeen("b").All()) != 0 {
+	if _, on, _ := attach.Blocked(db, "b"); on || func() bool { all, _ := s.agentSeen("b").All(); return len(all) != 0 }() {
 		t.Fatal("removing b left its task block or token versions")
 	}
 	c := call("agent.add", `{"name":"c"}`)["agent"].(map[string]any)
@@ -172,5 +172,14 @@ func TestGoPrivateSet(t *testing.T) {
 	bad := "a b"
 	if rep := s.admin(request{Op: "go.private.set", Agent: "ga", Patterns: &bad}, peer{}); rep["ok"] != false || len(recs) != 2 {
 		t.Fatalf("bad patterns: %v", rep)
+	}
+}
+
+// #198: an error that names an agent-made path reaches the admin with each terminal control escaped, and the quotes the
+// error already has kept.
+func TestEscaped(t *testing.T) {
+	in := "open \"a\x1b]52;c;eA==\a\u202eb\": é\u009b\xff"
+	if got, want := escaped(in), `open "a\x1b]52;c;eA==\a\u202eb": é\u009b`+"\ufffd"; got != want {
+		t.Fatalf("escaped(%q) = %q, want %q", in, got, want)
 	}
 }

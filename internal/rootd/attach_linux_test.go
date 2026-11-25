@@ -96,7 +96,7 @@ func TestAttach(t *testing.T) {
 			t.Errorf("admin output has %q", bad)
 		}
 	}
-	if b, ok, _ := attach.Blocked(db, "at"); !ok || b.Reason != attach.Token || b.Detail != "notes.md" {
+	if b, ok, _ := attach.Blocked(db, "at"); !ok || b.Reason != attach.Token || b.Detail != `"notes.md"` {
 		t.Fatalf("block %+v %v", b, ok)
 	}
 	if len(alerts) != 1 {
@@ -166,7 +166,16 @@ func TestAttach(t *testing.T) {
 		return l, d[:min(len(d), 64)]
 	}
 	os.WriteFile(filepath.Join(p.Workspace, ".mcp.json"), []byte(`{"mcpServers":{}}`), 0o644)
-	_, d := refused("")
+	// #198: each path is quoted, so a name with terminal controls or a ", " can't drive the terminal or forge the list
+	os.MkdirAll(filepath.Join(p.Workspace, ".claude", "rules"), 0o755)
+	os.WriteFile(filepath.Join(p.Workspace, ".claude", "rules", "a\x1b[2K\x1b]52;c;ZXZpbA==\x07, b\u202e.md"), nil, 0o644)
+	l0, d := refused("")
+	var rep struct{ Error string }
+	json.Unmarshal([]byte(l0), &rep)
+	if !strings.Contains(rep.Error, `".mcp.json"`) || !strings.Contains(rep.Error, `".claude/rules/a\x1b[2K\x1b]52;c;ZXZpbA==\a, b\u202e.md"`) ||
+		strings.ContainsAny(rep.Error, "\x1b\a\u202e") {
+		t.Fatalf("the refusal does not quote each name: %q", rep.Error)
+	}
 	os.WriteFile(filepath.Join(p.Workspace, "AGENTS.md"), []byte("planted after the refusal"), 0o644)
 	l, d2 := refused(d)
 	if d2 == d || len(d2) != 64 || !strings.Contains(l, "AGENTS.md") || !strings.Contains(l, "digest does not match this list") {

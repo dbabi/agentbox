@@ -20,7 +20,7 @@ func TestWatchSeesShortLivedToken(t *testing.T) {
 	creds(t, home, "gate-oauth-at-final-GGGGGGGGGGGGGGGGGGGG")
 	close(stop)
 	<-done
-	if !slices.Contains(s.All(), short) {
-		t.Fatalf("seen %q", s.All())
+	if all, err := s.All(); err != nil || !slices.Contains(all, short) {
+		t.Fatalf("seen %q %v", all, err)
 	}
 }
