@@ -34,7 +34,7 @@ Two words mark the state of each part:
 
 ## Status
 
-At the time of writing (2026-11-22), milestones 1, 2 and 4 of 9 are built. Milestone 3, the checks for agent requests, is built and its VM tests passed. Its 24-hour fuzz run is still pending.
+At the time of writing (2026-11-25), milestones 1, 2 and 4 of 9 are built. Milestone 3, the checks for agent requests, is built and its VM tests passed. Its 24-hour fuzz run is still pending.
 The real-hardware test has not run yet.
 
 Built:
@@ -62,10 +62,11 @@ Not built yet:
 - Automatic security updates. Today an admin runs `os plan` and `os apply` by hand.
 - Updating agentbox itself on an installed box. This is out of scope for the first release. A new release means a reinstall.
 
-Where it has run: QEMU VMs on an Apple Silicon Mac.
+Where it has run: QEMU VMs on an Apple Silicon Mac, and under KVM on CI's amd64 Linux runners.
 Most gates ran on an arm64 UEFI VM with Secure Boot on.
 Some gates also ran on an amd64 legacy BIOS VM.
-The milestone 2 and 3 gates ran in `none` mode on arm64 UEFI only.
+The milestone 2 and 3 gates ran in `none` mode only: on arm64 UEFI, and on amd64 BIOS in a weekly CI job.
+The milestone 4 gates ran in `none` mode on arm64 UEFI only.
 No amd64 UEFI install has run yet.
 No real machine has run agentbox yet.
 
@@ -131,7 +132,7 @@ Before you install on a real machine:
 4. [Roadmap](Roadmap.md): what each milestone adds.
 
 The code is Go: the standard library plus `golang.org/x/sys` and the pure-Go SQLite driver `modernc.org/sqlite`.
-The installer and the VM gate scripts are POSIX `sh`. One test tool, `hack/verify-seed.py`, is Python 3.
+The installer and the VM gate scripts are POSIX `sh`. A few helper scripts are Python 3, such as the seed checker `hack/verify-seed.py`.
 Run the unit tests from the repo root:
 
 ```sh

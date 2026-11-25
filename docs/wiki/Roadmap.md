@@ -2,7 +2,7 @@ agentbox is early alpha. It is not for production use.
 
 Milestones 1 and 2 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon, the root daemon's skeleton and resolver, disk quotas and packaged ntfy). Milestone 3, the operation registry and the request gate, is built and its VM gates passed. Its 24-hour fuzz run is pending, so it stays in progress. Milestone 4 is done: agent accounts, one sealed container per task, and interactive sessions. The brokers, policy and approvals are designed but not built. So a task can start an agent CLI, but it can't reach a model yet.
 
-The full design is in [`docs/design/`](../design/). Status is as of the time of writing (2026-11-23).
+The full design is in [`docs/design/`](../design/). Status is as of the time of writing (2026-11-25).
 
 Two terms used below:
 
@@ -16,12 +16,12 @@ agentbox is built in nine milestones, in this order. Each one ends with a gate: 
 | # | What it builds | Gate examples | Status |
 |---|---|---|---|
 | 1. Installer and safe OS updates | Seed generator; unattended install with optional disk encryption; recovery key; btrfs A/B OS generations with unattended fallback; release pipeline and signed firstboot install; zero-touch install ISO; power-cut tests | Unattended first boot in both TPM modes. Broken updates and power cuts fall back with no console input. The install and `os apply` checks on a real x86 PC. | **Done.** The gate passed in QEMU VMs ([Testing and Gates](Testing-and-Gates.md#milestone-1)), except the install and `os apply` checks on a real x86 PC, which have not run. |
-| 2. Firewall, audit log, root daemon | Host firewall (nftables) with `fwcheck`; btrfs quotas with a disk reserve and a content-store cap; the audit daemon, with a hash-chained log, taint epochs that never lose a row, and a disk-full mode; the root daemon's skeleton, name resolver and audit-log sealing; packaged ntfy on a Unix socket | An altered firewall stops agents from starting. With the audit daemon down, nothing runs. A broker reaches only addresses rootd resolved. `nft flush ruleset` is repaired within 60 s, with an alert. | **Done.** Every gate item passed in QEMU VMs ([Testing and Gates](Testing-and-Gates.md#milestone-2-gates)). Ran in `none` mode on arm64 UEFI only. |
+| 2. Firewall, audit log, root daemon | Host firewall (nftables) with `fwcheck`; btrfs quotas with a disk reserve and a content-store cap; the audit daemon, with a hash-chained log, taint epochs that never lose a row, and a disk-full mode; the root daemon's skeleton, name resolver and audit-log sealing; packaged ntfy on a Unix socket | An altered firewall stops agents from starting. With the audit daemon down, nothing runs. A broker reaches only addresses rootd resolved. `nft flush ruleset` is repaired within 60 s, with an alert. | **Done.** Every gate item passed in QEMU VMs ([Testing and Gates](Testing-and-Gates.md#milestone-2-gates)). Ran in `none` mode only: on arm64 UEFI, and on amd64 BIOS in a weekly CI job. |
 | 3. Operation registry and request gate | One registry of every operation, with generated code and schemas; the request gate in `agentboxd`; stable denial codes; the socket layout as code; fuzzers for every parser | A registry mismatch stops startup. An audit record with a secret or an unhashed body is refused, and nothing runs. 24 hours of fuzzing find no crash. | **In progress.** Built, and the VM gates passed ([Testing and Gates](Testing-and-Gates.md#milestone-3)). The 24-hour fuzz run is pending. |
 | 4. Agent accounts and one sealed container per task | Agent accounts with disk quotas; one disposable container per task, with no network, a fresh HOME and Go in the image; a seccomp profile that blocks btrfs ioctls; task stop; interactive sessions in a separate home; `agentbox why` to explain a denial | Claude Code or Codex hooks and MCP config that one task plants don't run in the next task. A task's leftover processes are gone within 20 s of its timeout. | **Done.** Every gate item passed in QEMU VMs ([Testing and Gates](Testing-and-Gates.md#milestone-4)). Ran in `none` mode on arm64 UEFI only. |
 | 5. Brokers | A proxy that holds no secrets, with a read-only Go module cache; a keys broker for LLM API keys and budgets; a git service that holds the GitHub token | No credential of any kind exists inside a task. Rebinding, raw IP, LAN and metadata-address attempts fail. | Designed, not built |
-| 6. Signed approvals | Cedar policies (Cedar is an open-source policy language); the floor (the minimum rules the root daemon enforces; policy can only make them stricter); pending operations bound to exact inputs, such as commit IDs and package hashes; approvals signed with an SSH key on the laptop; phone approvals with a passkey, for low-risk operations only; a visible ask budget, with `ask.quote`, `ask.status` and `ask.batch`; `agentbox egress allow` | Race, replay and argument swap fail. A phone approval of a laptop-only operation is refused. | Designed, not built |
-| 7. Apps and OS updates by agents | Apps in pods with no network, built offline; file writes; agent operations for package changes and nightly updates, built on the milestone 1 generations, with a floor of protected packages; workspace snapshots; a local-model "decide" helper | Protected packages can't be removed or downgraded. A nightly update with a kernel upgrade commits. | Designed, not built |
+| 6. Signed approvals | Cedar policies (Cedar is an open-source policy language); the floor (the minimum rules the root daemon enforces; policy can only make them stricter); pending operations bound to exact inputs, such as commit IDs and package hashes; approvals signed with an SSH key on the laptop; phone approvals with a passkey, for low-risk operations only; a visible ask budget, with `ask.quote`, `ask.status` and `ask.batch`; a signed `agentbox egress allow` (an unsigned admin form is built) | Race, replay and argument swap fail. A phone approval of a laptop-only operation is refused. | Designed, not built |
+| 7. Apps and OS updates by agents | Apps in pods with no network, built offline; file writes; agent operations for package changes and nightly updates, built on the milestone 1 generations, with a floor of protected packages; operations for agents to snapshot and restore a workspace; a local-model "decide" helper | Protected packages can't be removed or downgraded. A nightly update with a kernel upgrade commits. | Designed, not built |
 | 8. Agent bus and shared memory | Agent-to-agent task bus; shared memory with quarantine and taint; memory notes bound to a workspace | A poisoned memory fact never reaches instructions. Reading a tainted fact taints the reader. | Designed, not built |
 | 9. Benchmark and first signed release | Benchmark: 30 graded tasks, plus 20 injection, 10 poisoning, 10 deputy, 10 OS rollback and 10 approval-drift tasks; an external threat-model review; the first signed release | At least 90% of stock Ubuntu's task success. 0 exfiltrations. 0 floor bypasses. At most 1 ask per delivered change, plus 1 per new egress host ([see below](#features-that-span-milestones)). | Designed, not built |
 
@@ -49,13 +49,13 @@ All gates ran in QEMU VMs on an Apple Silicon Mac. Most ran on arm64 UEFI with S
 
 ## Milestone 2: what passed
 
-Every milestone 2 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. All four milestone 2 suites and the four milestone 1 smoke suites passed after a review whose problems were fixed. [Testing and Gates](Testing-and-Gates.md#milestone-2) lists each result and the commit it ran at.
+Every milestone 2 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. All four milestone 2 suites and the four milestone 1 smoke suites passed after a review whose problems were fixed. The milestone 2 gates also pass on amd64 BIOS, in a weekly CI job. [Testing and Gates](Testing-and-Gates.md#milestone-2) lists each result and the commit it ran at.
 
 - An altered firewall (9 kinds of change) keeps the agent stand-in from starting, and a firewall restart repairs each one. Reload, restart and reboot keep the sets rootd filled.
 - `nft flush ruleset`: the table was back in 50 s, with `agentbox: ALERT: firewall altered`.
 - With auditd stopped or hung, no effect runs. A taint clear from any socket but rootd's admin path is rejected, and the subject stays tainted.
-- A full disk still lets admin operations such as `taint.clear` and `agent.remove` run. A torn log tail, a backward clock step across midnight and a crash at each sealing step don't stop acknowledgements, and `agentbox audit verify` passes after each.
-- A broker reaches only the address and port that rootd resolved for it. A keys flow survives its element's expiry and is cut when its entry is removed.
+- On a full disk, the audit daemon refuses every record except the admin operation records that only rootd may send, such as `taint.clear` and `agent.remove`. A torn log tail, a backward clock step across midnight and a crash at each sealing step don't stop acknowledgements, and `agentbox audit verify` passes after each.
+- A process under a broker's user reaches only the address and port that rootd resolved for it. An open connection under the keys broker's user keeps working after its address expires from the firewall set. Removing its allowlist entry cuts it.
 - 200 root connections to `127.0.0.1:43100` succeed. Other users, other reserved ports and `[::1]` get a reset.
 - The `2/0` quota keeps its reserve: a writer at its limit gets `EDQUOT`, and system state keeps writing.
 - ntfy runs as `_ntfy` on a Unix socket only. ntfy under any other user keeps the agent stand-in from starting.
@@ -64,28 +64,29 @@ Every milestone 2 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 
 | Item | State |
 |---|---|
-| The milestone 2 gates in `tpm2` and `tpm2+tang` | Not run. The milestone 2 code doesn't touch unlock or boot, and the milestone 1 smoke suites still pass in `tpm2` and `tpm2+tang`. On amd64 BIOS they pass in a weekly CI job. |
+| The milestone 2 gates in `tpm2` and `tpm2+tang` | Not run. The milestone 2 code doesn't touch unlock or boot, and the milestone 1 smoke suites still pass in `tpm2` and `tpm2+tang`. |
 | Hiding systemd-resolved's Unix interfaces from the broker users | Not built: the broker units don't exist yet. A residual in the threat model until they land (milestone 5). |
 | The resolver's `unavailable` reason when systemd-resolved is down | No gate check. |
 
 ## Milestone 3: what passed
 
-Every milestone 3 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. The tests for milestones 1 and 2 also passed again on the same code. [Testing and Gates](Testing-and-Gates.md#milestone-3) lists each result and the commit it ran at.
+Every milestone 3 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. The tests for milestones 1 and 2 also passed again on the same code. The milestone 3 gates also pass on amd64 BIOS, in a weekly CI job. [Testing and Gates](Testing-and-Gates.md#milestone-3) lists each result and the commit it ran at.
 
 - The root daemon starts only when the policy schema, the JSON schemas and the MCP tool list match the registry. Each of five planted mismatches stops it, and the journal names the mismatch.
 - `agentboxd` gives each task a socket that only that task's agent user can use. A valid request runs in order: the audit log records it with its body hashed, then it runs, then its result is recorded.
 - A request with bad arguments, a forged caller or an operation no agent may call gets a typed denial, and nothing is recorded or run.
 - The audit log refuses a record with an unhashed body or a secret, and the operation does not run. No refused value is left in the audit directory.
 - The sockets and their directories on the box match the inventory in code, before and after a reboot. A wrong mode, a wrong owner and a stray file are each reported.
-- Every parser has a fuzz test: 53 in all. Short runs found bugs, which are fixed, and each crash input is kept as a test.
+- Fuzz tests cover the parsers for seeds, keys, apt and GRUB output, firewall sets, audit records, agent requests, denials and more. Short runs on macOS found bugs. A longer run found one more: rootd's reader for the firewall's sets accepted an IPv6 address with a `%` zone suffix. All are fixed, and each crash input is kept as a test.
+- The nightly fuzz job runs the fuzz tests on Linux, 3 hours each. No run has crashed so far.
 
 ## Milestone 3: what has not run
 
 | Item | State |
 |---|---|
-| 24 hours of fuzzing with no crash | Pending. Each fuzz test has run for at least 12 minutes so far. The nightly fuzz job, or one `hack/fuzz-all.sh` run, will cover it. |
-| Fuzzing on Linux | Not run yet. The short runs were on macOS, so Linux-only code waits for the nightly job. |
-| The milestone 3 gates in `tpm2` and `tpm2+tang` | Not run. The milestone 3 code doesn't touch unlock or boot. On amd64 BIOS they pass in a weekly CI job. |
+| 24 hours of fuzzing with no crash | Pending. No commit has had 24 CPU-hours of fuzzing on every fuzz test yet ([the 24 h gate](Testing-and-Gates.md#the-24-h-gate)). The nightly job skips the fuzz test for audit log segments, because that test needs root on Linux. |
+| A fuzz test for the task image checker | Not written. rootd runs this checker on the release's task image before it loads it. |
+| The milestone 3 gates in `tpm2` and `tpm2+tang` | Not run. The milestone 3 code doesn't touch unlock or boot. |
 | The `agentbox mcp` command for agent CLIs | Not built. The error mapping it will use is built and tested. |
 
 ## Milestone 4: what passed
@@ -103,6 +104,8 @@ Every milestone 4 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
   - The seccomp profile allows only the socket families tasks need.
   - System policy files keep Claude Code and Codex from running workspace hooks, MCP servers and plugins.
   - rootd pauses the agents while btrfs repairs its quota counts.
+  - rootd scans the workspace for credentials before an agent's first task and at each egress grant. A hit blocks the task until an admin acknowledges it.
+  - rootd checks the task image against the release's checksums before it loads it, and refuses an image with unsafe settings.
 
 ## Milestone 4: what has not run
 
