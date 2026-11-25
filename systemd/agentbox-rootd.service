@@ -15,6 +15,9 @@ Type=notify
 NotifyAccess=main
 ExecStart=/var/lib/agentbox/current/bin/agentbox rootd
 Sockets=agentbox-rootd-admin.socket agentbox-rootd-gate.socket agentbox-audit-seal.socket agentbox-rootd-resolve-proxy.socket agentbox-rootd-resolve-keys.socket agentbox-rootd-resolve-git.socket
+# a crash restarts rootd alone: the default mode also restarts every user@ that Requires= it, which ends every running
+# task and attach session (#218). An explicit restart still restarts them.
+RestartMode=direct
 Restart=on-failure
 RestartSec=2s
 UMask=0077
