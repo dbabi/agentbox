@@ -138,6 +138,31 @@ func TestEncodeLineCopiesArgs(t *testing.T) {
 	}
 }
 
+// #213: task new bounds the prompt as its request line carries it: '<' counts 1 byte and a newline 2. At gate.MaxPrompt
+// the CLI goes on to rootd-admin.sock; one newline more is refused first, naming the limit.
+func TestTaskNewPromptLimit(t *testing.T) {
+	p := strings.Repeat("<<<<<<<<<\n", gate.MaxPrompt/11-1) // 11 bytes each as JSON
+	p += strings.Repeat("<", gate.MaxPrompt-gate.PromptLen(p))
+	stdin := os.Stdin
+	defer func() { os.Stdin = stdin }()
+	for _, tc := range []struct {
+		prompt string
+		over   bool
+	}{{p, false}, {p + "\n", true}} {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { w.WriteString(tc.prompt); w.Close() }()
+		os.Stdin = r
+		err = run([]string{"task", "new", "--agent", "a"})
+		r.Close()
+		if over := err != nil && strings.Contains(err.Error(), "over 64512 bytes as JSON"); over != tc.over || err == nil {
+			t.Fatalf("a prompt of %d bytes as JSON: %v", gate.PromptLen(tc.prompt), err)
+		}
+	}
+}
+
 // #198: an error or reply rootd sends can carry names a task chose; the CLI prints it with every terminal control
 // escaped, and a JSON reply still decodes to the same value.
 func TestPrintable(t *testing.T) {

@@ -67,9 +67,8 @@ func cmdAgentboxd(args []string) error {
 	return s.ServeControl(ctl)
 }
 
-// lineCall sends one JSON line on a Unix socket and returns the reply line.
-// encodeLine is req as one line with no HTML escaping: json.Marshal would turn each <, > and & in forwarded args into
-// 6 bytes, so a request the gate accepted could pass rootd.sock's line limit.
+// encodeLine is req as one line with no HTML escaping: json.Marshal would turn each <, > and & in forwarded args or a
+// task new prompt into 6 bytes, so a request the gate or the CLI accepted could pass rootd's line limit.
 func encodeLine(req any) []byte {
 	var b bytes.Buffer
 	e := json.NewEncoder(&b)
@@ -78,6 +77,7 @@ func encodeLine(req any) []byte {
 	return b.Bytes()
 }
 
+// lineCall sends one JSON line on a Unix socket and returns the reply line.
 func lineCall(sock string, req any, timeout time.Duration) ([]byte, error) {
 	c, err := net.DialTimeout("unix", sock, timeout)
 	if err != nil {

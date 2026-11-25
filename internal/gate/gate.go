@@ -66,8 +66,19 @@ type job struct {
 	cli, prompt string
 }
 
-// MaxPrompt is the longest prompt dispatch takes; rootd-admin.sock lines hold it with room to spare.
-const MaxPrompt = 64 << 10
+// MaxPrompt is the longest prompt dispatch takes, as PromptLen counts it. The dispatch line on svc-gate.sock, which
+// lines() cuts at MaxRequest, holds it with the other fields; rootd-admin.sock lines hold it with room to spare.
+const MaxPrompt = MaxRequest - 1<<10
+
+// PromptLen is p's length in a request line: a JSON string with no HTML escaping, as the CLI and rootd send it. A
+// newline or quote takes 2 bytes, another control byte 6, so the raw length alone can overflow the line.
+func PromptLen(p string) int {
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false)
+	e.Encode(p)
+	return b.Len() - 1 // Encode's '\n'
+}
 
 type task struct {
 	id, agent string
@@ -130,7 +141,7 @@ func (s *Server) sockPath(id string) string {
 // dispatch is rootd passing on a human's `agentbox task new` request (§4.2): agentboxd picks the task id, keeps the
 // prompt, and asks rootd to start the task with origin admin:<request>. rootd derives everything else.
 func (s *Server) dispatch(req, agent, cli, prompt string) map[string]any {
-	if !agentRe.MatchString(agent) || !taskRe.MatchString(req) || len(prompt) > MaxPrompt || !slices.Contains(s.CLIs, cli) {
+	if !agentRe.MatchString(agent) || !taskRe.MatchString(req) || PromptLen(prompt) > MaxPrompt || !slices.Contains(s.CLIs, cli) {
 		return map[string]any{"ok": false, "error": "bad dispatch: agent, request, prompt size or CLI"}
 	}
 	id := ids.New(ids.Task)

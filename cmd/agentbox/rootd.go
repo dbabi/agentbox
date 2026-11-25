@@ -125,8 +125,8 @@ func adminLine(req map[string]any, what string) ([]byte, error) {
 	}
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(5 * time.Minute)) // agent.add and agent.remove wait for agentbox-accounts.service
-	b, _ := json.Marshal(req)
-	if _, err := c.Write(append(b, '\n')); err != nil {
+	// encodeLine: a task new prompt full of '<' stays within rootd's line
+	if _, err := c.Write(encodeLine(req)); err != nil {
 		return nil, err
 	}
 	line, err := bufio.NewReader(c).ReadBytes('\n')
