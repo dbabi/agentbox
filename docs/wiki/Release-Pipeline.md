@@ -189,7 +189,8 @@ The seed installs `agentbox-firstboot.service` into generation 1. The unit runs 
 5. It unpacks the tarball and runs `install.sh --from-firstboot`.
 6. It starts `agentbox-reconcile.service`.
 7. It runs `agentbox os mark-last-good`. This confirms generation 1 as the committed generation.
-8. It writes `/var/lib/agentbox/.firstboot-done`.
+8. It starts the units a boot starts: the firewall and rootd, then auditd, agentboxd, ntfy, the sockets and the health timer. The boot planned its units before `install.sh` enabled these, so without this step they would wait for the next reboot.
+9. It writes `/var/lib/agentbox/.firstboot-done`.
 
 If the check in step 3 or step 4 fails, firstboot installs nothing. It logs one of these lines:
 
@@ -213,7 +214,7 @@ These unit settings control when firstboot runs:
 | Setting | Effect |
 |---|---|
 | `After=network-online.target`, `Wants=network-online.target` | It waits for the network. |
-| `ConditionPathExists=!/var/lib/agentbox/.firstboot-done` | It never runs again after step 8. |
+| `ConditionPathExists=!/var/lib/agentbox/.firstboot-done` | It never runs again after step 9. |
 | `Restart=on-failure`, `RestartSec=60`, `StartLimitIntervalSec=0` | After a failure, it tries again every 60 seconds, with no limit. |
 | `WantedBy=multi-user.target` | Until step 8, it also runs at every boot. |
 | `TimeoutStartSec=45min` | One attempt can take up to 45 minutes. |
@@ -252,10 +253,10 @@ It works in this order:
 3. It stages the release in `/var/lib/agentbox/releases/.<ver>.new` and syncs it to disk. Then it renames the directory to `/var/lib/agentbox/releases/<ver>`. So a release directory only ever appears complete.
 4. It points the `current` link at the new release. If `current` pointed at another release, the `previous` link now points there. Both links switch by rename.
 5. It copies the units to `/etc/systemd/system/`. systemd reads units before `/var/lib/agentbox` is mounted, so the copies must be on the root file system.
-6. It runs `systemctl daemon-reload`. Then it enables every shipped unit that has an `[Install]` section. Today these are `agentbox-health.timer` and `agentbox-reconcile.service`.
+6. It runs `systemctl daemon-reload`. Then it enables every shipped unit that has an `[Install]` section: the services, their sockets and the health timer. Firstboot starts them.
 7. It syncs again. A power cut then cannot leave firstboot marked done with empty unit files.
 
-`install.sh` is safe to re-run. The same version with the same content changes nothing. `install.sh` refuses the same version with different content:
+`install.sh` is safe to re-run. The same version with the same content changes nothing. Its package step holds service starts back with its own `/usr/sbin/policy-rc.d`. A run that a power cut or a kill stops there leaves that file, so the next run removes it and lets `dpkg --configure -a` finish the cut-off package step first. Any other `policy-rc.d` stops the package step. `install.sh` refuses the same version with different content:
 
 ```
 install.sh: release <ver> is already installed with different content
@@ -312,8 +313,8 @@ Designed, not built: reconcile will also rebuild agent accounts and the rest of 
 | `agentbox-firstboot.service` | the seed | Installs the release once. |
 | `agentbox-boot-deadline.service` | the seed | Reboots the box if the booted generation is still not committed after 900 seconds. See [Generations and Updates](Generations-and-Updates.md). |
 | `agentbox-reconcile.service` | the release | Runs reconcile once per boot: quotas and ntfy's setup. |
-| `agentbox-firewall.service` | the release | Loads the `inet agentbox` nftables table. Every agentbox unit requires it. |
-| `agentbox-health.timer` | the release | Starts `agentbox-health.service` 1 minute after boot, then every 50 seconds. |
+| `agentbox-firewall.service` | the release | Loads the `inet agentbox` nftables table, before the network comes up. Every other agentbox unit requires it. |
+| `agentbox-health.timer` | the release | Starts `agentbox-health.service` 1 minute after the timer starts (at boot, or at firstboot's step 8), then every 50 seconds. |
 | `agentbox-health.service` | the release | Runs `agentbox fwcheck --repair`, then `agentbox os health`. See [Generations and Updates](Generations-and-Updates.md). |
 | `agentbox-auditd.service`, `agentbox-rootd.service` and their sockets | the release | The audit daemon and the root daemon skeleton. See [Architecture](Architecture.md). |
 | `ntfy.service` | the `ntfy` package | `install.sh` installs the package, with its postinst start held back; reconcile configures and enables it. |

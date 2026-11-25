@@ -62,7 +62,7 @@ v5.2 resolves every round-5 architecture finding in the text, and schedules each
 ```
 
 ## 2. Services and sockets
-All agentbox services are subcommands of one Go 1.26 binary (✓ `golang-1.26` 1.26.8). Every unit sets `Requires=` and `After=agentbox-reconcile.service agentbox-firewall.service`.
+All agentbox services are subcommands of one Go 1.26 binary (✓ `golang-1.26` 1.26.8). Every unit sets `Requires=` and `After=agentbox-reconcile.service agentbox-firewall.service`, except the firewall itself. It needs nothing reconcile writes, so it loads before the network, and a failed reconcile can't keep the input chain out (§6.1).
 
 | Service | uid | Holds | Isolation | Notes |
 |---|---|---|---|---|
@@ -198,10 +198,11 @@ taskrun's Go module filter (§6.2) listens on `127.0.0.1:8083` inside the contai
   3. Install it with `install.sh --from-firstboot` to `/var/lib/agentbox/releases/<ver>/{bin/agentbox,systemd/}`. The release is staged, synced, then renamed into place, and `current` and `previous` switch by rename. Unit files are copied to `/etc/systemd/system`, because PID 1 loads units before `@var_lib_agentbox` is mounted. Every shipped unit with an `[Install]` section is enabled.
   4. Run `agentbox-reconcile`.
   5. Mark gen-1 last-good.
-  6. Write `.firstboot-done`.
+  6. Start what a boot starts: the firewall and rootd, then auditd, agentboxd, ntfy, the sockets and the timers. The boot's transaction was built before `install.sh` enabled them, so nothing else starts them until a reboot. rootd comes first because ntfy's `fwcheck` compares the sets rootd refills before READY=1.
+  7. Write `.firstboot-done`.
   - It runs from `RuntimeDirectory=agentbox-firstboot` (root-only, fresh on every start, removed when the unit stops) with `PrivateMounts=yes`, so the `subvolid=5` mount never leaks.
   - curl uses timeouts, 5 retries, `--proto-redir =https` and `--max-filesize 64M`: both files land in tmpfs `/run`, and `make release` refuses a bigger tarball. The unit has `TimeoutStartSec=45min`.
-  - Every step is idempotent, so `install.sh --from-firstboot` MUST be safe to re-run.
+  - Every step is idempotent, so `install.sh --from-firstboot` MUST be safe to re-run. Its apt step blocks service starts with its own `/usr/sbin/policy-rc.d`, removed by a trap on exit, `HUP`, `INT` and `TERM`. A power cut or `SIGKILL` leaves it, so a rerun removes a `policy-rc.d` with exactly its bytes and refuses any other one. Then `dpkg --configure -a` finishes what a cut-off apt step unpacked, before apt runs again.
   - On failure the unit retries every 60 s with no start limit (`Restart=on-failure`, `RestartSec=60`, `StartLimitIntervalSec=0`). A reboot retries too: the unit stays enabled until `.firstboot-done` exists.
   - The health check ships in the release, so it can't see this unit. Until `.firstboot-done` exists, a failing firstboot shows only in `systemctl status agentbox-firstboot` (`activating (auto-restart)`), `journalctl -u agentbox-firstboot` and the console.
   - **Built in weeks 1–2:** `make release`, `install.sh`, `agentbox-reconcile.service` and `agentbox os mark-last-good`.
@@ -799,9 +800,12 @@ Human CLI replies (`approval_stale`, `CACHE_PURGE_FAILED`) are not agent codes; 
 - **Stateful.** After the confined drop, established packets in the original direction are accepted. Port and destination rules judge only new connections. Reply-direction packets get no such accept, so a broker still can't answer an inbound connection (brokers have no listeners).
 - **Inbound.** The `input` chain drops by default. It accepts loopback, established and related traffic, `tailscale0`, Tailscale's direct UDP 41641, IPv6 neighbor discovery, DHCP replies, and SSH from `ssh_from4`/`ssh_from6`. Those two sets hold `/etc/agentbox/ssh-from`, which the seed's `--ssh-from` writes; with no file, the private LAN ranges, `100.64.0.0/10` and `fe80::/10`. fwcheck compares them to the file like the static sets. A `ufw` that is enabled later can only drop more: a packet must pass every input hook. Rootful Docker is unsupported: its published ports go through the forward hook, which agentbox does not filter.
 - **Firewall load.** `agentbox-firewall.service` runs `agentbox fw load`, one `nft -f` transaction (Appendix B). It adds the table, sets and chains if missing, flushes only the `output` and `input` chains, then writes the rules. There is no `destroy`, so a reload keeps every set's elements.
+  - Like the masked `nftables.service`, the unit has `DefaultDependencies=no` and orders `Before=network-pre.target`, so the input chain is in place before any interface comes up. It orders `After=local-fs.target` (its binary is on `@var_lib_agentbox`, and it may rewrite its files in `/etc`), `systemd-sysusers.service` and `systemd-sysctl.service`.
+  - It has no `Requires=` on reconcile: the ruleset names only the service users, `_ntfy` and the seed's `ssh-from`. So a failed reconcile keeps the agent-facing units down but not the input chain.
 - **rootd fills the sets.** rootd writes each element's row to rootd.db before it adds the element. On start it makes the sets match rootd.db (`port_allow` and the unexpired resolution answers, with their remaining timeout). Only then does it send READY=1. User managers, brokers and ntfy order after it.
 - **Firewall verification.** `agentbox-firewall.service` and `fwcheck` hash the **normalized stateless JSON** (`nft -j -s list table inet agentbox`, set elements excluded). fwcheck then compares each set's elements to the expected state, read read-only from rootd.db. Static sets must match exactly. Dynamic `*_dst` sets must be subsets of rootd's recorded answers, so an empty set passes.
-- **Runtime check.** `agentbox-health.timer` runs `fwcheck` every 60 s. On a mismatch it alerts and runs `systemctl restart agentbox-firewall.service`. `Requires=` then restarts rootd, the brokers and the agent user managers, so a flushed or edited table is restored within about 60 s.
+- **Runtime check.** `agentbox-health.timer` runs `fwcheck` every 60 s. On a mismatch, or with `agentbox-firewall.service` failed, it alerts and runs `systemctl restart agentbox-firewall.service`. `Requires=` then restarts rootd, the brokers and the agent user managers, so a flushed or edited table is restored within about 60 s.
+  - A restart restarts only the units that run, so it then starts rootd, then auditd, agentboxd and ntfy: an earlier failed load stopped them. An agent's user manager starts again with its next task or attach.
 - **Stock `nftables.service` is masked** at install (§3.1). Its config starts with `flush ruleset`, and its `ExecStop` runs `nft flush ruleset` ✓.
 - No ruleset change for denials. nft never logs to agents, and a drop stays silent. Structured refusals come from the brokers (§5.6). A broker dial that nft drops ends in `EPERM` or in the 10 s dial budget, which becomes `EGRESS_DIAL_FAILED` or `KEYS_UPSTREAM`.
 
@@ -1121,6 +1125,8 @@ Human CLI replies (`approval_stale`, `CACHE_PURGE_FAILED`) are not agent codes; 
 | systemd-resolved down | Brokers can't resolve new destinations. Existing set entries expire, then everything fails closed. |
 | proxy, keys or git down | That capability is lost; alert. The task's forwarder retries for 5 s, then answers 503 `BROKER_UNAVAILABLE`, so clients don't hang. |
 | Firewall check fails | No agent or app user managers start. |
+| Firewall load fails | Every unit that `Requires=` it stays down. The health timer's `fwcheck` restarts the failed unit, then starts rootd, auditd, agentboxd and ntfy. Alert. |
+| Reconcile fails | The agent-facing units stay down. The firewall still loads, input chain included (§6.1). |
 | Table flushed or edited at runtime | The next `fwcheck` (at most 60 s later) fails. The firewall is reloaded, and rootd, the brokers and the user managers restart; running tasks are killed. Alert. |
 | Agent quota full (`1/N`) | That agent's writes fail with `EDQUOT`; alert. Agents can't create subvolumes outside `1/N`. `cache.purge{agent}` frees the cache share. |
 | Shared stores full (`2/0` limit) | Agent and app writes fail; new dispatch is already paused at 92%. Audit, `taint.db` and `rootd.db` keep the reserve, so admin ops still execute; alert. |
@@ -1528,7 +1534,7 @@ autoinstall:
       chroot /mnt/new update-grub
       grep -qF -- "--id 'agentbox-gen-1-$KV'" /mnt/new/boot/grub/grub.cfg # an unknown saved_entry silently boots entry 0
       chroot /mnt/new grub-editenv /boot/grub/grubenv set saved_entry="agentbox-gen-1-$KV"
-      # 5. firstboot: cleanup -> verify (sha256 pin, then minisign) -> install -> reconcile -> last-good -> done
+      # 5. firstboot: cleanup -> verify (sha256 pin, then minisign) -> install -> reconcile -> last-good -> start -> done
       install -m 0755 /dev/stdin /mnt/new/usr/local/sbin/agentbox-firstboot <<'FB'
       #!/bin/sh
       set -eu
@@ -1549,6 +1555,11 @@ autoinstall:
       "$D/x/install.sh" --from-firstboot
       systemctl start agentbox-reconcile.service
       /var/lib/agentbox/current/bin/agentbox os mark-last-good
+      # this boot's transaction came before install.sh enabled the units: start what a boot starts, or the box runs
+      # with no firewall, rootd, ntfy or health timer until its first reboot (#218). The firewall and rootd first:
+      # rootd's READY=1 waits for the sets that ntfy's fwcheck compares
+      systemctl start agentbox-firewall.service agentbox-rootd.service
+      systemctl start agentbox-auditd.service agentboxd.service ntfy.service sockets.target timers.target
       touch /var/lib/agentbox/.firstboot-done
       FB
       printf '%s\n' 'AGENTBOX_RELEASE_URL=<RELEASE_URL>' 'AGENTBOX_RELEASE_SHA256=<RELEASE_SHA256>' 'AGENTBOX_MINISIGN_PUBKEY=<MINISIGN_PUBKEY>' \

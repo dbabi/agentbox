@@ -221,7 +221,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 | `agentbox-boot-deadline.service` | the seed | Reboots an uncommitted generation after 900 s. |
 | `agentbox-reconcile.service` | the release | Re-applies agentbox's control state to the booted generation: the quota groups, the agent accounts, ntfy's config, ACLs and unit drop-in, and a systemd-networkd drop-in for every network config that records the NAT64 prefixes routers announce. |
 | `agentbox-accounts.service` | the release | Writes the agent accounts from rootd's `ids` table into `/etc`: users, groups, sub-id lines and the systemd drop-ins. |
-| `agentbox-firewall.service` | the release | Loads the `inet agentbox` nftables table. Every agentbox unit `Requires=` it. |
+| `agentbox-firewall.service` | the release | Loads the `inet agentbox` nftables table before the network comes up. Every other agentbox unit `Requires=` it. It needs nothing from reconcile, so a failed reconcile keeps the agents down but not the firewall. |
 | `agentbox-health.service`, `agentbox-health.timer` | the release | Every 50 s: `agentbox fwcheck --repair`, then `agentbox os health`. |
 | `agentbox-auditd.service` and its sockets | the release | The audit daemon. Socket-activated: one socket per producer (agentboxd, rootd, proxy, keys, git). |
 | `agentbox-rootd.service` and its sockets | the release | The root daemon: agent accounts, task start and stop, attach sessions, the resolver sockets for the three brokers, the admin socket, and the seal socket auditd calls. |
@@ -555,6 +555,8 @@ Root access is the approval.
 Built today (milestone 2): `agentbox fw load` adds the table as one add-only transaction, so a reload keeps every element rootd added.
 `fwcheck` runs from the health timer every 50 s, and from each agent-side unit's `ExecStartPre=`.
 On a mismatch it prints `agentbox: ALERT: firewall altered`, sends an ntfy alert, and restarts the firewall unit, which restarts every unit that `Requires=` it.
+A failed firewall unit counts as a mismatch too. After the restart, `fwcheck` starts rootd, auditd, agentboxd and ntfy, so the ones a failed load stopped come back.
+An agent's user manager comes back with its next task or attach.
 An input chain drops inbound traffic by default.
 It accepts loopback, replies to the box's own connections, the `tailscale0` interface, Tailscale's direct UDP port 41641, IPv6 neighbor discovery and DHCP replies.
 It accepts SSH only from the prefixes in `/etc/agentbox/ssh-from`, which the seed's `--ssh-from` writes.
