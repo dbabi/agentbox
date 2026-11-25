@@ -8,9 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"agentbox/internal/gate"
@@ -176,5 +181,51 @@ func TestPrintable(t *testing.T) {
 	var back map[string]string
 	if out := printable(string(line)); strings.ContainsAny(out, "\u009b\u202e\U000e0001") || json.Unmarshal([]byte(out), &back) != nil || back["path"] != hits["path"] {
 		t.Fatalf("printable(%s) = %s: decodes to %q", line, out, back)
+	}
+}
+
+// #213: fwcheck --repair, os health and os apply send their ALERTs to ntfy's alert topic with fixed text. A keyed
+// condition goes out once, and again after alertClear; a send that fails leaves it to the next run.
+func TestAlert(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "alert") // sun_path is 104 bytes on macOS: t.TempDir is too long
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	sock, tok, marks := alertSock, alertToken, alertDir
+	defer func() { alertSock, alertToken, alertDir = sock, tok, marks }()
+	alertSock, alertToken, alertDir = filepath.Join(dir, "ntfy.sock"), filepath.Join(dir, "token"), filepath.Join(dir, "alerts")
+	if err := os.WriteFile(alertToken, []byte("tk_x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alert("firewall", "agentbox: firewall", "down") // ntfy isn't up yet
+	if _, err := os.Stat(filepath.Join(alertDir, "firewall")); err == nil {
+		t.Fatal("a failed send marked the condition as alerted")
+	}
+	var mu sync.Mutex
+	var got []string
+	l, err := net.Listen("unix", alertSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = append(got, r.URL.Path+" "+r.Header.Get("Authorization")+" "+r.Header.Get("Title")+": "+string(b))
+		mu.Unlock()
+	})}
+	go srv.Serve(l)
+	defer srv.Close()
+	alert("firewall", "agentbox: firewall", "altered")
+	alert("firewall", "agentbox: firewall", "altered") // the next health run: still altered
+	alert("", "agentbox: os apply", "discarded")
+	alert("", "agentbox: os apply", "discarded")
+	alertClear("firewall")
+	alert("firewall", "agentbox: firewall", "altered")
+	mu.Lock()
+	defer mu.Unlock()
+	f, o := "/agentbox-alerts Bearer tk_x agentbox: firewall: altered", "/agentbox-alerts Bearer tk_x agentbox: os apply: discarded"
+	if want := []string{f, o, o, f}; !slices.Equal(got, want) {
+		t.Fatalf("sent %q, want %q", got, want)
 	}
 }

@@ -43,6 +43,7 @@ func cmdOS(args []string) error {
 		return syscall.Exec(unshare, argv, append(os.Environ(), "AGENTBOX_OS_NS=1"))
 	}
 	gens.AfterDelete = qgroupCheck
+	gens.Alert = func(title, msg string) { alert("", title, msg) }
 	fs := flag.NewFlagSet("os "+args[0], flag.ContinueOnError)
 	switch args[0] {
 	case "plan":
@@ -144,6 +145,7 @@ func qgroupCheck(ids []string) error {
 	}
 	if err = errors.Join(err, cerr); err != nil {
 		fmt.Fprintf(os.Stderr, "agentbox: ALERT: qgroups not checked after deleting subvolumes %s: %v %s\n", strings.Join(ids, " "), err, bytes.TrimSpace(line))
+		alert("", "agentbox: disk quotas", "qgroups were not checked after agentbox os deleted generation subvolumes, so the disk reserve may limit nothing until rootd's 5-minute check")
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "os: qgroups checked after deleting subvolumes %s: %s\n", strings.Join(ids, " "), bytes.TrimSpace(line))
@@ -201,10 +203,15 @@ func osHealth() error {
 	}
 	if c, err := gens.CommittedEntry(); err != nil || c != gens.Entry(gen, k) {
 		fmt.Fprintf(os.Stderr, "agentbox: ALERT: booted %s is not the committed %q (%v); the boot deadline returns to it\n", gens.Entry(gen, k), c, err)
+		alert("uncommitted-boot", "agentbox: health", "the box booted a generation that is not the committed one: the boot deadline reboots into the committed one")
 		return nil // update-grub runs only the committed generation's grub.d
 	}
+	alertClear("uncommitted-boot")
 	if len(bad) > 0 {
 		fmt.Fprintln(os.Stderr, "agentbox: ALERT: the committed generation is unhealthy (see above)")
+		alert("unhealthy", "agentbox: health", "the committed generation is unhealthy: journalctl -u agentbox-health.service names the failed checks")
+	} else {
+		alertClear("unhealthy")
 	}
 	return gens.FixGrub()
 }

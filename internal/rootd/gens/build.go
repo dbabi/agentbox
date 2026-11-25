@@ -316,6 +316,7 @@ func Build(hash, top string) (*Pending, error) {
 	pend, err := build(p, hash, root, boot, m, sums)
 	if err != nil && pend == nil {
 		fmt.Fprintf(os.Stderr, "agentbox: ALERT: build %s discarded: %v\n", m, err)
+		alert("agentbox: os apply", "os apply discarded the generation it was building: the box keeps running the committed one")
 		id, derr := discard(top, m)
 		if derr != nil {
 			return nil, fmt.Errorf("%v; discarding %s failed too: %v", err, m, derr)

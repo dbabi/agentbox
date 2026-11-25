@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -48,6 +49,9 @@ func cmdFWCheck(args []string) error {
 	}
 	bad, err := fwCheck()
 	if err == nil && len(bad) == 0 {
+		if *repair {
+			alertClear("firewall")
+		}
 		return nil
 	}
 	if err != nil {
@@ -57,6 +61,8 @@ func cmdFWCheck(args []string) error {
 		return errors.New("fwcheck: " + strings.Join(bad, "; "))
 	}
 	fmt.Fprintf(os.Stderr, "agentbox: ALERT: firewall altered: %s; restarting agentbox-firewall.service\n", strings.Join(bad, "; "))
+	// before the restart, which restarts ntfy too (Requires=)
+	alert("firewall", "agentbox: firewall", "the firewall was altered at runtime: fwcheck restarts it, and with it rootd, the brokers and the agents, which kills running tasks")
 	if out, err := exec.Command("systemctl", "restart", "agentbox-firewall.service").CombinedOutput(); err != nil {
 		return fmt.Errorf("fwcheck: restart agentbox-firewall.service: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -64,6 +70,7 @@ func cmdFWCheck(args []string) error {
 	for i := 0; i < 15; i++ {
 		if bad, err = fwCheck(); err == nil && len(bad) == 0 {
 			fmt.Fprintln(os.Stderr, "agentbox: firewall restored")
+			alertClear("firewall")
 			return nil
 		}
 		time.Sleep(time.Second)
@@ -82,3 +89,39 @@ func fwCheck() ([]string, error) {
 	}
 	return bad, err
 }
+
+// alertDir holds one empty file per standing condition whose alert went out. It is on tmpfs, so each boot alerts again.
+var alertDir = "/run/agentbox-alerts"
+
+// alertSock and alertToken are ntfy's socket and agentbox's token for it; tests point them at a stand-in.
+var alertSock, alertToken = ntfy.Socket, ntfy.TokenPath
+
+// alert sends an ALERT on to the human through ntfy, as rootd does, with fixed text: the caller printed the details
+// for the journal. A keyed alert names a condition the 50 s health timer sees at each run: it goes out once, and again
+// only after alertClear(key). A failed send is printed, and a keyed one is retried at the next run.
+func alert(key, title, msg string) {
+	mark := filepath.Join(alertDir, key)
+	if key != "" {
+		if _, err := os.Stat(mark); err == nil {
+			return
+		}
+	}
+	if err := ntfy.Publish(alertSock, alertToken, ntfy.AlertTopic, title, msg); err != nil {
+		fmt.Fprintf(os.Stderr, "agentbox: alert not sent: %v\n", err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "agentbox: alert sent:", msg)
+	if key == "" {
+		return
+	}
+	err := os.MkdirAll(alertDir, 0o700)
+	if err == nil {
+		err = os.WriteFile(mark, nil, 0o600)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agentbox: %v: the next run alerts again\n", err)
+	}
+}
+
+// alertClear ends key's condition, so its next ALERT goes out.
+func alertClear(key string) { os.Remove(filepath.Join(alertDir, key)) }
