@@ -7,16 +7,20 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 )
 
-// Fake gh, git and go for sign-release.sh. gh serves the draft from $REL, logs every call, exits $ATTEST_EXIT for
-// attestation verify, and counts $CI_RUNS or $RELEASE_RUNS successful push runs, none unless asked for $COMMIT; git
-// clones nothing and resolves the tag to $TAG_COMMIT; go logs its arguments and environment and "builds" by copying
-// CI's tarball, or by writing $REBUILD instead.
+// Fake gh, git, go, sudo and ps for sign-release.sh. gh serves the draft from $REL, logs every call, exits $ATTEST_EXIT
+// for attestation verify, and counts $CI_RUNS or $RELEASE_RUNS successful push runs, none unless asked for $COMMIT;
+// git clones only a .clone file that names the clone's path, and resolves the tag to $TAG_COMMIT; go logs its arguments
+// and environment and "builds" by copying CI's tarball, or by writing $REBUILD instead (with $SWAP, over CI's own copy
+// too), and exits $GO_EXIT. sudo stands in for the build user, the user nobody: while the command runs, $KEYFILE can't
+// be read and $BIN can't be written, and ps shows the command on a terminal of its own; $SHARE lists what it shares
+// with you instead.
 var signFakes = map[string]string{
 	"gh": `echo "gh $*" >> "$LOG"
 case "$1 $2" in
@@ -27,15 +31,30 @@ case "$1 $2" in
 "release upload") cp "$6" "$OUT"/ ;; # release upload <tag> -R <repo> <file>
 esac`,
 	"git": `for a; do d=$a; done
-case "$1 $3" in clone*) mkdir -p "$d" ;; "-C rev-parse") echo "$TAG_COMMIT" ;; esac`,
+case "$1 $3" in clone*) mkdir -p "$d" && echo "$d" > "$d/.clone" ;; "-C rev-parse") echo "$TAG_COMMIT" ;; esac`,
 	"go": `echo "go $*" >> "$LOG"; env >> "$LOG.env"
+[ -f .clone ] && echo "go: in a copy of the clone" >> "$LOG"
 while [ $# -gt 0 ]; do [ "$1" = -out ] && o=$2; shift; done; mkdir -p "$o" && cp "$REL"/*.tgz "$o"/
-[ -z "$REBUILD" ] || printf %s "$REBUILD" > "$o"/agentbox-1.0.0.tgz`,
+[ -z "$REBUILD" ] || printf %s "$REBUILD" > "$o"/agentbox-1.0.0.tgz
+[ -z "$SWAP" ] || printf %s "$REBUILD" > "$(dirname "$(cat .clone)")"/ci/agentbox-1.0.0.tgz
+exit "${GO_EXIT:-0}"`,
+	"sudo": `echo "sudo $1 $2 $3 $4 $5" >> "$LOG" # not the script after them, which names go run
+[ "$1 $2 $3 $4" = "-u nobody env -i" ] || exit 1
+shift 4
+case " $SHARE " in *" key "*) ;; *) chmod 0 "$KEYFILE" ;; esac
+case " $SHARE " in *" bin "*) ;; *) chmod a-w "$BIN" ;; esac
+case " $SHARE " in *" tty "*) t=$FAKE_TTY ;; *) t=pts/9 ;; esac
+env -i FAKE_TTY="$t" LOG="$LOG" REL="$REL" REBUILD="$REBUILD" SWAP="$SWAP" GO_EXIT="$GO_EXIT" "$@"; r=$?
+chmod 600 "$KEYFILE"; chmod 755 "$BIN"
+exit $r`,
+	"ps": `echo "$FAKE_TTY"`,
 }
 
 // TestSignReleaseFailsClosed runs sign-release.sh against a fake draft with a throwaway key. It publishes only when
 // the draft matches SHA256SUMS and the tag, has provenance, ci and release passed on the commit, the tag points at it,
-// the rebuild is byte-identical, the key matches the committed public key, and the signature verifies with it.
+// the rebuild is byte-identical, the key matches the committed public key, and the signature verifies with it. The
+// rebuild runs through sudo as the build user, and only if that user can't read the key, write a directory on PATH or
+// use your terminal; it gets a copy of the clone and none of your environment.
 func TestSignReleaseFailsClosed(t *testing.T) {
 	ms, err := exec.LookPath("minisign")
 	if err != nil {
@@ -43,6 +62,13 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 			t.Fatal("CI needs minisign")
 		}
 		t.Skip("minisign not installed")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root reads any file, so the fake sudo's chmod can't stand in for another user")
+	}
+	me, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
 	}
 	dir := t.TempDir()
 	genKey := func(name string) (key, pub string) {
@@ -66,25 +92,7 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 	forgedPub := filepath.Join(dir, "forged.pub")
 	os.WriteFile(forgedPub, []byte(strings.Join(lines, "\n")), 0o644)
 
-	// a draft in its own dir, with one file changed from the good one
-	draft := func(name, file string, b []byte) string {
-		rel := filepath.Join(dir, name)
-		os.Mkdir(rel, 0o755)
-		tgz := []byte("not really a tarball")
-		os.WriteFile(filepath.Join(rel, "agentbox-1.0.0.tgz"), tgz, 0o644)
-		os.WriteFile(filepath.Join(rel, "SHA256SUMS"), fmt.Appendf(nil, "%x  agentbox-1.0.0.tgz\n", sha256.Sum256(tgz)), 0o644)
-		os.WriteFile(filepath.Join(rel, "BUILDINFO"), []byte("commit 0123abc\ngo go1.26.11\nversion 1.0.0\n"), 0o644)
-		if file != "" {
-			os.WriteFile(filepath.Join(rel, file), b, 0o644)
-		}
-		return rel
-	}
-	rel := draft("rel", "", nil)
-	bin := filepath.Join(dir, "bin")
-	os.Mkdir(bin, 0o755)
-	for name, body := range signFakes {
-		os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
-	}
+	rel := signDraft(t, dir, "rel", "", nil)
 	script, err := os.ReadFile("sign-release.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +100,12 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 
 	// env: KEY=value entries that override the fakes' defaults
 	run := func(t *testing.T, committed string, env ...string) (log, envs, stderr string, sig string, err error) {
-		root, out := t.TempDir(), t.TempDir()
+		root, out, bin := t.TempDir(), t.TempDir(), t.TempDir()
+		for name, body := range signFakes {
+			os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
+		}
+		// a PATH with no directory that this user can write but bin, which the fake sudo locks
+		os.Symlink(ms, filepath.Join(bin, "minisign"))
 		os.MkdirAll(filepath.Join(root, "hack"), 0o755)
 		os.MkdirAll(filepath.Join(root, "keys"), 0o755)
 		os.WriteFile(filepath.Join(root, "hack", "sign-release.sh"), script, 0o755)
@@ -100,9 +113,10 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 		os.WriteFile(filepath.Join(root, "keys", "release-minisign.pub"), cp, 0o644)
 		logf := filepath.Join(out, "log")
 		cmd := exec.Command("sh", filepath.Join(root, "hack", "sign-release.sh"), "v1.0.0")
-		cmd.Env = append(append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "HOME="+out,
-			"TMPDIR="+out, "MINISIGN_KEY="+key, "LOG="+logf, "REL="+rel, "OUT="+out, "COMMIT=0123abc", "TAG_COMMIT=0123abc",
-			"ATTEST_EXIT=0", "CI_RUNS=1", "RELEASE_RUNS=1", "REBUILD="), env...)
+		cmd.Env = append(append(os.Environ(), "PATH="+bin+":/usr/bin:/bin:/usr/sbin:/sbin", "HOME="+out, "TMPDIR="+out,
+			"MINISIGN_KEY="+key, "AGENTBOX_BUILD_USER=nobody", "KEYFILE="+key, "BIN="+bin, "FAKE_TTY=pts/1", "SHARE=",
+			"LOG="+logf, "REL="+rel, "OUT="+out, "COMMIT=0123abc", "TAG_COMMIT=0123abc", "ATTEST_EXIT=0", "CI_RUNS=1",
+			"RELEASE_RUNS=1", "REBUILD=", "SWAP=", "GO_EXIT="), env...)
 		var e bytes.Buffer
 		cmd.Stderr = &e
 		err = cmd.Run()
@@ -131,14 +145,17 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 		if !strings.Contains(log, "release edit v1.0.0 -R dbabi/agentbox --draft=false") {
 			t.Errorf("never published:\n%s", log)
 		}
-		for _, f := range []string{"--signer-workflow dbabi/agentbox/.github/workflows/release.yml", "--source-ref refs/tags/v1.0.0", "--source-digest 0123abc", "go run ./hack/release -unsigned"} {
+		for _, f := range []string{"--signer-workflow dbabi/agentbox/.github/workflows/release.yml", "--source-ref refs/tags/v1.0.0",
+			"--source-digest 0123abc", "sudo -u nobody env -i PATH=", "go run ./hack/release -unsigned", "go: in a copy of the clone"} {
 			if !strings.Contains(log, f) {
 				t.Errorf("no %q in the calls:\n%s", f, log)
 			}
 		}
-		// the tagged code's build never sees the secret key path
-		if strings.Contains(env, key) || strings.Contains(log, key) {
-			t.Errorf("the rebuild got the key path %s", key)
+		// the tagged code's build gets none of your environment: not the key path, your HOME or the fakes' settings
+		for _, s := range []string{key, "HOME=" + filepath.Dir(sig) + "\n", "TAG_COMMIT="} {
+			if strings.Contains(env, s) {
+				t.Errorf("the rebuild's environment has %q:\n%s", s, env)
+			}
 		}
 		if b, err := exec.Command(ms, "-V", "-p", pub, "-m", filepath.Join(rel, "agentbox-1.0.0.tgz"), "-x", sig).CombinedOutput(); err != nil {
 			t.Errorf("uploaded signature does not verify: %v\n%s", err, b)
@@ -154,12 +171,20 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 		{"no ci run", pub, "no successful ci workflow run", []string{"CI_RUNS=0"}, false},
 		{"no release run", pub, "no successful release workflow run", []string{"RELEASE_RUNS=0"}, false},
 		{"no provenance", pub, "no valid GitHub build provenance", []string{"ATTEST_EXIT=1"}, false},
-		{"tarball not in SHA256SUMS", pub, "does not match SHA256SUMS", []string{"REL=" + draft("sums", "SHA256SUMS",
+		{"tarball not in SHA256SUMS", pub, "does not match SHA256SUMS", []string{"REL=" + signDraft(t, dir, "sums", "SHA256SUMS",
 			fmt.Appendf(nil, "%x  agentbox-1.0.0.tgz\n", sha256.Sum256([]byte("another tarball"))))}, false},
-		{"version not the tag", pub, "BUILDINFO version 1.0.1 does not match tag v1.0.0", []string{"REL=" + draft("version",
+		{"version not the tag", pub, "BUILDINFO version 1.0.1 does not match tag v1.0.0", []string{"REL=" + signDraft(t, dir, "version",
 			"BUILDINFO", []byte("commit 0123abc\ngo go1.26.11\nversion 1.0.1\n"))}, false},
 		{"tag elsewhere", pub, "tag v1.0.0 does not point at 0123abc", []string{"TAG_COMMIT=4567def"}, false},
 		{"rebuild differs", pub, "differs from CI's", []string{"REBUILD=another tarball"}, true},
+		{"rebuild fails", pub, "the rebuild as nobody failed", []string{"GO_EXIT=1"}, true},
+		// the tagged code writes its bytes over CI's tarball too: only the hash taken before the rebuild tells them apart
+		{"rebuild rewrites CI's tarball", pub, "differs from CI's", []string{"REBUILD=another tarball", "SWAP=1"}, true},
+		{"no build user", pub, "no user no-such-user-216", []string{"AGENTBOX_BUILD_USER=no-such-user-216"}, false},
+		{"build user is you", pub, "is root or you", []string{"AGENTBOX_BUILD_USER=" + me.Username}, false},
+		{"build user reads the key", pub, "can read " + key, []string{"SHARE=key"}, false},
+		{"build user writes PATH", pub, "can write ", []string{"SHARE=bin"}, false},
+		{"build user on your terminal", pub, "runs on your terminal", []string{"SHARE=tty"}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			log, _, stderr, _, err := run(t, c.committed, c.env...)
@@ -168,6 +193,87 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 				t.Errorf("built before refusing:\n%s", log)
 			}
 		})
+	}
+}
+
+// signDraft writes a draft in its own dir, with one file changed from the good one.
+func signDraft(t *testing.T, dir, name, file string, b []byte) string {
+	t.Helper()
+	rel := filepath.Join(dir, name)
+	os.Mkdir(rel, 0o755)
+	tgz := []byte("not really a tarball")
+	os.WriteFile(filepath.Join(rel, "agentbox-1.0.0.tgz"), tgz, 0o644)
+	os.WriteFile(filepath.Join(rel, "SHA256SUMS"), fmt.Appendf(nil, "%x  agentbox-1.0.0.tgz\n", sha256.Sum256(tgz)), 0o644)
+	os.WriteFile(filepath.Join(rel, "BUILDINFO"), []byte("commit 0123abc\ngo go1.26.11\nversion 1.0.0\n"), 0o644)
+	if file != "" {
+		os.WriteFile(filepath.Join(rel, file), b, 0o644)
+	}
+	return rel
+}
+
+// TestSignReleaseBuildUser runs sign-release.sh with the real sudo, where it can run commands as the user nobody with
+// no password (CI). The fake go runs there as the tagged code would, and tries to read the key and to put a fake
+// minisign on PATH; neither works, and the release publishes. With the key readable by that user, the script refuses
+// before the rebuild.
+func TestSignReleaseBuildUser(t *testing.T) {
+	ms, err := exec.LookPath("minisign")
+	if err == nil && exec.Command("sudo", "-n", "-u", "nobody", "true").Run() != nil {
+		err = fmt.Errorf("sudo can't run commands as nobody without a password")
+	}
+	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("CI needs minisign, and sudo to nobody with no password: %v", err)
+		}
+		t.Skip(err)
+	}
+	keys, bin, rel, out := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	// the user nobody may reach bin and the draft, not the key or this test's output
+	for _, d := range []string{filepath.Dir(bin), bin, rel} {
+		os.Chmod(d, 0o755)
+	}
+	key, pub := filepath.Join(keys, "k.key"), filepath.Join(keys, "k.pub")
+	if b, err := exec.Command(ms, "-G", "-W", "-s", key, "-p", pub).CombinedOutput(); err != nil {
+		t.Fatalf("minisign -G: %v\n%s", err, b)
+	}
+	tgz := []byte("not really a tarball")
+	os.WriteFile(filepath.Join(rel, "agentbox-1.0.0.tgz"), tgz, 0o644)
+	os.WriteFile(filepath.Join(rel, "SHA256SUMS"), fmt.Appendf(nil, "%x  agentbox-1.0.0.tgz\n", sha256.Sum256(tgz)), 0o644)
+	os.WriteFile(filepath.Join(rel, "BUILDINFO"), []byte("commit 0123abc\ngo go1.26.11\nversion 1.0.0\n"), 0o644)
+	os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\n"+signFakes["gh"]+"\n"), 0o755)
+	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\n"+signFakes["git"]+"\n"), 0o755)
+	os.WriteFile(filepath.Join(bin, "go"), fmt.Appendf(nil, `#!/bin/sh
+echo "rebuild: runs as $(id -un)" >&2
+cat %[1]q >/dev/null 2>&1 && echo "rebuild: read the key" >&2
+touch %[2]q/minisign 2>/dev/null && echo "rebuild: put a minisign on PATH" >&2
+while [ $# -gt 0 ]; do [ "$1" = -out ] && o=$2; shift; done; mkdir -p "$o" && cp %[3]q/agentbox-1.0.0.tgz "$o"/
+`, key, bin, rel), 0o755)
+	root := filepath.Join(out, "checkout")
+	os.MkdirAll(filepath.Join(root, "hack"), 0o755)
+	os.MkdirAll(filepath.Join(root, "keys"), 0o755)
+	script, _ := os.ReadFile("sign-release.sh")
+	os.WriteFile(filepath.Join(root, "hack", "sign-release.sh"), script, 0o755)
+	cp, _ := os.ReadFile(pub)
+	os.WriteFile(filepath.Join(root, "keys", "release-minisign.pub"), cp, 0o644)
+	run := func() (string, error) {
+		cmd := exec.Command("sh", filepath.Join(root, "hack", "sign-release.sh"), "v1.0.0")
+		cmd.Dir = "/" // the user nobody may not be able to open this test's working directory
+		cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "HOME="+out, "TMPDIR="+out, "MINISIGN_KEY="+key,
+			"AGENTBOX_BUILD_USER=nobody", "LOG="+filepath.Join(out, "log"), "REL="+rel, "OUT="+out, "COMMIT=0123abc",
+			"TAG_COMMIT=0123abc", "ATTEST_EXIT=0", "CI_RUNS=1", "RELEASE_RUNS=1")
+		b, err := cmd.CombinedOutput()
+		return string(b), err
+	}
+	b, err := run()
+	if err != nil || !strings.Contains(b, "rebuild: runs as nobody") || strings.Contains(b, "rebuild: read") || strings.Contains(b, "rebuild: put") {
+		t.Fatalf("%v\n%s", err, b)
+	}
+	if b, err := exec.Command(ms, "-V", "-p", pub, "-m", filepath.Join(rel, "agentbox-1.0.0.tgz"), "-x", filepath.Join(out, "agentbox-1.0.0.tgz.minisig")).CombinedOutput(); err != nil {
+		t.Errorf("uploaded signature does not verify: %v\n%s", err, b)
+	}
+	os.Chmod(keys, 0o755)
+	os.Chmod(key, 0o644)
+	if b, err := run(); err == nil || !strings.Contains(b, "nobody can read "+key) || strings.Contains(b, "rebuild: runs") {
+		t.Errorf("a key that the user nobody can read: %v\n%s", err, b)
 	}
 }
 
