@@ -30,7 +30,7 @@ const (
 	BlobMismatch   = "IMAGE_BLOB_MISMATCH"    // a blob, size or diff_id differs from what the manifest or config says
 	BadEnv         = "IMAGE_ENV"              // an Env entry with no '=' or a '*' in its name (CVE-2026-57231)
 	AutoUpdate     = "IMAGE_AUTOUPDATE_LABEL" // io.containers.autoupdate* (CVE-2026-121885)
-	Workdir        = "IMAGE_WORKDIR"          // a relative WORKDIR, or one that resolves through a symlink (CVE-2026-55686)
+	Workdir        = "IMAGE_WORKDIR"          // a WORKDIR not a clean absolute path, or one that can resolve through a symlink (CVE-2026-55686)
 	User           = "IMAGE_USER"             // a USER: tasks run --userns=keep-id, which podman 5.7 lets the image USER override
 	Checkpoint     = "IMAGE_CHECKPOINT"       // a checkpoint annotation or label (CVE-2026-94603)
 	maxJSON        = 1 << 20
@@ -222,7 +222,7 @@ func Check(p string) (Image, error) {
 	if err := Lint(c.Config); err != nil {
 		return Image{}, err
 	}
-	wd := path.Clean(c.Config.WorkingDir)
+	wd := c.Config.WorkingDir // clean: Lint refused it otherwise
 	// pass 2: each layer's diff_id, and what it does to WORKDIR and the dirs above it
 	layers := map[string]*layerFacts{}
 	err = walk(p, func(name string, r io.Reader) error {
@@ -240,7 +240,7 @@ func Check(p string) (Image, error) {
 	if err != nil {
 		return Image{}, err
 	}
-	var fs map[string]byte // the merged type of WORKDIR and each dir above it: '2' a symlink, '5' a dir, '0' a file
+	var fs map[string]byte // the merged type of WORKDIR and each dir above it: '2' a symlink, '1' a hard link, '5' a dir, '0' a file
 	for i, l := range m.Layers {
 		f := layers[l.Digest]
 		if f == nil {
@@ -249,12 +249,15 @@ func Check(p string) (Image, error) {
 		if f.diffID != c.RootFS.DiffIDs[i] {
 			return Image{}, refuse(BlobMismatch, "layer %d: diff_id %s, the config says %.80s", i, f.diffID, c.RootFS.DiffIDs[i])
 		}
+		if f.through != "" {
+			return Image{}, refuse(Workdir, "layer %d writes %.80q below its own symlink or hard link, so it can put a symlink on WORKDIR %.80q", i, f.through, wd)
+		}
 		fs = f.apply(fs)
 	}
-	if c.Config.WorkingDir != "" {
+	if wd != "" {
 		for q := wd; q != "/"; q = path.Dir(q) {
-			if fs[q] == tar.TypeSymlink {
-				return Image{}, refuse(Workdir, "WORKDIR %.80q resolves through the symlink %.80q", c.Config.WorkingDir, q)
+			if t := fs[q]; t == tar.TypeSymlink || t == tar.TypeLink { // link(2) does not follow a symlink: a hard link can be one
+				return Image{}, refuse(Workdir, "WORKDIR %.80q resolves through the symlink or hard link %.80q", wd, q)
 			}
 		}
 	}
@@ -281,8 +284,9 @@ func Lint(c RunConfig) error {
 	if c.User != "" {
 		return refuse(User, "USER %.80q: tasks run as the agent uid under keep-id", c.User)
 	}
-	if c.WorkingDir != "" && !path.IsAbs(c.WorkingDir) {
-		return refuse(Workdir, "WORKDIR %.80q is not absolute", c.WorkingDir)
+	// Check walks WORKDIR by its text, and the kernel follows a symlink before it applies '..'
+	if c.WorkingDir != "" && (!path.IsAbs(c.WorkingDir) || path.Clean(c.WorkingDir) != c.WorkingDir) {
+		return refuse(Workdir, "WORKDIR %.80q: want an absolute path with no '.', '..', '//' or trailing '/'", c.WorkingDir)
 	}
 	return nil
 }
@@ -357,12 +361,14 @@ func walk(p string, f func(name string, r io.Reader) error) error {
 }
 
 // layerFacts is one layer's diff_id and what it does to WORKDIR's path: entries set a type, whiteouts delete, an
-// opaque marker empties a dir of what the layers below put in it.
+// opaque marker empties a dir of what the layers below put in it. through is an entry the layer writes below one of
+// its own symlinks or hard links, if WORKDIR is set.
 type layerFacts struct {
 	diffID  string
 	set     map[string]byte
 	deleted []string
 	opaque  []string
+	through string
 }
 
 func scanLayer(r io.Reader, gz bool, wd string) (*layerFacts, error) {
@@ -376,6 +382,7 @@ func scanLayer(r io.Reader, gz bool, wd string) (*layerFacts, error) {
 		src = z
 	}
 	f := &layerFacts{set: map[string]byte{}}
+	links := map[string]bool{} // the layer's symlinks and hard links: a hard link can name a symlink
 	tee := io.TeeReader(src, h)
 	tr := tar.NewReader(tee)
 	for {
@@ -387,6 +394,19 @@ func scanLayer(r io.Reader, gz bool, wd string) (*layerFacts, error) {
 			return nil, refuse(BlobMismatch, "layer tar: %v", err)
 		}
 		p := path.Clean("/" + hd.Name)
+		// The overlay driver (accounts.StorageConf) unpacks each layer into a dir of its own and follows that layer's
+		// links on the way, so an entry below one lands where its name does not say. A build writes none there.
+		// shortcut: this walk costs a name's length times its depth; bound names before app images (#173) come here.
+		if wd != "" {
+			for q := path.Dir(p); q != "/" && f.through == ""; q = path.Dir(q) {
+				if links[q] {
+					f.through = p
+				}
+			}
+			if hd.Typeflag == tar.TypeSymlink || hd.Typeflag == tar.TypeLink {
+				links[p] = true
+			}
+		}
 		dir, base := path.Split(p)
 		dir = path.Clean(dir)
 		switch {
@@ -396,7 +416,7 @@ func scanLayer(r io.Reader, gz bool, wd string) (*layerFacts, error) {
 			f.deleted = append(f.deleted, path.Join(dir, base[len(".wh."):]))
 		case on(p, wd):
 			t := hd.Typeflag
-			if t != tar.TypeSymlink && t != tar.TypeDir {
+			if t != tar.TypeSymlink && t != tar.TypeLink && t != tar.TypeDir {
 				t = tar.TypeReg
 			}
 			f.set[p] = t

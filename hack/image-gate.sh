@@ -11,9 +11,9 @@
 #          - a byte appended, SHA256SUMS kept: refused IMAGE_RELEASE_SHA256;
 #          - the release's index, manifest and config with other layer bytes under the pinned layer digest (the
 #            GHSA-pggw-qqjf-6cxw shape): refused IMAGE_BLOB_MISMATCH;
-#          - an Env entry with no '=', an io.containers.autoupdate label, a WORKDIR through a symlink, a USER (tasks
-#            run keep-id) and a checkpoint label: refused IMAGE_ENV, IMAGE_AUTOUPDATE_LABEL, IMAGE_WORKDIR,
-#            IMAGE_USER and IMAGE_CHECKPOINT.
+#          - an Env entry with no '=', an io.containers.autoupdate label, a WORKDIR through a symlink, a WORKDIR
+#            that is a hard link to a symlink, a USER (tasks run keep-id) and a checkpoint label: refused IMAGE_ENV,
+#            IMAGE_AUTOUPDATE_LABEL, IMAGE_WORKDIR (both), IMAGE_USER and IMAGE_CHECKPOINT.
 #          Each refusal is the typed task.start reply (reason image_refused, the code), the task never runs, and the
 #          agent's podman holds no image afterwards: nothing reached podman load. With the release's image back, a
 #          task runs again under the same image ID.
@@ -104,7 +104,7 @@ check "  ... named localhost/agentbox-task:<tag> on that ID" '[ "$(upod image in
 cp $IMG /tmp/ig-plus1 && printf x >> /tmp/ig-plus1
 check "a byte appended to the release's task image, SHA256SUMS unchanged: refused IMAGE_RELEASE_SHA256" 'fresh && swap /tmp/ig-plus1 keep && refused IMAGE_RELEASE_SHA256'
 unswap
-for f in blob:IMAGE_BLOB_MISMATCH env:IMAGE_ENV autoupdate:IMAGE_AUTOUPDATE_LABEL workdir:IMAGE_WORKDIR user:IMAGE_USER checkpoint:IMAGE_CHECKPOINT; do
+for f in blob:IMAGE_BLOB_MISMATCH env:IMAGE_ENV autoupdate:IMAGE_AUTOUPDATE_LABEL workdir:IMAGE_WORKDIR hardlink:IMAGE_WORKDIR user:IMAGE_USER checkpoint:IMAGE_CHECKPOINT; do
   n=${f%%:*} c=${f#*:}
   check "fixture $n, SHA256SUMS naming it: refused $c before podman load" 'fresh && swap $F/$n.oci.tar && refused $c'
   unswap

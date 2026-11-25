@@ -42,7 +42,7 @@ func main() {
 // want is the code rootd refuses each fixture with; "" loads.
 var want = map[string]string{
 	"good": "", "blob": image.BlobMismatch, "env": image.BadEnv, "autoupdate": image.AutoUpdate, "workdir": image.Workdir,
-	"user": image.User, "checkpoint": image.Checkpoint,
+	"hardlink": image.Workdir, "user": image.User, "checkpoint": image.Checkpoint,
 }
 
 func fixtures(arch string) (map[string][]byte, error) {
@@ -50,10 +50,10 @@ func fixtures(arch string) (map[string][]byte, error) {
 	cfg := func(rc image.RunConfig) image.Config {
 		return image.Config{Architecture: arch, OS: "linux", Config: rc}
 	}
-	var l bytes.Buffer
-	tw := tar.NewWriter(&l)
-	tw.WriteHeader(&tar.Header{Typeflag: tar.TypeSymlink, Name: "work", Linkname: "/etc", Mode: 0o777})
-	tw.Close()
+	work := links(tar.Header{Typeflag: tar.TypeSymlink, Name: "work", Linkname: "/etc", Mode: 0o777})
+	// link(2) does not follow a symlink, so podman would unpack work as one
+	hard := links(tar.Header{Typeflag: tar.TypeSymlink, Name: "evil", Linkname: "/etc", Mode: 0o777},
+		tar.Header{Typeflag: tar.TypeLink, Name: "work", Linkname: "evil"})
 	good := task.Archive(arch)
 	blob, err := swapLayer(good, append(append([]byte(nil), sk[:len(sk)-1024]...), entry("etc/shadow", "root::0:0:99999:7:::\n")...))
 	return map[string][]byte{
@@ -61,10 +61,22 @@ func fixtures(arch string) (map[string][]byte, error) {
 		"blob":       blob,
 		"env":        image.Build([][]byte{sk}, cfg(image.RunConfig{Env: []string{"PATH=/usr/bin", "HOME"}}), task.Image()),
 		"autoupdate": image.Build([][]byte{sk}, cfg(image.RunConfig{Labels: map[string]string{"io.containers.autoupdate": "registry"}}), task.Image()),
-		"workdir":    image.Build([][]byte{sk, l.Bytes()}, cfg(image.RunConfig{WorkingDir: "/work"}), task.Image()),
+		"workdir":    image.Build([][]byte{sk, work}, cfg(image.RunConfig{WorkingDir: "/work"}), task.Image()),
+		"hardlink":   image.Build([][]byte{sk, hard}, cfg(image.RunConfig{WorkingDir: "/work"}), task.Image()),
 		"user":       image.Build([][]byte{sk}, cfg(image.RunConfig{User: "0"}), task.Image()),
 		"checkpoint": image.Build([][]byte{sk}, cfg(image.RunConfig{Labels: map[string]string{"io.podman.annotations.checkpoint.name": "x"}}), task.Image()),
 	}, err
+}
+
+// links is a layer of entries with no content, such as symlinks and hard links.
+func links(hs ...tar.Header) []byte {
+	var b bytes.Buffer
+	tw := tar.NewWriter(&b)
+	for _, h := range hs {
+		tw.WriteHeader(&h)
+	}
+	tw.Close()
+	return b.Bytes()
 }
 
 // entry is one regular file as a tar stream, end marker included.

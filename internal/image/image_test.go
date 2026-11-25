@@ -30,9 +30,10 @@ func layer(es ...ent) []byte {
 	return b.Bytes()
 }
 
-func dir(n string) ent      { return ent{n, tar.TypeDir, ""} }
-func link(n, to string) ent { return ent{n, tar.TypeSymlink, to} }
-func file(n string) ent     { return ent{n, tar.TypeReg, ""} }
+func dir(n string) ent          { return ent{n, tar.TypeDir, ""} }
+func link(n, to string) ent     { return ent{n, tar.TypeSymlink, to} }
+func hardlink(n, to string) ent { return ent{n, tar.TypeLink, to} }
+func file(n string) ent         { return ent{n, tar.TypeReg, ""} }
 func write(t *testing.T, b []byte) string {
 	p := filepath.Join(t.TempDir(), "a.tar")
 	if err := os.WriteFile(p, b, 0o644); err != nil {
@@ -224,6 +225,11 @@ func TestLint(t *testing.T) {
 		{RunConfig{User: "0"}, User},
 		{RunConfig{User: "agent"}, User},
 		{RunConfig{WorkingDir: "work"}, Workdir},
+		{RunConfig{WorkingDir: "/l/../w"}, Workdir},
+		{RunConfig{WorkingDir: "/work/."}, Workdir},
+		{RunConfig{WorkingDir: "/work/"}, Workdir},
+		{RunConfig{WorkingDir: "//work"}, Workdir},
+		{RunConfig{WorkingDir: "/"}, ""},
 		{RunConfig{Env: []string{"A=*", "B=", "PATH=/usr/bin"}, Labels: map[string]string{"org.opencontainers.image.version": "26.04"}, WorkingDir: "/workspace"}, ""},
 	} {
 		if got := code(Lint(c.rc)); got != c.want {
@@ -248,8 +254,8 @@ func TestLint(t *testing.T) {
 	}
 }
 
-// WORKDIR is checked against the merged layers: a symlink anywhere on its path, in any layer, unless a later layer
-// whites it out or makes its dir opaque.
+// WORKDIR is checked against the merged layers: a symlink or hard link anywhere on its path, in any layer, unless a
+// later layer whites it out or makes its dir opaque, and any entry a layer writes below its own links.
 func TestWorkdirSymlink(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -267,6 +273,17 @@ func TestWorkdirSymlink(t *testing.T) {
 		{"a symlink next to it", [][]byte{layer(dir("work/"), link("worker", "/etc"))}, "/work", ""},
 		{"a link elsewhere", [][]byte{base}, "/usr/bin", ""},
 		{"a symlink added in a later layer", [][]byte{layer(dir("work/")), layer(file(".wh.work"), link("work", "/etc"))}, "/work", Workdir},
+		// link(2) does not follow a symlink, so a hard link to one is a symlink too
+		{"a hard link to a symlink", [][]byte{layer(link("evil", "/etc"), hardlink("work", "evil"))}, "/work", Workdir},
+		{"a hard link above it", [][]byte{layer(link("evil", "/etc"), hardlink("work", "evil"))}, "/work/x", Workdir},
+		// the unpacker follows a layer's own symlinks: s/x lands on /w/x
+		{"written through a symlink of its layer", [][]byte{layer(dir("w/"), link("s", "/w"), link("s/x", "/etc"))}, "/w/x", Workdir},
+		{"written through a dir under one", [][]byte{layer(dir("w/"), link("s", "/w"), dir("s/x/"), link("s/x/y", "/etc"))}, "/w/x/y", Workdir},
+		{"written through a hard link to one", [][]byte{layer(dir("w/"), link("evil", "/w"), hardlink("h", "evil"), link("h/x", "/etc"))}, "/w/x", Workdir},
+		// overlay unpacks each layer into a dir of its own, so s/x lands on /s/x, a dir that hides the symlink
+		{"under a lower layer's symlink", [][]byte{layer(dir("w/"), link("s", "/w")), layer(link("s/x", "/etc"))}, "/w/x", ""},
+		// the kernel follows l before it applies '..': /l/../w is /x/w, a symlink
+		{"'..' after a symlink", [][]byte{layer(dir("x/"), dir("x/y/"), link("l", "/x/y"), link("x/w", "/etc"))}, "/l/../w", Workdir},
 	} {
 		_, err := Check(write(t, Build(c.layers, Config{Config: RunConfig{WorkingDir: c.wd}}, "x")))
 		if got := code(err); got != c.want {
