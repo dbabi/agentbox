@@ -402,6 +402,10 @@ Each service runs as its own Linux user, with only the access it needs.
 - When the session ends, rootd scans the workspace for every login token the session held.
   rootd watches the login files during the session, so a token the CLI rotated away counts too, and the scan reads git objects and packfiles.
   Tasks stay blocked until the scan is clean, and a hit sends an alert.
+- `agentbox attach rescan --agent <name>` scans again and lifts a clean block.
+  After a rootd restart, the token versions rootd saw are gone, so it lifts the block only with `--ack-restart`, once you have checked the workspace by hand.
+  Each rescan that changes a block is audited: it records the ack and the number of hits, never a file name.
+  If the audit service is down, the block stays.
 - A session has no network yet, so a real login can't reach its servers (issue #90).
 
 ### Apps
@@ -719,7 +723,7 @@ It decides when a task's actions need a human signature.
 - Every effect follows one order: INTENT, acknowledgement, effect, RESULT, acknowledgement.
   auditd acknowledges a record only after it is on disk.
 - If auditd is down, no effect runs and no tainted data is delivered.
-  `task.stop` is the one exception.
+  The exceptions only remove capability: `task.stop`, and the stop of a session that outlived a rootd restart, which `agentbox attach rescan` runs before its scan.
 - Each field has an audit class.
   `drop` fields, such as secrets, are never logged, not even as a hash.
   `hash` fields, such as file contents, are logged as a hash and a length.

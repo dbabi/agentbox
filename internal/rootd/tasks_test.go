@@ -317,7 +317,7 @@ func TestTaskNotEmptyBlock(t *testing.T) {
 	if rep := restarted.start(ids.New(ids.Task), "claude", "daemon"); rep["reason"] != "agent_blocked" {
 		t.Fatalf("after a restart: %v", rep)
 	}
-	s := &server{db: r.db, tasks: restarted}
+	s := &server{db: r.db, tasks: restarted, audit: r.t.audit}
 	if rep := s.rescan("claude", false); rep["blocked"] != true {
 		t.Fatalf("rescan with the cgroup still populated: %v", rep)
 	}

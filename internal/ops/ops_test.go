@@ -51,7 +51,7 @@ func TestGoldenSets(t *testing.T) {
 			"bus.agents.list bus.inbox.ack bus.inbox.read bus.lease.acquire bus.lease.heartbeat bus.lease.release bus.message.send " +
 				"bus.task.cancel bus.task.claim bus.task.get bus.task.send bus.task.update memory.forget memory.purge memory.read memory.review memory.write"},
 		{"not Cedar-gated", func(o Op) bool { return o.Group == "" },
-			"agent.add agent.attach agent.remove agent.skills.set approver.add approver.remove budget.set cache.purge go.private.set memory.purge " +
+			"agent.add agent.attach agent.remove agent.skills.set approver.add approver.remove attach.rescan budget.set cache.purge go.private.set memory.purge " +
 				"memory.review op.resolve passkey.confirm passkey.register passkey.revoke pending.deny policy.set procedural.set push.policy.set " +
 				"remote.set secret.set taint.clear update.policy.set"},
 		{"signed admin ops (§5.3 admin trust)", func(o Op) bool { return o.Class == Admin && o.Sig != SigNone && len(o.Bound) > 0 },
@@ -100,7 +100,7 @@ func TestAuditClasses(t *testing.T) {
 			}
 		}
 	}
-	want = "agent.skills.set.skills bus.message.send.parts bus.task.send.skills bus.task.send.message bus.task.update.message " +
+	want = "agent.skills.set.skills attach.rescan.tasks bus.message.send.parts bus.task.send.skills bus.task.send.message bus.task.update.message " +
 		"bus.task.update.artifacts os.pkg.install.packages os.pkg.remove.packages pending.deny.strike"
 	if g := strings.Join(got, " "); g != want {
 		t.Errorf("keep-class arrays and objects:\n got %s\nwant %s", g, want)

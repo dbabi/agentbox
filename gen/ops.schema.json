@@ -310,6 +310,25 @@
       },
       "additionalProperties": false
     },
+    "attach.rescan": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "ackRestart": {
+          "type": "boolean",
+          "x-agentbox-audit": "keep"
+        },
+        "name": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "name",
+        "ackRestart"
+      ],
+      "additionalProperties": false
+    },
     "budget.set": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -1247,6 +1266,21 @@
       "required": [
         "log"
       ],
+      "additionalProperties": false
+    },
+    "attach.rescan": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "hits": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "tasks": {
+          "type": "array",
+          "x-agentbox-audit": "keep"
+        }
+      },
       "additionalProperties": false
     },
     "gh.issue.read": {

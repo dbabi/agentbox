@@ -76,6 +76,7 @@ type Field struct {
 
 func str(n string) Field        { return Field{Name: n, Type: "string", Audit: Keep} }
 func num(n string) Field        { return Field{Name: n, Type: "integer", Audit: Keep} }
+func flag(n string) Field       { return Field{Name: n, Type: "boolean", Audit: Keep} }
 func list(n string) Field       { return Field{Name: n, Type: "array", Audit: Keep} }
 func obj(n string) Field        { return Field{Name: n, Type: "object", Audit: Keep} }
 func members(n string) Field    { return Field{Name: n, Type: "array", Audit: Members} }
@@ -172,6 +173,11 @@ var Registry = withAskFields([]Op{
 	rd("ask.quote", "Quote what 1 to 8 ops would cost this task before acting. Quote your whole plan once.", host, "", members("ops")),
 	agentboxd(rd("ask.status", "Show this task's asks and taint; with id, that ask's state. waitMs (at most 25000) waits for a change.", host, "",
 		str("id").opt(), num("waitMs").opt())),
+	func() Op {
+		o := admin("attach.rescan", SigNone, str("name"), flag("ackRestart"))
+		o.Out = fields(num("hits").opt(), list("tasks").opt()) // the token scan's hit count, or the leftover tasks it lifted
+		return o
+	}(),
 	agentboxd(rd("bus.agents.list", "List the agents on this box and their skills.", host, "")),
 	agentboxd(Op{Name: "bus.inbox.ack", Desc: "Acknowledge a message in your inbox.", Class: Coord, Group: GCoord, Resource: inbox,
 		Args: fields(str("messageId")), Sig: SigNone, Rollback: CovNone}),
