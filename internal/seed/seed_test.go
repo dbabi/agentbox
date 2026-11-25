@@ -177,11 +177,15 @@ func TestRenderModes(t *testing.T) {
 				if i, j := strings.Index(s, "early-commands:"), strings.Index(s, "need exactly 1"); i < 0 || j < i || strings.Count(s[i:j], "\n    - ") != 1 {
 					t.Error("the disk guard must be early-commands[0]")
 				}
-				// firstboot: capped downloads, the sha256 pin, then minisign, and only then does anything unpack or install
+				// firstboot: capped downloads, the sha256 pin, then minisign, and only then does anything unpack or install.
+				// It starts the firewall and the rest after reconcile, and is done only once they run (#218).
 				last := -1
 				for _, step := range []string{"--max-filesize 64M", `h=$(sha256sum "$D/ab.tgz")`, `[ "$h" = "$AGENTBOX_RELEASE_SHA256" ] || {`,
 					`minisign -Vm "$D/ab.tgz" -P "$AGENTBOX_MINISIGN_PUBKEY" || {`, `tar -xzf "$D/ab.tgz"`, `"$D/x/install.sh" --from-firstboot`,
-					"systemctl start agentbox-reconcile.service", "touch /var/lib/agentbox/.firstboot-done", "'AGENTBOX_RELEASE_SHA256=" + testSHA + "'"} {
+					"systemctl start agentbox-reconcile.service", "os mark-last-good",
+					"systemctl start agentbox-firewall.service agentbox-rootd.service\n",
+					"systemctl start agentbox-auditd.service agentboxd.service ntfy.service sockets.target timers.target\n",
+					"touch /var/lib/agentbox/.firstboot-done", "'AGENTBOX_RELEASE_SHA256=" + testSHA + "'"} {
 					i := strings.Index(s, step)
 					if i <= last {
 						t.Errorf("firstboot step %q missing or out of order", step)

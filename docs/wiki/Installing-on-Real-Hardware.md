@@ -401,7 +401,7 @@ This happens with no input:
 
 1. In an encrypted mode, the initramfs unlocks the disk with the TPM, or with the TPM and Tang. A disk passphrase prompt shows for a few seconds while clevis unlocks the disk. Do not type anything. A problem shows only as a prompt that stays.
 2. GRUB boots generation 1 (`gen-1`) of the OS.
-3. `agentbox-firstboot.service` downloads the release and its `.minisig`. It checks the SHA-256 pin first, then the minisign signature. Only then does it install the release.
+3. `agentbox-firstboot.service` downloads the release and its `.minisig`. It checks the SHA-256 pin first, then the minisign signature. Only then does it install the release. Then it starts the firewall and the agentbox services, with no reboot.
 4. If firstboot fails, it retries every 60 seconds, and again at every boot.
 
 Find the box's address in your router's DHCP list. Or log in on the console as the admin user, with your password, and run:

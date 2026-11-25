@@ -40,14 +40,21 @@ func cmdFW(args []string) error {
 }
 
 // cmdFWCheck is fwcheck: every ExecStartPre=+ of a unit that needs the firewall, and agentbox-health.service with
-// --repair, which alerts and restarts agentbox-firewall.service (Requires= restarts rootd, the brokers and the agents).
+// --repair, which alerts and restarts agentbox-firewall.service (Requires= restarts rootd, the brokers and the agents),
+// then starts the units that an earlier failed load stopped.
 func cmdFWCheck(args []string) error {
 	fs := flag.NewFlagSet("fwcheck", flag.ContinueOnError)
-	repair := fs.Bool("repair", false, "on a mismatch: alert, restart agentbox-firewall.service, check again")
+	repair := fs.Bool("repair", false, "on a mismatch or a failed agentbox-firewall.service: alert, restart it, start the units that need it, check again")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	bad, err := fwCheck()
+	if *repair {
+		// a failed load stopped every unit that Requires= the firewall; a table that checks out would leave them down (#218)
+		if _, e := systemctl("is-failed", "--quiet", "agentbox-firewall.service"); e == nil {
+			bad = append(bad, "agentbox-firewall.service failed")
+		}
+	}
 	if err == nil && len(bad) == 0 {
 		if *repair {
 			alertClear("firewall")
@@ -63,10 +70,17 @@ func cmdFWCheck(args []string) error {
 	fmt.Fprintf(os.Stderr, "agentbox: ALERT: firewall altered: %s; restarting agentbox-firewall.service\n", strings.Join(bad, "; "))
 	// before the restart, which restarts ntfy too (Requires=)
 	alert("firewall", "agentbox: firewall", "the firewall was altered at runtime: fwcheck restarts it, and with it rootd, the brokers and the agents, which kills running tasks")
-	if out, err := exec.Command("systemctl", "restart", "agentbox-firewall.service").CombinedOutput(); err != nil {
+	if out, err := systemctl("restart", "agentbox-firewall.service"); err != nil {
 		return fmt.Errorf("fwcheck: restart agentbox-firewall.service: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	// systemctl returns once the firewall is up; rootd's refill runs in the restarts that Requires= queued after it
+	// The restart restarts only the units that run: start the ones an earlier failed load or start left down (#218).
+	// rootd first: its READY=1 waits for its refill, which ntfy's own fwcheck compares. Agents' user managers start
+	// with their next task or attach.
+	for _, u := range [][]string{{"agentbox-rootd.service"}, {"agentbox-auditd.service", "agentboxd.service", "ntfy.service"}} {
+		if out, err := systemctl(append([]string{"start"}, u...)...); err != nil {
+			return fmt.Errorf("fwcheck: start %s: %v: %s", strings.Join(u, " "), err, strings.TrimSpace(string(out)))
+		}
+	}
 	for i := 0; i < 15; i++ {
 		if bad, err = fwCheck(); err == nil && len(bad) == 0 {
 			fmt.Fprintln(os.Stderr, "agentbox: firewall restored")
@@ -82,13 +96,16 @@ func cmdFWCheck(args []string) error {
 }
 
 // fwCheck is the table and set checks plus ntfy's: its unit and its running process are _ntfy, the uid the ruleset names.
-func fwCheck() ([]string, error) {
+// A var, like systemctl, so tests can stand in for the box.
+var fwCheck = func() ([]string, error) {
 	bad, err := fw.Check(fw.RootdDB, time.Now())
 	if err := ntfy.CheckUser(); err != nil {
 		bad = append(bad, strings.TrimPrefix(err.Error(), "fwcheck: "))
 	}
 	return bad, err
 }
+
+var systemctl = func(args ...string) ([]byte, error) { return exec.Command("systemctl", args...).CombinedOutput() }
 
 // alertDir holds one empty file per standing condition whose alert went out. It is on tmpfs, so each boot alerts again.
 var alertDir = "/run/agentbox-alerts"

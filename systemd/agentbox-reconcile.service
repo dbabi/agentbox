@@ -1,5 +1,5 @@
 # Re-applies agentbox's persistent control store to whichever generation booted (ARCHITECTURE.md §3.2). Every agentbox
-# unit sets Requires= and After= on it. Never order it After=multi-user.target or agentbox-firstboot.service:
+# unit but the firewall sets Requires= and After= on it. Never order it After=multi-user.target or agentbox-firstboot.service:
 # agentbox-firstboot runs `systemctl start agentbox-reconcile.service` itself, and that nested start would wait forever.
 # It also writes ntfy's config, ACLs and firewall drop-in, so it runs before ntfy (ARCHITECTURE.md §2, §3.3).
 [Unit]

@@ -17,6 +17,7 @@ case $VER in ''|[!0-9A-Za-z]*|*[!0-9A-Za-z._~-]*) die "bad release version '$VER
 A=/var/lib/agentbox
 ETC=/etc
 L=/usr/lib
+RCD=/usr/sbin/policy-rc.d
 R=$A/releases
 N=$R/.$VER.new
 mkdir -p "$R"
@@ -59,14 +60,20 @@ need=
 for p in ntfy podman uidmap dbus-user-session; do
   dpkg -s "$p" 2>/dev/null | grep -qx 'Status: install ok installed' || need="$need $p"
 done
+# This exact file is install.sh's own: a run that a power cut or SIGKILL stopped before its trap left it (#218).
+rcd() { printf '#!/bin/sh\n# agentbox install.sh: no service starts during its apt step\nexit 101\n'; }
+if rcd | cmp -s - "$RCD"; then rm -f "$RCD"; fi
 if [ -n "$need" ]; then
-  [ ! -e /usr/sbin/policy-rc.d ] || die "/usr/sbin/policy-rc.d exists; remove it and rerun"
-  printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod 0755 /usr/sbin/policy-rc.d
-  trap 'rm -f /usr/sbin/policy-rc.d' EXIT
+  [ ! -e "$RCD" ] || die "$RCD exists; remove it and rerun"
+  rcd > "$RCD" && chmod 0755 "$RCD"
+  trap 'rm -f "$RCD"' EXIT
+  trap 'exit 1' HUP INT TERM # dash runs no EXIT trap for a signal that kills it, such as systemd's TERM at a stop
   apt() { DEBIAN_FRONTEND=noninteractive apt-get -q -y -o DPkg::Lock::Timeout=300 --no-install-recommends "$@"; }
+  # after an apt step cut off mid-dpkg, apt-get refuses until dpkg configures what it unpacked
+  DEBIAN_FRONTEND=noninteractive dpkg --configure -a || die "dpkg --configure -a failed"
   # shellcheck disable=SC2086 # one package name per word
   apt install $need || { apt update && apt install $need; } || die "apt-get install$need failed"
-  rm -f /usr/sbin/policy-rc.d; trap - EXIT
+  rm -f "$RCD"; trap - EXIT HUP INT TERM
 fi
 getent passwd _ntfy >/dev/null || die "the ntfy package made no _ntfy user"
 # The ruleset names those users; it must pass nft -c before any unit is enabled (§2).

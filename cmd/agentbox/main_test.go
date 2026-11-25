@@ -229,3 +229,59 @@ func TestAlert(t *testing.T) {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
 }
+
+// #218: fwcheck --repair also repairs a failed agentbox-firewall.service, since a failed load stopped every unit that
+// Requires= it, even once the table checks out. After the restart it starts those units, rootd first. A failed
+// restart starts nothing. Without --repair, fwcheck only checks.
+func TestFWCheckRepair(t *testing.T) {
+	dir := t.TempDir()
+	check, ctl, marks, sock, tok := fwCheck, systemctl, alertDir, alertSock, alertToken
+	defer func() { fwCheck, systemctl, alertDir, alertSock, alertToken = check, ctl, marks, sock, tok }()
+	alertDir, alertSock, alertToken = filepath.Join(dir, "alerts"), filepath.Join(dir, "none"), filepath.Join(dir, "token") // no ntfy
+	all := [][]string{{"restart", "agentbox-firewall.service"}, {"start", "agentbox-rootd.service"},
+		{"start", "agentbox-auditd.service", "agentboxd.service", "ntfy.service"}}
+	for _, tc := range []struct {
+		name                          string
+		altered, failed, restartFails bool
+		want                          [][]string
+	}{
+		{"intact", false, false, false, nil},
+		{"an altered table", true, false, false, all},
+		{"a failed unit, an intact table", false, true, false, all},
+		{"a restart that fails", true, false, true, all[:1]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls [][]string
+			restarted := false
+			fwCheck = func() ([]string, error) {
+				if tc.altered && !restarted {
+					return []string{"set confined: missing element 70001-70999"}, nil
+				}
+				return nil, nil
+			}
+			systemctl = func(args ...string) ([]byte, error) {
+				if args[0] == "is-failed" {
+					if tc.failed {
+						return nil, nil
+					}
+					return nil, errors.New("exit status 1")
+				}
+				calls = append(calls, args)
+				if args[0] == "restart" && tc.restartFails {
+					return []byte("Job for agentbox-firewall.service failed."), errors.New("exit status 1")
+				}
+				restarted = restarted || args[0] == "restart"
+				return nil, nil
+			}
+			err := cmdFWCheck([]string{"--repair"})
+			if (err == nil) != !tc.restartFails || !slices.EqualFunc(calls, tc.want, slices.Equal[[]string]) {
+				t.Fatalf("err %v, systemctl %q; want %q", err, calls, tc.want)
+			}
+		})
+	}
+	systemctl = func(args ...string) ([]byte, error) { t.Errorf("systemctl %q without --repair", args); return nil, nil }
+	fwCheck = func() ([]string, error) { return []string{"altered"}, nil }
+	if err := cmdFWCheck(nil); err == nil {
+		t.Error("fwcheck passed an altered table")
+	}
+}

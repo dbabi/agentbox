@@ -2,10 +2,15 @@
 # restart or reload keeps every element rootd added; it fails unless the live table then hashes like the ruleset. Every
 # agentbox unit Requires= this one, so a failed load keeps them all down, and `systemctl restart` (fwcheck --repair)
 # restarts them. No ExecStop: stopping must not open anything.
+# It needs nothing reconcile writes, so it neither waits for reconcile nor fails with it: the input chain is in place
+# before any interface comes up, as the masked nftables.service was (#218). It needs the local file systems: the binary
+# is on @var_lib_agentbox, and the ruleset and sysctl files it may rewrite are in /etc.
 [Unit]
 Description=agentbox firewall
-Requires=agentbox-reconcile.service
-After=agentbox-reconcile.service
+DefaultDependencies=no
+After=local-fs.target systemd-sysusers.service systemd-sysctl.service
+Wants=network-pre.target
+Before=network-pre.target
 # fwcheck --repair restarts this unit after every alteration: no start limit may leave the table unrestored
 StartLimitIntervalSec=0
 
