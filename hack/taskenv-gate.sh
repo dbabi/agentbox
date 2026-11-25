@@ -330,8 +330,11 @@ task ga "touch /workspace/wready; while [ ! -e /workspace/wgo ]; do sleep 0.1; d
 wt=$!
 for i in $(seq 600); do [ -e $WS/ga/wready ] && [ -s $G/last ] && break; sleep 0.1; done
 T4=$(cat $G/last)
-systemctl restart agentbox-rootd.service; sleep 1; touch $WS/ga/wgo; wait $wt
-check "C-G2 a rootd restart mid-task marks that witness incomplete" 'wrec $T4 | grep -q "\"incomplete\":true" &&
+# rootd alone: a plain restart also restarts the agent's user manager (its Requires=), which ends the task. Until #222
+# that check passed only because rootd died in the middle of stopping it.
+systemctl restart --job-mode=ignore-dependencies agentbox-rootd.service; sleep 1; touch $WS/ga/wgo; wait $wt
+check "C-G2 a rootd restart mid-task marks that witness incomplete; the task outlives it and its line after it is kept" '
+  wrec $T4 > $G/w4 && grep -q "\"incomplete\":true" $G/w4 && grep -qF "dn_00000000000000000000000000 - BROKER_UNAVAILABLE forwarder" $G/w4 &&
   journalctl -b -u agentbox-rootd.service -o cat | grep -q "witness $T4: reopened after a restart, marked incomplete"'
 check "  ... and raises no alert: no GATE_MISMATCH record and no ALERT for that task" '! cat $A/seg-*.jsonl | grep "\"task\":\"$T4\"" | grep -q "\"type\":\"\(GATE_MISMATCH\|ALERT\)\""'
 
