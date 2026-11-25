@@ -8,27 +8,34 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-// Fake gh, git and go for sign-release.sh. gh serves the draft from $REL and logs every call; git clones nothing;
-// go logs its arguments and environment and "builds" by copying CI's tarball.
+// Fake gh, git and go for sign-release.sh. gh serves the draft from $REL, logs every call, exits $ATTEST_EXIT for
+// attestation verify, and counts $CI_RUNS or $RELEASE_RUNS successful push runs, none unless asked for $COMMIT; git
+// clones nothing and resolves the tag to $TAG_COMMIT; go logs its arguments and environment and "builds" by copying
+// CI's tarball, or by writing $REBUILD instead.
 var signFakes = map[string]string{
 	"gh": `echo "gh $*" >> "$LOG"
 case "$1 $2" in
 "release download") while [ $# -gt 0 ]; do [ "$1" = -D ] && d=$2; shift; done; mkdir -p "$d" && cp "$REL"/* "$d"/ ;;
-"run list") case "$*" in *"--workflow ci "*) echo "$CI_RUNS" ;; *) echo 1 ;; esac ;;
+"attestation verify") exit "$ATTEST_EXIT" ;;
+"run list") for f in "--commit $COMMIT" "--event push" "--status success"; do case " $* " in *" $f "*) ;; *) echo 0; exit ;; esac; done
+  case " $* " in *" --workflow ci "*) echo "$CI_RUNS" ;; *" --workflow release "*) echo "$RELEASE_RUNS" ;; *) echo 0 ;; esac ;;
 "release upload") cp "$6" "$OUT"/ ;; # release upload <tag> -R <repo> <file>
 esac`,
 	"git": `for a; do d=$a; done
-case "$1 $3" in clone*) mkdir -p "$d" ;; "-C rev-parse") echo "$COMMIT" ;; esac`,
+case "$1 $3" in clone*) mkdir -p "$d" ;; "-C rev-parse") echo "$TAG_COMMIT" ;; esac`,
 	"go": `echo "go $*" >> "$LOG"; env >> "$LOG.env"
-while [ $# -gt 0 ]; do [ "$1" = -out ] && o=$2; shift; done; mkdir -p "$o" && cp "$REL"/*.tgz "$o"/`,
+while [ $# -gt 0 ]; do [ "$1" = -out ] && o=$2; shift; done; mkdir -p "$o" && cp "$REL"/*.tgz "$o"/
+[ -z "$REBUILD" ] || printf %s "$REBUILD" > "$o"/agentbox-1.0.0.tgz`,
 }
 
 // TestSignReleaseFailsClosed runs sign-release.sh against a fake draft with a throwaway key. It publishes only when
-// the key matches the committed public key, the signature verifies with it, and ci passed on the commit.
+// the draft matches SHA256SUMS and the tag, has provenance, ci and release passed on the commit, the tag points at it,
+// the rebuild is byte-identical, the key matches the committed public key, and the signature verifies with it.
 func TestSignReleaseFailsClosed(t *testing.T) {
 	ms, err := exec.LookPath("minisign")
 	if err != nil {
@@ -59,12 +66,20 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 	forgedPub := filepath.Join(dir, "forged.pub")
 	os.WriteFile(forgedPub, []byte(strings.Join(lines, "\n")), 0o644)
 
-	rel := filepath.Join(dir, "rel")
-	os.Mkdir(rel, 0o755)
-	tgz := []byte("not really a tarball")
-	os.WriteFile(filepath.Join(rel, "agentbox-1.0.0.tgz"), tgz, 0o644)
-	os.WriteFile(filepath.Join(rel, "SHA256SUMS"), fmt.Appendf(nil, "%x  agentbox-1.0.0.tgz\n", sha256.Sum256(tgz)), 0o644)
-	os.WriteFile(filepath.Join(rel, "BUILDINFO"), []byte("commit 0123abc\ngo go1.26.11\nversion 1.0.0\n"), 0o644)
+	// a draft in its own dir, with one file changed from the good one
+	draft := func(name, file string, b []byte) string {
+		rel := filepath.Join(dir, name)
+		os.Mkdir(rel, 0o755)
+		tgz := []byte("not really a tarball")
+		os.WriteFile(filepath.Join(rel, "agentbox-1.0.0.tgz"), tgz, 0o644)
+		os.WriteFile(filepath.Join(rel, "SHA256SUMS"), fmt.Appendf(nil, "%x  agentbox-1.0.0.tgz\n", sha256.Sum256(tgz)), 0o644)
+		os.WriteFile(filepath.Join(rel, "BUILDINFO"), []byte("commit 0123abc\ngo go1.26.11\nversion 1.0.0\n"), 0o644)
+		if file != "" {
+			os.WriteFile(filepath.Join(rel, file), b, 0o644)
+		}
+		return rel
+	}
+	rel := draft("rel", "", nil)
 	bin := filepath.Join(dir, "bin")
 	os.Mkdir(bin, 0o755)
 	for name, body := range signFakes {
@@ -75,7 +90,8 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := func(t *testing.T, committed, ciRuns string) (log, env, stderr string, sig string, err error) {
+	// env: KEY=value entries that override the fakes' defaults
+	run := func(t *testing.T, committed string, env ...string) (log, envs, stderr string, sig string, err error) {
 		root, out := t.TempDir(), t.TempDir()
 		os.MkdirAll(filepath.Join(root, "hack"), 0o755)
 		os.MkdirAll(filepath.Join(root, "keys"), 0o755)
@@ -84,8 +100,9 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 		os.WriteFile(filepath.Join(root, "keys", "release-minisign.pub"), cp, 0o644)
 		logf := filepath.Join(out, "log")
 		cmd := exec.Command("sh", filepath.Join(root, "hack", "sign-release.sh"), "v1.0.0")
-		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "HOME="+out,
-			"TMPDIR="+out, "MINISIGN_KEY="+key, "LOG="+logf, "REL="+rel, "OUT="+out, "COMMIT=0123abc", "CI_RUNS="+ciRuns)
+		cmd.Env = append(append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "HOME="+out,
+			"TMPDIR="+out, "MINISIGN_KEY="+key, "LOG="+logf, "REL="+rel, "OUT="+out, "COMMIT=0123abc", "TAG_COMMIT=0123abc",
+			"ATTEST_EXIT=0", "CI_RUNS=1", "RELEASE_RUNS=1", "REBUILD="), env...)
 		var e bytes.Buffer
 		cmd.Stderr = &e
 		err = cmd.Run()
@@ -107,7 +124,7 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 	}
 
 	t.Run("publishes", func(t *testing.T) {
-		log, env, stderr, sig, err := run(t, pub, "1")
+		log, env, stderr, sig, err := run(t, pub)
 		if err != nil {
 			t.Fatalf("%v\n%s", err, stderr)
 		}
@@ -127,19 +144,103 @@ func TestSignReleaseFailsClosed(t *testing.T) {
 			t.Errorf("uploaded signature does not verify: %v\n%s", err, b)
 		}
 	})
-	t.Run("wrong key", func(t *testing.T) {
-		log, _, stderr, _, err := run(t, otherPub, "1")
-		refused(t, log, stderr, err, "key ID")
-	})
-	t.Run("verify fails", func(t *testing.T) {
-		log, _, stderr, _, err := run(t, forgedPub, "1")
-		refused(t, log, stderr, err, "does not verify")
-	})
-	t.Run("no ci run", func(t *testing.T) {
-		log, _, stderr, _, err := run(t, pub, "0")
-		refused(t, log, stderr, err, "no successful ci workflow run")
-		if strings.Contains(log, "go run") {
-			t.Errorf("built before checking ci:\n%s", log)
+	for _, c := range []struct {
+		name, committed, want string
+		env                   []string
+		built                 bool // the check comes after the rebuild
+	}{
+		{"wrong key", otherPub, "key ID", nil, true},
+		{"verify fails", forgedPub, "does not verify", nil, true},
+		{"no ci run", pub, "no successful ci workflow run", []string{"CI_RUNS=0"}, false},
+		{"no release run", pub, "no successful release workflow run", []string{"RELEASE_RUNS=0"}, false},
+		{"no provenance", pub, "no valid GitHub build provenance", []string{"ATTEST_EXIT=1"}, false},
+		{"tarball not in SHA256SUMS", pub, "does not match SHA256SUMS", []string{"REL=" + draft("sums", "SHA256SUMS",
+			fmt.Appendf(nil, "%x  agentbox-1.0.0.tgz\n", sha256.Sum256([]byte("another tarball"))))}, false},
+		{"version not the tag", pub, "BUILDINFO version 1.0.1 does not match tag v1.0.0", []string{"REL=" + draft("version",
+			"BUILDINFO", []byte("commit 0123abc\ngo go1.26.11\nversion 1.0.1\n"))}, false},
+		{"tag elsewhere", pub, "tag v1.0.0 does not point at 0123abc", []string{"TAG_COMMIT=4567def"}, false},
+		{"rebuild differs", pub, "differs from CI's", []string{"REBUILD=another tarball"}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			log, _, stderr, _, err := run(t, c.committed, c.env...)
+			refused(t, log, stderr, err, c.want)
+			if !c.built && strings.Contains(log, "go run") {
+				t.Errorf("built before refusing:\n%s", log)
+			}
+		})
+	}
+}
+
+// release.yml's build job runs the tagged code (its tests, every module's init, hack/release) with a read-only token.
+// Only publish may write, sign provenance and attest, so it checks out nothing and runs no Go, and it takes only
+// build's three files for this commit and tag.
+func TestReleaseWorkflow(t *testing.T) {
+	y, err := os.ReadFile("../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	build, publish, ok := strings.Cut(string(y), "\n  publish:\n")
+	if !ok {
+		t.Fatal("release.yml has no publish job")
+	}
+	if strings.Contains(build, ": write") {
+		t.Error("the workflow or its build job asks for a write permission")
+	}
+	for _, p := range []string{"contents: write", "id-token: write", "attestations: write"} {
+		if !strings.Contains(publish, p) {
+			t.Errorf("publish lacks %s", p)
 		}
-	})
+	}
+	if regexp.MustCompile(`actions/checkout|setup-go|(?m)^ +go `).MatchString(publish) {
+		t.Error("publish checks out the repo or runs Go")
+	}
+	m := regexp.MustCompile(`(?m)^      - name: check build's files\n        run: \|\n((?:          .*\n)+)`).FindStringSubmatch(publish)
+	if m == nil {
+		t.Fatal("publish has no \"check build's files\" step")
+	}
+	check := regexp.MustCompile(`(?m)^ {10}`).ReplaceAllString(m[1], "")
+	tgz := []byte("not really a tarball")
+	for _, c := range []struct {
+		name string
+		edit func(dist string)
+		ok   bool
+	}{
+		{"build's files", func(string) {}, true},
+		{"an extra file", func(d string) { os.WriteFile(filepath.Join(d, "agentbox-1.0.0-extra.tgz"), tgz, 0o644) }, false},
+		{"a dir", func(d string) { os.Mkdir(filepath.Join(d, "x"), 0o755) }, false},
+		{"no SHA256SUMS", func(d string) { os.Remove(filepath.Join(d, "SHA256SUMS")) }, false},
+		{"a symlinked tarball", func(d string) {
+			os.Rename(filepath.Join(d, "agentbox-1.0.0.tgz"), filepath.Join(d, "..", "elsewhere"))
+			os.Symlink("../elsewhere", filepath.Join(d, "agentbox-1.0.0.tgz"))
+		}, false},
+		{"another commit", func(d string) {
+			os.WriteFile(filepath.Join(d, "BUILDINFO"), []byte("commit 4567def\ngo go1.26.11\nversion 1.0.0\n"), 0o644)
+		}, false},
+		{"another version", func(d string) {
+			os.WriteFile(filepath.Join(d, "BUILDINFO"), []byte("commit 0123abc\ngo go1.26.11\nversion 1.0.1\n"), 0o644)
+		}, false},
+		{"a second commit line", func(d string) {
+			os.WriteFile(filepath.Join(d, "BUILDINFO"), []byte("commit 0123abc\ngo go1.26.11\nversion 1.0.0\ncommit 4567def\n"), 0o644)
+		}, false},
+		{"a changed tarball", func(d string) { os.WriteFile(filepath.Join(d, "agentbox-1.0.0.tgz"), []byte("other"), 0o644) }, false},
+		{"SHA256SUMS of another file", func(d string) {
+			b, _ := os.ReadFile(filepath.Join(d, "BUILDINFO"))
+			os.WriteFile(filepath.Join(d, "SHA256SUMS"), fmt.Appendf(nil, "%x  BUILDINFO\n", sha256.Sum256(b)), 0o644)
+		}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			d := filepath.Join(root, "dist")
+			os.Mkdir(d, 0o755)
+			os.WriteFile(filepath.Join(d, "agentbox-1.0.0.tgz"), tgz, 0o644)
+			os.WriteFile(filepath.Join(d, "SHA256SUMS"), fmt.Appendf(nil, "%x  agentbox-1.0.0.tgz\n", sha256.Sum256(tgz)), 0o644)
+			os.WriteFile(filepath.Join(d, "BUILDINFO"), []byte("commit 0123abc\ngo go1.26.11\nversion 1.0.0\n"), 0o644)
+			c.edit(d)
+			cmd := exec.Command("bash", "-e", "-c", check) // a run step's default shell
+			cmd.Dir, cmd.Env = root, append(os.Environ(), "GITHUB_REF_NAME=v1.0.0", "GITHUB_SHA=0123abc")
+			if out, err := cmd.CombinedOutput(); (err == nil) != c.ok {
+				t.Errorf("check exited %v, want ok=%v:\n%s", err, c.ok, out)
+			}
+		})
+	}
 }
