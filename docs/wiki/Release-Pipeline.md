@@ -392,7 +392,11 @@ OS package updates use a different path, `agentbox os plan` and `agentbox os app
 A release is made in two halves. CI builds it, and the owner signs it. The minisign secret key never goes to GitHub.
 
 1. Push a tag: `git tag v<ver> && git push origin v<ver>`.
-2. `.github/workflows/release.yml` runs the tests and builds `agentbox-<ver>.tgz` with `go run ./hack/release -unsigned`. It records the commit and the Go version in `BUILDINFO`, writes `SHA256SUMS`, adds a GitHub build-provenance attestation, and drafts the release.
+2. `.github/workflows/release.yml` runs two jobs.
+   - `build` runs the tests and builds `agentbox-<ver>.tgz` with `go run ./hack/release -unsigned`. It records the commit and the Go version in `BUILDINFO` and writes `SHA256SUMS`. Its token can only read the repository.
+   - `publish` runs none of the repository's code. It takes only those three files, checks them against the tag and its commit, adds a GitHub build-provenance attestation, and drafts the release.
+
+   Only `publish` can write to the repository or get the token that signs the attestation. A step can change the environment of the later steps in its job, so the tested code never shares a job with those permissions. `build` can still hand over a tarball that its tests changed. The rebuild in step 3 catches that.
 3. The owner runs `hack/sign-release.sh v<ver>` from a clone of `main`. It publishes only if every check below passes, and stops before any upload at the first one that fails:
    - The draft's tarball matches `SHA256SUMS`.
    - `gh attestation verify` shows the tarball was built by `release.yml` from the tag's commit.

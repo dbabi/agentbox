@@ -1,16 +1,17 @@
 # CD: a v* tag builds the release unsigned, attests where it came from, and drafts a GitHub Release.
 # The owner then runs hack/sign-release.sh <tag>: it rebuilds the same commit with the same Go version, checks the
 # bytes match CI's, signs with the owner's minisign key (which never leaves the owner's machine) and publishes.
+# Two jobs, because any step can add to PATH and the env of every later step in its job: build runs the tagged code
+# (the tests, every module's init, hack/release) with a read-only token, and publish holds the write, OIDC and
+# attestation permissions and runs none of that code.
 name: release
 on:
   push:
     tags: ['v*']
 permissions:
-  contents: write     # create the draft release
-  id-token: write     # sign the build provenance
-  attestations: write
+  contents: read
 jobs:
-  release:
+  build:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,6 +32,33 @@ jobs:
           printf 'commit %s\ngo %s\nversion %s\n' "$GITHUB_SHA" "$(go env GOVERSION)" "$v" > dist/BUILDINFO
           (cd dist && sha256sum "agentbox-$v.tgz" > SHA256SUMS)
           cat dist/BUILDINFO dist/SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write     # create the draft release
+      id-token: write     # sign the build provenance
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      # build ran the tagged code, so its files are data: exactly these three regular files, and BUILDINFO and
+      # SHA256SUMS just as build writes them for this commit, tag and tarball
+      - name: check build's files
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          ls -lAR dist
+          for f in BUILDINFO SHA256SUMS "agentbox-$v.tgz"; do [ -f "dist/$f" ] && [ ! -L "dist/$f" ] || exit 1; done
+          test "$(find dist -mindepth 1 | wc -l)" -eq 3
+          printf 'commit %s\ngo %s\nversion %s\n' "$GITHUB_SHA" "$(sed -n 's/^go //p' dist/BUILDINFO)" "$v" | cmp - dist/BUILDINFO
+          (cd dist && sha256sum "agentbox-$v.tgz") | cmp - dist/SHA256SUMS
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/agentbox-*.tgz
@@ -40,13 +68,14 @@ jobs:
         run: |
           v="${GITHUB_REF_NAME#v}"
           sum=$(cut -d' ' -f1 dist/SHA256SUMS)
+          gover=$(sed -n 's/^go //p' dist/BUILDINFO)
           url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/agentbox-$v.tgz"
           {
             echo "Unsigned until the owner signs it: this stays a draft until \`hack/sign-release.sh $GITHUB_REF_NAME\` rebuilds it, checks the bytes match and adds \`agentbox-$v.tgz.minisig\`."
             echo
             echo "Seed flags: \`--release-url $url --release-sha256 $sum\`"
             echo
-            echo "Built from \`$GITHUB_SHA\` with $(go env GOVERSION). Check the provenance with \`gh attestation verify agentbox-$v.tgz -R $GITHUB_REPOSITORY\`."
+            echo "Built from \`$GITHUB_SHA\` with $gover. Check the provenance with \`gh attestation verify agentbox-$v.tgz -R $GITHUB_REPOSITORY\`."
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/agentbox-*.tgz dist/SHA256SUMS dist/BUILDINFO --draft --verify-tag \
-            --title "agentbox $v" --notes-file notes.md --generate-notes
+          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" "dist/agentbox-$v.tgz" dist/SHA256SUMS dist/BUILDINFO \
+            --draft --verify-tag --title "agentbox $v" --notes-file notes.md --generate-notes
