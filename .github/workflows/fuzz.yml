@@ -38,7 +38,7 @@ jobs:
     timeout-minutes: 200 # 3 h of fuzzing plus the build
     strategy:
       fail-fast: false
-      # a Free plan runs 20 hosted jobs at once; 49 fuzz jobs would hold PR CI back for hours. ceil(targets / 8) waves of
+      # a Free plan runs 20 hosted jobs at once; 53 fuzz jobs would hold PR CI back for hours. ceil(targets / 8) waves of
       # FUZZTIME plus the build fit in 24 h (hack TestFuzzWorkflowDay)
       max-parallel: 8
       matrix:

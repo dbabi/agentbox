@@ -113,7 +113,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 ```
 
 - The script runs the fuzz tests at low priority, `FUZZ_JOBS` at a time, each for the full duration. Then it writes `summary.txt` under `.fuzz/<start time>/`. It exits 1 if any test fails.
-- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 49 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
+- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 53 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
 - Each `go test` process and each fuzz worker gets `GOMEMLIMIT=$FUZZ_MEM` (default `1GiB`). `FUZZ_PARALLEL` sets the workers per test (default 1).
 - It records the commit the run started on, and each test's CPU seconds (`cpu_s`, the build included).
 - Go keeps each test's corpus in `$(go env GOCACHE)/fuzz`, so the next run starts from it. `go clean -fuzzcache` deletes it.
@@ -121,7 +121,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 - A crash input lands in its package's `testdata/fuzz/<test>/`. Commit it with the fix, so it stays a regression test.
 - On a Mac, `caffeinate -i` keeps the machine from idle sleep. Keep it on power with the lid open.
 
-The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 49 tests take about 22 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
+The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 53 tests take about 22 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
 
 ### The 24 h gate
 

@@ -77,7 +77,7 @@ Every milestone 3 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 - A request with bad arguments, a forged caller or an operation no agent may call gets a typed denial, and nothing is recorded or run.
 - The audit log refuses a record with an unhashed body or a secret, and the operation does not run. No refused value is left in the audit directory.
 - The sockets and their directories on the box match the inventory in code, before and after a reboot. A wrong mode, a wrong owner and a stray file are each reported.
-- Every parser has a fuzz test: 45 in all. Short runs found bugs, which are fixed, and each crash input is kept as a test.
+- Every parser has a fuzz test: 53 in all. Short runs found bugs, which are fixed, and each crash input is kept as a test.
 
 ## Milestone 3: what has not run
 
