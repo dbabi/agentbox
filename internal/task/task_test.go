@@ -26,7 +26,7 @@ import (
 // the task seccomp profile, a tmpfs HOME and only the task's own dirs.
 func TestArgv(t *testing.T) {
 	id := "task_01JD000000000000000000000Z"
-	a := Argv(Spec{Task: id, Agent: "claude", Runtime: 7200 * time.Second, Deadline: time.UnixMilli(1_800_000_000_000),
+	a := Argv(Spec{Task: id, Agent: "claude", UID: 70001, GID: 70001, Runtime: 7200 * time.Second, Deadline: time.UnixMilli(1_800_000_000_000),
 		Workspace: "/var/lib/agentbox/data/workspaces/claude", Seccomp: "/var/lib/agentbox/control/seccomp-task.json",
 		Image: "localhost/agentbox-task:x", HostUsr: []string{"/usr/bin"},
 		Env: []string{"-e", "GOPROXY=off"}, Witness: "/run/agentbox-witness/t/" + id})
@@ -35,7 +35,7 @@ func TestArgv(t *testing.T) {
 		"systemd-run --user -M ag-claude@ --unit=agentbox-task-" + id + ".service --collect",
 		"-p Delegate=yes -p KillMode=mixed -p TimeoutStopSec=15 -p RuntimeMaxSec=7200",
 		"-p ExecStopPost=-/usr/bin/podman rm -f -i -t 0 task-" + id + " /usr/bin/podman run --cgroups=split --rm --name task-" + id,
-		"--network=none --userns=keep-id --security-opt=no-new-privileges --cap-drop=all --security-opt=seccomp=/var/lib/agentbox/control/seccomp-task.json",
+		"--network=none --userns=keep-id --user=70001:70001 --security-opt=no-new-privileges --cap-drop=all --security-opt=seccomp=/var/lib/agentbox/control/seccomp-task.json",
 		"--read-only --tmpfs /tmp:rw,size=2g --mount type=tmpfs,destination=/home/agent,tmpfs-size=4g,tmpfs-mode=0700,U=true --pids-limit=4096 --log-driver=none",
 		"-v /var/lib/agentbox/data/workspaces/claude:/workspace",
 		"-v /run/agentbox-gate/t/" + id + ":/run/agentbox/gate:ro -v /run/agentbox-proxy/t/" + id + ":/run/agentbox/egress:ro",

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"agentbox/internal/ids"
+	"agentbox/internal/image"
 	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/attach"
 	"agentbox/internal/rootd/witness"
@@ -232,6 +234,10 @@ func (t *tasks) start(id, agent, origin string) reply {
 		} else if strings.Contains(err.Error(), "cannot set user namespace") {
 			reason = "podman_userns" // podman joined a process that is not its pause process (#125)
 		}
+		var r *image.Refused
+		if errors.As(err, &r) {
+			return reply{"ok": false, "reason": "image_refused", "code": r.Code, "error": err.Error()}
+		}
 		return reply{"ok": false, "reason": reason, "error": err.Error()}
 	}
 	return reply{"ok": true, "task": id, "unit": task.Unit(id), "chain": si.chain, "trace": si.trace, "tainted": tainted}
@@ -388,7 +394,7 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 		return false, err
 	}
 	dl := time.UnixMilli(si.deadline)
-	argv := task.Argv(task.Spec{Task: id, Agent: acct.Name, Runtime: dl.Sub(t.cfg.Now()), Deadline: dl, Workspace: acct.Workspace,
+	argv := task.Argv(task.Spec{Task: id, Agent: acct.Name, UID: acct.UID, GID: acct.GID, Runtime: dl.Sub(t.cfg.Now()), Deadline: dl, Workspace: acct.Workspace,
 		Seccomp: t.cfg.Seccomp, Image: t.cfg.Image, HostUsr: t.cfg.HostUsr, Env: env, Witness: filepath.Join(t.cfg.WitnessRoot, id)})
 	t0 := time.Now()
 	err = t.cfg.Launch(argv)
@@ -746,33 +752,41 @@ func (t *tasks) ensurePodman(a Account) error {
 		return nil
 	}
 	if err := t.cfg.EnsureImage(a, setup); err != nil {
-		return fmt.Errorf("task image: %v", err)
+		return fmt.Errorf("task image: %w", err)
 	}
 	return nil
 }
 
-var imported sync.Map // uid: the agent's podman has task.Image()
+var imported sync.Map // uid: the agent's podman has the checked task image, named task.Image()
 
-// ensureImage imports the stub task image into the agent's podman once per uid, through its user manager so podman's
-// pause process lands there (§4.2); with setup, it calls podman there again even if the image is in.
+// ensureImage loads the release's task image into the agent's podman once per uid, through its user manager so
+// podman's pause process lands there (§4.2); with setup, it calls podman there again even if the image is in. The
+// archive must be the bytes the signed release's SHA256SUMS names, and pass image.Check, before podman reads it
+// (#102, #109); then the name points at the checked config digest, so podman runs nothing else under it.
 func ensureImage(a Account, setup bool) error {
 	if _, ok := imported.Load(a.UID); ok && !setup {
 		return nil
 	}
-	sk := task.Skeleton()
-	if b, err := os.ReadFile(task.ImageTar); err != nil || !bytes.Equal(b, sk) {
-		if err := os.WriteFile(task.ImageTar, sk, 0o644); err != nil {
-			return err
-		}
+	p, err := filepath.EvalSymlinks(task.ImageFile) // check and load the same file, even if current switches between
+	if err != nil {
+		return err
 	}
-	if err := os.Chmod(task.ImageTar, 0o644); err != nil { // rootd's UMask=0077; the agent's podman reads it
+	if err := image.CheckRelease(task.ReleaseSums, task.ArchiveName(runtime.GOARCH), p); err != nil {
+		return err
+	}
+	img, err := image.Check(p)
+	if err != nil {
 		return err
 	}
 	user := []string{"systemd-run", "--user", "-M", "ag-" + a.Name + "@", "--wait", "--quiet", "--collect", task.Podman}
-	if runFor(30*time.Second, append(user, "image", "exists", task.Image())...) != nil {
-		if err := runFor(60*time.Second, append(user, "import", task.ImageTar, task.Image())...); err != nil {
+	if runFor(30*time.Second, append(user, "image", "exists", img.ID)...) != nil {
+		if err := runFor(60*time.Second, append(user, "load", "-q", "-i", p)...); err != nil {
 			return err
 		}
+	}
+	// podman's image ID is the config digest: by ID, not by the name podman load gave it
+	if err := runFor(30*time.Second, append(user, "tag", img.ID, task.Image())...); err != nil {
+		return fmt.Errorf("podman load gave no image %s: %v", img.ID, err)
 	}
 	imported.Store(a.UID, true)
 	return nil

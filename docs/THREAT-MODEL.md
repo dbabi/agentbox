@@ -69,6 +69,7 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | Until `osbuild-fetch@` lands, `agentbox os plan` runs apt as root on the host; apt's update hooks are cleared, but `apt-get update` and download output, and a closure-mismatch error, reach the admin's terminal raw (the approval listing quotes every origin) | Weeks 11–12: `osbuild-fetch@` |
 | The stock `10_linux` entries stay in `grub.cfg`: nothing selects them unattended, but one booted by hand runs the btrfs top level without `rootflags` and leaves `recordfail` set | |
 | `ua-timer`, `motd-news`, `apport-autoreport` and `update-notifier-download` stay enabled and contact the network (they change no packages) | |
+| Ubuntu's podman 5.7 lacks the fix for GHSA-pggw-qqjf-6cxw (podman 5.8.10), where a crafted image matches another image's digest with other layers and config. rootd checks every blob of the task image itself before `podman load` and pins it by its config digest. App images are not built yet, so nothing checks them | Ubuntu's podman with the fix; app images through the same check (#173) |
 
 ## Test-model limits (what the gates can't show)
 | Limit | Effect |

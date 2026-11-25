@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"time"
 
+	"agentbox/internal/image"
 	"agentbox/internal/ops"
 	"agentbox/internal/taskenv"
 )
@@ -23,10 +24,12 @@ import (
 const (
 	ControlDir  = "/var/lib/agentbox/control"
 	ExportsDir  = ControlDir + "/exports" // <agent>/: the generated CLI configs, mounted read-only
-	Binary      = "/var/lib/agentbox/current/bin/agentbox"
+	Release     = "/var/lib/agentbox/current"
+	Binary      = Release + "/bin/agentbox"
 	Podman      = "/usr/bin/podman"
-	ImageTar    = ControlDir + "/task-image.tar" // the image's root skeleton, imported per agent (stub, below)
-	StopTimeout = 15 * time.Second               // TimeoutStopSec: SIGTERM to SIGKILL
+	ImageFile   = Release + "/image/task.oci.tar" // install.sh copies the box's ArchiveName here
+	ReleaseSums = Release + "/SHA256SUMS"         // the signed release's sha256 of every file in its tarball
+	StopTimeout = 15 * time.Second                // TimeoutStopSec: SIGTERM to SIGKILL
 )
 
 // Svcs are the services with a per-task socket dir, and where the container sees each one (Appendix C).
@@ -53,6 +56,7 @@ func CgroupDir(uid uint32, task string) string {
 // Spec is everything the launch argv is built from: typed values only, nothing interpolated from agent input.
 type Spec struct {
 	Task, Agent string // already validated: ids.Is("task", Task), an existing account
+	UID, GID    uint32 // the agent's; --user, so an image USER never applies (#109)
 	Runtime     time.Duration
 	Deadline    time.Time
 	Workspace   string
@@ -76,6 +80,7 @@ func Argv(s Spec) []string {
 		"-p", "RuntimeMaxSec=" + strconv.FormatInt(sec, 10),
 		"-p", "ExecStopPost=-" + Podman + " rm -f -i -t 0 " + Container(s.Task),
 		Podman, "run", "--cgroups=split", "--rm", "--name", Container(s.Task), "--network=none", "--userns=keep-id",
+		"--user=" + strconv.FormatUint(uint64(s.UID), 10) + ":" + strconv.FormatUint(uint64(s.GID), 10),
 		"--security-opt=no-new-privileges", "--cap-drop=all", "--security-opt=seccomp=" + s.Seccomp,
 		"--read-only", "--tmpfs", "/tmp:rw,size=2g", "--mount", "type=tmpfs,destination=/home/agent,tmpfs-size=4g,tmpfs-mode=0700,U=true",
 		"--pids-limit=4096", "--log-driver=none",
@@ -270,7 +275,16 @@ func Skeleton() []byte {
 	return b.Bytes()
 }
 
-// Image is the stub image's name: its tag is the skeleton's hash, so a box imports it once per skeleton change.
+// Archive is the task image as the release ships it for arch: the skeleton as its one layer, in an OCI archive that
+// rootd checks (internal/image) before podman loads it (#102).
+func Archive(arch string) []byte {
+	return image.Build([][]byte{Skeleton()}, image.Config{Architecture: arch, OS: "linux"}, Image())
+}
+
+// ArchiveName is Archive(arch)'s path in the release tarball and its SHA256SUMS.
+func ArchiveName(arch string) string { return "image/linux-" + arch + "/task.oci.tar" }
+
+// Image is the stub image's name: its tag is the skeleton's hash, so a box loads it once per skeleton change.
 func Image() string {
 	h := sha256.Sum256(Skeleton())
 	return "localhost/agentbox-task:" + hex.EncodeToString(h[:6])

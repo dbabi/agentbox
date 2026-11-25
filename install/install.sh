@@ -22,8 +22,11 @@ R=$A/releases
 N=$R/.$VER.new
 mkdir -p "$R"
 rm -rf "$N"
-mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d" "$N/tmpfiles.d" "$N/gen" "$N/seccomp"
+mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d" "$N/tmpfiles.d" "$N/gen" "$N/seccomp" "$N/image"
 install -m 0755 "$BIN" "$N/bin/agentbox"
+# rootd checks the task image against the release's SHA256SUMS before every load (#102)
+install -m 0644 "$S/image/linux-$ARCH/task.oci.tar" "$N/image/task.oci.tar"
+install -m 0644 "$S/SHA256SUMS" "$N/SHA256SUMS"
 install -m 0644 "$S"/systemd/* "$N/systemd/"
 install -m 0644 "$S"/sysusers.d/* "$N/sysusers.d/"
 install -m 0644 "$S"/tmpfiles.d/* "$N/tmpfiles.d/"
@@ -78,6 +81,11 @@ fi
 getent passwd _ntfy >/dev/null || die "the ntfy package made no _ntfy user"
 # The ruleset names those users; it must pass nft -c before any unit is enabled (§2).
 "$R/$VER/bin/agentbox" fw load -c || die "the firewall ruleset does not pass nft -c"
+# No podman auto-update for any user (#109): an image label must never restart a unit. Agent and app uids have no
+# login to start it, and the admin has no use for it on this box.
+mkdir -p "$ETC/systemd/user"
+ln -sfn /dev/null "$ETC/systemd/user/podman-auto-update.timer"
+ln -sfn /dev/null "$ETC/systemd/user/podman-auto-update.service"
 # PID 1 loads units before /var/lib/agentbox is mounted, so the units are copies on the root file system.
 install -m 0644 "$R/$VER"/systemd/* "$ETC/systemd/system/"
 systemctl daemon-reload

@@ -1,6 +1,7 @@
 // Command release builds an agentbox release; run it as `make release` from the repo root (PLAN.md milestones row
 // 1–2). It writes agentbox-<ver>.tgz (install.sh, the systemd units, the sysusers.d and tmpfiles.d files, the op
-// registry's generated gen/ files, the task seccomp profile, agentbox for linux/arm64 and linux/amd64) and agentbox-<ver>.tgz.minisig. The
+// registry's generated gen/ files, the task seccomp profile, the task image per architecture, SHA256SUMS of all of
+// these, agentbox for linux/arm64 and linux/amd64) and agentbox-<ver>.tgz.minisig. The
 // tarball is reproducible (sorted entries, fixed mtime, root:root), so anyone can rebuild a commit with the same Go
 // version and compare the hash a seed pins with --release-sha256.
 package main
@@ -20,8 +21,10 @@ import (
 	"sort"
 	"time"
 
+	"agentbox/internal/image"
 	"agentbox/internal/ops"
 	"agentbox/internal/seccomp"
+	"agentbox/internal/task"
 )
 
 // The version names /var/lib/agentbox/releases/<ver> on the box (install.sh checks the same charset) and the tarball,
@@ -131,6 +134,28 @@ func build(version, key, out string, sign bool) (string, []byte, error) {
 		return "", nil, err
 	}
 	files = append(files, file{"seccomp/seccomp-task.json", sp, 0o644})
+	// the task image, so the release signature covers its bytes (#102)
+	for _, arch := range []string{"arm64", "amd64"} {
+		ip := filepath.Join(tmp, "task-"+arch+".oci.tar")
+		if err := os.WriteFile(ip, task.Archive(arch), 0o644); err != nil {
+			return "", nil, err
+		}
+		files = append(files, file{task.ArchiveName(arch), ip, 0o644})
+	}
+	// SHA256SUMS: rootd checks the task image against it before every load
+	all := map[string][]byte{}
+	for _, fl := range files {
+		b, err := os.ReadFile(fl.src)
+		if err != nil {
+			return "", nil, err
+		}
+		all[fl.name] = b
+	}
+	sums := filepath.Join(tmp, "SHA256SUMS")
+	if err := os.WriteFile(sums, image.Sums(all), 0o644); err != nil {
+		return "", nil, err
+	}
+	files = append(files, file{"SHA256SUMS", sums, 0o644})
 	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
 
 	if err := os.MkdirAll(out, 0o755); err != nil {

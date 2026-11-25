@@ -16,7 +16,9 @@ import (
 	"strings"
 	"testing"
 
+	"agentbox/internal/image"
 	"agentbox/internal/ops"
+	"agentbox/internal/task"
 )
 
 // TestBuild builds one release twice: the same bytes both times, root-owned entries with fixed modes, one ELF per
@@ -84,7 +86,7 @@ func TestBuild(t *testing.T) {
 	for _, g := range ops.Shipped { // exactly these, whatever else sits in gen/
 		units = append(units, "gen/"+g)
 	}
-	units = append(units, "seccomp/seccomp-task.json")
+	units = append(units, "seccomp/seccomp-task.json", "SHA256SUMS", "image/linux-amd64/task.oci.tar", "image/linux-arm64/task.oci.tar")
 	all := strings.Fields(want)
 	for _, u := range units {
 		mode[u] = 0o644
@@ -97,6 +99,7 @@ func TestBuild(t *testing.T) {
 		t.Fatal("systemd/agentbox-reconcile.service, sysusers.d/agentbox.conf or tmpfiles.d/agentbox.conf is missing from the repo")
 	}
 	var names []string
+	content := map[string][]byte{}
 	for tr := tar.NewReader(zr); ; {
 		h, err := tr.Next()
 		if err == io.EOF {
@@ -106,11 +109,12 @@ func TestBuild(t *testing.T) {
 			t.Fatal(err)
 		}
 		names = append(names, h.Name)
+		b, _ := io.ReadAll(tr)
+		content[h.Name] = b
 		if h.Typeflag != tar.TypeReg || h.Mode != mode[h.Name] || h.Uid != 0 || h.Gid != 0 || h.Uname != "root" {
 			t.Errorf("%s: type %c mode %o owner %d:%d %s", h.Name, h.Typeflag, h.Mode, h.Uid, h.Gid, h.Uname)
 		}
 		if m, ok := machine[h.Name]; ok {
-			b, _ := io.ReadAll(tr)
 			if f, err := elf.NewFile(bytes.NewReader(b)); err != nil || f.Machine != m || !bytes.Contains(b, []byte("1.2.3-test")) {
 				t.Errorf("%s: want a %v ELF that carries the version (%v)", h.Name, m, err)
 			}
@@ -122,6 +126,21 @@ func TestBuild(t *testing.T) {
 	}
 	if got := strings.Join(names, " "); got != want {
 		t.Errorf("entries: %s, want %s", got, want)
+	}
+	// SHA256SUMS lists every other entry, and the task image is task.Archive and passes rootd's check (#102)
+	sums := content["SHA256SUMS"]
+	delete(content, "SHA256SUMS")
+	if !bytes.Equal(sums, image.Sums(content)) {
+		t.Errorf("SHA256SUMS:\n%s", sums)
+	}
+	for _, arch := range []string{"arm64", "amd64"} {
+		p := filepath.Join(dir, arch+".tar")
+		if err := os.WriteFile(p, content[task.ArchiveName(arch)], 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if img, err := image.Check(p); err != nil || img.Config.Architecture != arch || !bytes.Equal(content[task.ArchiveName(arch)], task.Archive(arch)) {
+			t.Errorf("%s task image: %v", arch, err)
+		}
 	}
 	for _, v := range []string{"", "../x", ".hidden", "1 2", "a/b", "1.0+git", strings.Repeat("1", 65)} {
 		if _, _, err := build(v, key, out, true); err == nil {
