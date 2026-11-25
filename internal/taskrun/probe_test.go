@@ -50,12 +50,23 @@ func TestProbe(t *testing.T) {
 	if _, err := (&Probe{Root: tree(t, nil), Task: "task_A", Dial: unreachable}).Run(); err != nil {
 		t.Fatalf("clean task: %v", err)
 	}
+	// #223: bonding's class file and the kernel's fallback tunnels, down, are no way out
+	ok := map[string]string{"/sys/class/net/bonding_masters": "bond0\n", "/sys/class/net/tunl0/flags": "0x80\n",
+		"/sys/class/net/sit0/flags": "0x80\n", "/sys/class/net/ip6tnl0/flags": "0x0\n"}
+	if _, err := (&Probe{Root: tree(t, ok), Task: "task_A", Dial: unreachable}).Run(); err != nil {
+		t.Fatalf("bonding_masters and down fallback tunnels: %v", err)
+	}
 	for _, c := range []struct {
 		check string
 		over  map[string]string
 		dial  func(string, string) error
 	}{
 		{"netdev", map[string]string{"/sys/class/net/eth0/x": ""}, nil},
+		{"netdev", map[string]string{"/sys/class/net/tunl0/flags": "0x81\n"}, nil}, // a fallback tunnel set up
+		{"netdev", map[string]string{"/sys/class/net/tunl0/x": ""}, nil},           // no flags: counted as up
+		{"netdev", map[string]string{"/sys/class/net/tg0/flags": "0x82\n"}, nil},   // down, but not a fallback tunnel
+		{"netdev", map[string]string{"/sys/class/net/sit0/flags": "junk\n"}, nil},  // flags that don't parse
+		{"netdev", map[string]string{"/sys/class/net/bonding_masters/x": ""}, nil}, // a dir under that name is a device
 		{"route", map[string]string{"/proc/net/route": route4 + "lo\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n"}, nil},
 		{"route", map[string]string{"/proc/net/ipv6_route": route6 +
 			"00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000400 00000001 00000000 00000003 eth0\n"}, nil},

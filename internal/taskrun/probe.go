@@ -57,7 +57,13 @@ func (p *Probe) Run() (time.Duration, error) {
 
 func (p *Probe) path(s string) string { return filepath.Join(p.Root, s) }
 
-// netdev: lo is the only interface.
+// fallback are the tunnels the kernel adds, down, to every new netns while ipip, sit, ip6_tunnel, ip_gre, ip6_gre or
+// ip_vti is loaded (net.core.fb_tunnels_only_for_init_net=0, the default). Down, one is no way out, and the task has no
+// CAP_NET_ADMIN to set it up.
+var fallback = []string{"tunl0", "sit0", "ip6tnl0", "gre0", "gretap0", "erspan0", "ip6gre0", "ip_vti0", "ip6_vti0"}
+
+// netdev: lo is the only interface. Only devices count: bonding adds a bonding_masters file to every netns's
+// /sys/class/net. A fallback tunnel counts only while it is up.
 func (p *Probe) netdev() error {
 	es, err := os.ReadDir(p.path("/sys/class/net"))
 	if err != nil {
@@ -65,12 +71,25 @@ func (p *Probe) netdev() error {
 	}
 	var names []string
 	for _, e := range es {
+		if fi, err := os.Stat(p.path("/sys/class/net/" + e.Name())); err == nil && !fi.IsDir() {
+			continue // a class file, not a device; a device's entry links to its dir
+		}
+		if slices.Contains(fallback, e.Name()) && !p.up(e.Name()) {
+			continue
+		}
 		names = append(names, e.Name())
 	}
 	if !slices.Equal(names, []string{"lo"}) {
 		return fmt.Errorf("interfaces %v, want only lo", names)
 	}
 	return nil
+}
+
+// up reports whether a device's flags have IFF_UP. Flags it can't read count as up.
+func (p *Probe) up(dev string) bool {
+	b, err := os.ReadFile(p.path("/sys/class/net/" + dev + "/flags"))
+	f, perr := strconv.ParseUint(strings.TrimSpace(string(b)), 0, 32)
+	return err != nil || perr != nil || f&0x1 != 0
 }
 
 // route: no usable default route, IPv4 or IPv6. The kernel's IPv6 null entry is a reject route, so it doesn't count.

@@ -24,7 +24,6 @@ import (
 const (
 	ProxyURL   = "http://127.0.0.1:8080"
 	NoProxy    = "127.0.0.1,localhost,::1"
-	GoFilter   = "http://127.0.0.1:8083"
 	MaxPrivate = 1024
 )
 
@@ -44,7 +43,10 @@ var Unset = []string{"GOFLAGS", "GONOSUMDB", "GONOPROXY", "GOINSECURE", "HTTP_PR
 func Env(goProxy bool, goPrivate string) []string {
 	env := []string{"HTTPS_PROXY=" + ProxyURL, "https_proxy=" + ProxyURL, "NO_PROXY=" + NoProxy, "no_proxy=" + NoProxy}
 	if goProxy {
-		env = append(env, "GOPROXY="+GoFilter+",https://proxy.golang.org,direct", "GOSUMDB=sum.golang.org")
+		// shortcut: no Go module filter on 127.0.0.1:8083 yet (§6.2, weeks 7-8), and go moves past a GOPROXY entry only on
+		// 404 or 410, so an entry nothing serves fails every fetch. Until taskrun serves it, go asks proxy.golang.org over
+		// CONNECT, which the agent's allowlist already lets it do.
+		env = append(env, "GOPROXY=https://proxy.golang.org,direct", "GOSUMDB=sum.golang.org")
 	} else {
 		env = append(env, "GOPROXY=off") // go fails at once with its own error and opens no CONNECT
 	}

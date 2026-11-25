@@ -10,7 +10,8 @@
 #          sh script (AGENTBOX_TEST_CLI=sh) by taskrun after it starts the in-task forwarders. No --dns=none: podman
 #          refuses it with --network=none, and leaves the image's resolv.conf as it is (taskenv).
 #          A-G1: the Go, proxy and quiet npm/pip env for an agent with and without proxy.golang.org:443; GOPROXY=off
-#          fails at once with 0 CONNECTs; GOPRIVATE from go.private.set; the image's GOFLAGS, GONOSUMDB, GONOPROXY,
+#          fails at once with 0 CONNECTs; with it, go asks proxy.golang.org over the egress forwarder, not the Go module
+#          filter that nothing serves yet (#223); GOPRIVATE from go.private.set; the image's GOFLAGS, GONOSUMDB, GONOPROXY,
 #          GOINSECURE, HTTP_PROXY and ALL_PROXY never reach the task; the pinned Go; no cache survives into the next
 #          task; npm test and pip list open 0 CONNECTs. A-G2: a go.mod that needs a newer Go fails with go's own
 #          toolchain error and 0 CONNECTs. C-G2: direct lookups fail in under 1 s; resolv.conf names only 127.0.0.1; the
@@ -214,7 +215,7 @@ check "go.private.set{ga, corp.example/*} through rootd-admin.sock, audited" '$B
   [ "$(cat $E/ga.goprivate)" = "corp.example/*" ] && cat $A/seg-*.jsonl | grep "\"type\":\"INTENT\"" | grep -q "\"name\":\"go.private.set\""'
 check "  ... a pattern with a space is refused" '! $B goprivate set --agent ga --patterns "a b" && [ "$(cat $E/ga.goprivate)" = "corp.example/*" ]'
 task ga env > $G/env-ga; task gb env > $G/env-gb
-check "A-G1 ga (proxy.golang.org:443 allowlisted): GOPROXY is the filter, then proxy.golang.org, then direct" 'grep -qx "GOPROXY=http://127.0.0.1:8083,https://proxy.golang.org,direct" $G/env-ga'
+check "A-G1 ga (proxy.golang.org:443 allowlisted): GOPROXY is proxy.golang.org, then direct: no Go module filter yet (#223)" 'grep -qx "GOPROXY=https://proxy.golang.org,direct" $G/env-ga'
 check "  ... GOSUMDB=sum.golang.org, GOTOOLCHAIN=local, GOPRIVATE=corp.example/*" 'grep -qx GOSUMDB=sum.golang.org $G/env-ga && grep -qx GOTOOLCHAIN=local $G/env-ga && grep -qx "GOPRIVATE=corp.example/\*" $G/env-ga'
 check "  ... the npm and pip flags and NO_UPDATE_NOTIFIER=1" 'for v in npm_config_audit=false npm_config_fund=false npm_config_update_notifier=false NO_UPDATE_NOTIFIER=1 PIP_DISABLE_PIP_VERSION_CHECK=1; do grep -qx $v $G/env-ga && grep -qx $v $G/env-gb || exit 1; done'
 check "A-G1 gb (no proxy.golang.org): GOPROXY=off, GOTOOLCHAIN=local, no GOSUMDB and no GOPRIVATE" 'grep -qx GOPROXY=off $G/env-gb && grep -qx GOTOOLCHAIN=local $G/env-gb && ! grep -q "^GOSUMDB=\|^GOPRIVATE=" $G/env-gb'
@@ -225,6 +226,13 @@ c=$(connects)
 check "A-G1 gb: go mod download fails at once with go's own GOPROXY=off error and 0 CONNECTs" '
   ! task gb "t0=\$(date +%s%N); go mod download; r=\$?; echo ms=\$(( (\$(date +%s%N)-t0)/1000000 )); exit \$r" > $G/gmd 2>&1 &&
   grep -q "module lookup disabled by GOPROXY=off" $G/gmd && [ "$(sed -n "s/^ms=//p" $G/gmd)" -lt 2000 ] && [ "$(connects)" = "$c" ]'
+# #223: the stub proxy refuses every CONNECT but ok.example, so the fetch fails; it must fail at proxy.golang.org's
+# CONNECT, not on a dial to 127.0.0.1:8083, where nothing listens
+mkdir -p $WS/ga/gofx && cp $WS/gb/go.mod $WS/ga/gofx/go.mod && chown -R ag-ga:ag-ga $WS/ga
+c=$(connects)
+check "A-G1 ga: go mod download asks proxy.golang.org through the egress forwarder, and dials no 127.0.0.1:8083 (#223)" '
+  task ga "cd gofx && go mod download" > $G/gma 2>&1; cat $G/gma; ! grep -q "127.0.0.1:8083" $G/gma &&
+  grep -q "https://proxy.golang.org/" $G/gma && [ "$(connects)" -gt "$c" ] && grep -q "^CONNECT proxy.golang.org:443 " $G/proxy.log'
 check "A-G1 go version is the image's pinned Go ($(sed -n "s/^go = \"\(.*\)\"/\1/p" /tmp/gate-image/task/mise.toml))" '
   task ga "go version" | grep -qx "go version go$(sed -n "s/^go = \"\(.*\)\"/\1/p" /tmp/gate-image/task/mise.toml) linux/arm64"'
 check "A-G1 a task writes \$GOCACHE, ~/go/pkg/mod and ~/.npm; the next task sees none of it, only taskrun's own HOME files" '

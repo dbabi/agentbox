@@ -34,4 +34,11 @@ func TestSkipMotd(t *testing.T) {
 	if _, err := SkipMotd("session optional pam_motd.so a\nsession optional pam_env.so\nsession optional pam_motd.so b\n"); err == nil {
 		t.Fatal("non-adjacent pam_motd lines must be an error")
 	}
+	// #223: once the admin comments the motd lines out, the agent line goes too. Linux-PAM doesn't count comments in a
+	// jump, so [success=2] would skip pam_mail and the first common-session line for every agent login.
+	off := strings.ReplaceAll(out, "session    optional   pam_motd.so", "#session    optional   pam_motd.so")
+	if got, err := SkipMotd(off); err != nil || strings.Contains(got, skipMark) ||
+		got != strings.ReplaceAll(ubuntuLogin, "session    optional   pam_motd.so", "#session    optional   pam_motd.so") {
+		t.Fatalf("%v:\n%s", err, got)
+	}
 }

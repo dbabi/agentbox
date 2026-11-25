@@ -16,7 +16,8 @@ var motdLine = regexp.MustCompile(`^session\s+\S+\s+pam_motd\.so(\s|$)`)
 
 // SkipMotd returns login with the agent line right before its adjacent pam_motd lines (Appendix C), so a task launch
 // never runs /etc/update-motd.d/* while humans still get motd. It drops any earlier copy of the line first, so a rerun
-// changes nothing, and the skip count is the number of adjacent pam_motd lines.
+// changes nothing, and the skip count is the number of adjacent pam_motd lines. With no pam_motd line left, the old
+// line goes too: its jump would skip the session modules after it.
 func SkipMotd(login string) (string, error) {
 	var keep []string
 	for _, l := range strings.Split(login, "\n") {
@@ -36,7 +37,7 @@ func SkipMotd(login string) (string, error) {
 		}
 	}
 	if at < 0 {
-		return login, nil // no motd for anyone: nothing to skip
+		return strings.Join(keep, "\n"), nil // no motd for anyone: nothing to skip
 	}
 	line := fmt.Sprintf("session [success=%d default=ignore] %s", n, skipMark)
 	out := append(append(append([]string{}, keep[:at]...), line), keep[at:]...)
