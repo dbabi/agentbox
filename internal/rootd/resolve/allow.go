@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"agentbox/internal/rootd/gens"
 )
@@ -142,39 +143,58 @@ func listFile(dir, svc string) (string, bool) {
 	return "", false
 }
 
+// editMu serializes EditList: two edits that both read the old file would each write back a copy without the other's
+// change, and a finished removal would come back.
+var editMu sync.Mutex
+
 // EditList adds (add=true) or removes e for svc and writes the file atomically. It reports whether anything changed.
+// Rows match on the Entry LoadLists parses from them, so a removal takes every row that names e, in any spelling, and
+// the file is written back in canonical form.
 func EditList(dir, svc string, e Entry, add bool) (bool, error) {
 	p, withSvc := listFile(dir, svc)
 	if p == "" {
 		return false, fmt.Errorf("unknown service %q (proxy, keys or git)", svc)
 	}
+	e, err := ParseEntry(e.String())
+	if err != nil {
+		return false, err
+	}
 	if add && svc == "proxy" && slices.Contains(deputyHosts, e.Host) {
 		return false, fmt.Errorf("%s is a deputy host: never in common.list (§6.2)", e.Host)
 	}
+	editMu.Lock()
+	defer editMu.Unlock()
 	rows, err := readList(p, withSvc)
 	if err != nil {
 		return false, err
 	}
-	want := [2]string{"", e.String()}
-	if withSvc {
-		want[0] = svc
-	}
-	i := slices.Index(rows, want)
-	switch {
-	case add && i >= 0, !add && i < 0:
-		return false, nil
-	case add:
-		rows = append(rows, want)
-	default:
-		rows = slices.Delete(rows, i, i+1)
-	}
 	var b strings.Builder
 	b.WriteString("# managed by agentbox egress allow/remove (rootd)\n")
+	found := false
 	for _, r := range rows {
+		re, err := ParseEntry(r[1])
+		if err != nil {
+			return false, fmt.Errorf("%s: %v", filepath.Base(p), err)
+		}
+		if re == e && (!withSvc || r[0] == svc) {
+			found = true
+			if !add {
+				continue
+			}
+		}
 		if withSvc {
 			b.WriteString(r[0] + " ")
 		}
-		b.WriteString(r[1] + "\n")
+		b.WriteString(re.String() + "\n")
+	}
+	if add == found {
+		return false, nil
+	}
+	if add {
+		if withSvc {
+			b.WriteString(svc + " ")
+		}
+		b.WriteString(e.String() + "\n")
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false, err
