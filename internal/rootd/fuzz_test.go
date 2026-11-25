@@ -80,6 +80,9 @@ func FuzzRequest(f *testing.F) {
 			if _, ok := rep["ok"].(bool); !ok {
 				t.Fatalf("line %d to %s: reply %q has no ok", i, sock, out)
 			}
+			if i == 0 && sock == "resolve-keys" && string(line) == seeds[0] && rep["ok"] != true {
+				t.Fatalf("an allowlisted resolve on a fresh rootd: reply %q", out) // #222: the resolve path stays reachable
+			}
 		}
 	})
 }

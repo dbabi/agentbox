@@ -89,3 +89,26 @@ func TestReopen(t *testing.T) {
 	}
 	w2.Remove()
 }
+
+// #222 R55: END lines after the first and bytes with no newline count against MaxKept, so a flood of either shows in
+// Dropped; the last END is still kept.
+func TestWitnessFloodCounted(t *testing.T) {
+	end := "END " + strings.Repeat("a", 64) + "\n"
+	for name, flood := range map[string]string{"END lines": strings.Repeat(end, 2*MaxKept/len(end)), "no newline": strings.Repeat("x", 2*MaxKept)} {
+		root := t.TempDir()
+		w, err := Create(root, "task_3", -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := writer(t, root, "task_3")
+		if _, err := f.WriteString(flood); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		r := w.Drain()
+		w.Remove()
+		if r.Dropped == 0 || name == "END lines" && r.End != strings.Repeat("a", 64) {
+			t.Errorf("%s: %+v", name, r)
+		}
+	}
+}

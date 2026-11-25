@@ -154,7 +154,10 @@ func (s *server) serve(name string, c *net.UnixConn) {
 				s.attach(c, r, buf[i+1:])
 				return
 			}
-			if _, err := c.Write(s.lineFrom(name, p, buf[:i])); err != nil {
+			s.reqs.RLock()
+			out := s.lineFrom(name, p, buf[:i])
+			s.reqs.RUnlock()
+			if _, err := c.Write(out); err != nil {
 				return
 			}
 			buf = buf[i+1:]

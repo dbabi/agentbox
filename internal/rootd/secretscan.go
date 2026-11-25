@@ -264,7 +264,8 @@ func (t *tasks) secretGate(acct Account, ack int) reply {
 }
 
 // grantScan is the scan at an egress grant for host: every active agent's workspace is scanned again, and the reply
-// names each credential that works against host. A hit no admin acknowledged blocks that agent's next task.
+// names each credential that works against host. Each one blocks that agent's next task until it is acknowledged
+// (again, if it was before the grant) or removed.
 func (t *tasks) grantScan(agents []string, host string) (matching []map[string]any, failed []string) {
 	if t.cfg.SecretScan == nil {
 		return nil, nil
@@ -283,8 +284,30 @@ func (t *tasks) grantScan(agents []string, host string) (matching []map[string]a
 				matching = append(matching, map[string]any{"agent": name, "path": h.Path, "line": h.Line, "type": h.Rule})
 			}
 		}
+		if err := t.dropAcks(acct, host); err != nil {
+			log.Printf("secret scan %s: acks for %s: %v", name, host, err)
+			if !slices.Contains(failed, name) {
+				failed = append(failed, name)
+			}
+		}
 	}
 	return matching, failed
+}
+
+// dropAcks forgets every acknowledged hit that works against host. The admin acked it while host was not allowed, so
+// with host allowed it blocks the agent's next task until an --ack-secrets again.
+func (t *tasks) dropAcks(acct Account, host string) error {
+	st, ok, err := t.loadScan(accounts.WorkspaceSubject(acct.Name, int(acct.UID)))
+	if err != nil || !ok {
+		return err
+	}
+	n := len(st.acked)
+	st.acked = slices.DeleteFunc(st.acked, func(h secrets.Hit) bool { return secrets.ForHost(h.Rule, host) })
+	if len(st.acked) == n {
+		return nil
+	}
+	st.checked = false
+	return t.saveScan(acct, st)
 }
 
 func (s *server) activeAgents() []string {

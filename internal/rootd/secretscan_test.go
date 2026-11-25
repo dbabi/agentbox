@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agentbox/internal/ids"
+	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/secrets"
 )
 
@@ -45,8 +46,19 @@ func TestSecretGate(t *testing.T) {
 	if len(failed) != 0 || len(found) != 1 || found[0]["type"] != "github-pat" || found[0]["path"] != gh.Path {
 		t.Fatalf("grant scan: %v %v", found, failed)
 	}
+	// #222 R52: the ack came while github was not allowed, so the grant drops it and the next task blocks, as the
+	// grant's warning says, until a new --ack-secrets
+	if rep := start(); rep["reason"] != SecretsInWorkspace {
+		t.Fatalf("a task after the grant, on the ack from before it: %v", rep)
+	}
+	if rep := r.t.secretGate(acct, 1); rep != nil {
+		t.Fatalf("--ack-secrets 1 after the grant: %v", rep)
+	}
 	if found, _ := r.t.grantScan([]string{"claude"}, "pypi.org"); len(found) != 0 {
 		t.Fatalf("a grant for another host named it: %v", found)
+	}
+	if st, _, _ := r.t.loadScan(accounts.WorkspaceSubject("claude", int(acct.UID))); !slices.Equal(st.acked, []secrets.Hit{gh}) {
+		t.Fatalf("a grant for another host changed the acks: %v", st.acked)
 	}
 	hits = append(hits, secrets.Hit{Path: ".env", Rule: "aws-access-token", Line: 1})
 	if rep := start(); rep["reason"] != SecretsInWorkspace || !strings.Contains(rep["error"].(string), ".env:1 (aws-access-token)") {

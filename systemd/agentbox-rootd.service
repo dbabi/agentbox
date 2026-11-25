@@ -23,6 +23,8 @@ Restart=on-failure
 # job, so systemctl start and restart would hang for as long as rootd refuses (#256). A crash still restarts it.
 RestartPreventExitStatus=78
 RestartSec=2s
+# at SIGTERM rootd closes its sockets and waits up to 60 s for the requests in flight (their effect and audit RESULT)
+TimeoutStopSec=90s
 UMask=0077
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
 # ProtectHome=yes without /run/user: rootd checks and removes each agent's stale podman pause.pid there (§4.2)

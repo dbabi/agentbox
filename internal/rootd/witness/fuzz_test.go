@@ -14,7 +14,7 @@ func FuzzLines(f *testing.F) {
 		for i := 0; i < 64; i++ { // repeat the input so the cap is reached
 			for _, l := range bytes.SplitAfter(b, []byte("\n")) {
 				if len(l) > maxLine {
-					w.add(nil, maxLine)
+					w.add(nil, len(l)) // as read does: an over-long line counts every byte
 				} else if len(l) > 0 {
 					w.add(l, len(l))
 				}

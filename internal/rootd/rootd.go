@@ -256,6 +256,7 @@ func Run(cfg Config) error {
 			for _, ln := range lns {
 				ln.Close()
 			}
+			s.drain(drainTimeout) // a request past its INTENT ACK gets its effect and RESULT before rootd exits
 			return nil
 		case <-t.C:
 			if res, err := refill(db, svc); err != nil {
@@ -292,6 +293,9 @@ type server struct {
 	// applyOS runs accounts.Reconcile in agentbox-accounts.service: rootd's ProtectSystem=strict keeps /etc read-only here
 	applyOS func() error
 
+	// reqs is held shared while a request line is handled (serve); drain takes it to wait for those in flight
+	reqs sync.RWMutex
+
 	live sync.Map // agent -> session id of each running attach
 	seen sync.Map // agent -> *attach.Seen: every session-home token version since rootd started, in memory only
 	// watched is agent -> the session id whose every token version this rootd process saw: after a restart a rescan
@@ -305,6 +309,23 @@ type server struct {
 	inconsistent func() (bool, error)
 	qrescan      func() error
 	qlimit       func() error // quota.Refresh, on each consistent check; nil: none
+}
+
+// drainTimeout bounds the wait at stop for requests in flight, below the unit's TimeoutStopSec=90s.
+const drainTimeout = 60 * time.Second
+
+// drain waits up to d for the request lines being handled, and holds new ones back. It reports whether they all ended.
+// shortcut: an attach session is not waited for; its block stays, and attach rescan finishes it after a restart.
+func (s *server) drain(d time.Duration) bool {
+	done := make(chan struct{})
+	go func() { s.reqs.Lock(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		log.Printf("stop: requests still running after %v; exiting anyway", d)
+		return false
+	}
 }
 
 // refresh re-resolves ntfy.sh:443 into ntfy_dst (§6.1). A failure only logs: ntfy is down until the next try.
@@ -450,19 +471,6 @@ func (s *server) handle(sock string, p peer, r request) reply {
 		return s.admin(r, p)
 	case sock == sockGate && r.Op == "task.op":
 		return s.taskOp(r)
-	case s.tasks == nil:
-	case sock == sockGate && r.Op == "task.start":
-		if rep := s.fenceDeny(r.Op); rep != nil {
-			return rep
-		}
-		return s.tasks.start(r.Task, r.Agent, r.Origin)
-	case sock == sockGate && r.Op == "task.stop":
-		if r.Probe != "" {
-			s.tasks.probeFailed(r.Task, r.Probe)
-		}
-		return s.tasks.stop(r.Task, r.Reason)
-	case (sock == sockGate || strings.HasPrefix(sock, "resolve-")) && r.Op == "task.list_live":
-		return s.tasks.listLive()
 	case len(sock) > 8 && sock[:8] == "resolve-" && r.Op == "resolve":
 		svc := sock[8:]
 		e, err := resolve.ParseEntry(r.Host + ":" + strconv.Itoa(r.Port))
@@ -482,6 +490,19 @@ func (s *server) handle(sock string, p peer, r request) reply {
 			out[i] = a.String()
 		}
 		return reply{"ok": true, "addrs": out, "expires_at": exp.UnixMilli()}
+	case s.tasks == nil: // the task ops below need the registry; resolve above doesn't
+	case sock == sockGate && r.Op == "task.start":
+		if rep := s.fenceDeny(r.Op); rep != nil {
+			return rep
+		}
+		return s.tasks.start(r.Task, r.Agent, r.Origin)
+	case sock == sockGate && r.Op == "task.stop":
+		if r.Probe != "" {
+			s.tasks.probeFailed(r.Task, r.Probe)
+		}
+		return s.tasks.stop(r.Task, r.Reason)
+	case (sock == sockGate || strings.HasPrefix(sock, "resolve-")) && r.Op == "task.list_live":
+		return s.tasks.listLive()
 	}
 	return fail("bad_request")
 }

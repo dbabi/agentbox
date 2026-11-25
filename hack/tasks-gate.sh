@@ -51,7 +51,8 @@
 #            and repairs, and with the file and its snapshot gone the next task starts (#205);
 #          - a new agent's workspace is scanned for credentials (gitleaks rules) in a unit with only loopback; a
 #            GitHub token planted before its first task blocks it, naming the file and type; --ack-secrets 1 lets it
-#            start; an egress grant for github.com names the token type; once removed, the next task starts (#104);
+#            start; an egress grant for github.com names the token type and drops that ack, so the next task is
+#            refused (#222); once removed, the next task starts (#104);
 #            an egress grant whose scan fails (a dir chain past 256 levels) leaves the next task to scan again, and
 #            that failure blocks it; with the chain gone the next task starts (#208).
 # PASS/FAIL lines go to .vm/tasks-gate.txt, command output to .vm/tasks-gate.log; exit 1 on any FAIL.
@@ -588,6 +589,9 @@ check "  ... an egress grant for github.com:443 names the token type, agent and 
   grep -qF "a github-pat in gs'"'"'s workspace (notes/creds.txt:2)" /tmp/tg-eg && ! grep -qF "$GHT" /tmp/tg-eg &&
   $B egress allow --svc proxy --entry pypi.org:443 > /tmp/tg-eg2; $B egress remove --svc proxy --entry pypi.org:443 >/dev/null; cat /tmp/tg-eg2;
   grep -q "\"ok\":true" /tmp/tg-eg2 && ! grep -q github-pat /tmp/tg-eg2'
+check "  ... #222: the github.com grant dropped the ack from before it: the next task with no new --ack-secrets is refused" '
+  ! $B task new --agent gs --cli sh --deadline 2m < /tmp/tg-p > /tmp/tg-sec3 2>&1; cat /tmp/tg-sec3;
+  grep -q "\"reason\":\"secrets_in_workspace\"" /tmp/tg-sec3 && grep -qF "notes/creds.txt:2 (github-pat)" /tmp/tg-sec3'
 check "  ... once the token is removed, the next task scans clean and starts" 'rm $W2/notes/creds.txt && rm -f $W2/gs.ran && t=$(newg < /tmp/tg-p) &&
   wait_end $t 60 && [ -e $W2/gs.ran ] && scans gs | tail -1 | grep -q " 0 hits, "'
 check "  ... the scanner had no network: each scan saw only lo; run on the host instead it sees the NIC, which rootd would refuse (the control)" '
