@@ -2,6 +2,7 @@ package ops
 
 import (
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -92,6 +93,41 @@ func TestClassifyPassesSink(t *testing.T) {
 			if err := CheckAudit(fs, v, ""); secret && err == nil {
 				t.Errorf("%s: unclassified %s passes the sink", o.Name, b)
 			}
+		}
+	}
+}
+
+// #221: a task chooses how deep a keep value nests. A passing value costs CheckKeep no allocation, so its time and memory
+// stay linear in the request; a failing string still gets its whole pointer.
+func TestCheckKeepDeep(t *testing.T) {
+	const depth = 9000
+	var v any = "x"
+	for range depth {
+		v = []any{v}
+	}
+	if n := testing.AllocsPerRun(5, func() { CheckKeep(v, "/packages") }); n != 0 {
+		t.Fatalf("CheckKeep of a passing value %d deep: %v allocations", depth, n)
+	}
+	raw := []byte(`{"packages":` + strings.Repeat("[", depth) + `"x"` + strings.Repeat("]", depth) + `}`)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if _, e := mustOp("os.pkg.install").ValidateArgs(raw); e != nil {
+		t.Fatal(e)
+	}
+	runtime.ReadMemStats(&after)
+	if n := after.TotalAlloc - before.TotalAlloc; n > 16<<20 {
+		t.Fatalf("ValidateArgs of %d bytes %d deep allocated %d MiB", len(raw), depth, n>>20)
+	}
+	var big any = strings.Repeat("b", MaxKeep+1)
+	for range 3 {
+		big = []any{"ok", big}
+	}
+	for _, c := range []struct {
+		v        any
+		at, want string
+	}{{big, "/a", "/a/1/1/1"}, {map[string]any{"k": []any{big}}, "", "/k/0/1/1/1"}, {strings.Repeat("b", MaxKeep+1), "", "/"}} {
+		if err := CheckKeep(c.v, c.at); err == nil || err.Error() != c.want+": keep-class string over 1024 bytes" {
+			t.Errorf("CheckKeep at %q: %v, want the pointer %s", c.at, err, c.want)
 		}
 	}
 }

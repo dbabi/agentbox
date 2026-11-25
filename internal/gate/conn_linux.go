@@ -39,6 +39,7 @@ func lines(c *net.UnixConn, idle time.Duration, f func([]byte) []byte) {
 	for {
 		c.SetReadDeadline(time.Now().Add(idle))
 		n, oobn, flags, _, err := c.ReadMsgUnix(b, oob)
+		n = max(n, 0) // with an error (a deadline, a revoke's close), ReadMsgUnix can return n = -1
 		if oobn > 0 || flags&unix.MSG_CTRUNC != 0 {
 			if msgs, perr := unix.ParseSocketControlMessage(oob[:oobn]); perr == nil {
 				for _, m := range msgs {
@@ -72,16 +73,38 @@ func lines(c *net.UnixConn, idle time.Duration, f func([]byte) []byte) {
 	}
 }
 
+// MaxConns is how many connections one task's socket serves at once; more wait in the listen backlog. So a task can't
+// fill agentboxd's fd table, which would fail every other task's accept and its dials to rootd.sock.
+const MaxConns = 8
+
+// acceptRetry is l.Accept, but it waits out a failure for want of a descriptor or kernel memory (EMFILE, ENFILE,
+// ENOBUFS, ENOMEM), backing off from 5 ms to 1 s as net/http does, so a full fd table never ends a listener for good.
+func acceptRetry(l net.Listener, name string) (net.Conn, error) {
+	for wait := 5 * time.Millisecond; ; wait = min(2*wait, time.Second) {
+		c, err := l.Accept()
+		if err == nil || !(errors.Is(err, unix.EMFILE) || errors.Is(err, unix.ENFILE) || errors.Is(err, unix.ENOBUFS) || errors.Is(err, unix.ENOMEM)) {
+			return c, err
+		}
+		log.Printf("%s: accept: %v; retrying in %v", name, err, wait)
+		time.Sleep(wait)
+	}
+}
+
 func (s *Server) accept(t *task) {
+	slots := make(chan struct{}, MaxConns)
 	for {
-		c, err := t.ln.Accept()
+		slots <- struct{}{} // revoke closes every connection, so a full set always drains
+		c, err := acceptRetry(t.ln, "task "+t.id)
 		if err != nil {
 			if !errors.Is(err, net.ErrClosed) {
 				log.Printf("task %s: accept: %v", t.id, err)
 			}
 			return
 		}
-		go s.serve(t, c.(*net.UnixConn))
+		go func() {
+			defer func() { <-slots }()
+			s.serve(t, c.(*net.UnixConn))
+		}()
 	}
 }
 
@@ -111,7 +134,7 @@ func (s *Server) serve(t *task, c *net.UnixConn) {
 // ServeControl serves svc-gate.sock: rootd's register and revoke, uid 0 only (§2.1).
 func (s *Server) ServeControl(l net.Listener) error {
 	for {
-		c, err := l.Accept()
+		c, err := acceptRetry(l, "svc-gate.sock")
 		if err != nil {
 			return err
 		}

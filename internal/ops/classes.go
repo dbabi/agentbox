@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 )
 
 // MaxKeep is the longest keep-class string an audit record may carry (§9 "Enforcement at the sink").
@@ -273,23 +275,34 @@ func CheckAudit(fs []Field, v any, at string) error {
 	return nil
 }
 
-// CheckKeep fails on any string in v longer than MaxKeep bytes.
+// CheckKeep fails on any string in v longer than MaxKeep bytes. It builds the pointer only for a string that fails:
+// a pointer per level would cost O(depth^2) bytes, and a task chooses the depth.
 func CheckKeep(v any, at string) error {
+	path := overKeep(v)
+	if path == nil {
+		return nil
+	}
+	slices.Reverse(path)
+	return fmt.Errorf("%s: keep-class string over %d bytes", orRoot(at+strings.Join(path, "")), MaxKeep)
+}
+
+// overKeep returns the pointer segments of a string over MaxKeep in v, innermost first, or nil if there is none.
+func overKeep(v any) []string {
 	switch x := v.(type) {
 	case string:
 		if len(x) > MaxKeep {
-			return fmt.Errorf("%s: keep-class string over %d bytes", orRoot(at), MaxKeep)
+			return []string{}
 		}
 	case []any:
 		for i, e := range x {
-			if err := CheckKeep(e, at+"/"+strconv.Itoa(i)); err != nil {
-				return err
+			if p := overKeep(e); p != nil {
+				return append(p, "/"+strconv.Itoa(i))
 			}
 		}
 	case map[string]any:
 		for k, e := range x {
-			if err := CheckKeep(e, at+"/"+Escape(k)); err != nil {
-				return err
+			if p := overKeep(e); p != nil {
+				return append(p, "/"+Escape(k))
 			}
 		}
 	}
