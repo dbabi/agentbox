@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agentbox/internal/rootd/accounts"
@@ -191,15 +192,24 @@ func covered(hits, acked []secrets.Hit) bool {
 // rescan scans acct's workspace and records it. A scan never marks the workspace checked unless every hit is
 // acknowledged, so new hits block the next task; firstTask false (workspace creation, an egress grant) leaves it
 // unchecked, since only the scan right before a task counts for that task. A truncated scan never does, and no ack
-// covers it: the files it did not read may hold more.
+// covers it: the files it did not read may hold more. The workspace is unchecked from before the scan until a result
+// is saved, so a scan that fails, or a rootd that stops mid-scan, leaves the next task to scan again (#208). One scan
+// of a workspace runs at a time, so an older one can't save over a newer one's hits (#224).
 func (t *tasks) rescan(acct Account, ack int, firstTask bool) ([]secrets.Hit, reply) {
+	ws := accounts.WorkspaceSubject(acct.Name, int(acct.UID))
+	v, _ := t.scans.LoadOrStore(ws, &sync.Mutex{})
+	v.(*sync.Mutex).Lock()
+	defer v.(*sync.Mutex).Unlock()
+	if _, err := t.db.Exec(`UPDATE secret_scan SET checked=0 WHERE workspace=?`, ws); err != nil {
+		return nil, reply{"ok": false, "reason": SecretScanFailed, "error": err.Error()}
+	}
 	hits, err := t.cfg.SecretScan(acct)
 	capped := errors.Is(err, errTooManyHits)
 	if err != nil && !capped {
 		log.Printf("secret scan %s: %v", acct.Name, err)
 		return nil, reply{"ok": false, "reason": SecretScanFailed, "error": "the workspace credential scan failed, so tasks stay blocked: " + err.Error()}
 	}
-	st, _, err := t.loadScan(accounts.WorkspaceSubject(acct.Name, int(acct.UID)))
+	st, _, err := t.loadScan(ws)
 	if err != nil {
 		return nil, reply{"ok": false, "reason": SecretScanFailed, "error": err.Error()}
 	}

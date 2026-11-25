@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"maps"
@@ -29,20 +30,28 @@ const minToken = 20
 
 var tokenKey = regexp.MustCompile(`(?i)token|key`)
 
-// Tokens collects every string under a key naming a token or key in the session-home credential files.
-func Tokens(home string) []string {
+// Tokens collects every string under a key naming a token or key in the session-home credential files. A missing or
+// empty file holds no login. Any other file it can't read, such as a symlink, a FIFO, one over 1 MiB or one that is
+// not JSON, is an error, with the tokens of the other files: a CLI may still read a login there (#224).
+func Tokens(home string) ([]string, error) {
 	var out []string
+	var errs []error
 	for _, f := range CredFiles {
 		b, err := wsfs.ReadFile(home, f, 1<<20)
-		if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || err == nil && len(bytes.TrimSpace(b)) == 0 {
 			continue
 		}
 		var v any
-		if json.Unmarshal(b, &v) == nil {
-			collect(v, false, &out)
+		if err == nil {
+			err = json.Unmarshal(b, &v)
 		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("session-home's %s can't be read for the token scan: %v", f, err))
+			continue
+		}
+		collect(v, false, &out)
 	}
-	return out
+	return out, errors.Join(errs...)
 }
 
 func collect(v any, keyed bool, out *[]string) {
@@ -109,18 +118,22 @@ func (s *Seen) All() ([]string, error) {
 }
 
 // Watch re-reads the credential files on each inotify event in their dirs, and every interval as a backstop, until
-// stop closes, and once more then. A version a CLI replaces before rootd reads it after the event is still missed.
-func (s *Seen) Watch(home string, every time.Duration, stop <-chan struct{}) {
+// stop closes, and once more then. A version a CLI replaces before rootd reads it after the event is still missed, and
+// so is one a read in between fails on (a CLI may be mid-write). It returns the last read's error: the files the
+// session left must be readable for its scan to count.
+func (s *Seen) Watch(home string, every time.Duration, stop <-chan struct{}) error {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	ev, end := credEvents(home)
 	defer end()
 	for {
-		s.Add(Tokens(home))
+		ts, _ := Tokens(home)
+		s.Add(ts)
 		select {
 		case <-stop:
-			s.Add(Tokens(home))
-			return
+			ts, err := Tokens(home)
+			s.Add(ts)
+			return err
 		case <-t.C:
 		case _, ok := <-ev:
 			if !ok {
