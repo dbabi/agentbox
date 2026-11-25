@@ -30,14 +30,14 @@ agentbox aims to be an OS where AI agents can work safely. The design rests on f
 
 ## Status
 
-The installer, safe OS updates, the first host services (firewall, audit log, root daemon), the checks for agent requests, agent accounts and sealed task containers are built. The request checks still need one 24-hour fuzz run. No task can reach a model yet, because the brokers are not built. agentbox has run only in QEMU virtual machines, never on real hardware. Everything after the OS layer has been tested only in unencrypted arm64 UEFI VMs.
+The installer, safe OS updates, the first host services (firewall, audit log, root daemon), the checks for agent requests, agent accounts and sealed task containers are built. The request checks still need one 24-hour fuzz run. No task can reach a model yet, because the brokers are not built. agentbox has run only in QEMU virtual machines, never on real hardware. Everything after the OS layer has been tested only in unencrypted VMs. Agent accounts and tasks ran on arm64 UEFI only; the host services and request checks also ran on amd64 BIOS.
 
 **Works today**, in VMs on an Apple Silicon Mac:
 
 - Unattended install of Ubuntu Server 26.04.1 from one seed, with disk encryption and a recovery key. Zero-touch installs work on arm64 UEFI with Secure Boot on, and on amd64 legacy BIOS.
 - A/B OS generations: a package change builds offline, boots once, and stays only if healthy.
 - Releases you build and sign yourself with `make release`. First boot checks them against a pinned SHA-256 and your minisign key. There is no official release yet.
-- A host firewall that limits each agentbox service to its allowed destinations, and drops inbound traffic except SSH.
+- A host firewall that limits each agentbox service to its allowed destinations. Inbound, it drops new connections except SSH from the seed's address ranges and Tailscale traffic.
 - Agent accounts and sealed tasks. `agentbox task new` runs each task in a disposable container with no network and a fresh home. `agentbox attach` opens a filtered interactive session.
 
 **Not yet:**
