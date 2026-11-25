@@ -282,6 +282,8 @@ func TestWorkdirSymlink(t *testing.T) {
 		{"written through a hard link to one", [][]byte{layer(dir("w/"), link("evil", "/w"), hardlink("h", "evil"), link("h/x", "/etc"))}, "/w/x", Workdir},
 		// overlay unpacks each layer into a dir of its own, so s/x lands on /s/x, a dir that hides the symlink
 		{"under a lower layer's symlink", [][]byte{layer(dir("w/"), link("s", "/w")), layer(link("s/x", "/etc"))}, "/w/x", ""},
+		// overlay: a dir after its whiteout replaces it and merges with the dir below, so a/b/c is still there
+		{"a whiteout its layer's dir replaces", [][]byte{layer(dir("a/"), dir("a/b/"), link("a/b/c", "/etc")), layer(file("a/.wh.b"), dir("a/b/"))}, "/a/b/c", Workdir},
 		// the kernel follows l before it applies '..': /l/../w is /x/w, a symlink
 		{"'..' after a symlink", [][]byte{layer(dir("x/"), dir("x/y/"), link("l", "/x/y"), link("x/w", "/etc"))}, "/l/../w", Workdir},
 	} {

@@ -360,13 +360,13 @@ func walk(p string, f func(name string, r io.Reader) error) error {
 	}
 }
 
-// layerFacts is one layer's diff_id and what it does to WORKDIR's path: entries set a type, whiteouts delete, an
-// opaque marker empties a dir of what the layers below put in it. through is an entry the layer writes below one of
-// its own symlinks or hard links, if WORKDIR is set.
+// layerFacts is one layer's diff_id and what it does to WORKDIR's path: entries set a type, whiteouts delete unless a
+// dir of the same layer replaces them, an opaque marker empties a dir of what the layers below put in it. through is an
+// entry the layer writes below one of its own symlinks or hard links, if WORKDIR is set.
 type layerFacts struct {
 	diffID  string
 	set     map[string]byte
-	deleted []string
+	deleted map[string]bool
 	opaque  []string
 	through string
 }
@@ -381,7 +381,7 @@ func scanLayer(r io.Reader, gz bool, wd string) (*layerFacts, error) {
 		}
 		src = z
 	}
-	f := &layerFacts{set: map[string]byte{}}
+	f := &layerFacts{set: map[string]byte{}, deleted: map[string]bool{}}
 	links := map[string]bool{} // the layer's symlinks and hard links: a hard link can name a symlink
 	tee := io.TeeReader(src, h)
 	tr := tar.NewReader(tee)
@@ -413,13 +413,18 @@ func scanLayer(r io.Reader, gz bool, wd string) (*layerFacts, error) {
 		case base == ".wh..wh..opq":
 			f.opaque = append(f.opaque, dir)
 		case strings.HasPrefix(base, ".wh."):
-			f.deleted = append(f.deleted, path.Join(dir, base[len(".wh."):]))
-		case on(p, wd):
-			t := hd.Typeflag
-			if t != tar.TypeSymlink && t != tar.TypeLink && t != tar.TypeDir {
-				t = tar.TypeReg
+			f.deleted[path.Join(dir, base[len(".wh."):])] = true
+		default:
+			if hd.Typeflag == tar.TypeDir {
+				delete(f.deleted, p) // overlay: the dir replaces the whiteout before it, and merges with the dirs below
 			}
-			f.set[p] = t
+			if on(p, wd) {
+				t := hd.Typeflag
+				if t != tar.TypeSymlink && t != tar.TypeLink && t != tar.TypeDir {
+					t = tar.TypeReg
+				}
+				f.set[p] = t
+			}
 		}
 	}
 	if _, err := io.Copy(io.Discard, tee); err != nil { // the tar's padding counts toward the diff_id
@@ -440,7 +445,7 @@ func (f *layerFacts) apply(fs map[string]byte) map[string]byte {
 				return true
 			}
 		}
-		for _, d := range f.deleted {
+		for d := range f.deleted {
 			if p == d || strings.HasPrefix(p, d+"/") {
 				return true
 			}
