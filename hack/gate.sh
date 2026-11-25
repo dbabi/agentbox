@@ -298,13 +298,17 @@ echo '# changed' >> "\$x/$V/systemd/agentbox-reconcile.service"
 ! "\$x/$V/install.sh" --from-firstboot && l $V $V0 && [ "\$(ls -A \$A/releases | tr '\n' ' ')" = "$V0 $V " ] && [ -z "\$(ls -A \$A | grep '^\.' | grep -v '^\.firstboot-done\$')" ]
 EOF
 # The guest tries the probe port, TCP and UDP, on the gateway, on 10.0.2.2 and on the other addresses QEMU's slirp maps
-# to the host's loopback (255.255.255.255, fec0::2). A failed connect is expected; a line in probe.log is the failure.
-# The guest must still reach release-serve, so the check can't pass on a dead network.
+# to the host's loopback (255.255.255.255, fec0::2). Then, as a task that got root could, it writes raw frames to the
+# probe port at the host's own loopback and unspecified addresses: libslirp 4.9.1 connects to those as given, so vmnet
+# must drop them. A failed connect is expected; a line in probe.log is the failure. The guest must still reach
+# release-serve, and libslirp must answer a raw SYN to that forward, so the check can't pass on a dead network or on
+# frames that libslirp drops as malformed.
 n=$(probes)
 vm_check "the guest reaches release-serve at 10.0.2.2:$RPORT and no other host loopback port (TCP/UDP $LPORT)" <<EOF
 curl -fsS -o /dev/null "http://10.0.2.2:$RPORT/agentbox-$V.tgz.minisig" || exit 1
 # the box takes no SLAAC address, so without one fec0::2 would fail in the guest and prove nothing
 d=\$(ip -o -4 route show default | awk '{print \$5}') && ip -6 addr add fec0::15/64 dev "\$d" nodad || exit 1
+a=\$(ip -o -4 addr show dev "\$d" | awk '{print \$4; exit}')
 python3 - <<'PY'
 import socket as S
 for f, a in ((S.AF_INET, "10.0.2.1"), (S.AF_INET, "10.0.2.2"), (S.AF_INET, "255.255.255.255"), (S.AF_INET6, "fec0::2")):
@@ -317,10 +321,37 @@ for f, a in ((S.AF_INET, "10.0.2.1"), (S.AF_INET, "10.0.2.2"), (S.AF_INET, "255.
     except OSError as e: print(a, t, e)
     s.close()
 PY
-sleep 2; ip -6 addr del fec0::15/64 dev "\$d"
+python3 - "\$d" "\${a%/*}" <<'PY'
+import socket as S, struct, sys, time
+def ck(b):
+  b += b"\0" * (len(b) % 2); s = sum(struct.unpack("!%dH" % (len(b) // 2), b))
+  while s >> 16: s = (s & 0xffff) + (s >> 16)
+  return ~s & 0xffff or 0xffff  # the same sum as 0; UDP over IPv4 reads 0 as no checksum
+def frame(dst, p, sport, dport):  # a TCP SYN, or (p 17) a 1-byte UDP datagram, from this guest to dst:dport
+  f = S.AF_INET6 if ":" in dst else S.AF_INET
+  s, d = S.inet_pton(f, sys.argv[2] if f == S.AF_INET else "fec0::15"), S.inet_pton(f, dst)
+  l4, c = (struct.pack("!HHIIBBHHH", sport, dport, 1, 0, 0x50, 2, 65535, 0, 0), 16) if p == 6 else (struct.pack("!HHHHB", sport, dport, 9, 0, 120), 6)
+  l4 = l4[:c] + struct.pack("!H", ck(s + d + struct.pack("!BBH", 0, p, len(l4)) + l4)) + l4[c + 2:]
+  if f == S.AF_INET6: return b"\x86\xdd" + struct.pack("!IHBB", 6 << 28, len(l4), p, 64) + s + d + l4
+  h = struct.pack("!BBHIBBH", 0x45, 0, 20 + len(l4), 0, 64, p, 0) + s + d
+  return b"\x08\x00" + h[:10] + struct.pack("!H", ck(h)) + h[12:] + l4
+r = S.socket(S.AF_PACKET, S.SOCK_RAW, S.htons(3)); r.bind((sys.argv[1], 0)); me = r.getsockname()[4]
+for a in ("127.0.0.1", "0.0.0.0", "::1", "::", "::ffff:127.0.0.1"):
+  for p in (6, 17): r.send(b"\xff" * 6 + me + frame(a, p, 40001, $LPORT))  # libslirp takes any destination MAC
+r.send(b"\xff" * 6 + me + frame("10.0.2.2", 6, 40002, $RPORT)); r.settimeout(1); end = time.time() + 10
+while time.time() < end:
+  try: b = r.recv(2048)
+  except S.timeout: continue
+  if b[12:14] == b"\x08\x00" and b[23] == 6 and b[26:30] == S.inet_aton("10.0.2.2") and b[34:38] == struct.pack("!HH", $RPORT, 40002) and b[47] & 0x12 == 0x12: sys.exit()
+sys.exit("libslirp sent no SYN-ACK for a raw SYN to 10.0.2.2:$RPORT")
+PY
+r=\$?; sleep 2; ip -6 addr del fec0::15/64 dev "\$d"; exit \$r
 EOF
-if [ "$(probes)" = "$n" ]; then echo "PASS the host's loopback probe saw nothing from the guest"
-else echo "FAIL the guest reached the host's loopback probe on $LPORT:"; tail -n +$((n + 1)) "$REL/probe.log"; fi | tee -a "$OUT"
+# the probe must still be up, or the check proves nothing: one connection from the host makes exactly one line
+m=$(probes); curl -s -m 2 -o /dev/null "http://127.0.0.1:$LPORT/" || :
+i=0; while [ "$(probes)" -le "$m" ] && [ $i -lt 20 ]; do sleep 0.5; i=$((i + 1)); done
+if [ "$m" = "$n" ] && kill -0 "$LSN" 2>/dev/null && [ "$(probes)" = $((m + 1)) ]; then echo "PASS the host's loopback probe saw nothing from the guest, and still answers"
+else echo "FAIL the guest reached the host's loopback probe on $LPORT, or the probe is down:"; tail -n +$((n + 1)) "$REL/probe.log"; fi | tee -a "$OUT"
 reboot_vm
 vm_check "next boot finishes, reconcile started by multi-user.target, no failed units" <<EOF
 [ "\$(timeout $((600 * SLOW)) systemctl is-system-running --wait)" = running ] && [ "\$(systemctl is-active agentbox-reconcile.service)" = active ]

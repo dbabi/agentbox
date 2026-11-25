@@ -6,7 +6,8 @@
 //   vmnet SSH_PORT FWD_PORT... -- QEMU ARGS...
 //     forwards 127.0.0.1:SSH_PORT to the guest's port 22, and each 10.0.2.2:FWD_PORT in the guest to 127.0.0.1:FWD_PORT
 //     on the host. The gateway 10.0.2.1, 255.255.255.255 and fec0::/64 never reach the host's loopback; any other
-//     10.0.2.2 port is an outside address like any other. It then execs QEMU, which must take the network as
+//     10.0.2.2 port is an outside address like any other. A frame to the host's own loopback or unspecified address
+//     never reaches libslirp (to_host). It then execs QEMU, which must take the network as
 //     `-netdev stream,id=ID,addr.type=fd,addr.str=3`. A child process runs the network until QEMU exits.
 //   vmnet relay PORT
 //     internal: libslirp runs this for each guest connection to a FWD_PORT, with the connection on stdin and stdout.
@@ -119,6 +120,18 @@ static int get_revents(int i, void *o) {
          (r & POLLERR ? SLIRP_POLL_ERR : 0) | (r & POLLHUP ? SLIRP_POLL_HUP : 0);
 }
 
+// to_host: a frame to IPv4 0.0.0.0/8 or 127.0.0.0/8, or to IPv6 ::/96 (::, ::1) or ::ffff:0:0/96 (v4-mapped). A host
+// socket takes each of these as the host itself, and libslirp connects to the frame's destination as given:
+// disable_host_loopback covers only the gateway's addresses. libslirp 4.9.7 drops these itself; 4.9.1 (Ubuntu 26.04's)
+// does not. A shorter frame has no IP header that libslirp reads (it reads the type right after the MACs).
+static bool to_host(const uint8_t *f, size_t n) {
+  if (n >= 14 + 20 && f[12] == 0x08 && f[13] == 0x00) return f[30] == 0 || f[30] == 127;
+  if (n < 14 + 40 || f[12] != 0x86 || f[13] != 0xdd) return false;
+  static const uint8_t zero[10];
+  const uint8_t *d = f + 14 + 24;
+  return memcmp(d, zero, 10) == 0 && d[10] == d[11] && (d[10] == 0 || d[10] == 0xff);
+}
+
 static _Noreturn void run(Slirp *s) {
   static char b[2 * 70000];
   size_t have = 0;
@@ -144,7 +157,8 @@ static _Noreturn void run(Slirp *s) {
         len = ntohl(len);
         if (len > sizeof b - 4) { fprintf(stderr, "vmnet: frame of %u bytes\n", len); exit(1); }
         if (have - off - 4 < len) break;
-        slirp_input(s, (const uint8_t *)b + off + 4, (int)len);
+        const uint8_t *f = (const uint8_t *)b + off + 4;
+        if (!to_host(f, len)) slirp_input(s, f, (int)len);
         off += 4 + len;
       }
       memmove(b, b + off, have - off);

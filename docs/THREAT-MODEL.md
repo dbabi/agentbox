@@ -76,7 +76,7 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | QEMU 11.1's NVMe controller ignores FUA | In an NVMe power-cut log, FUA writes are never flush marks: the replay at the last flush can be the disk just before the final journal commit. Use `DISKBUS=virtio` for exact durability points. |
 | blklogwrites once left a 15.7 MiB hole in a virtio install log (cause unknown) | `replay-log`, `powercut.sh check` and `boot` fail loudly at a hole |
 | Power-cut replay needs a plain btrfs partition | Encrypted disks are not replayed: `powercut-fidelity` runs in `none`. QMP cuts (`os-apply-powercuts-tpm2`) run in `tpm2` only. `vm.sh cut` models only a disk with no volatile write cache. |
-| The test VM's network (`hack/vmnet`) still reaches the Mac's LAN | It reaches the Mac's `127.0.0.1` only on the Tang and release-serve ports. `gate.sh` checks that a loopback listener with no forward sees nothing. |
+| The test VM's network (`hack/vmnet`) still reaches the Mac's LAN | It reaches the Mac's `127.0.0.1` only on the Tang and release-serve ports. `gate.sh` checks that a loopback listener with no forward sees nothing, even from frames that root in the VM writes by hand. |
 | The arm64 VM has no hardware watchdog | arm64 tests softdog only; the i6300esb path runs on amd64. Watchdog detection on real x86 hardware is unit-tested only (the old-PC gate checks it). |
 | The milestone 4 gates use stand-in brokers | Broker restart, outage and retry checks run against stubs that bind the same per-task sockets. No task reaches a model or the internet in a gate. |
 | A skill's frontmatter hook needs a model reply to fire | The tasks gate checks only the setting that turns hooks off. |
