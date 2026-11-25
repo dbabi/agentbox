@@ -13,7 +13,8 @@ import (
 
 // TestFuzzAll runs fuzz-all.sh under dash with a fake go: every listed target runs at nice 10 for the given time, under
 // GOMEMLIMIT, one at a time with FUZZ_JOBS=1; a crash fails the run, and the summary names the crasher and each
-// target's CPU seconds. Without FUZZ_JOBS, the run picks at least one job and at most one per CPU.
+// target's CPU seconds. A crash does not end its lane: the targets after it still run (#216). Without FUZZ_JOBS, the
+// run picks at least one job and at most one per CPU.
 func TestFuzzAll(t *testing.T) {
 	dash, err := exec.LookPath("dash")
 	if err != nil {
@@ -32,14 +33,18 @@ case "$1 $2" in
 "test -list") [ "$4" = x/a ] && { echo FuzzA; echo TestNot; } || echo FuzzB; echo "ok $4 0.1s" ;;
 *) echo "$* nice=$(ps -o nice= -p $$ | tr -d ' ') mem=$GOMEMLIMIT start" >> "$OUT/calls"
    sleep 1; echo end >> "$OUT/calls"
-   case "$*" in *FuzzB*) echo "    Failing input written to testdata/fuzz/FuzzB/abc"; exit 1 ;; esac
+   case "$*" in *"$CRASH"*) echo "    Failing input written to testdata/fuzz/$CRASH/abc"; exit 1 ;; esac
    echo "fuzz: elapsed: 1s, execs: 42 (42/sec)" ;;
 esac
 `), 0o755)
+	// fuzz runs fuzz-all.sh 3s one target at a time; CRASH names the target that crashes
+	fuzz := func(out, crash string) ([]byte, error) {
+		cmd := exec.Command(dash, filepath.Join(root, "hack", "fuzz-all.sh"), "3s")
+		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "OUT="+out, "FUZZ_JOBS=1", "FUZZ_MEM=300MiB", "CRASH="+crash)
+		return cmd.CombinedOutput()
+	}
 	out := filepath.Join(t.TempDir(), "out")
-	cmd := exec.Command(dash, filepath.Join(root, "hack", "fuzz-all.sh"), "3s")
-	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "OUT="+out, "FUZZ_JOBS=1", "FUZZ_MEM=300MiB")
-	b, err := cmd.CombinedOutput()
+	b, err := fuzz(out, "FuzzB")
 	if err == nil {
 		t.Fatalf("a crash must fail the run:\n%s", b)
 	}
@@ -59,7 +64,38 @@ esac
 	if !regexp.MustCompile(`^[^\n]* start\nend\n[^\n]* start\nend\n$`).Match(calls) {
 		t.Errorf("FUZZ_JOBS=1 must run one target at a time:\n%s", calls)
 	}
-	cmd = exec.Command(dash, filepath.Join(root, "hack", "fuzz-all.sh"), "1s")
+	// the first target of the lane crashes: the lane goes on, and the next target runs and passes
+	out = filepath.Join(t.TempDir(), "out")
+	if b, err = fuzz(out, "FuzzA"); err == nil {
+		t.Fatalf("a crash must fail the run:\n%s", b)
+	}
+	sum, _ = os.ReadFile(filepath.Join(out, "summary.txt"))
+	for _, want := range []string{"targets=2 fails=1", "FAIL x/a FuzzA execs=0 cpu_s=0 crasher=testdata/fuzz/FuzzA/abc", "PASS x/b FuzzB execs=42 cpu_s=0\n"} {
+		if !strings.Contains(string(sum), want) {
+			t.Errorf("a crash first in its lane: summary lacks %q:\n%s\n%s", want, sum, b)
+		}
+	}
+	// a lane that dies anyway (here FuzzA's .rc is a dir, so writing it fails) still gets summary.txt, with FuzzB FAIL
+	out = filepath.Join(t.TempDir(), "out")
+	os.MkdirAll(filepath.Join(out, "x_a.FuzzA.log.rc"), 0o755)
+	if b, err = fuzz(out, "none"); err == nil {
+		t.Fatalf("a target with no rc must fail the run:\n%s", b)
+	}
+	sum, _ = os.ReadFile(filepath.Join(out, "summary.txt"))
+	for _, want := range []string{"targets=2 fails=2", "FAIL x/a FuzzA execs=42 cpu_s=0\n", "FAIL x/b FuzzB execs=0 cpu_s=0\n"} {
+		if !strings.Contains(string(sum), want) {
+			t.Errorf("a dead lane: summary lacks %q:\n%s\n%s", want, sum, b)
+		}
+	}
+	// an earlier run's .rc files must not count for this one: a run into a used OUT refuses and runs nothing
+	calls, _ = os.ReadFile(filepath.Join(out, "calls"))
+	if b, err = fuzz(out, "none"); err == nil || !strings.Contains(string(b), "holds an earlier run") {
+		t.Errorf("a run into a used OUT: %v\n%s", err, b)
+	}
+	if again, _ := os.ReadFile(filepath.Join(out, "calls")); string(again) != string(calls) {
+		t.Errorf("a run into a used OUT ran targets:\n%s", again)
+	}
+	cmd := exec.Command(dash, filepath.Join(root, "hack", "fuzz-all.sh"), "1s")
 	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "OUT="+filepath.Join(t.TempDir(), "out2"), "FUZZ_JOBS=")
 	b, _ = cmd.CombinedOutput()
 	if m := regexp.MustCompile(`targets for 1s each, ([0-9]+) at a time, GOMEMLIMIT=1GiB`).FindSubmatch(b); m == nil {

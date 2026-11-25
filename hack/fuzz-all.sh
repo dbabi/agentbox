@@ -45,6 +45,8 @@ if [ -z "${FUZZ_JOBS:-}" ]; then
 fi
 case $FUZZ_JOBS in '' | *[!0-9]* | 0) echo "fuzz-all: FUZZ_JOBS must be a positive integer" >&2; exit 1 ;; esac
 out=${OUT:-.fuzz/$(date -u +%Y%m%dT%H%M%SZ)}
+# an earlier run's .rc would count as this run's result for a target that never wrote one
+[ ! -e "$out/targets" ] || { echo "fuzz-all: $out holds an earlier run; set OUT to a new dir" >&2; exit 1; }
 mkdir -p "$out"
 list >"$out/targets" || exit 1
 trap 'trap - INT TERM; kill 0' INT TERM # the go test children and their fuzz workers too
@@ -58,9 +60,11 @@ lane=0
 while [ "$lane" -lt "$FUZZ_JOBS" ]; do
 	awk -v n="$FUZZ_JOBS" -v l="$lane" 'NR % n == l' "$out/targets" | while read -r p t; do
 		log=$out/$(echo "$p" | tr / _).$t.log
-		# time -p adds the user and sys seconds of go test, the test binary and its fuzz workers
-		nice -n 10 env GOMEMLIMIT="$mem" time -p go test -run='^$' -fuzz="^$t\$" -fuzztime="$dur" -parallel="$par" "$p" >"$log" 2>&1
-		echo $? >"$log.rc"
+		# time -p adds the user and sys seconds of go test, the test binary and its fuzz workers. In an if, a failing
+		# target does not end the lane under set -e: the targets after it still run
+		if nice -n 10 env GOMEMLIMIT="$mem" time -p go test -run='^$' -fuzz="^$t\$" -fuzztime="$dur" -parallel="$par" "$p" \
+			>"$log" 2>&1; then rc=0; else rc=$?; fi
+		echo $rc >"$log.rc"
 	done &
 	lane=$((lane + 1))
 done
@@ -70,6 +74,7 @@ fail=0
 : >"$out/results"
 while read -r p t; do
 	log=$out/$(echo "$p" | tr / _).$t.log
+	[ -f "$log" ] || : >"$log" # a lane that died left none: FAIL with no execs, not an awk error before summary.txt
 	if [ "$(cat "$log.rc" 2>/dev/null)" = 0 ]; then r=PASS; else r=FAIL fail=$((fail + 1)); fi
 	execs=$(grep -o 'execs: [0-9]*' "$log" | tail -n 1 | cut -d' ' -f2)
 	cpu=$(awk '/^(user|sys) [0-9.]+$/ { s += $2 } END { printf "%.0f", s }' "$log")
