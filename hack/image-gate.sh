@@ -72,9 +72,14 @@ print(json.loads(r("blobs/sha256/"+json.loads(r("index.json"))["manifests"][0]["
 sum() { sha256sum < "$1" | cut -d" " -f1; }
 field() { $B task list | python3 -c 'import json,sys; t=[x for x in json.load(sys.stdin)["tasks"] if x["task"]==sys.argv[1]]; print(t[0].get(sys.argv[2],"") if t else "")' "$1" "$2"; }
 wait_end() { i=0; while [ -z "$(field "$1" end_reason)" ]; do i=$((i+1)); [ $i -lt 300 ] || return 1; sleep 0.2; done; }
-restart_rootd() { systemctl restart agentbox-rootd.service && systemctl is-active -q agentbox-rootd.service; }
+# A rootd restart restarts ntfy and the agent's user manager too (Requires=), and both keep systemd's default start
+# limit of 5 starts in 10 s (#257): at most one restart in 2.5 s. The start waits until the user manager is back.
+restart_rootd() { sleep 2.5; systemctl restart agentbox-rootd.service && systemctl is-active -q agentbox-rootd.service &&
+  systemctl start "user@$(id -u ag-gi).service"; }
+# empty: the agent's podman answers, and holds no image
+empty() { ims=$(upod images -q) && [ -z "$ims" ]; }
 # fresh: the agent's podman with no image, and a rootd that has loaded nothing yet
-fresh() { upod rmi -a -f >/dev/null 2>&1 || :; [ -z "$(upod images -q)" ] && restart_rootd; }
+fresh() { upod rmi -a -f >/dev/null 2>&1 || :; empty && restart_rootd; }
 # runs: a task completes, as the agent uid, and the agent's podman holds only the image with ID $1
 runs() { rm -f $W/ig.uid; echo 'id -u > /workspace/ig.uid' | $B task new --agent gi --cli sh --deadline 2m > /tmp/ig-new &&
   T=$(sed -n 's/.*"task":"\(task_[0-9A-Z]*\)".*/\1/p' /tmp/ig-new) && wait_end $T && [ "$(field $T end_reason)" = completed ] &&
@@ -86,7 +91,7 @@ unswap() { umount $SUMS 2>/dev/null; umount $IMG 2>/dev/null; :; }
 # refused CODE: task.start's reply is image_refused with CODE, no task runs, and nothing reached podman load
 refused() { rm -f $W/ig.uid; echo 'id -u > /workspace/ig.uid' | $B task new --agent gi --cli sh --deadline 2m > /tmp/ig-new 2>&1; cat /tmp/ig-new
   grep -q '"reason":"image_refused"' /tmp/ig-new && grep -q "\"code\":\"$1\"" /tmp/ig-new && sleep 1 && [ ! -e $W/ig.uid ] &&
-  [ -z "$(upod images -q)" ] && journalctl -u agentbox-rootd.service --since "-60s" | grep -q "$1"; }
+  empty && journalctl -u agentbox-rootd.service --since "-60s" | grep -q "$1"; }
 
 mkdir -p /run/systemd/system/agentboxd.service.d && printf '[Service]\nEnvironment=AGENTBOX_TEST_CLI=sh\n' > /run/systemd/system/agentboxd.service.d/50-ig.conf
 systemctl daemon-reload && systemctl restart agentboxd.service
