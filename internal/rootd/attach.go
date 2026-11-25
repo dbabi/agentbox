@@ -3,6 +3,7 @@ package rootd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"path/filepath"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"agentbox/internal/ops"
 	"agentbox/internal/rootd/attach"
 	"agentbox/internal/task"
 )
@@ -44,7 +46,7 @@ func (s *server) agentSeen(agent string) *attach.Seen {
 // rescan is attach.rescan: the whole workspace against every session-home token version rootd has seen. A clean scan
 // lifts a standing block (a hit the admin removed, or an attach whose scan never ran). If rootd restarted since that
 // attach, the versions it rotated away are gone from memory, so a clean scan lifts the block only with ack (the admin
-// checked the workspace).
+// checked the workspace). The change to the block is an admin op (§9): see audited.
 func (s *server) rescan(agent string, ack bool) reply {
 	if !agentRe.MatchString(agent) {
 		return reply{"ok": false, "error": "bad agent name"}
@@ -57,10 +59,12 @@ func (s *server) rescan(agent string, ack bool) reply {
 		return reply{"ok": err == nil, "blocked": false}
 	}
 	if b.Reason == attach.TaskNotEmpty {
-		return s.rescanTask(b)
+		return s.rescanTask(b, ack)
 	}
 	if b.Reason == attach.Live {
-		s.cfg.Attach.Stop(agent, b.Session) // rootd stopped mid-attach: its session must not outlive the scan
+		// rootd stopped mid-attach: its session must not outlive the scan. Like task.stop, this only removes
+		// capability (the end of that agent.attach), so it doesn't wait for an ACK.
+		s.cfg.Attach.Stop(agent, b.Session)
 	}
 	p := attach.AgentPaths(s.attachRoot(), agent, b.Session)
 	seen := s.agentSeen(agent)
@@ -78,16 +82,18 @@ func (s *server) rescan(agent string, ack bool) reply {
 		return reply{"ok": true, "blocked": true, "error": "rootd restarted since this attach, so the token versions it saw are gone: " +
 			"check the workspace by hand, then agentbox attach rescan --agent " + agent + " --ack-restart"}
 	}
-	if err := attach.End(s.db, agent, b.Session, hits); err != nil {
-		return reply{"ok": false, "error": err.Error()}
-	}
-	log.Printf("attach.rescan %s: %d hit(s), ack-restart %v", agent, len(hits), ack)
-	return reply{"ok": true, "blocked": len(hits) > 0, "hits": hits}
+	return s.audited(agent, ack, func() (map[string]any, reply) {
+		if err := attach.End(s.db, agent, b.Session, hits); err != nil {
+			return nil, reply{"ok": false, "blocked": true, "error": err.Error()}
+		}
+		log.Printf("attach.rescan %s: %d hit(s), ack-restart %v", agent, len(hits), ack)
+		return map[string]any{"hits": len(hits)}, reply{"ok": true, "blocked": len(hits) > 0, "hits": hits}
+	})
 }
 
 // rescanTask lifts the TaskNotEmpty block once every leftover task's unit cgroup is gone or empty (§4.2 Stop step 2):
 // each task.stop that left processes recorded its own row.
-func (s *server) rescanTask(b attach.BlockRow) reply {
+func (s *server) rescanTask(b attach.BlockRow, ack bool) reply {
 	if s.tasks == nil {
 		return reply{"ok": false, "blocked": true, "error": "no task registry"}
 	}
@@ -95,7 +101,7 @@ func (s *server) rescanTask(b attach.BlockRow) reply {
 	if err != nil {
 		return reply{"ok": false, "blocked": true, "error": err.Error()}
 	}
-	var still []string
+	var still, empty []string
 	for _, id := range left {
 		var uid uint32
 		if err := s.db.QueryRow(`SELECT uid FROM task_registry WHERE task=?`, id).Scan(&uid); err != nil {
@@ -103,21 +109,58 @@ func (s *server) rescanTask(b attach.BlockRow) reply {
 		}
 		if populated(filepath.Join(s.tasks.cfg.Cgroup, task.CgroupDir(uid, id))) {
 			still = append(still, id)
-			continue
+		} else {
+			empty = append(empty, id)
 		}
-		if err := attach.ClearTask(s.db, id); err != nil {
-			return reply{"ok": false, "blocked": true, "error": err.Error()}
+	}
+	after := func() reply {
+		if len(still) > 0 {
+			return reply{"ok": true, "blocked": true, "error": "task(s) " + strings.Join(still, ", ") + " still have processes in their unit cgroups"}
 		}
-		log.Printf("attach.rescan %s: task %s left no process", b.Agent, id)
+		if _, on, err := attach.Blocked(s.db, b.Agent); on || err != nil {
+			return reply{"ok": err == nil, "blocked": true, "error": "another block stands: agentbox attach status"}
+		}
+		log.Printf("attach.rescan %s: no leftover task: block lifted", b.Agent)
+		return reply{"ok": true, "blocked": false}
 	}
-	if len(still) > 0 {
-		return reply{"ok": true, "blocked": true, "error": "task(s) " + strings.Join(still, ", ") + " still have processes in their unit cgroups"}
+	if len(empty) == 0 {
+		return after()
 	}
-	if _, on, err := attach.Blocked(s.db, b.Agent); on || err != nil {
-		return reply{"ok": err == nil, "blocked": true, "error": "another block stands: agentbox attach status"}
+	return s.audited(b.Agent, ack, func() (map[string]any, reply) {
+		done := []string{}
+		for _, id := range empty {
+			if err := attach.ClearTask(s.db, id); err != nil {
+				return map[string]any{"tasks": done}, reply{"ok": false, "blocked": true, "error": err.Error()}
+			}
+			done = append(done, id)
+			log.Printf("attach.rescan %s: task %s left no process", b.Agent, id)
+		}
+		return map[string]any{"tasks": done}, after()
+	})
+}
+
+// audited runs change, attach.rescan's change to agent's task block, as an admin op (§9): INTENT, its ACK, change,
+// RESULT with change's outputs (the hit count, never a hit's name: the agent picks those). With no ACK nothing
+// changes, and the block stays.
+func (s *server) audited(agent string, ack bool, change func() (map[string]any, reply)) reply {
+	o, _ := ops.Lookup("attach.rescan")
+	id := newDenyID()
+	if err := s.audit(map[string]any{"type": "INTENT", "opId": id, "name": o.Name, "origin": "admin",
+		"args": ops.Classify(o.Args, map[string]any{"name": agent, "ackRestart": ack})}); err != nil {
+		return reply{"ok": false, "blocked": true, "error": "audit: the INTENT was not ACKed, the block stays: " + err.Error()}
 	}
-	log.Printf("attach.rescan %s: no leftover task: block lifted", b.Agent)
-	return reply{"ok": true, "blocked": false}
+	out, rep := change()
+	status, detail := "executed", ""
+	if rep["ok"] != true {
+		status, detail = "failed", fmt.Sprint(rep["error"])
+	}
+	if err := s.audit(map[string]any{"type": "RESULT", "opId": id, "status": status, "detail": detail, "outputs": ops.Classify(o.Out, out)}); err != nil {
+		log.Printf("attach.rescan %s: RESULT not audited: %v", agent, err)
+		if rep["ok"] == true {
+			rep["ok"], rep["error"] = false, "the block changed, but its audit RESULT was not ACKed: "+err.Error()
+		}
+	}
+	return rep
 }
 
 // escaped is s with each rune a terminal would not print as is (C0, C1, bidi and other format controls) written as a Go

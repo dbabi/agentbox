@@ -230,8 +230,19 @@ as git -C $W -c user.name=t -c user.email=t@example.com -c core.hooksPath=/dev/n
 as git -C $W -c gc.auto=0 reflog expire --expire=now --all; as git -C $W gc -q --prune=now
 check "  ... after a rootd restart a clean rescan keeps the block: the rotated-away versions are gone from memory" 'systemctl restart agentbox-rootd &&
   $B attach rescan --agent at > /tmp/gate-rs; cat /tmp/gate-rs; grep -q "\"blocked\":true" /tmp/gate-rs && grep -q -- "--ack-restart" /tmp/gate-rs'
+check "  ... with auditd stopped, --ack-restart is refused and the block stays: lifting it is audited" '
+  systemctl stop agentbox-auditd.service "agentbox-auditd-*.socket" && [ ! -e /run/agentbox-audit/rootd.sock ] &&
+  { $B attach rescan --agent at --ack-restart > /tmp/gate-rs; cat /tmp/gate-rs; grep -q "the INTENT was not ACKed, the block stays" /tmp/gate-rs; } &&
+  B=$B sh /tmp/gate-blocked.sh token_in_workspace'
+systemctl start "agentbox-auditd-*.socket" agentbox-auditd.service
 check "  ... and --ack-restart lifts it once the token is gone from files and objects" '$B attach rescan --agent at --ack-restart | grep -q "\"blocked\":false" &&
   $B attach status | grep -qF "\"blocks\":[]"'
+check "  ... each rescan that changed the block is an INTENT with the ack and a RESULT with the hit count, never a file name" '
+  cat /var/lib/agentbox/audit/seg-*.jsonl > /tmp/gate-audit && grep "\"name\":\"attach.rescan\"" /tmp/gate-audit &&
+  grep -qF "\"args\":{\"ackRestart\":false,\"name\":\"at\"},\"name\":\"attach.rescan\"" /tmp/gate-audit &&
+  op=$(grep -F "\"args\":{\"ackRestart\":true,\"name\":\"at\"},\"name\":\"attach.rescan\"" /tmp/gate-audit | sed -n "s/.*\"opId\":\"\([^\"]*\)\".*/\1/p" | tail -1) &&
+  [ -n "$op" ] && grep "\"opId\":\"$op\"" /tmp/gate-audit | grep "\"type\":\"RESULT\"" | grep -q "\"outputs\":{\"hits\":0}.*\"status\":\"executed\"" &&
+  grep "\"type\":\"RESULT\"" /tmp/gate-audit | grep -q "\"outputs\":{\"hits\":[1-9]" && ! grep -q -e notes.json -e mid.json /tmp/gate-audit'
 # #199, #201: a git dir in session-home, behind a .git link or a relative gitdir:, refuses the attach
 as sh -c "mkdir -p $W/gl && ln -s /home/agent/g $W/gl/.git"
 check "#199 a .git link into session-home refuses the attach, naming it" '! attach --cli bash </dev/null >/tmp/gate-g1 2>&1; cat /tmp/gate-g1;

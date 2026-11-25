@@ -20,6 +20,8 @@ func TestValidateArgs(t *testing.T) {
 		{"file.write", `{"path":"/srv/a/x","content":"` + strings.Repeat("c", MaxKeep+1) + `"}`, "", ""},
 		{"ask.quote", `{"ops":[{"name":"file.write","args":{"path":"` + strings.Repeat("p", MaxKeep+1) + `","content":"c"}}]}`, "/ops/0/args/path", "no string over 1024 bytes"},
 		{"app.logs", `{"app":"a","lines":1.5}`, "/lines", "an integer"},
+		{"attach.rescan", `{"name":"a","ackRestart":true}`, "", ""},
+		{"attach.rescan", `{"name":"a","ackRestart":"yes"}`, "/ackRestart", "a boolean"},
 		{"gh.pr.comment", `{"remote":"r","number":1,"body":"x agentbox-op: y"}`, "/body", "no agentbox-op: marker"},
 		{"ask.quote", `{"ops":[{"name":"file.write","args":{"path":"p","content":"c"}}]}`, "", ""},
 		{"ask.quote", `{"ops":[]}`, "/ops", "1 to 8 {name, args} items"},
@@ -52,6 +54,8 @@ func sample(fs []Field) map[string]any {
 			m[f.Name] = "secret-value-" + f.Name
 		case f.Type == "integer":
 			m[f.Name] = json.Number("7")
+		case f.Type == "boolean":
+			m[f.Name] = true
 		case f.Type == "array":
 			m[f.Name] = []any{"secret-value-" + f.Name}
 		default:

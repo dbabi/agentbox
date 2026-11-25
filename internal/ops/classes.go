@@ -108,6 +108,10 @@ func checkType(f Field, x any, p string, nested bool) *ArgError {
 		if _, err := strconv.ParseInt(string(n), 10, 64); err != nil {
 			return &ArgError{p, "an integer"}
 		}
+	case "boolean":
+		if _, ok := x.(bool); !ok {
+			return &ArgError{p, "a boolean"}
+		}
 	case "object":
 		if _, ok := x.(map[string]any); !ok {
 			return &ArgError{p, "an object"}

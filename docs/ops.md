@@ -22,6 +22,7 @@ Every op, from `internal/ops/registry.go` (ARCHITECTURE.md §5.1, §5.3). Args a
 | `ask.batch` | live | SideEffect | Host | shape, ops (members) |  | always | each member's bound inputs; the member H list | per member |  |  |  | yes |  |
 | `ask.quote` | read | Read | Host | ops (members) |  | none | n/a | n/a |  |  |  | yes |  |
 | `ask.status` | read | Read | Host | id?, waitMs? |  | none | n/a | n/a |  |  |  |  |  |
+| `attach.rescan` | admin | n/a |  | name, ackRestart | hits?, tasks? | none | n/a | n/a |  |  |  | yes |  |
 | `budget.set` | admin | n/a |  | budgets |  | none | n/a | n/a |  |  |  | yes |  |
 | `bus.agents.list` | read | Read | Host |  |  | none | n/a | n/a |  |  |  |  |  |
 | `bus.inbox.ack` | coordination | Coordination | Inbox | messageId |  | none | n/a | none |  |  |  |  |  |
