@@ -72,8 +72,8 @@ print(json.loads(r("blobs/sha256/"+json.loads(r("index.json"))["manifests"][0]["
 sum() { sha256sum < "$1" | cut -d" " -f1; }
 field() { $B task list | python3 -c 'import json,sys; t=[x for x in json.load(sys.stdin)["tasks"] if x["task"]==sys.argv[1]]; print(t[0].get(sys.argv[2],"") if t else "")' "$1" "$2"; }
 wait_end() { i=0; while [ -z "$(field "$1" end_reason)" ]; do i=$((i+1)); [ $i -lt 300 ] || return 1; sleep 0.2; done; }
-# A rootd restart restarts ntfy and the agent's user manager too (Requires=), and both keep systemd's default start
-# limit of 5 starts in 10 s (#257): at most one restart in 2.5 s. The start waits until the user manager is back.
+# A rootd restart restarts the agent's user manager too (Requires=), which keeps systemd's default start limit of 5
+# starts in 10 s (#257): at most one restart in 2.5 s. The start waits until the user manager is back.
 restart_rootd() { sleep 2.5; systemctl restart agentbox-rootd.service && systemctl is-active -q agentbox-rootd.service &&
   systemctl start "user@$(id -u ag-gi).service"; }
 # empty: the agent's podman answers, and holds no image
