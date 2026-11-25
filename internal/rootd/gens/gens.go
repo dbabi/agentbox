@@ -164,6 +164,37 @@ func MenuIDs(cfg []byte) []string {
 	return ids
 }
 
+// CheckEntryArgs is the commit's GRUB check (#215): in a grub.cfg, 09_agentbox's menu entry id must boot its kernel
+// with the arguments of cmdline (/proc/cmdline, less the BOOT_IMAGE= that GRUB puts first). GRUB splits the linux
+// line into words, so fields are compared, not spacing.
+func CheckEntryArgs(cfg []byte, id, cmdline string) error {
+	want := strings.Fields(cmdline)
+	if len(want) > 0 && strings.HasPrefix(want[0], "BOOT_IMAGE=") {
+		want = want[1:]
+	}
+	in := false
+	for _, l := range strings.Split(string(cfg), "\n") {
+		if !in {
+			in = strings.HasPrefix(l, "menuentry ") && strings.HasSuffix(l, " --id '"+id+"' {")
+			continue
+		}
+		f := strings.Fields(l)
+		if len(f) == 1 && f[0] == "}" {
+			break
+		}
+		if len(f) > 1 && f[0] == "linux" {
+			if got := f[2:]; !slices.Equal(got, want) {
+				return fmt.Errorf("grub.cfg boots %s with %q, not with the booted %q", id, strings.Join(got, " "), strings.Join(want, " "))
+			}
+			return nil
+		}
+	}
+	if !in {
+		return fmt.Errorf("grub.cfg has no menu entry --id '%s'", id)
+	}
+	return fmt.Errorf("grub.cfg's menu entry %s has no linux line", id)
+}
+
 // Prune returns the generations to delete (§3.3 step 7): keep current, previous and one more, that is the three
 // newest at or below the committed one, plus every protected generation (booted, saved_entry, committed, pending).
 // Anything newer than the committed generation and unprotected is a failed trial or an interrupted build.

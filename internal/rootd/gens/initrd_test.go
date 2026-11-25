@@ -6,8 +6,11 @@ import (
 	"testing"
 )
 
-// lsinitrd lines from the tpm2 VM's initrd.img-7.0.0-43-generic (dracut 110)
-const initrdList = `-rwxr-xr-x   1 root     root         3888 Mar  8  2024 usr/bin/clevis-decrypt-tang
+// lsinitrd lines from the tpm2 VM's initrd.img-7.0.0-43-generic (dracut 110), with the sss and tpm2 pins a tpm2+tang
+// initrd has (usr/bin, as in the tpm2+tang VM's)
+const initrdList = `-rwxr-xr-x   1 root     root        22744 Mar  8  2024 usr/bin/clevis-decrypt-sss
+-rwxr-xr-x   1 root     root         3888 Mar  8  2024 usr/bin/clevis-decrypt-tang
+-rwxr-xr-x   1 root     root         3345 Mar  8  2024 usr/bin/clevis-decrypt-tpm2
 -rwxr-xr-x   1 root     root       134536 Sep 16 14:55 usr/bin/systemd-cryptsetup
 -rwxr-xr-x   1 root     root         2466 Mar 16  2026 usr/libexec/clevis-luks-askpass
 -rw-r--r--   1 root     root       106633 Oct 23 11:56 usr/lib/modules/7.0.0-43-generic/kernel/drivers/nvme/host/nvme-core.ko.zst
@@ -23,28 +26,41 @@ func TestInitrdProblems(t *testing.T) {
 	if miss := InitrdProblems(initrdList, crypttab, tang); len(miss) != 0 {
 		t.Fatalf("a good initrd: %v", miss)
 	}
-	without := func(s string) string {
+	without := func(ss ...string) string {
 		var keep []string
 		for _, l := range strings.Split(initrdList, "\n") {
-			if !strings.Contains(l, s) {
+			if !slices.ContainsFunc(ss, func(s string) bool { return strings.Contains(l, s) }) {
 				keep = append(keep, l)
 			}
 		}
 		return strings.Join(keep, "\n")
 	}
+	tpm2 := Mode{Encrypted: true, Drivers: tang.Drivers}
+	// what lsinitrd also lists by these names: dracut's module names, the units, the generator, links (#215)
+	others := "dracut modules:\nsystemd-cryptsetup\nclevis\nclevis-pin-sss\nclevis-pin-tang\nclevis-pin-tpm2\n" +
+		"-rwxr-xr-x   1 root     root        59872 Sep 16 14:55 usr/lib/systemd/system-generators/systemd-cryptsetup-generator\n" +
+		"-rw-r--r--   1 root     root          303 Mar 16  2026 usr/lib/systemd/system/clevis-luks-askpass.path\n" +
+		"-rw-r--r--   1 root     root          229 Mar 16  2026 usr/lib/systemd/system/clevis-luks-askpass.service\n" +
+		"lrwxrwxrwx   1 root     root           28 Sep 16 14:55 usr/lib/systemd/systemd-cryptsetup -> ../../bin/systemd-cryptsetup\n" +
+		"lrwxrwxrwx   1 root     root           48 Nov 19 02:34 etc/systemd/system/cryptsetup.target.wants/clevis-luks-askpass.path -> /usr/lib/systemd/system/clevis-luks-askpass.path\n"
 	for _, tc := range []struct {
 		name, list, crypttab string
 		m                    Mode
 		want                 []string
 	}{
-		{"clevis removed", without("clevis"), crypttab, tang, []string{"no clevis-luks-askpass", "no clevis-decrypt-tang"}},
+		{"clevis removed", without("clevis"), crypttab, tang, []string{"no clevis-luks-askpass", "no clevis-decrypt-tpm2", "no clevis-decrypt-sss", "no clevis-decrypt-tang"}},
 		{"crypttab dropped (dracut could not see the disk)", initrdList, "", tang, []string{"etc/crypttab has no croot line"}},
-		{"no systemd-cryptsetup", without("systemd-cryptsetup"), crypttab, Mode{Encrypted: true}, []string{"no systemd-cryptsetup"}},
+		{"no systemd-cryptsetup", without("systemd-cryptsetup"), crypttab, tpm2, []string{"no systemd-cryptsetup"}},
+		{"tpm2 pin missing, tpm2 mode", without("clevis-decrypt-tpm2"), crypttab, tpm2, []string{"no clevis-decrypt-tpm2"}},
+		{"tpm2 pin missing, tpm2+tang mode", without("clevis-decrypt-tpm2"), crypttab, tang, []string{"no clevis-decrypt-tpm2"}},
+		{"sss pin missing, tpm2+tang mode", without("clevis-decrypt-sss"), crypttab, tang, []string{"no clevis-decrypt-sss"}},
+		{"only units, a generator, links and module names", without("usr/bin/", "usr/libexec/") + others, crypttab, tang,
+			[]string{"no clevis-luks-askpass", "no systemd-cryptsetup", "no clevis-decrypt-tpm2", "no clevis-decrypt-sss", "no clevis-decrypt-tang"}},
 		{"recorded storage driver missing", without("/nvme.ko"), crypttab, tang, []string{"no nvme.ko"}},
 		{"recorded watchdog driver missing (no unattended fallback 4)", without("i6300esb"), crypttab, tang, []string{"no i6300esb.ko"}},
 		{"none mode needs btrfs only", without("clevis"), "", Mode{}, nil},
 		{"none mode without btrfs", without("btrfs"), "", Mode{}, []string{"no btrfs.ko"}},
-		{"tpm2 mode needs no tang", without("clevis-decrypt-tang"), crypttab, Mode{Encrypted: true}, nil},
+		{"tpm2 mode needs neither sss nor tang", without("clevis-decrypt-sss", "clevis-decrypt-tang"), crypttab, tpm2, nil},
 	} {
 		if got := InitrdProblems(tc.list, tc.crypttab, tc.m); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)

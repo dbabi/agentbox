@@ -248,8 +248,8 @@ It prints one progress line per step:
 | `os: nspawn: apt-get install` | apt installs the approved `.deb` files, checked again by SHA-256. The container has no network and a fixed private user-ID range. It sees the new generation's root and boot directory; the `.deb` files and package lists are read-only. Service starts are blocked, and `update-grub` and `grub-install` are diverted to no-ops. |
 | `os: scaffolding check` | Those blockers must be gone. The installed packages must equal the plan's end state. |
 | `os: name check` | Every file name in the new boot directory must match `[0-9A-Za-z.+~_-]`. |
-| `os: initrd gate` | Every kernel's initrd must hold `btrfs.ko` and the disk and watchdog drivers recorded at install. The encrypted modes also need the `croot` line in `etc/crypttab`, `clevis-luks-askpass` and `systemd-cryptsetup`. `tpm2+tang` also needs `clevis-decrypt-tang`. |
-| `os: update-grub` | `grub.cfg` is regenerated and must list the new entry. |
+| `os: initrd gate` | Every kernel's initrd must hold `btrfs.ko` and the disk and watchdog drivers recorded at install. The encrypted modes also need the `croot` line in `etc/crypttab`, `clevis-luks-askpass`, `systemd-cryptsetup` and `clevis-decrypt-tpm2`. `tpm2+tang` also needs `clevis-decrypt-sss` and `clevis-decrypt-tang`. Each must be a file of that name. A module may have a compression suffix, such as `.zst`. A systemd unit or a link of the same name does not count. |
+| `os: update-grub` | `grub.cfg` is regenerated and must list the new entry. It is made from the running generation's GRUB settings, so the trial boots with those. |
 | `os: boot once: <entry>` | Everything is flushed to disk, the pending trial is recorded, and `next_entry` is set. |
 
 The trial boots the newest kernel in the new generation.
@@ -312,13 +312,26 @@ On the trial, it checks five things:
 The first run that passes every check commits the trial. In the test gates, that came about a minute after boot.
 The commit does this, in order:
 
-1. It sets `saved_entry` to the trial, then reads `grubenv` back to confirm it.
-2. It writes the trial's id to `/bootpart/agentbox/committed`.
-3. It regenerates `grub.cfg`, so the empty-`grubenv` fallback names the new generation.
-4. It clears the pending record.
-5. It applies [retention](#retention).
+1. It makes a `grub.cfg` from the trial's own GRUB settings, without installing it. The trial's entry in it must have the kernel command line the trial booted with.
+2. It sets `saved_entry` to the trial, then reads `grubenv` back to confirm it.
+3. It writes the trial's id to `/bootpart/agentbox/committed`.
+4. It regenerates `grub.cfg`, so the empty-`grubenv` fallback names the new generation.
+5. It clears the pending record.
+6. It applies [retention](#retention).
 
 The journal shows `os: committed agentbox-gen-M-<kernel>`, then one `os: prune gen-N` line per deleted generation.
+
+Step 1 is there because the trial booted with the running generation's GRUB settings, and step 4 uses the trial's own, for every entry.
+A package can change those settings, for example with a file in `/etc/default/grub.d` that adds a kernel argument.
+Without step 1, that argument would reach every entry, the older generations included, and no boot would have tested it.
+When the command lines differ, health does not commit. At each run it prints this line:
+
+```
+agentbox: ALERT: not committing agentbox-gen-M-<kernel>: with its own GRUB settings, grub.cfg boots agentbox-gen-M-<kernel> with "<arguments>", not with the booted "<arguments>"; the boot deadline falls back
+```
+
+It sends one ntfy alert per boot. `grub.cfg` and `grubenv` stay as they were, and the commit deadline falls back.
+Step 1 compares only the trial's command line. Other GRUB settings, such as `GRUB_DEFAULT`, are not checked.
 
 If a check fails, health logs the problem and tries again a minute later:
 
@@ -352,6 +365,7 @@ No path back needs console input.
 | The initrd cannot find root, for example btrfs missing from the initrd | The initrd gives up after `rd.timeout=600` and reboots. | about 10.5 minutes |
 | A mount fails and systemd enters emergency mode | The emergency shell reboots after 120 s. | about 4 minutes |
 | The trial boots but never gets healthy, or a unit blocks boot forever | The commit deadline reboots after 900 s. | the deadline plus one reboot |
+| The trial's own GRUB settings change its kernel command line | Health does not commit it, and the commit deadline reboots after 900 s. | the deadline plus one reboot |
 | PID 1 hangs | The watchdog resets the box after 60 s (`RuntimeWatchdogSec=60s`). | not measured |
 | Power is cut during `os apply` | See [Power-cut safety](#power-cut-safety). | |
 | `grubenv` is empty or lost | The last line of 09_agentbox boots the committed entry. | passed |

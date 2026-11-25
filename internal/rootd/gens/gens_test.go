@@ -134,3 +134,41 @@ func TestMenuIDs(t *testing.T) {
 		t.Errorf("MenuIDs took a fallback line or a submenu entry: %q", got)
 	}
 }
+
+// TestCheckEntryArgs reads the grub.cfg fixture with the command line GRUB gave gen-6's kernel on the VM: BOOT_IMAGE
+// first, then the linux line's words, single-spaced. A grub.d snippet in the trial changes the arguments of every
+// entry at once, as 09_agentbox prints one ARGS for all of them.
+func TestCheckEntryArgs(t *testing.T) {
+	cfg, err := os.ReadFile("testdata/grub.cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "agentbox-gen-6-7.0.0-43-generic"
+	booted := "BOOT_IMAGE=/agentbox/gens/gen-6/vmlinuz-7.0.0-43-generic root=UUID=d369d544-d694-42d1-8480-7294f0ee0070 ro " +
+		"console=tty0 console=ttyAMA0 panic=10 rd.emergency=reboot rd.shell=0 rd.timeout=600 " +
+		"rd.luks.uuid=598e540a-ab53-4e10-9731-850810370284 rootflags=subvol=@gen-6"
+	if err := CheckEntryArgs(cfg, id, booted); err != nil {
+		t.Fatalf("the booted entry: %v", err)
+	}
+	edit := func(old, new string) []byte { return []byte(strings.ReplaceAll(string(cfg), old, new)) }
+	for _, tc := range []struct {
+		name    string
+		cfg     []byte
+		id      string
+		cmdline string
+		want    string // in the error
+	}{
+		{"a snippet adds crashkernel=", edit(" rd.timeout=600 ", " rd.timeout=600 crashkernel=512M "), id, booted, `with "root=UUID=`},
+		{"a snippet drops the fallback arguments", edit(" panic=10 rd.emergency=reboot rd.shell=0 rd.timeout=600", ""), id, booted, `not with the booted "root=UUID=`},
+		{"the consoles swap, and with them the primary one", edit("console=tty0 console=ttyAMA0", "console=ttyAMA0 console=tty0"), id, booted, "not with the booted"},
+		{"another generation's entry", cfg, "agentbox-gen-1-7.0.0-43-generic", booted, "rootflags=subvol=@gen-1"},
+		{"no entry for the trial", edit("--id '"+id+"'", "--id 'x'"), id, booted, "has no menu entry --id '" + id + "'"},
+		{"an entry with no linux line", edit(" linux /agentbox/gens/gen-6/vmlinuz-7.0.0-43-generic", " echo"), id, booted, "has no linux line"},
+		{"only a fallback line names the trial", []byte(`if [ "${saved_entry}" = "` + id + `" ]; then set fallback=2; fi` + "\n"), id, booted, "has no menu entry"},
+		{"a command line without BOOT_IMAGE keeps its first word", cfg, id, "BOOT=x " + booted[len("BOOT_IMAGE=/agentbox/gens/gen-6/vmlinuz-7.0.0-43-generic "):], "not with the booted \"BOOT=x"},
+	} {
+		if err := CheckEntryArgs(tc.cfg, tc.id, tc.cmdline); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}

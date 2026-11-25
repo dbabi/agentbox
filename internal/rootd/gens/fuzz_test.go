@@ -120,6 +120,7 @@ func FuzzBoot(f *testing.F) {
 		}
 		GrubEnv(env)
 		MenuIDs(cfg)
+		CheckEntryArgs(cfg, id, cmdline)
 		if g, k, ok := ParseEntry(id); ok && Entry(g, k) != id {
 			t.Fatalf("ParseEntry(%q) = %q %q", id, g, k)
 		}

@@ -43,7 +43,7 @@ func cmdOS(args []string) error {
 		return syscall.Exec(unshare, argv, append(os.Environ(), "AGENTBOX_OS_NS=1"))
 	}
 	gens.AfterDelete = qgroupCheck
-	gens.Alert = func(title, msg string) { alert("", title, msg) }
+	gens.Alert = alert
 	fs := flag.NewFlagSet("os "+args[0], flag.ContinueOnError)
 	switch args[0] {
 	case "plan":

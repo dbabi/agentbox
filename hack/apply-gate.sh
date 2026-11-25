@@ -11,7 +11,8 @@
 #          boots once, where health alerts ntfy once though it runs more than once (#213). (Run again on a used box, the
 #          generation numbers are higher and the oldest one is pruned.)
 # breaks   a trial broken in GRUB, in the initrd (clevis removed; btrfs in none mode), in fstab (/boot bound to the
-#          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
+#          parent's dir; a /boot device that never appears), by a unit that blocks boot forever, and by its own GRUB
+#          settings (a grub.d snippet that adds a kernel argument, which health must not commit): each falls back to
 #          the committed generation with no console input. After the GRUB break, health drops the kernel-less entry
 #          and retention refuses to prune while a kept fstab binds the trial. Then a clean apply commits, and an
 #          emptied grubenv boots that committed generation, not entry 0.
@@ -314,6 +315,13 @@ sc_breaks() {
   settled || :
   check "blocking unit: trial $M marked failed" 'echo "test -e /var/lib/agentbox/os/failed/$M.json" | root'
   status
+  # GRUB settings the trial never booted with (#215): the build's update-grub ran the committed generation's, so the
+  # trial boots without the snippet's argument. Health must not commit it: its update-grub would add it to every entry.
+  plan --reinstall --install base-files
+  build
+  with_top "printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT=\"\$GRUB_CMDLINE_LINUX_DEFAULT agentbox.gate=1\"' > \$T/@$M/etc/default/grub.d/99-gate.cfg && grep -qF agentbox.gate=1 \$T/@$M/etc/default/grub.d/99-gate.cfg" || die "could not add the grub.d snippet"
+  fallback "GRUB settings break (a grub.d snippet adds a kernel argument)" $((DEADLINE + 900)) "rootflags=subvol=@$M"
+  check "GRUB settings break: health refused $M at each run, alerted ntfy once, and grub.cfg never got the argument" 'h=$(echo "journalctl -b -1 -o cat -u agentbox-health.service" | root) && [ "$(printf "%s\n" "$h" | grep -cF "agentbox: ALERT: not committing $E: with its own GRUB settings")" -ge 2 ] && [ "$(printf "%s\n" "$h" | grep -cF "agentbox: alert sent: os apply did not commit the trial")" = 1 ] && echo "test -s /boot/grub/grub.cfg && ! grep -qF agentbox.gate=1 /boot/grub/grub.cfg" | root'
   # a clean apply commits first: on a fresh box the committed gen-1 is entry 0 too (09_agentbox lists the oldest first),
   # and a GRUB that ignored the fallback below would boot it all the same
   plan --reinstall --install base-files
