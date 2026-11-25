@@ -3,6 +3,8 @@ package task
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"agentbox/internal/gate"
+	"agentbox/internal/ops"
 	"agentbox/internal/taskenv"
 	"agentbox/internal/taskrun"
 )
@@ -23,10 +27,14 @@ import (
 // GateSock is the task's gate socket inside the container.
 const GateSock = "/run/agentbox/gate/gate.sock"
 
-// MaxResultOutput is how much of the CLI's stdout taskrun posts: the tail, so the post fits one gate line.
+// MaxResultOutput is how much of the CLI's stdout taskrun keeps: the tail. fit cuts it further when JSON escaping would
+// push the post past one gate line.
 //
 // shortcut: the 50 MB output cap needs the bus result rows of weeks 7-8; until then the result carries the last 16 KiB.
 const MaxResultOutput = 16 << 10
+
+// MaxResultDenials is how many logged denials the result carries (§4.2 Inside the container, step 5).
+const MaxResultDenials = 20
 
 // Job is the task.fetch reply: what agentboxd dispatched.
 type Job struct {
@@ -36,12 +44,14 @@ type Job struct {
 }
 
 // Result is the task.result post. Probe names the isolation check that failed (taskrun.ProbeChecks), if one did.
+// Denials are the newest logged ones: the task's own report, since task code can write the log.
 type Result struct {
-	Exit      int    `json:"exit"`
-	Output    string `json:"output"`
-	OutputLen int64  `json:"outputLen"`
-	Probe     string `json:"probe,omitempty"`
-	ProbeMS   int64  `json:"probeMs"`
+	Exit      int          `json:"exit"`
+	Output    string       `json:"output"`
+	OutputLen int64        `json:"outputLen"`
+	Probe     string       `json:"probe,omitempty"`
+	ProbeMS   int64        `json:"probeMs"`
+	Denials   []ops.Denial `json:"denials,omitempty"`
 }
 
 // Runner is taskrun's environment; tests replace the socket and the clock.
@@ -58,7 +68,7 @@ type Runner struct {
 // and ENOENT with capped backoff (1 s to 30 s) until 60 s before the deadline (§4.2): a gate that restarts rebinds its
 // socket in the same dir, and the bind mount sees the new one.
 func (r *Runner) Call(method string, params, out any) error {
-	req, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	req := request(method, params)
 	wait := time.Second
 	for {
 		err := r.call(req, out)
@@ -71,6 +81,12 @@ func (r *Runner) Call(method string, params, out any) error {
 		r.Sleep(wait)
 		wait = min(2*wait, 30*time.Second)
 	}
+}
+
+// request is the JSON-RPC line Call sends, without its newline.
+func request(method string, params any) []byte {
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	return b
 }
 
 func (r *Runner) call(req []byte, out any) error {
@@ -133,7 +149,8 @@ func (r *Runner) Setup() error {
 }
 
 // Taskrun is the container's PID 1 (§4.2): set up HOME, clean the env and start the forwarders, fetch the task, probe
-// the isolation from inside and tell the gate it passed, run the CLI with the prompt on stdin, post the result. SIGTERM (the unit stopping) goes on to the CLI's process group; systemd SIGKILLs the rest after
+// the isolation from inside and tell the gate it passed, run the CLI with the prompt on stdin, post the result with
+// its END witness line. SIGTERM (the unit stopping) goes on to the CLI's process group; systemd SIGKILLs the rest after
 // TimeoutStopSec, and the payload is inside the unit's cgroup.
 func Taskrun() int {
 	dl, _ := strconv.ParseInt(os.Getenv("AGENTBOX_DEADLINE"), 10, 64)
@@ -159,7 +176,7 @@ func Taskrun() int {
 		var pe *taskrun.ProbeError
 		errors.As(perr, &pe)
 		fmt.Fprintln(os.Stderr, "taskrun:", perr)
-		if err := r.Call("task.result", Result{Exit: 1, Output: perr.Error(), Probe: pe.Check, ProbeMS: pt.Milliseconds()}, nil); err != nil {
+		if err := r.post(rec, Result{Exit: 1, Output: perr.Error(), Probe: pe.Check, ProbeMS: pt.Milliseconds()}); err != nil {
 			fmt.Fprintln(os.Stderr, "taskrun:", err)
 		}
 		return 1
@@ -175,11 +192,47 @@ func Taskrun() int {
 		return 1
 	}
 	code, out, n := r.run(argv, job.Prompt)
-	if err := r.Call("task.result", Result{Exit: code, Output: out, OutputLen: n, ProbeMS: pt.Milliseconds()}, nil); err != nil {
+	if err := r.post(rec, Result{Exit: code, Output: out, OutputLen: n, ProbeMS: pt.Milliseconds()}); err != nil {
 		fmt.Fprintln(os.Stderr, "taskrun:", err)
 		return 1
 	}
 	return code
+}
+
+// post sends res as task.result, with the logged denials and cut to one gate line. It writes END <sha256 of the params
+// it sends> to the witness first: the gate stops the task, cgroup and all, before it answers, so no line after it
+// reaches rootd (§5.6 Witness).
+func (r *Runner) post(rec *taskrun.Recorder, res Result) error {
+	res.Denials = denials(rec.Log)
+	b := fit(res)
+	sum := sha256.Sum256(b)
+	rec.End(hex.EncodeToString(sum[:]))
+	return r.Call("task.result", json.RawMessage(b), nil)
+}
+
+// denials are the newest MaxResultDenials logged denials of at most ops.MaxDenial bytes each, so they can't crowd the
+// output out of the post.
+func denials(logPath string) []ops.Denial {
+	var out []ops.Denial
+	for _, d := range taskrun.Recent(logPath, taskrun.LogMax) {
+		if len(out) < MaxResultDenials && len(d.JSON()) <= ops.MaxDenial {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// fit marshals res, dropping the oldest output bytes until its task.result request fits gate.MaxRequest. A byte is 1
+// to 6 bytes as JSON (a control byte is \u00XX), so each round drops a sixth of the excess, and no more than that.
+func fit(res Result) []byte {
+	for {
+		b, _ := json.Marshal(res)
+		over := len(request("task.result", json.RawMessage(b))) - gate.MaxRequest
+		if over <= 0 || res.Output == "" {
+			return b
+		}
+		res.Output = res.Output[min((over+5)/6, len(res.Output)):]
+	}
 }
 
 // run starts the CLI in its own process group in /workspace and reaps every child until it exits: as PID 1, taskrun

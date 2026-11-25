@@ -15,7 +15,8 @@
 #          task; npm test and pip list open 0 CONNECTs. A-G2: a go.mod that needs a newer Go fails with go's own
 #          toolchain error and 0 CONNECTs. C-G2: direct lookups fail in under 1 s; resolv.conf names only 127.0.0.1; the
 #          proxy env; a broker down 3 s is reconnected, down for good gives 503 BROKER_UNAVAILABLE within 6 s, which
-#          agentbox why prints; the 64-entry log, gone in the next task; why --errno EOPNOTSUPP; a rootd crash mid-task
+#          agentbox why prints; the 64-entry log, gone in the next task; the task's result carries the newest 20, and
+#          its witness END is the sha256 of the result agentboxd got (#223); why --errno EOPNOTSUPP; a rootd crash mid-task
 #          restarts rootd alone, so the task completes (#218); the eight fixed lines,
 #          the same for two agents and in the CLIs' HOME files; the witness FIFO from task.start to task.stop
 #          (write-only for the task, closed to uid agentbox, 1 MiB kept at 64 KiB, removed at stop, incomplete after a
@@ -171,6 +172,8 @@ broker_up() { python3 $G/broker.py /run/agentbox-$1/t/$2/$1.sock $G/$1.log </dev
   for i in $(seq 50); do [ -S /run/agentbox-$1/t/$2/$1.sock ] && return 0; sleep 0.1; done; return 1; }
 connects() { touch $G/proxy.log; grep -c '^CONNECT' $G/proxy.log || :; }
 ended() { $B task list | python3 -c 'import json,sys; sys.exit(not [t for t in json.load(sys.stdin)["tasks"] if t["task"]==sys.argv[1] and t.get("end_reason")])' "$1"; }
+# wrec TASK: the task's WITNESS record from the audit segments
+wrec() { for i in $(seq 50); do cat $A/seg-*.jsonl | grep "\"type\":\"WITNESS\"" | grep "\"task\":\"$1\"" | tail -1 | grep . && return 0; sleep 0.2; done; return 1; }
 # task AGENT SCRIPT: one task through task.start; prints what the script printed and returns its exit code. The id goes
 # to $G/last. After `down SVC...`, the next task starts with those brokers down.
 down() { for v; do touch $G/down-$v; done; }
@@ -266,6 +269,10 @@ check "C-G2 70 proxy denials: the log keeps 64, agentbox why shows the newest 10
   task ga "for i in \$(seq 70); do curl -s -p -x http://127.0.0.1:8080 http://deny\$i.example/ >/dev/null; done; wc -l < ~/.agentbox/denials.jsonl; agentbox why" > $G/ring &&
   [ "$(head -1 $G/ring)" = 64 ] && [ "$(grep -c "^EGRESS_NOT_ALLOWLISTED next=ask by=proxy id=dn_" $G/ring)" = 10 ] &&
   grep -q "host=deny70.example:80$" $G/ring && grep -q "remedy: op net.allow_domain{host: deny70.example, port: 80} (cli)" $G/ring'
+TR=$(cat $G/last)
+check "  ... its result carries the newest 20, and its witness ends with the sha256 of the result agentboxd got (#223)" '
+  journalctl -b -u agentboxd -o cat | grep "task $TR result: " > $G/res-ring; cat $G/res-ring
+  h=$(sed -n "s/.* 20 denials, sha256 \([0-9a-f]\{64\}\), .*/\1/p" $G/res-ring) && [ -n "$h" ] && wrec $TR | grep -qF "\"end\":\"$h\""'
 check "  ... and the next task starts with no log" 'task ga "[ ! -e ~/.agentbox/denials.jsonl ] && agentbox why" | grep -q "^No denials logged"'
 
 # --- C-G2: the fixed lines ---
@@ -296,8 +303,6 @@ check "C-G2 brokers down for good: 503 BROKER_UNAVAILABLE within 6 s on the LLM 
   grep -q "\"message\":\"agentbox BROKER_UNAVAILABLE:" $G/r10 && grep -q "CONNECT tunnel failed, response 503" $G/r10 &&
   [ "$(sed -n "s/^egress_ms=//p" $G/r10)" -le 6000 ] && grep -q "^BROKER_UNAVAILABLE{llm} next=retry by=forwarder id=dn_" $G/r10 &&
   grep -q "^BROKER_UNAVAILABLE{egress} next=retry by=forwarder id=dn_" $G/r10'
-# wrec TASK: the task's WITNESS record from the audit segments
-wrec() { for i in $(seq 50); do cat $A/seg-*.jsonl | grep "\"type\":\"WITNESS\"" | grep "\"task\":\"$1\"" | tail -1 | grep . && return 0; sleep 0.2; done; return 1; }
 check "  ... task.stop: rootd kept at most 64 KiB, counted the rest, kept the forwarders' lines, removed the dir, and sent WITNESS" '
   wrec $T2 > $G/w2 && python3 -c "
 import json,sys; w=json.loads(open(sys.argv[1]).read())[\"body\"]; kept=sum(len(l)+1 for l in w[\"lines\"])
