@@ -286,6 +286,8 @@ $A egress remove --svc keys --entry ports.ubuntu.com:80 >>$L 2>&1
 # nft flush ruleset: the health timer's fwcheck alerts and restores within 60 s. Starting the timer fires its catch-up
 # run at once; the flush comes right after that run ends, so the repair has to wait out a whole period (the worst case)
 systemctl stop agentbox-agent-stub.service
+# the failed load above stopped ntfy.service with its Requires=, and a firewall restart restarts only units that run
+check "ntfy.service runs again, so the flush below can alert" 'systemctl start ntfy.service && systemctl is-active ntfy.service'
 i0=$(systemctl show -P InactiveEnterTimestampMonotonic agentbox-health.service)
 systemctl start agentbox-health.timer
 for i in $(seq 60); do [ "$(systemctl show -P InactiveEnterTimestampMonotonic agentbox-health.service)" != "$i0" ] && break; sleep 0.5; done

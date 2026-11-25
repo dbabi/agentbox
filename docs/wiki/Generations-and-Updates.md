@@ -453,7 +453,7 @@ failed:      {"at":"<time>","booted":"agentbox-gen-1-<kernel>","entry":"agentbox
 `os status` changes nothing. A trial that fell back shows as `pending` until the next health run records it.
 
 The journal keeps every commit, prune and alert from health, and every deadline reboot, across all generations.
-`os apply` prints its own prune and ALERT lines to your terminal only, and sends each ALERT to ntfy too.
+`os apply` prints its own prune and ALERT lines to your terminal, not to the journal, and sends each ALERT to ntfy too.
 When you run `os mark-last-good` by hand, its lines, including any commit, also go only to your terminal.
 To read the journal:
 

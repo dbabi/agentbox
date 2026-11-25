@@ -432,7 +432,7 @@ func protectedGens() (booted int, committed int, prot []int, err error) {
 // rootd check qgroups (#209). Nil, as in tests, runs nothing.
 var AfterDelete func(ids []string) error
 
-// Alert, if set, sends an ALERT on to the human with fixed text (agentbox os: ntfy). The stderr line before it keeps the
+// Alert, if set, sends an ALERT on to the human with fixed text (agentbox os: ntfy). The ALERT line on stderr keeps the
 // details. Nil, as in tests, sends nothing.
 var Alert func(title, msg string)
 
