@@ -95,6 +95,8 @@ attach() { timeout 180 $B attach --agent at "$@"; }
 typed() { sleep 3; cat "$1"; } # after the prompt, as a human types: earlier bytes race the session's terminal setup
 digest() { sed -n 's/.*--ack-control-changes=\([0-9a-f]\{64\}\).*/\1/p' "$1" | head -1; } # the one a refusal printed
 hook() { printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch %s/%s"}]}]}}\n' $M "$1"; }
+# sent PATTERN: rootd logged "alert sent: PATTERN" within 10 s; its outbox sends alerts from their own goroutine (#220)
+sent() { for i in $(seq 10); do journalctl -b -u agentbox-rootd -o cat | grep -q "alert sent: $1" && return; sleep 1; done; return 1; }
 
 check "agent add: ag-at, its workspace, and its user manager" '$B agent add --name at && U=$(id -u ag-at) &&
   i=0; until systemctl is-active -q user@$U.service; do i=$((i+1)); [ $i -lt 50 ] || exit 1; sleep 0.2; done'
@@ -224,7 +226,7 @@ check "  ... the block names notes.json, the packfile git gc wrote, a loose obje
   B=$B sh /tmp/gate-blocked.sh token_in_workspace && grep -q "notes.json" /tmp/gate-st && grep -q "\.git/objects/pack/pack-[0-9a-f]*\.pack" /tmp/gate-st &&
   grep -q "\.git/objects/[0-9a-f][0-9a-f]/" /tmp/gate-st && grep -q "mid.json" /tmp/gate-st && ! grep -qF "$TOK" /tmp/gate-st && ! grep -qF "$MID" /tmp/gate-st &&
   ! journalctl -b -o cat | grep -qF -e "$TOK" -e "$MID" && ! grep -rqF -e "$TOK" -e "$MID" /var/lib/agentbox/audit'
-check "  ... an ntfy alert went out on agentbox-alerts" 'journalctl -b -u agentbox-rootd -o cat | grep -q "alert sent: .* hold a session-home token" &&
+check "  ... an ntfy alert went out on agentbox-alerts" 'sent ".* hold a session-home token" &&
   python3 -c "import sqlite3,sys; c=sqlite3.connect(\"file:/var/lib/ntfy/cache.db?mode=ro\",uri=True); sys.exit(0 if c.execute(\"select count(*) from messages where topic=\x27agentbox-alerts\x27 and message like \x27%token%\x27\").fetchone()[0] else 1)"'
 check "  ... a later attach is refused while the block stands" '! attach --cli bash </dev/null >/tmp/gate-a4 2>&1 && grep -q "not cleared" /tmp/gate-a4'
 check "rescan keeps the block while the token is in the workspace" '$B attach rescan --agent at | grep -q "\"blocked\":true"'
@@ -253,7 +255,7 @@ typed /tmp/gate-in5b | attach --cli bash >/tmp/gate-a5b 2>&1 # a refusal's diges
 check "#224 a session that leaves its credential file a symlink fails the token scan: tasks stay blocked, with an alert" '
   typed /tmp/gate-in5 | attach --cli bash --ack-control-changes=$(digest /tmp/gate-a5b) >/tmp/gate-a5 2>&1; cat -v /tmp/gate-a5;
   grep -q "linked=0" /tmp/gate-a5 && grep -qF "token scan failed, tasks stay blocked" /tmp/gate-a5 && B=$B sh /tmp/gate-blocked.sh attach_live &&
-  journalctl -b -u agentbox-rootd -o cat | grep -q "alert sent: token scan failed after an attach"'
+  sent "token scan failed after an attach"'
 check "  ... rescan keeps the block while it is a link, naming it, and lifts it once it is a regular file again" '
   $B attach rescan --agent at > /tmp/gate-rs5; cat /tmp/gate-rs5; grep -q "\"blocked\":true" /tmp/gate-rs5 && grep -qF ".claude/.credentials.json" /tmp/gate-rs5 &&
   mv -f $H/.claude/c2.json $H/.claude/.credentials.json && $B attach rescan --agent at | grep -q "\"blocked\":false"'
