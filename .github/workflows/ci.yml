@@ -33,6 +33,9 @@ jobs:
           sudo env "PATH=$PATH" "GOTOOLCHAIN=$GOTOOLCHAIN" go test -count=1 -v ./internal/audit/... > audit-root.log 2>&1 || { cat audit-root.log; exit 1; }
           cat audit-root.log
           if grep -- '--- SKIP' audit-root.log; then echo 'privileged audit run skipped tests' >&2; exit 1; fi
+      # rootd and agentboxd serve each connection on its own goroutine; -count=1, so a cached pass is not a run
+      - name: go test -race
+        run: go test -race -count=1 ./...
       # a later change can run arm64 VM gates here if the arm runner has KVM
       - name: probe /dev/kvm
         if: matrix.os == 'ubuntu-26.04-arm'

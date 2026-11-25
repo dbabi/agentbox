@@ -98,7 +98,7 @@ func TestTaskStartSnapshot(t *testing.T) {
 	r.wsTaint, r.wsEpoch = true, 4
 	first := r.adminTask(t)
 	var intent map[string]any
-	for _, m := range r.records {
+	for _, m := range r.recs() {
 		if m["name"] == "workspace.snapshot" {
 			intent = m
 		}
@@ -108,8 +108,8 @@ func TestTaskStartSnapshot(t *testing.T) {
 		intent["taintEpochs"].(map[string]int64)["workspace:claude#1"] != 4 {
 		t.Fatalf("snapshot INTENT %v, rows %v", intent, snap)
 	}
-	if !slices.ContainsFunc(r.records, func(m map[string]any) bool { return m["type"] == "TAINT" && m["subject"] == "snap:"+snap[0] }) {
-		t.Fatalf("the workspace taint was not copied to snap:%s: %v", snap[0], r.records)
+	if !slices.ContainsFunc(r.recs(), func(m map[string]any) bool { return m["type"] == "TAINT" && m["subject"] == "snap:"+snap[0] }) {
+		t.Fatalf("the workspace taint was not copied to snap:%s: %v", snap[0], r.recs())
 	}
 	if want := "snapshot claude " + snap[0] + " 1/1 ro=1"; len(fb.calls) != 1 || fb.calls[0] != want || len(r.launch) != 1 {
 		t.Fatalf("calls %v, want %q before the one launch", fb.calls, want)
@@ -158,7 +158,8 @@ func TestUndo(t *testing.T) {
 	}
 	r.db.Exec(`UPDATE task_registry SET ended_at=1 WHERE task=?`, live)
 
-	r.records, fb.calls = nil, nil
+	r.reset()
+	fb.calls = nil
 	rep := r.t.undo(id, "rootd-admin:root")
 	if rep["ok"] != true || rep["snapshot"] != snap {
 		t.Fatalf("undo: %v", rep)
@@ -175,7 +176,7 @@ func TestUndo(t *testing.T) {
 	}
 	var names []string
 	var restore map[string]any
-	for _, m := range r.records {
+	for _, m := range r.recs() {
 		n, _ := m["name"].(string)
 		names = append(names, m["type"].(string)+" "+n)
 		if m["name"] == "workspace.restore" {
@@ -218,8 +219,8 @@ func TestTaskStartSnapshotTaintedDuring(t *testing.T) {
 	r.t.cfg.Btrfs = hookBtrfs{fb, func() { r.wsTaint = true }}
 	r.adminTask(t)
 	snap := r.snaps("task-start")
-	if len(snap) != 1 || !slices.ContainsFunc(r.records, func(m map[string]any) bool { return m["type"] == "TAINT" && m["subject"] == "snap:"+snap[0] }) {
-		t.Fatalf("rows %v: snap: not tainted: %v", snap, r.records)
+	if len(snap) != 1 || !slices.ContainsFunc(r.recs(), func(m map[string]any) bool { return m["type"] == "TAINT" && m["subject"] == "snap:"+snap[0] }) {
+		t.Fatalf("rows %v: snap: not tainted: %v", snap, r.recs())
 	}
 }
 
@@ -246,15 +247,15 @@ func TestTaskStartSnapshotTaintNotACKed(t *testing.T) {
 		t.Fatalf("subvolumes %v left", es)
 	}
 	var op string
-	for _, m := range r.records {
+	for _, m := range r.recs() {
 		if m["name"] == "workspace.snapshot" {
 			op, _ = m["opId"].(string)
 		}
 	}
-	if !slices.ContainsFunc(r.records, func(m map[string]any) bool {
+	if !slices.ContainsFunc(r.recs(), func(m map[string]any) bool {
 		return m["type"] == "RESULT" && m["opId"] == op && m["status"] == "failed"
 	}) {
-		t.Fatalf("no failed RESULT for %s: %v", op, r.records)
+		t.Fatalf("no failed RESULT for %s: %v", op, r.recs())
 	}
 }
 
@@ -267,8 +268,8 @@ func TestTaskStartSnapshotNested(t *testing.T) {
 	if rep["ok"] != false || rep["reason"] != "snapshot_failed" || !strings.Contains(rep["error"].(string), "NESTED_SUBVOLUME") || len(r.launch) != 0 || len(fb.calls) != 0 {
 		t.Fatalf("start: %v, launches %d, btrfs %v", rep, len(r.launch), fb.calls)
 	}
-	if slices.ContainsFunc(r.records, func(m map[string]any) bool { return m["name"] == "workspace.snapshot" }) {
-		t.Fatalf("an INTENT was sent: %v", r.records)
+	if slices.ContainsFunc(r.recs(), func(m map[string]any) bool { return m["name"] == "workspace.snapshot" }) {
+		t.Fatalf("an INTENT was sent: %v", r.recs())
 	}
 }
 
