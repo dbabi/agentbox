@@ -1,6 +1,7 @@
 package ntfy
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -18,8 +19,11 @@ func TestServerYML(t *testing.T) {
 			t.Errorf("server.yml has no line %q", l)
 		}
 	}
-	if !strings.Contains(dropIn, "Requires=agentbox-firewall.service\n") || !strings.Contains(dropIn, "ExecStartPre=+"+agentboxBin+" fwcheck\n") {
+	if !strings.Contains(dropIn, "Requires=agentbox-firewall.service agentbox-rootd.service\n") || !strings.Contains(dropIn, "ExecStartPre=+"+agentboxBin+" fwcheck\n") {
 		t.Error("drop-in lost the firewall gate")
+	}
+	if !strings.Contains(dropIn, "After=agentbox-firewall.service agentbox-rootd.service\n") { // #220: fwcheck compares rootd's refill
+		t.Error("drop-in does not order ntfy after rootd")
 	}
 	if !strings.Contains(tmpfiles, "d /run/ntfy 2750 _ntfy agentbox-notify -\n") {
 		t.Error("tmpfiles lost the setgid socket dir")
@@ -70,7 +74,7 @@ func TestPublish(t *testing.T) {
 	got := make(chan string, 1)
 	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		got <- r.Method + " " + r.URL.Path + " " + r.Header.Get("Authorization") + " " + r.Header.Get("Title") + " " + string(b)
+		got <- fmt.Sprint(r.Method, " ", r.URL.Path, " ", r.Header.Get("Authorization"), " ", r.Header.Get("Title"), " ", string(b), " close=", r.Close)
 		if r.URL.Path == "/denied" {
 			w.WriteHeader(http.StatusForbidden)
 		}
@@ -79,10 +83,14 @@ func TestPublish(t *testing.T) {
 	if err := Publish(sock, tok, AlertTopic, "t", "m"); err != nil {
 		t.Fatal(err)
 	}
-	if g := <-got; g != "POST /agentbox-alerts Bearer tk_test t m" {
+	// close=true: no keep-alive, so no idle connection outlives the call (#220: rootd's outbox retries every 10 s)
+	if g := <-got; g != "POST /agentbox-alerts Bearer tk_test t m close=true" {
 		t.Fatalf("request: %q", g)
 	}
 	if err := Publish(sock, tok, "denied", "t", "m"); err == nil {
 		t.Fatal("a 403 must fail")
+	}
+	if g := <-got; !strings.HasSuffix(g, " close=true") {
+		t.Fatalf("a refused request kept its connection: %q", g)
 	}
 }

@@ -14,8 +14,11 @@
 #          (agentbox-agent-stub.service: Requires= the firewall and rootd, ExecStartPre=+fwcheck, as an agent's user@
 #          drop-in) and reboots: ntfy runs as _ntfy from the packaged unit with the drop-in, ss shows only its Unix
 #          socket (no TCP or UDP listener), the socket dir is setgid _ntfy:agentbox-notify, topic ACLs hold, rootd fills
-#          ntfy_dst4/6 with checked ntfy.sh answers and _ntfy reaches only those. The stand-in starts; with ntfy's unit
-#          set to any other user, or a ntfy_dst element rootd didn't add, fwcheck fails and it can't start.
+#          ntfy_dst4/6 with checked ntfy.sh answers and _ntfy reaches only those. ntfy starts after rootd's READY=1, so
+#          its fwcheck passes the first time (#220). The stand-in starts; with ntfy's unit set to any other user, or a
+#          ntfy_dst element rootd didn't add, fwcheck fails and it can't start. With ntfy stopped, the alert of a
+#          `fwcheck --repair` waits in rootd.db's outbox, through the rootd restart the repair makes, and reaches ntfy
+#          once ntfy is back (#220).
 # PASS/FAIL lines go to .vm/quota-ntfy-gate.txt, command output to .vm/quota-ntfy-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -97,7 +100,7 @@ r=$(qg 2/0 referenced); btrfs qgroup limit $((r + (64 << 20))) 2/0 $M
 check "a writer into data/images (no own limit) that fills 2/0 gets EDQUOT" 'e=$(dd if=/dev/urandom of=$M/data/images/gate-fill bs=1M count=200 conv=fsync 2>&1); echo "$e" | grep -aq "Disk quota exceeded"'
 check "  ... while system state still writes 128 MiB, more than 2/0 had left" 'dd if=/dev/urandom of=$M/audit/gate-fill2 bs=1M count=128 conv=fsync && [ $(stat -c %s $M/audit/gate-fill2) = $((128 << 20)) ]'
 check "the next reconcile restores 2/0's limit" '$A reconcile && leaves'
-systemctl start agentbox-rootd.service
+systemctl start agentbox-rootd.service ntfy.service # ntfy stopped with rootd (Requires=, #220)
 rm -f $M/audit/gate-fill $M/audit/gate-fill2 $M/data/images/gate-fill; rmdir $M/audit 2>/dev/null || :
 btrfs subvolume delete $W >/dev/null && btrfs subvolume sync $M && btrfs qgroup destroy 1/999 $M && rmdir $M/data/workspaces
 btrfs qgroup clear-stale $M >/dev/null 2>&1 || :
@@ -111,7 +114,8 @@ ntfy)
 check "ntfy 2.11 from the archive; _ntfy from its sysusers entry" 'dpkg -s ntfy | grep -q "^Version: 2\.11\." && getent passwd _ntfy && grep -Eq "^u\s+_ntfy\s" /usr/lib/sysusers.d/ntfy.conf'
 check "ntfy enabled and up behind agentbox-firewall.service" '[ "$(systemctl is-enabled ntfy)" = enabled ] && systemctl is-active agentbox-firewall.service ntfy'
 check "reconcile is ordered before ntfy" 'systemctl show -P Before agentbox-reconcile.service | grep -qw ntfy.service'
-check "drop-in: Requires= and After= agentbox-firewall.service, ExecStartPre=+fwcheck" 'systemctl show -P Requires ntfy | grep -qw agentbox-firewall.service && systemctl show -P After ntfy | grep -qw agentbox-firewall.service && systemctl show -P ExecStartPre ntfy | grep -q "agentbox fwcheck"'
+check "drop-in: Requires= and After= agentbox-firewall.service and agentbox-rootd.service, ExecStartPre=+fwcheck" 'for u in agentbox-firewall.service agentbox-rootd.service; do
+  systemctl show -P Requires ntfy | grep -qw $u && systemctl show -P After ntfy | grep -qw $u || exit 1; done && systemctl show -P ExecStartPre ntfy | grep -q "agentbox fwcheck"'
 for f in /etc/ntfy/server.yml /etc/tmpfiles.d/agentbox-ntfy.conf /etc/systemd/system/ntfy.service.d/50-agentbox.conf; do
   check "$f is root:root 0644" '[ "$(stat -c "%U:%G %a" $f)" = "root:root 644" ]'; done
 check "server.yml: no HTTP listener, Unix socket 0660, deny-all with an auth-file, upstream with a base-url" 'f=/etc/ntfy/server.yml; grep -qx "listen-http: \"-\"" $f && grep -qx "listen-unix: /run/ntfy/ntfy.sock" $f && grep -qx "listen-unix-mode: 0660" $f && grep -qx "auth-default-access: deny-all" $f && grep -qx "auth-file: /var/lib/ntfy/user.db" $f && grep -qx "upstream-base-url: \"https://ntfy.sh\"" $f && grep -q "^base-url: \"https://" $f'
@@ -123,6 +127,8 @@ EOF
   reboot_vm
   { echo "$PRELUDE"; cat <<'EOF'; } | guest
 check "boot finishes with ntfy and the stub agent unit up" '[ "$(timeout 600 systemctl is-system-running --wait)" = running ] && systemctl is-active ntfy agentbox-agent-stub'
+check "#220 ntfy's start began after rootd's READY=1 (its refill), and its fwcheck passed the first time" 'r=$(systemctl show -P ActiveEnterTimestampMonotonic agentbox-rootd) n=$(systemctl show -P InactiveExitTimestampMonotonic ntfy) && echo "rootd ready $r, ntfy start $n" &&
+  [ "$r" -gt 0 ] && [ "$n" -ge "$r" ] && [ "$(systemctl show -P NRestarts ntfy)" = 0 ]'
 check "ntfy's unit runs as _ntfy, and so does its process (all four uids)" '[ "$(systemctl show -P User ntfy)" = _ntfy ] && u=$(id -u _ntfy) && grep -Eq "^Uid:\s+$u\s+$u\s+$u\s+$u$" /proc/$(systemctl show -P MainPID ntfy)/status'
 check "ss: ntfy has no TCP or UDP listener" '! ss -Htulnp | grep -q "\"ntfy\""'
 check "ss: ntfy's only listener is /run/ntfy/ntfy.sock" '[ "$(ss -Hxlp | grep "\"ntfy\"" | awk "{print \$5}")" = /run/ntfy/ntfy.sock ]'
@@ -154,6 +160,18 @@ check "  ... and the agent unit can't start" '! systemctl restart agentbox-agent
 check "  ... and ntfy itself can't start" '! systemctl restart ntfy && [ "$(systemctl show -P MainPID ntfy)" = 0 ]'
 rm /run/systemd/system/ntfy.service.d/90-gate.conf; systemctl daemon-reload; systemctl reset-failed
 check "  ... back to _ntfy: ntfy and the agent unit start" 'systemctl restart ntfy && systemctl restart agentbox-agent-stub'
+# #220: an alert ntfy can't take waits in rootd.db's outbox. The health timer stays off, so only this repair alerts.
+systemctl stop agentbox-health.timer
+for i in $(seq 120); do [ "$(systemctl show -P ActiveState agentbox-health.service)" != activating ] && break; sleep 1; done
+systemctl stop ntfy.service; t0=$(date +%s); sleep 1
+outbox() { python3 -c "import sqlite3; print(sqlite3.connect(\"file:$M/rootd.db?mode=ro\", uri=True).execute(\"select count(*) from alert_outbox\").fetchone()[0])"; }
+fwalerts() { python3 -c "import sqlite3; print(sqlite3.connect(\"file:/var/lib/ntfy/cache.db?mode=ro\", uri=True).execute(\"select count(*) from messages where topic=\x27agentbox-alerts\x27 and title=\x27agentbox: firewall\x27 and time >= $t0\").fetchone()[0])"; }
+check "#220 ntfy stopped, the ruleset flushed: fwcheck --repair can't send its alert, so it queues it in rootd.db" 'nft flush ruleset && $A fwcheck --repair > /tmp/gate-q.log 2>&1; cat /tmp/gate-q.log;
+  grep -q "agentbox: alert not sent: .*; queued for rootd to send: the firewall was altered at runtime" /tmp/gate-q.log && grep -q "agentbox: firewall restored" /tmp/gate-q.log'
+check "  ... the repair restarted rootd and started ntfy, and rootd sent the alert: once in ntfy's cache, the outbox empty" 'systemctl is-active -q ntfy &&
+  for i in $(seq 30); do [ "$(fwalerts)" = 1 ] && [ "$(outbox)" = 0 ] && break; sleep 1; done; echo "ntfy has $(fwalerts), the outbox $(outbox)";
+  [ "$(fwalerts)" = 1 ] && [ "$(outbox)" = 0 ] && journalctl -u agentbox-rootd -o cat --since @$t0 | grep -q "alert sent: the firewall was altered at runtime"'
+systemctl start agentbox-health.timer
 check "no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 echo "fails=$fails"
 EOF

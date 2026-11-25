@@ -12,6 +12,7 @@ import (
 
 	"agentbox/internal/fw"
 	"agentbox/internal/ntfy"
+	"agentbox/internal/rootd"
 )
 
 // cmdFW runs `agentbox fw load|check` and `agentbox fwcheck` as root on the box (ARCHITECTURE.md §6.1).
@@ -107,15 +108,18 @@ var fwCheck = func() ([]string, error) {
 
 var systemctl = func(args ...string) ([]byte, error) { return exec.Command("systemctl", args...).CombinedOutput() }
 
-// alertDir holds one empty file per standing condition whose alert went out. It is on tmpfs, so each boot alerts again.
+// alertDir holds one empty file per standing condition whose alert went out or was queued. It is on tmpfs, so each
+// boot alerts again.
 var alertDir = "/run/agentbox-alerts"
 
-// alertSock and alertToken are ntfy's socket and agentbox's token for it; tests point them at a stand-in.
-var alertSock, alertToken = ntfy.Socket, ntfy.TokenPath
+// alertSock and alertToken are ntfy's socket and agentbox's token for it, and alertDB the rootd.db whose outbox takes
+// an alert ntfy doesn't; tests point them at a stand-in.
+var alertSock, alertToken, alertDB = ntfy.Socket, ntfy.TokenPath, fw.RootdDB
 
 // alert sends an ALERT on to the human through ntfy, as rootd does, with fixed text: the caller printed the details
 // for the journal. A keyed alert names a condition the 50 s health timer sees at each run: it goes out once, and again
-// only after alertClear(key). A failed send is printed, and a keyed one is retried at the next run.
+// only after alertClear(key). An alert ntfy doesn't take goes in rootd.db's outbox, which rootd sends until ntfy takes
+// it (#220). One that can't be queued either is printed, and a keyed one is tried again at the next run.
 func alert(key, title, msg string) {
 	mark := filepath.Join(alertDir, key)
 	if key != "" {
@@ -123,11 +127,14 @@ func alert(key, title, msg string) {
 			return
 		}
 	}
-	if err := ntfy.Publish(alertSock, alertToken, ntfy.AlertTopic, title, msg); err != nil {
-		fmt.Fprintf(os.Stderr, "agentbox: alert not sent: %v\n", err)
+	if err := ntfy.Publish(alertSock, alertToken, ntfy.AlertTopic, title, msg); err == nil {
+		fmt.Fprintln(os.Stderr, "agentbox: alert sent:", msg)
+	} else if qerr := queueAlert(title, msg); qerr == nil {
+		fmt.Fprintf(os.Stderr, "agentbox: alert not sent: %v; queued for rootd to send: %s\n", err, msg)
+	} else {
+		fmt.Fprintf(os.Stderr, "agentbox: alert not sent: %v; not queued: %v\n", err, qerr)
 		return
 	}
-	fmt.Fprintln(os.Stderr, "agentbox: alert sent:", msg)
 	if key == "" {
 		return
 	}
@@ -142,3 +149,13 @@ func alert(key, title, msg string) {
 
 // alertClear ends key's condition, so its next ALERT goes out.
 func alertClear(key string) { os.Remove(filepath.Join(alertDir, key)) }
+
+// queueAlert puts one alert in rootd.db's outbox (ARCHITECTURE.md §11).
+func queueAlert(title, msg string) error {
+	db, err := rootd.OpenDB(alertDB)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return rootd.QueueAlert(db, title, msg)
+}

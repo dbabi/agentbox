@@ -97,7 +97,7 @@ func OpenDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("rootd.db: journal_mode=%s synchronous=%d, need wal and FULL (2)", mode, syncv)
 	}
-	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, snapSchema, secretSchema, attach.Schema, attach.BaselineSchema} {
+	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, snapSchema, secretSchema, attach.Schema, attach.BaselineSchema, alertSchema} {
 		if _, err := db.Exec(schema); err != nil {
 			db.Close()
 			return nil, err
@@ -165,6 +165,11 @@ func Run(cfg Config) error {
 	defer db.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	if cfg.Alert != nil { // every alert goes through rootd.db's outbox: one raised while ntfy is down goes out later (§11)
+		ob := &outbox{db: db, send: cfg.Alert, kick: make(chan struct{}, 1)}
+		go ob.run(ctx, alertRetry)
+		cfg.Alert = ob.queue
+	}
 	da := newDenyAudit(func(r map[string]any) { sendDeny(cfg.AuditSocket, r) })
 	go da.run(ctx)
 	svc := &resolve.Service{
