@@ -254,7 +254,7 @@ It prints one progress line per step:
 
 The trial boots the newest kernel in the new generation.
 If any step after the clone fails, the build is discarded: its subvolume and boot directory are deleted, and the running generation is unchanged.
-The command then prints `agentbox: ALERT: build gen-M discarded: <reason>`.
+The command then prints `agentbox: ALERT: build gen-M discarded: <reason>` and sends an ntfy alert.
 One exception: if setting `next_entry` fails after the write may have landed, the trial stays pending instead. See the last row of the error table below.
 
 Example from a test run. apt's output is left out. The numbers jump from 12 to 18 because earlier test trials failed.
@@ -328,6 +328,7 @@ agentbox: health: trial agentbox-gen-17-<kernel> not committed yet; the boot dea
 ```
 
 On the committed generation, health only alerts: `agentbox: ALERT: the committed generation is unhealthy (see above)`.
+It sends one ntfy alert, and the next only after the generation is healthy again or the box reboots.
 It also regenerates `grub.cfg` if it lists an entry whose kernel or initrd is gone.
 
 These checks are a first version. Before them, `agentbox-health.service` runs `agentbox fwcheck --repair`, which restores an altered firewall table. Checks for agentbox services, DNS and Tailscale are designed, not built.
@@ -385,7 +386,7 @@ About a minute after the box is back on the committed entry, the next health run
 
 - If `grubenv` still names the trial in `next_entry` or `saved_entry`, it puts those values back first.
 - It writes `/var/lib/agentbox/os/failed/gen-M.json`.
-- It logs `agentbox: ALERT: trial <entry> failed: the box booted <entry> instead; it stays uncommitted`.
+- It logs `agentbox: ALERT: trial <entry> failed: the box booted <entry> instead; it stays uncommitted`, and sends an ntfy alert.
 
 The failed generation stays on disk until the next `os apply` deletes it.
 Nothing needs cleaning up by hand.
@@ -405,12 +406,12 @@ A generation's boot directory and subvolume are deleted together. Then `grub.cfg
 Linux frees a deleted subvolume in the background, and the last step can leave the disk quota counts inconsistent, so that no quota limits anything.
 So retention then waits until Linux has freed the deleted subvolumes, and asks rootd to check the quota counts at once (`agentbox quota check`).
 The journal shows `os: qgroups checked after deleting subvolumes <ids>: <rootd's reply>`.
-If rootd can't be reached, the command prints `agentbox: ALERT: qgroups not checked after deleting subvolumes ...` and fails; rootd's own check, every 5 minutes, still runs.
+If rootd can't be reached, the command prints `agentbox: ALERT: qgroups not checked after deleting subvolumes ...`, sends an ntfy alert and fails; rootd's own check, every 5 minutes, still runs.
 For example, with generations 1 to 4 on disk, committing gen-4 deletes gen-1.
 After a commit, three generations normally remain. During a trial there is one more.
 
 Before it deletes anything, retention reads the fstab of every kept generation.
-If one still mounts a boot directory that would be deleted, it deletes nothing and stops with `ALERT: retention refused: ...`.
+If one still mounts a boot directory that would be deleted, it deletes nothing, sends an ntfy alert and stops with `ALERT: retention refused: ...`.
 If an error or a power cut leaves `grub.cfg` listing a deleted generation, the next health run on the committed generation regenerates it.
 
 A new generation's number is above every generation on disk and every failed trial on record, so gaps in the numbers are normal.
@@ -452,7 +453,7 @@ failed:      {"at":"<time>","booted":"agentbox-gen-1-<kernel>","entry":"agentbox
 `os status` changes nothing. A trial that fell back shows as `pending` until the next health run records it.
 
 The journal keeps every commit, prune and alert from health, and every deadline reboot, across all generations.
-`os apply` prints its own prune and ALERT lines to your terminal only.
+`os apply` prints its own prune and ALERT lines to your terminal only, and sends each ALERT to ntfy too.
 When you run `os mark-last-good` by hand, its lines, including any commit, also go only to your terminal.
 To read the journal:
 

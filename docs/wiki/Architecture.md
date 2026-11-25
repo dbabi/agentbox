@@ -551,7 +551,7 @@ Root access is the approval.
 
 Built today (milestone 2): `agentbox fw load` adds the table as one add-only transaction, so a reload keeps every element rootd added.
 `fwcheck` runs from the health timer every 50 s, and from each agent-side unit's `ExecStartPre=`.
-On a mismatch it prints `agentbox: ALERT: firewall altered` and restarts the firewall unit, which restarts every unit that `Requires=` it.
+On a mismatch it prints `agentbox: ALERT: firewall altered`, sends an ntfy alert, and restarts the firewall unit, which restarts every unit that `Requires=` it.
 An input chain drops inbound traffic by default.
 It accepts loopback, replies to the box's own connections, the `tailscale0` interface, Tailscale's direct UDP port 41641, IPv6 neighbor discovery and DHCP replies.
 It accepts SSH only from the prefixes in `/etc/agentbox/ssh-from`, which the seed's `--ssh-from` writes.
@@ -738,8 +738,10 @@ It decides when a task's actions need a human signature.
 Built today: auditd with one socket per producer, sequence-named segments, the hash chain, taint epochs, disk-full mode and rootd's sealing (`chattr +a`, then `+i`).
 `agentbox audit verify` checks the chain.
 Installer logs persist under `/var/log`, with no password hash.
-The `os` commands and `fwcheck` print alerts that start with `agentbox: ALERT:`.
-When `os health` runs from its timer, those alerts land in the journal.
+The `os` commands and `fwcheck` print alerts that start with `agentbox: ALERT:`, and send each one to ntfy with fixed text.
+The printed line keeps the details. When `os health` runs from its timer, it lands in the journal.
+A condition that stands, such as an unhealthy committed generation, sends one ntfy alert, and the next only after it clears or the box reboots.
+If ntfy can't take an alert, the command prints `agentbox: alert not sent`. A standing condition is sent again at the next health run; other alerts are not queued.
 
 ## When things fail
 

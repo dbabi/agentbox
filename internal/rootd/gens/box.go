@@ -358,6 +358,7 @@ func Settle() (*Pending, error) {
 		return nil, err
 	}
 	fmt.Fprintf(os.Stderr, "agentbox: ALERT: trial %s failed: the box booted %s instead; it stays uncommitted\n", p.Entry, Entry(gen, k))
+	alert("agentbox: os apply", "an os apply trial failed: the box booted another entry, and the trial stays uncommitted")
 	return nil, nil
 }
 
@@ -431,6 +432,16 @@ func protectedGens() (booted int, committed int, prot []int, err error) {
 // rootd check qgroups (#209). Nil, as in tests, runs nothing.
 var AfterDelete func(ids []string) error
 
+// Alert, if set, sends an ALERT on to the human with fixed text (agentbox os: ntfy). The stderr line before it keeps the
+// details. Nil, as in tests, sends nothing.
+var Alert func(title, msg string)
+
+func alert(title, msg string) {
+	if Alert != nil {
+		Alert(title, msg)
+	}
+}
+
 // afterDelete hands the ids of the deleted subvolumes, skipping "" (none was there), to AfterDelete.
 func afterDelete(ids ...string) error {
 	ids = slices.DeleteFunc(ids, func(id string) bool { return id == "" })
@@ -487,6 +498,7 @@ func stillBound(top string, all, drop []int) error {
 		}
 		for _, d := range drop {
 			if References(fstab, filepath.Join(GensDir, Gen(d))) {
+				alert("agentbox: os apply", "retention deleted nothing: a kept generation's fstab still binds the boot dir of one it would delete")
 				return fmt.Errorf("ALERT: retention refused: kept %s's fstab still binds %s", Gen(k), filepath.Join(GensDir, Gen(d)))
 			}
 		}

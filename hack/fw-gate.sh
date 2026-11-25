@@ -16,7 +16,8 @@
 #          - a broker uid reaches only the address and port in its own dst set (dropped for the rest, private ranges and
 #            DNS included); a confined uid reaches nothing
 #          - a keys flow survives its element's expiry (conntrack), while a new connection is refused
-#          - `nft flush ruleset`: within 60 s the health timer's fwcheck alerts and the table is back, sets refilled
+#          - `nft flush ruleset`: within 60 s the health timer's fwcheck alerts and the table is back, sets refilled; the
+#            alert reaches ntfy's agentbox-alerts topic once, with fixed text (#213)
 #          - inbound (issue #80), with network-namespace peers on a LAN link (lan0) and on tailscale0: a listener on
 #            0.0.0.0/[::]:11434 is unreachable from the LAN; SSH works only from the seed's --ssh-from prefixes (IPv4 and
 #            IPv6, after neighbor discovery); Tailscale's direct UDP 41641 arrives; tailscale0 reaches everything; the
@@ -295,6 +296,9 @@ echo "flush at $t0, table back at $t1: $((t1 - t0)) s" >>$L
 check "nft flush ruleset: the table is back within 60 s ($((t1 - t0)) s)" '[ $t1 -gt 0 ] && [ $((t1 - t0)) -le 60 ]'
 sleep 5
 check "nft flush ruleset: fwcheck alerted, restarted the firewall, and the refill restored rootd's sets" 'journalctl -u agentbox-health.service --since @$t0 -o cat | grep -q "agentbox: ALERT: firewall altered: nft list table inet agentbox" && journalctl -u agentbox-health.service --since @$t0 -o cat | grep -q "agentbox: firewall restored" && [ "$(pa)" = "$p" ] && [ "$(elems proxy_dst4)" = "$d" ] && $A fwcheck'
+# ntfy.service restarts with the firewall (Requires=): fwcheck sent the alert before the restart, and ntfy's cache keeps it
+check "nft flush ruleset: the alert reached ntfy's agentbox-alerts topic once, with fixed text (#213)" 'journalctl -u agentbox-health.service --since @$t0 -o cat | grep -q "agentbox: alert sent: the firewall was altered at runtime" &&
+  [ "$(python3 -c "import sqlite3; c=sqlite3.connect(\"file:/var/lib/ntfy/cache.db?mode=ro\",uri=True); print(c.execute(\"select count(*) from messages where topic=\x27agentbox-alerts\x27 and title=\x27agentbox: firewall\x27 and message like \x27the firewall was altered at runtime:%\x27 and time >= $t0\").fetchone()[0])")" = 1 ]'
 check "after the repair, the agent stand-in starts" 'systemctl start agentbox-agent-stub.service && systemctl is-active agentbox-agent-stub.service'
 
 # for the reboot: a fresh answer, and the stand-in starts at boot like an agent's user manager

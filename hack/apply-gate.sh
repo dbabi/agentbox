@@ -8,7 +8,8 @@
 # cycles   holds systemd one archive version back (in place, a test fixture: the install took the newest), then gen-2
 #          removes the newest kernel and gen-3 brings it back with every systemd binary upgraded (a kernel and systemd
 #          change whose initrd dracut builds inside the nspawn), gen-4 prunes gen-1; then current cold-boots and previous
-#          boots once. (Run again on a used box, the generation numbers are higher and the oldest one is pruned.)
+#          boots once, where health alerts ntfy once though it runs more than once (#213). (Run again on a used box, the
+#          generation numbers are higher and the oldest one is pruned.)
 # breaks   a trial broken in GRUB, in the initrd (clevis removed; btrfs in none mode), in fstab (/boot bound to the
 #          parent's dir; a /boot device that never appears), and by a unit that blocks boot forever: each falls back to
 #          the committed generation with no console input. After the GRUB break, health drops the kernel-less entry
@@ -260,6 +261,8 @@ EOF
   wait_boot "$old" $((DEADLINE + 600)) || die "previous: never rebooted"
   log "previous: rebooted after $(( $(date +%s) - t0 )) s"
   check "previous: the boot deadline returned to $CUR, still committed" '[ "$(booted)" = "$CUR" ] && [ "$(committed)" = "$CUR" ] && deadline_fired "$PREV"'
+  # #213: each health run on $PREV prints the ALERT; ntfy gets it once
+  check "previous: health alerted ntfy once that $PREV was not committed, though it ran more than once" 'h=$(echo "journalctl -b -1 -o cat -u agentbox-health.service" | root) && [ "$(printf "%s\n" "$h" | grep -cF "agentbox: ALERT: booted $PREV is not the committed")" -ge 2 ] && [ "$(printf "%s\n" "$h" | grep -cF "agentbox: alert sent: the box booted a generation that is not the committed one")" = 1 ]'
   status
 }
 
