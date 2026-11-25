@@ -304,7 +304,7 @@ For release `0.0.1`, they print `releases/0.0.1` and `0.0.1`. The binary is not 
 - Never order it `After=multi-user.target` or `After=agentbox-firstboot.service`. Firstboot starts it from inside the boot. With either ordering, firstboot waits for that start, and the start waits for firstboot. The boot hangs until systemd stops the firstboot attempt at its 45-minute `TimeoutStartSec`.
 - `systemd-analyze verify` does not catch that mistake. The install gate checks the unit's `After=` list and then boots the box for real.
 
-Designed, not built: reconcile will also rebuild agent accounts and the rest of what agentbox manages in the OS from agentbox's own state. It runs at every boot, so whichever generation boots gets the same setup. Every agentbox unit already requires it and starts after it.
+Designed, not built: reconcile will also rebuild agent accounts and the rest of what agentbox manages in the OS from agentbox's own state. It runs at every boot, so whichever generation boots gets the same setup. Every agentbox unit except the firewall already requires it and starts after it.
 
 ## Units on the box
 
