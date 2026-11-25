@@ -301,9 +301,13 @@ wt=$!
 for i in $(seq 600); do [ -e $WS/ga/wready ] && [ -s $G/last ] && break; sleep 0.1; done
 T7=$(cat $G/last) UM=user@$(id -u ag-ga).service
 um=$(systemctl show -P MainPID $UM) nr=$(systemctl show -P NRestarts agentbox-rootd.service)
-systemctl kill -s KILL agentbox-rootd.service
-for i in $(seq 100); do [ "$(systemctl show -P NRestarts agentbox-rootd.service)" -gt "$nr" ] && systemctl is-active -q agentbox-rootd.service && break; sleep 0.1; done
+t7=$(date +%s); systemctl kill -s KILL agentbox-rootd.service
+for i in $(seq 300); do [ "$(systemctl show -P NRestarts agentbox-rootd.service)" -gt "$nr" ] && systemctl is-active -q agentbox-rootd.service && break; sleep 0.1; done
 touch $WS/ga/wgo; wait $wt
+# to the host's log: what the check below compares, and the journal around the crash
+echo "rootd crash: NRestarts $nr -> $(systemctl show -P NRestarts agentbox-rootd.service); $UM MainPID $um -> $(systemctl show -P MainPID $UM); task $T7: $(tr '\n' ' ' < $G/r7)"
+$B task list | python3 -c 'import json,sys; print(*[t for t in json.load(sys.stdin)["tasks"] if t["task"]==sys.argv[1]])' "$T7"
+journalctl -b -o short-monotonic -u agentbox-rootd.service -u "$UM" --since @$t7 | grep -v -E "agentbox: (witness|audit)" | tail -25
 check "a rootd crash mid-task (SIGKILL): systemd restarts rootd alone, the agent's user manager keeps its PID, and the task completes" '
   [ "$(systemctl show -P NRestarts agentbox-rootd.service)" -gt "$nr" ] && [ -n "$um" ] && [ "$um" != 0 ] && [ "$(systemctl show -P MainPID $UM)" = "$um" ] &&
   grep -qx outlived $G/r7 && [ "$($B task list | python3 -c "import json,sys; print(*[t.get(\"end_reason\") for t in json.load(sys.stdin)[\"tasks\"] if t[\"task\"]==sys.argv[1]])" $T7)" = completed ]'
