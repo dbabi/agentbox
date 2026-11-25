@@ -59,7 +59,6 @@ func TestQuotaFence(t *testing.T) {
 		t.Fatalf("a read must pass the fence (and stop at not_built): %+v", d)
 	}
 	s.checkQuota()
-	time.Sleep(100 * time.Millisecond) // the alert goes from its own goroutine
 	if rescans != 2 || alerts.Load() != 1 {
 		t.Fatalf("a retry: %d rescans, %d alerts (want 2 and 1)", rescans, alerts.Load())
 	}

@@ -25,16 +25,14 @@ func attachRequest(line []byte) (request, bool) {
 	return r, dec.Decode(&r) == nil && r.Op == "agent.attach"
 }
 
-// alert sends a high-priority ntfy message; a failure only logs (the block already stands).
+// alert queues a high-priority ntfy message (Config.Alert); a failure only logs (the block already stands).
 func (s *server) alert(agent, msg string) {
 	if s.cfg.Alert == nil {
 		return
 	}
 	if err := s.cfg.Alert("agentbox: attach "+agent, msg); err != nil {
-		log.Printf("alert not sent: %v", err)
-		return
+		log.Printf("alert not queued: %v", err)
 	}
-	log.Printf("alert sent: %s", msg)
 }
 
 // agentSeen is the agent's token versions: a later rescan still matches a token the CLI has since rotated.

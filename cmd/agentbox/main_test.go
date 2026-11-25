@@ -20,6 +20,7 @@ import (
 
 	"agentbox/internal/gate"
 	"agentbox/internal/recovery"
+	"agentbox/internal/rootd"
 )
 
 func TestFlagParsing(t *testing.T) {
@@ -185,23 +186,47 @@ func TestPrintable(t *testing.T) {
 }
 
 // #213: fwcheck --repair, os health and os apply send their ALERTs to ntfy's alert topic with fixed text. A keyed
-// condition goes out once, and again after alertClear; a send that fails leaves it to the next run.
+// condition goes out once, and again after alertClear. #220: one ntfy doesn't take goes in rootd.db's outbox for
+// rootd to send, which counts as sent; one that can't be queued either leaves it to the next run.
 func TestAlert(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "alert") // sun_path is 104 bytes on macOS: t.TempDir is too long
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	sock, tok, marks := alertSock, alertToken, alertDir
-	defer func() { alertSock, alertToken, alertDir = sock, tok, marks }()
+	sock, tok, marks, db := alertSock, alertToken, alertDir, alertDB
+	defer func() { alertSock, alertToken, alertDir, alertDB = sock, tok, marks, db }()
 	alertSock, alertToken, alertDir = filepath.Join(dir, "ntfy.sock"), filepath.Join(dir, "token"), filepath.Join(dir, "alerts")
 	if err := os.WriteFile(alertToken, []byte("tk_x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	alert("firewall", "agentbox: firewall", "down") // ntfy isn't up yet
+	alertDB = filepath.Join(alertToken, "rootd.db") // under a file: it can't be opened
+	alert("firewall", "agentbox: firewall", "down") // ntfy isn't up yet, and the outbox can't take it
 	if _, err := os.Stat(filepath.Join(alertDir, "firewall")); err == nil {
-		t.Fatal("a failed send marked the condition as alerted")
+		t.Fatal("an alert neither sent nor queued marked the condition as alerted")
 	}
+	alertDB = filepath.Join(dir, "rootd.db")
+	alert("firewall", "agentbox: firewall", "down") // rootd.db's outbox takes it
+	alert("firewall", "agentbox: firewall", "down") // the next health run: it is queued already
+	if _, err := os.Stat(filepath.Join(alertDir, "firewall")); err != nil {
+		t.Fatalf("a queued alert left the condition unmarked: %v", err)
+	}
+	d, err := rootd.OpenDB(alertDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var q []string
+	rows, err := d.Query(`SELECT title || ': ' || msg FROM alert_outbox ORDER BY id`)
+	for err == nil && rows.Next() {
+		var a string
+		err = rows.Scan(&a)
+		q = append(q, a)
+	}
+	d.Close()
+	if err != nil || !slices.Equal(q, []string{"agentbox: firewall: down"}) {
+		t.Fatalf("outbox %q, %v; want the one alert", q, err)
+	}
+	alertClear("firewall")
 	var mu sync.Mutex
 	var got []string
 	l, err := net.Listen("unix", alertSock)
@@ -235,9 +260,12 @@ func TestAlert(t *testing.T) {
 // restart starts nothing. Without --repair, fwcheck only checks.
 func TestFWCheckRepair(t *testing.T) {
 	dir := t.TempDir()
-	check, ctl, marks, sock, tok := fwCheck, systemctl, alertDir, alertSock, alertToken
-	defer func() { fwCheck, systemctl, alertDir, alertSock, alertToken = check, ctl, marks, sock, tok }()
+	check, ctl, marks, sock, tok, db := fwCheck, systemctl, alertDir, alertSock, alertToken, alertDB
+	defer func() {
+		fwCheck, systemctl, alertDir, alertSock, alertToken, alertDB = check, ctl, marks, sock, tok, db
+	}()
 	alertDir, alertSock, alertToken = filepath.Join(dir, "alerts"), filepath.Join(dir, "none"), filepath.Join(dir, "token") // no ntfy
+	alertDB = filepath.Join(dir, "rootd.db")
 	all := [][]string{{"restart", "agentbox-firewall.service"}, {"start", "agentbox-rootd.service"},
 		{"start", "agentbox-auditd.service", "agentboxd.service", "ntfy.service"}}
 	for _, tc := range []struct {

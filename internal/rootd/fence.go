@@ -48,13 +48,9 @@ func (s *server) checkLocked() (bool, error) {
 		log.Printf("ALERT quota: %s", msg)
 		go s.audit(map[string]any{"type": "ALERT", "reason": "qgroup_inconsistent"})
 		if s.cfg.Alert != nil {
-			go func() {
-				if err := s.cfg.Alert("agentbox: disk quotas", msg); err != nil {
-					log.Printf("alert not sent: %v", err)
-					return
-				}
-				log.Printf("alert sent: %s", msg)
-			}()
+			if err := s.cfg.Alert("agentbox: disk quotas", msg); err != nil {
+				log.Printf("alert not queued: %v", err)
+			}
 		}
 	}
 	s.freeze(true)

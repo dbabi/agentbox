@@ -118,7 +118,7 @@ type tasks struct {
 	db      *sql.DB
 	audit   func(map[string]any) error // waits for the ACK
 	query   func(map[string]any) (*auditReply, error)
-	alert   func(title, msg string) error // ntfy (Config.Alert); nil: none
+	alert   func(title, msg string) error // queues an ntfy alert (Config.Alert); nil: none
 	mu      sync.Mutex
 	stops   map[string]*sync.Mutex // one task.stop at a time per task
 	watch   map[string]bool
@@ -413,13 +413,9 @@ func (t *tasks) probeFailed(id, check string) {
 	log.Printf("ALERT %s", msg)
 	go t.audit(map[string]any{"type": "ALERT", "reason": taskrun.ProbeFailed, "task": id, "check": check})
 	if t.alert != nil {
-		go func() {
-			if err := t.alert("agentbox: task "+agent, msg); err != nil {
-				log.Printf("alert not sent: %v", err)
-				return
-			}
-			log.Printf("alert sent: %s", msg)
-		}()
+		if err := t.alert("agentbox: task "+agent, msg); err != nil {
+			log.Printf("alert not queued: %v", err)
+		}
 	}
 }
 
@@ -474,11 +470,9 @@ func (t *tasks) stop(id, reason string) reply {
 		log.Printf("ALERT %s", msg)
 		go t.audit(map[string]any{"type": "ALERT", "reason": "task_not_empty", "task": id})
 		if t.alert != nil {
-			go func() {
-				if err := t.alert("agentbox: task "+agent, msg); err != nil {
-					log.Printf("alert not sent: %v", err)
-				}
-			}()
+			if err := t.alert("agentbox: task "+agent, msg); err != nil {
+				log.Printf("alert not queued: %v", err)
+			}
 		}
 	}
 	// 2a: with no writer left, the witness holds every line the task wrote; WITNESS goes to auditd unwaited

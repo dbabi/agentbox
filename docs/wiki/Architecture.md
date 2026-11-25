@@ -226,7 +226,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 | `agentbox-auditd.service` and its sockets | the release | The audit daemon. Socket-activated: one socket per producer (agentboxd, rootd, proxy, keys, git). |
 | `agentbox-rootd.service` and its sockets | the release | The root daemon: agent accounts, task start and stop, attach sessions, the resolver sockets for the three brokers, the admin socket, and the seal socket auditd calls. |
 | `agentboxd.service` and its socket | the release | The task gate: one socket per task, with no network. |
-| `ntfy.service` | the Ubuntu `ntfy` package | Notifications, as `_ntfy`, on a Unix socket only. `install.sh` installs the package; reconcile configures and enables it. |
+| `ntfy.service` | the Ubuntu `ntfy` package | Notifications, as `_ntfy`, on a Unix socket only. `install.sh` installs the package; reconcile configures and enables it. It starts after rootd, once rootd has filled the firewall sets that ntfy's `fwcheck` compares. |
 | `agentbox-agent-stub.service` | the release | A stand-in for an agent unit, for the gates. Not enabled. |
 
 ### Designed parts of the OS layer
@@ -747,7 +747,9 @@ Installer logs persist under `/var/log`, with no password hash.
 The `os` commands and `fwcheck` print alerts that start with `agentbox: ALERT:`, and send each one to ntfy with fixed text.
 The printed line keeps the details. When `os health` runs from its timer, it lands in the journal.
 A condition that stands, such as an unhealthy committed generation, sends one ntfy alert, and the next only after it clears or the box reboots.
-If ntfy can't take an alert, the command prints `agentbox: alert not sent`. A standing condition is sent again at the next health run; other alerts are not queued.
+If ntfy can't take an alert, the command prints `agentbox: alert not sent` and puts the alert in rootd's alert queue.
+rootd's own alerts go through that queue too. rootd sends its own alerts at once, and tries every queued alert again every 10 seconds until ntfy takes it.
+The queue lives in `rootd.db`, so an alert survives a restart of ntfy or rootd. It holds at most 256 alerts.
 
 ## When things fail
 

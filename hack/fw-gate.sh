@@ -12,7 +12,8 @@
 #            dst set or port_allow, ntfy under another uid, the reserved-ports sysctl, nftables.service unmasked) keeps
 #            the stand-in from starting; a hooked extra chain fails the firewall load itself and stops rootd,
 #            auditd, agentboxd and ntfy, and once it is gone `fwcheck --repair` restarts the firewall and starts all four
-#          - with reconcile failing, a firewall restart still loads the table, input chain included, and rootd stays down
+#          - with reconcile failing, a firewall restart still loads the table, input chain included, and rootd stays down,
+#            and ntfy with it (Requires=), so its fwcheck never runs against sets rootd didn't refill
 #          - reload, restart and `fw load` keep every set's elements, and an element's expiry keeps running
 #          - 200 root connections to 127.0.0.1:43100 succeed; other uids, other reserved ports and ::1 get a reset
 #          - a broker uid reaches only the address and port in its own dst set (dropped for the rest, private ranges and
@@ -246,10 +247,10 @@ check "  ... which stops rootd, auditd, agentboxd and ntfy; with the chain delet
 # #218: the firewall needs nothing reconcile writes. A foreign sub-id entry in the agentbox span fails reconcile; a
 # firewall restart then loads the deleted table again, while rootd, auditd and agentboxd (Requires= reconcile) stay down
 cp /etc/subuid /run/subuid.ok; echo "evil:$((0x70000000)):65536" >> /etc/subuid
-check "reconcile failing: a firewall restart still loads the deleted table and its input chain; rootd, auditd and agentboxd stay down" '! systemctl restart agentbox-reconcile.service && nft delete table inet agentbox && systemctl restart agentbox-firewall.service &&
-  systemctl is-active -q agentbox-firewall.service && nft list chain inet agentbox input | grep -q "policy drop;" && ! systemctl is-active agentbox-rootd.service agentbox-auditd.service agentboxd.service'
+# ntfy stops with rootd (Requires=, #220): the firewall restart can't start it into a fwcheck of sets rootd never refilled
+check "reconcile failing: a firewall restart still loads the deleted table and its input chain; rootd, auditd, agentboxd and ntfy stay down" '! systemctl restart agentbox-reconcile.service && nft delete table inet agentbox && systemctl restart agentbox-firewall.service &&
+  systemctl is-active -q agentbox-firewall.service && nft list chain inet agentbox input | grep -q "policy drop;" && ! systemctl is-active agentbox-rootd.service agentbox-auditd.service agentboxd.service ntfy.service'
 cp /run/subuid.ok /etc/subuid
-# ntfy restarted with the firewall, and its fwcheck failed until rootd's refill: reset-failed lifts its start limit
 check "  ... with the entry gone, reconcile and rootd start, rootd refills its sets, and auditd, agentboxd and ntfy start" 'systemctl reset-failed && systemctl start agentbox-reconcile.service agentbox-rootd.service &&
   systemctl start agentbox-auditd.service agentboxd.service ntfy.service && [ "$(pa)" = "$PA" ] && $A fwcheck'
 

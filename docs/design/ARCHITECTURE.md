@@ -102,7 +102,7 @@ All agentbox services are subcommands of one Go 1.26 binary (✓ `golang-1.26` 1
   - `auth-default-access` does nothing without `auth-file` ✓. The `agentbox-notify` identity gets write access to its own topics only.
   - `upstream-base-url` needs `base-url` ✓, or ntfy refuses to start. ntfy.sh receives only the SHA-256 of `<base-url>/<topic>` and the message ID ✓, never the text.
   - tmpfiles: `d /run/ntfy 2750 _ntfy agentbox-notify -` and `d /var/lib/ntfy 0750 _ntfy _ntfy -`. ntfy only chmods its socket and never chowns it ✓, so the setgid dir supplies the group.
-  - Drop-in `/etc/systemd/system/ntfy.service.d/50-agentbox.conf`: `[Unit] Requires=agentbox-firewall.service`, `After=agentbox-firewall.service`; `[Service] ExecStartPre=+/var/lib/agentbox/current/bin/agentbox fwcheck`. The packaged unit orders only `After=network.target` ✓.
+  - Drop-in `/etc/systemd/system/ntfy.service.d/50-agentbox.conf`: `[Unit] Requires=agentbox-firewall.service agentbox-rootd.service`, `After=agentbox-firewall.service agentbox-rootd.service`; `[Service] ExecStartPre=+/var/lib/agentbox/current/bin/agentbox fwcheck`. The packaged unit orders only `After=network.target` ✓. rootd sends READY=1 only after its refill, so ntfy's `fwcheck` never compares sets rootd hasn't filled (§6.1, #220).
   - **install.sh order:** `apt-get install ntfy` → `getent passwd _ntfy` must succeed → write the files above → `systemd-tmpfiles --create` → `nft -c -f /etc/nftables.d/agentbox.nft` must exit 0 → `systemctl enable ntfy.service`. Any failure stops the install.
 
 ### 2.1 Socket inventory (complete)
@@ -1142,7 +1142,7 @@ Human CLI replies (`approval_stale`, `CACHE_PURGE_FAILED`) are not agent codes; 
 | depcheck fails or times out | Every changed dependency file is high-risk, and the report says why. |
 | A tool ignores the proxy | Its lookup fails in under 1 s, or `connect()` gets `ENETUNREACH`; `agentbox why --errno` explains. |
 | A batch member is refused or fails | Later members become `refused` with `BATCH_ABORTED`; earlier effects stay (for example a pushed branch with no PR); the batch row takes that member's state. The agent may re-ask the rest. |
-| An alert can't be delivered (ntfy down) | It is queued like other alerts and retried. |
+| An alert can't be delivered (ntfy down) | It waits in rootd.db's `alert_outbox`. Every rootd alert goes there first, and so does each one `fwcheck` or `agentbox os` could not send. rootd sends its own alerts at once, and tries every queued alert again every 10 s until ntfy takes it. The outbox holds at most 256 alerts (#220). |
 
 ## 12. Layout
 ```
@@ -1912,6 +1912,7 @@ CREATE TABLE workspace_snapshots(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, a
 CREATE TABLE os_lock(id INTEGER PRIMARY KEY CHECK(id = 1), plan TEXT NOT NULL, gen TEXT NOT NULL, taken_at INTEGER NOT NULL) STRICT;  -- §3.3
 CREATE TABLE set_elements(set_name TEXT NOT NULL, element TEXT NOT NULL, expires_at INTEGER, PRIMARY KEY(set_name, element)) STRICT;  -- nft refill source (§6.1)
 CREATE TABLE clock(id INTEGER PRIMARY KEY CHECK(id = 1), boot_id TEXT NOT NULL, offset_ms INTEGER NOT NULL) STRICT;  -- wall minus CLOCK_MONOTONIC when the dst expiries were last written; a change within the boot is a wall step: rootd rebases the expiries by it, fwcheck its now
+CREATE TABLE alert_outbox(id INTEGER PRIMARY KEY, title TEXT NOT NULL, msg TEXT NOT NULL, queued_at INTEGER NOT NULL) STRICT;  -- alerts ntfy has not taken yet; rootd deletes each one once ntfy answers 200 (§11)
 -- taint.db (auditd, synchronous=FULL)
 -- subject: 'task:<id>' | 'session:<id>' | 'workspace:<agent>#<N>' | 'ref:<repo>:<ref>' | 'snap:<id>' | 'fact:<id>'
 -- content_id: for workspace: the clean-baseline snapshot; for ref: the cleared OID; for fact: the cleared body hash

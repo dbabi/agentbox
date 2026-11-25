@@ -64,10 +64,11 @@ func BaseURL(host string) string { return "https://" + host + ":8443" }
 var tmpfiles = "# Written by agentbox-reconcile (ARCHITECTURE.md §2).\n" + sockets.TmpfilesLines(sockets.Inventory(), sockets.NtfyTmpfiles)
 
 // dropIn: the packaged unit orders only After=network.target, so without it ntfy starts outside the firewall gate.
+// It starts after rootd's READY=1 too, which waits for the refill its fwcheck compares (§6.1, #220).
 const dropIn = `# Written by agentbox-reconcile (ARCHITECTURE.md §2).
 [Unit]
-Requires=agentbox-firewall.service
-After=agentbox-firewall.service
+Requires=agentbox-firewall.service agentbox-rootd.service
+After=agentbox-firewall.service agentbox-rootd.service
 
 [Service]
 ExecStartPre=+` + agentboxBin + ` fwcheck
@@ -294,7 +295,9 @@ func Publish(sock, tokenPath, topic, title, msg string) error {
 	if err != nil {
 		return err
 	}
-	c := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+	// no keep-alive: this Transport is dropped after one request, and an idle connection in it would never close
+	// (rootd's outbox retries every 10 s)
+	c := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
 		}}}
