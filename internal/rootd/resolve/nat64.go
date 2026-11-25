@@ -6,11 +6,25 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"slices"
 	"syscall"
+
+	"agentbox/internal/rootd/gens"
 )
 
 // NetworkdSocket is systemd-networkd's Varlink service (io.systemd.Network).
 const NetworkdSocket = "/run/systemd/netif/io.systemd.Network"
+
+// Pref64DropIn is the drop-in agentbox-reconcile gives every .network file. networkd records the PREF64 options of
+// router advertisements only with UsePREF64=yes, which defaults to no, and netplan has no key for it.
+const Pref64DropIn = "90-agentbox-pref64.conf"
+
+const pref64Conf = "# Written by agentbox-reconcile (ARCHITECTURE.md Appendix B check 2).\n[IPv6AcceptRA]\nUsePREF64=yes\n"
+
+// NetworkDirs are the directories networkd reads .network files from (systemd.network(5)), /etc first.
+var NetworkDirs = []string{"/etc/systemd/network", "/run/systemd/network", "/usr/local/lib/systemd/network", "/usr/lib/systemd/network"}
 
 // ipv4only.arpa's A records (RFC 7050): a DNS64 resolver wraps them in its NAT64 prefix.
 var wka = []netip.Addr{netip.MustParseAddr("192.0.0.170"), netip.MustParseAddr("192.0.0.171")}
@@ -49,7 +63,9 @@ func NAT64Prefixes(ctx context.Context, resolve func(context.Context, string) ([
 // Networkd reads networkd's state over its Varlink socket at Path.
 type Networkd struct{ Path string }
 
-// Pref64 returns every PREF64 prefix networkd holds, on any link. A box without networkd has none.
+// Pref64 returns every PREF64 prefix networkd holds, on any link. A box without networkd has none. A link networkd
+// runs without Pref64DropIn is an error: networkd drops the PREF64 options it receives there, so the network's prefix
+// would be missing, not absent.
 func (n Networkd) Pref64(ctx context.Context) ([]netip.Prefix, error) {
 	msg, err := varlinkCall(ctx, n.Path, "io.systemd.Network.Describe", map[string]any{})
 	if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED) {
@@ -65,7 +81,10 @@ func parsePref64(msg []byte) ([]netip.Prefix, error) {
 	var raw struct {
 		Parameters struct {
 			Interfaces []struct {
-				NDisc struct {
+				Name               string
+				NetworkFile        string
+				NetworkFileDropins []string
+				NDisc              struct {
 					PREF64 []struct {
 						Prefix       []int
 						PrefixLength int
@@ -83,6 +102,9 @@ func parsePref64(msg []byte) ([]netip.Prefix, error) {
 	}
 	var out []netip.Prefix
 	for _, l := range raw.Parameters.Interfaces {
+		if l.NetworkFile != "" && !slices.ContainsFunc(l.NetworkFileDropins, func(d string) bool { return filepath.Base(d) == Pref64DropIn }) {
+			return nil, fmt.Errorf("%s runs %s without %s, so networkd records no PREF64 on it", l.Name, l.NetworkFile, Pref64DropIn)
+		}
 		for _, p := range l.NDisc.PREF64 {
 			b := make([]byte, len(p.Prefix))
 			ok := true
@@ -100,4 +122,30 @@ func parsePref64(msg []byte) ([]netip.Prefix, error) {
 		}
 	}
 	return out, nil
+}
+
+// WritePref64DropIns gives every .network file in dirs the drop-in dirs[0]/<name>.network.d/Pref64DropIn. It reports
+// whether it wrote one, so the caller knows networkd must reload.
+func WritePref64DropIns(dirs []string) (bool, error) {
+	changed := false
+	for _, d := range dirs {
+		names, err := filepath.Glob(filepath.Join(d, "*.network"))
+		if err != nil {
+			return changed, err
+		}
+		for _, n := range names {
+			p := filepath.Join(dirs[0], filepath.Base(n)+".d", Pref64DropIn)
+			if b, err := os.ReadFile(p); err == nil && string(b) == pref64Conf {
+				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				return changed, err
+			}
+			if err := gens.WriteAtomic(p, []byte(pref64Conf), 0o644); err != nil {
+				return changed, err
+			}
+			changed = true
+		}
+	}
+	return changed, nil
 }

@@ -219,7 +219,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 |---|---|---|
 | `agentbox-firstboot.service` | the seed | Installs the signed release once. Retries every 60 s until it succeeds. |
 | `agentbox-boot-deadline.service` | the seed | Reboots an uncommitted generation after 900 s. |
-| `agentbox-reconcile.service` | the release | Re-applies agentbox's control state to the booted generation: the quota groups, the agent accounts, and ntfy's config, ACLs and unit drop-in. |
+| `agentbox-reconcile.service` | the release | Re-applies agentbox's control state to the booted generation: the quota groups, the agent accounts, ntfy's config, ACLs and unit drop-in, and a systemd-networkd drop-in for every network config that records the NAT64 prefixes routers announce. |
 | `agentbox-accounts.service` | the release | Writes the agent accounts from rootd's `ids` table into `/etc`: users, groups, sub-id lines and the systemd drop-ins. |
 | `agentbox-firewall.service` | the release | Loads the `inet agentbox` nftables table. Every agentbox unit `Requires=` it. |
 | `agentbox-health.service`, `agentbox-health.timer` | the release | Every 50 s: `agentbox fwcheck --repair`, then `agentbox os health`. |

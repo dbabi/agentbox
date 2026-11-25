@@ -3,6 +3,7 @@
 #   checks.sh setup | main | after-reboot | cleanup
 # Every check prints PASS or FAIL; each phase ends with fails=N. FLOW (host:port, a public HTTP server reached through
 # the box's real uplink) comes from the environment.
+# shellcheck disable=SC2034 # the check strings read the variables set for them, in eval
 set -u
 A=/var/lib/agentbox/current/bin/agentbox
 RG="python3 /run/rg/rg.py"
@@ -21,6 +22,9 @@ v4() { for a in $1; do case $a in *:*) ;; *) echo "$a"; return ;; esac; done; }
 set_has() { nft list set inet agentbox "$1" | grep -qF "$2"; }
 sets_have() { nft list table inet agentbox | grep -qF "$1"; }
 allow() { $A egress allow --svc "$1" --entry "$2" >/dev/null; }
+# link IF: networkd's line for IF from rg.py links: name, .network file, drop-ins, PREF64 prefixes
+link() { $RG links | awk -v i="$1" '$1 == i'; }
+P64=90-agentbox-pref64.conf
 remove() { $A egress remove --svc "$1" --entry "$2"; }
 # as UID CMD...: a broker or test uid runs CMD
 as() { u=$1; shift; runuser -u "$u" -- "$@"; }
@@ -68,7 +72,7 @@ setup)
     -a own6.gate.test=2600:ffff::15 -a onlink.gate.test=192.88.98.7 -a tail.gate.test=192.88.97.7 \
     -a lo.gate.test=127.0.0.1 -a ll.gate.test=fe80::1 -a mc.gate.test=224.0.0.251 -a ula.gate.test=fd00::1 \
     -a ipv4only.arpa=192.0.0.170,192.0.0.171,2600:ffff:64::c000:aa,2600:ffff:64::c000:ab \
-    -a nsp.gate.test=2600:ffff:64::c0a8:101
+    -a nsp.gate.test=2600:ffff:64::c0a8:101 -a p64.gate.test=2600:ffff:6464::c0a8:101
   # DNS64 with a network-specific prefix (RFC 7050): ipv4only.arpa's AAAA puts 2600:ffff:64::/96 in front of 192.0.0.170
   mkdir -p /run/systemd/resolved.conf.d
   printf '[Resolve]\nDNS=127.0.0.153\nDomains=~.\n' > /run/systemd/resolved.conf.d/90-rootd-gate.conf
@@ -143,6 +147,25 @@ main)
   check "keys' list is not git's: git gets not_allowlisted" '[ "$(reason git pub.gate.test 443)" = not_allowlisted ]'
   check "the proxy resolves nothing without a live task (no task registry yet)" '[ "$(reason proxy pub.gate.test 443)" = not_allowlisted ]'
   check "a bad host (IP literal, one label) is refused"  '[ "$(reason keys 1.2.3.4 443)" = not_allowlisted ] && [ "$(reason keys localhost 443)" = not_allowlisted ]'
+
+  echo "== a NAT64 prefix that only router advertisements announce (PREF64, RFC 8781)"
+  # networkd records PREF64 only with UsePREF64=yes: reconcile's drop-in for every .network file
+  check "networkd runs the uplink's .network with agentbox's $P64 (reconcile, at firstboot)" 'link "$IF" | grep -q "/$P64"'
+  # a test link networkd runs: rgp0 here, its router rgp1 in the netns rg-ra; no drop-in until reconcile runs again
+  N=/run/systemd/network/10-rg-pref64.network t_p64=$(date +%s)
+  ip netns add rg-ra && ip link add rgp0 type veth peer name rgp1 netns rg-ra
+  ip -n rg-ra link set lo up && ip -n rg-ra link set rgp1 up && ip -n rg-ra addr add fe80::64:1/64 dev rgp1 nodad
+  printf '[Match]\nName=rgp0\n\n[Network]\nLinkLocalAddressing=ipv6\nIPv6AcceptRA=yes\n' > $N
+  networkctl reload
+  check "networkd runs the test link on $N, with no drop-in" 'i=0; until link rgp0 | grep -q "^rgp0 $N - "; do i=$((i+1)); [ $i -lt 15 ] || exit 1; sleep 1; done'
+  check "while it does, rootd refuses every name unavailable, and its DENY names the link" '[ "$(reason keys pub.gate.test 443)" = unavailable ] && journalctl -u agentbox-rootd.service --since @$t_p64 -o cat | grep -q "entry=pub.gate.test:443 code=unavailable detail=\"NAT64 prefix discovery: networkd PREF64: rgp0 runs $N without $P64"'
+  check "agentbox reconcile gives that .network the drop-in and reloads networkd" '$A reconcile && i=0 && until link rgp0 | grep -q "^rgp0 $N /etc/systemd/network/10-rg-pref64.network.d/$P64 "; do i=$((i+1)); [ $i -lt 15 ] || exit 1; sleep 1; done'
+  check "and rootd resolves again"                '[ "$(reason keys pub.gate.test 443)" = ok ]'
+  allow keys p64.gate.test:443
+  check "networkd records the PREF64 prefix the router announces on the test link" 'i=0; until link rgp0 | grep -q " 2600:ffff:6464::/96$"; do ip netns exec rg-ra $RG ra rgp1 2600:ffff:6464::/96; i=$((i+1)); [ $i -lt 15 ] || exit 1; sleep 1; done'
+  check "an address under that prefix that wraps 192.168.x is refused non_public (nat64_private)" '[ "$(reason keys p64.gate.test 443)" = non_public ] && journalctl -u agentbox-rootd.service --since @$t_p64 -o cat | grep -q "entry=p64.gate.test:443 code=non_public detail=\"2600:ffff:6464::c0a8:101: nat64_private" && ! sets_have "2600:ffff:6464::c0a8:101 . 443"'
+  ip netns del rg-ra; rm -rf $N /etc/systemd/network/10-rg-pref64.network.d; networkctl reload
+  check "with the test link gone, rootd resolves again" 'i=0; while link rgp0 | grep -q .; do i=$((i+1)); [ $i -lt 15 ] || exit 1; sleep 1; done; [ "$(reason keys pub.gate.test 443)" = ok ]'
   # §9: an allowlist edit is INTENT, ACK, effect, RESULT; with auditd and its sockets stopped nothing executes
   E=/var/lib/agentbox/control/egress; sum0=$(cat $E/*.list 2>/dev/null | sha256sum)
   systemctl stop agentbox-auditd.service agentbox-auditd-agentboxd.socket agentbox-auditd-git.socket agentbox-auditd-keys.socket agentbox-auditd-proxy.socket agentbox-auditd-rootd.socket
@@ -277,6 +300,7 @@ for s in ["proxy_dst4","proxy_dst6","keys_dst4","keys_dst6","git_dst4","git_dst6
 EOF'
   check "audit: the scratch dir's open segment is still seg-000004, sealed ones keep +i" '[ "$(ls /var/lib/agentbox/rg-audit | grep -c seg-)" = 4 ] && lsattr /var/lib/agentbox/rg-audit/seg-000003.jsonl | cut -c1-22 | grep -q i'
   check "auditd's own chain verifies after the reboot" '$A audit verify'
+  check "networkd runs the uplink's .network with $P64 from boot" 'link "$IF" | grep -q "/$P64"'
   check "no failed units"                         '[ -z "$(systemctl --failed --no-legend --plain)" ]'
   ;;
 
@@ -285,6 +309,8 @@ cleanup)
   rm -f /run/systemd/resolved.conf.d/90-rootd-gate.conf; systemctl restart systemd-resolved.service
   ip addr del 192.88.99.15/32 dev "$IF" 2>/dev/null; ip -6 addr del 2600:ffff::15/128 dev "$IF" 2>/dev/null
   ip route del 192.88.98.0/24 dev "$IF" 2>/dev/null; ip link del rg0 2>/dev/null
+  ip netns del rg-ra 2>/dev/null; rm -rf /run/systemd/network/10-rg-pref64.network /etc/systemd/network/10-rg-pref64.network.d
+  networkctl reload
   sed -i '/hosts.gate.test/d' /etc/hosts
   chattr -R -ia /var/lib/agentbox/rg-audit 2>/dev/null; rm -rf /var/lib/agentbox/rg-audit
   ;;

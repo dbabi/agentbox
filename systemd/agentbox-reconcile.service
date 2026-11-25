@@ -5,6 +5,8 @@
 [Unit]
 Description=agentbox reconcile
 Before=ntfy.service
+# its PREF64 drop-ins (ARCHITECTURE.md Appendix B check 2) need networkd up to reload it
+After=systemd-networkd.service
 
 [Service]
 Type=oneshot
