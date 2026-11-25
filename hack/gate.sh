@@ -282,7 +282,7 @@ check "reconcile not ordered after multi-user.target or firstboot" '! systemctl 
 check "systemd-analyze verify: reconcile and firstboot units" 'systemd-analyze verify agentbox-reconcile.service agentbox-firstboot.service'
 check "firstboot done, no retry loop"    '[ -e /var/lib/agentbox/.firstboot-done ] && [ "\$(systemctl show -P Result agentbox-firstboot.service)" = success ] && [ "\$(systemctl show -P SubState agentbox-firstboot.service)" = dead ]'
 # #218: install.sh enables the units after this boot's transaction was built, so firstboot starts them itself
-check "firstboot started what it enabled: every release unit with [Install], and ntfy, active; the input chain loaded" 'for u in \$(grep -l "^\[Install\]" /var/lib/agentbox/current/systemd/* | sed "s|.*/||") ntfy.service; do systemctl is-active -q \$u || { echo "\$u not active"; exit 1; }; done && nft list chain inet agentbox input | grep -q "policy drop;"'
+check "firstboot started what it enabled: every release unit with [Install], and ntfy, active; the input chain loaded; no ordering cycle" 'for u in \$(grep -l "^\[Install\]" /var/lib/agentbox/current/systemd/* | sed "s|.*/||") ntfy.service; do systemctl is-active -q \$u || { echo "\$u not active"; exit 1; }; done && nft list chain inet agentbox input | grep -q "policy drop;" && ! journalctl -b -o cat | grep -qi "ordering cycle"'
 check "firstboot leaves no /run copies"  '! ls -d /run/agentbox-firstboot*'
 check "no failed units"                  '[ -z "\$(systemctl --failed --no-legend --plain)" ]'
 # the boot has finished (first check), so any unit that rewrites grubenv in place has run; GRUB's own save_env moves no mtime
@@ -354,9 +354,20 @@ m=$(probes); curl -s -m 2 -o /dev/null "http://127.0.0.1:$LPORT/" || :
 i=0; while [ "$(probes)" -le "$m" ] && [ $i -lt 20 ]; do sleep 0.5; i=$((i + 1)); done
 if [ "$m" = "$n" ] && kill -0 "$LSN" 2>/dev/null && [ "$(probes)" = $((m + 1)) ]; then echo "PASS the host's loopback probe saw nothing from the guest, and still answers"
 else echo "FAIL the guest reached the host's loopback probe on $LPORT, or the probe is down:"; tail -n +$((n + 1)) "$REL/probe.log"; fi | tee -a "$OUT"
+# #218: the health timer firstboot started runs 1 min later, so no run sees firstboot's own boot unfinished (os health
+# would call that unhealthy and alert)
+vm_check "the health timer's first run, 1 min after firstboot started it, saw the boot finished" <<'EOF'
+for i in $(seq 120); do [ "$(systemctl show -P ExecMainStartTimestampMonotonic agentbox-health.service)" != 0 ] && [ "$(systemctl show -P ActiveState agentbox-health.service)" = inactive ] && break; sleep 1; done
+[ "$(systemctl show -P ExecMainStartTimestampMonotonic agentbox-health.service)" -gt "$(systemctl show -P FinishTimestampMonotonic)" ] &&
+  ! journalctl -b -u agentbox-health.service -o cat | grep -q "agentbox: health: system is"
+EOF
 reboot_vm
 vm_check "next boot finishes, reconcile started by multi-user.target, no failed units" <<EOF
 [ "\$(timeout $((600 * SLOW)) systemctl is-system-running --wait)" = running ] && [ "\$(systemctl is-active agentbox-reconcile.service)" = active ]
+EOF
+vm_check "next boot: no ordering cycle, and the firewall was up before network-pre.target (#218)" <<'EOF'
+f=$(systemctl show -P ActiveEnterTimestampMonotonic agentbox-firewall.service) n=$(systemctl show -P ActiveEnterTimestampMonotonic network-pre.target)
+! journalctl -b -o cat | grep -qi "ordering cycle" && [ "$f" -gt 0 ] && [ "$f" -le "$n" ]
 EOF
 vm_check "firstboot does not run again" <<'EOF'
 [ "$(systemctl show -P ConditionResult agentbox-firstboot.service)" = no ]

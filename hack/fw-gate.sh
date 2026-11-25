@@ -299,15 +299,15 @@ wait $FP || :
 check "the keys flow opened before the expiry still gets its HTTP answer (ct established)" 'grep -q "^HTTP/1.1 " /var/tmp/flow.out'
 $A egress remove --svc keys --entry ports.ubuntu.com:80 >>$L 2>&1
 
-# nft flush ruleset: the health timer's fwcheck alerts and restores within 60 s. Starting the timer fires its catch-up
-# run at once; the flush comes right after that run ends, so the repair has to wait out a whole period (the worst case)
+# nft flush ruleset: the health timer's fwcheck alerts and restores within 60 s. A started timer first runs 1 min later
+# (OnActiveSec, #218), so the gate runs the check once by hand: the timer's next run comes a whole period (50 s) after
+# that one, and the flush comes right after it ends, so the repair has to wait out that period (the worst case)
 systemctl stop agentbox-agent-stub.service
 # the failed load above stopped ntfy.service with its Requires=, and the repair after it started it again (#218)
 check "ntfy.service runs again, so the flush below can alert" 'systemctl is-active ntfy.service'
 i0=$(systemctl show -P InactiveEnterTimestampMonotonic agentbox-health.service)
-systemctl start agentbox-health.timer
-for i in $(seq 60); do [ "$(systemctl show -P InactiveEnterTimestampMonotonic agentbox-health.service)" != "$i0" ] && break; sleep 0.5; done
-check "the health timer's catch-up run finished just before the flush" '[ "$(systemctl show -P InactiveEnterTimestampMonotonic agentbox-health.service)" != "$i0" ]'
+systemctl start agentbox-health.timer && systemctl start agentbox-health.service
+check "the health check ran just before the flush, with the timer started" '[ "$(systemctl show -P InactiveEnterTimestampMonotonic agentbox-health.service)" != "$i0" ] && systemctl is-active -q agentbox-health.timer'
 t0=$(date +%s); nft flush ruleset; t1=0
 for i in $(seq 90); do nft list table inet agentbox >/dev/null 2>&1 && { t1=$(date +%s); break; }; sleep 1; done
 echo "flush at $t0, table back at $t1: $((t1 - t0)) s" >>$L
