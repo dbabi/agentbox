@@ -182,7 +182,7 @@ autoinstall:
       chroot /mnt/new update-grub
       grep -qF -- "--id 'agentbox-gen-1-$KV'" /mnt/new/boot/grub/grub.cfg # an unknown saved_entry silently boots entry 0
       chroot /mnt/new grub-editenv /boot/grub/grubenv set saved_entry="agentbox-gen-1-$KV"
-      # 5. firstboot: cleanup -> verify (sha256 pin, then minisign) -> install -> reconcile -> last-good -> done
+      # 5. firstboot: cleanup -> verify (sha256 pin, then minisign) -> install -> reconcile -> last-good -> start -> done
       install -m 0755 /dev/stdin /mnt/new/usr/local/sbin/agentbox-firstboot <<'FB'
       #!/bin/sh
       set -eu
@@ -203,6 +203,11 @@ autoinstall:
       "$D/x/install.sh" --from-firstboot
       systemctl start agentbox-reconcile.service
       /var/lib/agentbox/current/bin/agentbox os mark-last-good
+      # this boot's transaction came before install.sh enabled the units: start what a boot starts, or the box runs
+      # with no firewall, rootd, ntfy or health timer until its first reboot (#218). The firewall and rootd first:
+      # rootd's READY=1 waits for the sets that ntfy's fwcheck compares
+      systemctl start agentbox-firewall.service agentbox-rootd.service
+      systemctl start agentbox-auditd.service agentboxd.service ntfy.service sockets.target timers.target
       touch /var/lib/agentbox/.firstboot-done
       FB
 {{- if .SSHFromCmd}}

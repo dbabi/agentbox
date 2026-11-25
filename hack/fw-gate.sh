@@ -10,7 +10,9 @@
 #            ExecStartPre=+agentbox fwcheck) starts
 #          - each alteration (a rule inserted or deleted, a static element removed, an element rootd never recorded in a
 #            dst set or port_allow, ntfy under another uid, the reserved-ports sysctl, nftables.service unmasked) keeps
-#            the stand-in from starting; a hooked extra chain fails the firewall load itself
+#            the stand-in from starting; a hooked extra chain fails the firewall load itself and stops rootd,
+#            auditd, agentboxd and ntfy, and once it is gone `fwcheck --repair` restarts the firewall and starts all four
+#          - with reconcile failing, a firewall restart still loads the table, input chain included, and rootd stays down
 #          - reload, restart and `fw load` keep every set's elements, and an element's expiry keeps running
 #          - 200 root connections to 127.0.0.1:43100 succeed; other uids, other reserved ports and ::1 get a reset
 #          - a broker uid reaches only the address and port in its own dst set (dropped for the rest, private ranges and
@@ -24,7 +26,8 @@
 #            box's own connections get their replies; an enabled ufw that allows 11434 opens nothing
 #          - the input chain's policy set to accept, a rule inserted in it, the chain deleted, or a prefix added to
 #            ssh_from4 each keep the stand-in from starting, and a firewall restart repairs each
-#          - after a reboot: the sets are back and the stand-in starts at boot, with no failed unit
+#          - after a reboot: the sets are back and the stand-in starts at boot, with no failed unit; the firewall was up
+#            before network-pre.target and systemd-networkd, and needs nothing from reconcile
 # The sets rootd fills come from the real agentbox-rootd.service: rootd records the fixed port_allow tuples itself, and
 # the gate writes the dst answers rootd would have written (set_answers, with their entries on the allowlists) and asks rootd to
 # refill (`agentbox egress refill`); a firewall restart restarts rootd through Requires=, and rootd refills before READY=1.
@@ -235,7 +238,20 @@ altered "the input chain's policy set to accept" 'nft chain inet agentbox input 
 altered "an input rule accepting tcp dport 11434" 'nft insert rule inet agentbox input tcp dport 11434 accept'
 altered "the input chain deleted" 'nft flush chain inet agentbox input && nft delete chain inet agentbox input'
 altered "a prefix the seed never named added to ssh_from4" "nft add element inet agentbox ssh_from4 '{ 203.0.113.0/24 }'"
-check "a table with an extra hooked chain fails the firewall load itself (fail closed); deleting it restores" 'nft add chain inet agentbox evil "{ type filter hook output priority -10; policy accept; }" && ! systemctl restart agentbox-firewall.service && ! systemctl is-active agentbox-firewall.service && journalctl -u agentbox-firewall.service -n 20 -o cat | grep -q "stateless hash" && nft delete chain inet agentbox evil && systemctl reset-failed && restore'
+check "a table with an extra hooked chain fails the firewall load itself (fail closed)" 'nft add chain inet agentbox evil "{ type filter hook output priority -10; policy accept; }" && ! systemctl restart agentbox-firewall.service && ! systemctl is-active agentbox-firewall.service && journalctl -u agentbox-firewall.service -n 20 -o cat | grep -q "stateless hash"'
+# #218: a restart restarts only the units that run, and the table checks out once the chain is gone: the repair restarts
+# the failed firewall itself and starts what the failed load stopped
+check "  ... which stops rootd, auditd, agentboxd and ntfy; with the chain deleted, fwcheck --repair restarts the failed firewall and starts all four" '! systemctl is-active agentbox-rootd.service agentbox-auditd.service agentboxd.service ntfy.service && nft delete chain inet agentbox evil &&
+  $A fwcheck --repair && for u in agentbox-firewall.service agentbox-rootd.service agentbox-auditd.service agentboxd.service ntfy.service; do systemctl is-active -q $u || exit 1; done && $A fwcheck'
+# #218: the firewall needs nothing reconcile writes. A foreign sub-id entry in the agentbox span fails reconcile; a
+# firewall restart then loads the deleted table again, while rootd, auditd and agentboxd (Requires= reconcile) stay down
+cp /etc/subuid /run/subuid.ok; echo "evil:$((0x70000000)):65536" >> /etc/subuid
+check "reconcile failing: a firewall restart still loads the deleted table and its input chain; rootd, auditd and agentboxd stay down" '! systemctl restart agentbox-reconcile.service && nft delete table inet agentbox && systemctl restart agentbox-firewall.service &&
+  systemctl is-active -q agentbox-firewall.service && nft list chain inet agentbox input | grep -q "policy drop;" && ! systemctl is-active agentbox-rootd.service agentbox-auditd.service agentboxd.service'
+cp /run/subuid.ok /etc/subuid
+# ntfy restarted with the firewall, and its fwcheck failed until rootd's refill: reset-failed lifts its start limit
+check "  ... with the entry gone, reconcile and rootd start, rootd refills its sets, and auditd, agentboxd and ntfy start" 'systemctl reset-failed && systemctl start agentbox-reconcile.service agentbox-rootd.service &&
+  systemctl start agentbox-auditd.service agentboxd.service ntfy.service && [ "$(pa)" = "$PA" ] && $A fwcheck'
 
 # Reload, restart and fw load keep the sets
 p=$(pa) d=$(elems proxy_dst4) e1=$(expires proxy_dst4)
@@ -286,8 +302,8 @@ $A egress remove --svc keys --entry ports.ubuntu.com:80 >>$L 2>&1
 # nft flush ruleset: the health timer's fwcheck alerts and restores within 60 s. Starting the timer fires its catch-up
 # run at once; the flush comes right after that run ends, so the repair has to wait out a whole period (the worst case)
 systemctl stop agentbox-agent-stub.service
-# the failed load above stopped ntfy.service with its Requires=, and a firewall restart restarts only units that run
-check "ntfy.service runs again, so the flush below can alert" 'systemctl start ntfy.service && systemctl is-active ntfy.service'
+# the failed load above stopped ntfy.service with its Requires=, and the repair after it started it again (#218)
+check "ntfy.service runs again, so the flush below can alert" 'systemctl is-active ntfy.service'
 i0=$(systemctl show -P InactiveEnterTimestampMonotonic agentbox-health.service)
 systemctl start agentbox-health.timer
 for i in $(seq 60); do [ "$(systemctl show -P InactiveEnterTimestampMonotonic agentbox-health.service)" != "$i0" ] && break; sleep 0.5; done
@@ -313,7 +329,12 @@ EOF
 
 phase2() { cat <<'EOF'
 echo "== after reboot" >>$L
-check "reboot: firewall, rootd and agent stand-in active; no failed units" '[ "$(systemctl is-system-running --wait)" = running ] && systemctl is-active agentbox-firewall.service agentbox-rootd.service agentbox-agent-stub.service'
+check "reboot: firewall, rootd and agent stand-in active; no failed units" '[ "$(systemctl is-system-running --wait)" = running ] && for u in agentbox-firewall.service agentbox-rootd.service agentbox-agent-stub.service; do systemctl is-active -q $u || exit 1; done'
+# #218: the input chain is in place before any interface comes up, and a failed reconcile can't keep it out
+check "reboot: the firewall was up before network-pre.target and systemd-networkd, and needs nothing from reconcile" 'f=$(systemctl show -P ActiveEnterTimestampMonotonic agentbox-firewall.service) &&
+  n=$(systemctl show -P ActiveEnterTimestampMonotonic network-pre.target) && d=$(systemctl show -P ExecMainStartTimestampMonotonic systemd-networkd.service) &&
+  echo "active at (us): firewall $f, network-pre.target $n, networkd started $d" && [ "$f" -gt 0 ] && [ "$f" -le "$n" ] && [ "$f" -lt "$d" ] &&
+  ! systemctl show -p Requires -p Wants -p After agentbox-firewall.service | grep -q agentbox-reconcile'
 check "reboot: the static sets are loaded and rootd's sets are back from rootd.db" 'nft list set inet agentbox confined | grep -qF 70001-70999 && [ "$(elems private4 | wc -l)" = 13 ] && [ "$(pa)" = "$PA" ] && [ "$(elems proxy_dst4)" = "{\"concat\": [\"$IP\", 80]}" ]'
 check "reboot: the input chain drops by default and ssh_from4/6 hold the seed's --ssh-from" 'nft list chain inet agentbox input | grep -q "policy drop;" && nft list set inet agentbox ssh_from4 | grep -qF "elements = { 10.0.2.0/24, 192.0.2.0/25 }" && nft list set inet agentbox ssh_from6 | grep -qF "elements = { fd00:ab::/112 }"'
 check "reboot: fwcheck passes; agentbox-proxy reaches $IP:80 and nothing else" '$A fwcheck && [ "$(as agentbox-proxy $IP 80)" = ok ] && dropped agentbox-proxy 1.1.1.1 443'

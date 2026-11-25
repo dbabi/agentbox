@@ -281,6 +281,8 @@ check "reconcile ran, enabled for multi-user.target" '[ "\$(systemctl is-active 
 check "reconcile not ordered after multi-user.target or firstboot" '! systemctl show -P After agentbox-reconcile.service | grep -Eq "multi-user.target|agentbox-firstboot"'
 check "systemd-analyze verify: reconcile and firstboot units" 'systemd-analyze verify agentbox-reconcile.service agentbox-firstboot.service'
 check "firstboot done, no retry loop"    '[ -e /var/lib/agentbox/.firstboot-done ] && [ "\$(systemctl show -P Result agentbox-firstboot.service)" = success ] && [ "\$(systemctl show -P SubState agentbox-firstboot.service)" = dead ]'
+# #218: install.sh enables the units after this boot's transaction was built, so firstboot starts them itself
+check "firstboot started what it enabled: every release unit with [Install], and ntfy, active; the input chain loaded" 'for u in \$(grep -l "^\[Install\]" /var/lib/agentbox/current/systemd/* | sed "s|.*/||") ntfy.service; do systemctl is-active -q \$u || { echo "\$u not active"; exit 1; }; done && nft list chain inet agentbox input | grep -q "policy drop;"'
 check "firstboot leaves no /run copies"  '! ls -d /run/agentbox-firstboot*'
 check "no failed units"                  '[ -z "\$(systemctl --failed --no-legend --plain)" ]'
 # the boot has finished (first check), so any unit that rewrites grubenv in place has run; GRUB's own save_env moves no mtime
