@@ -182,6 +182,11 @@ func (t *tasks) undo(task, signer string) reply {
 		return reply{"ok": false, "error": "agent " + agent + " is gone or was replaced; its snapshots are archived"}
 	}
 	hold := "undo:" + snap
+	// marked before the hold is taken and until it is gone, so attach rescan never takes it for a crashed attach (#222)
+	if _, busy := t.undos.LoadOrStore(agent, hold); busy {
+		return reply{"ok": false, "error": "undo: another undo of " + agent + " is running"}
+	}
+	defer t.undos.Delete(agent)
 	if err := attach.Begin(t.db, agent, hold, t.cfg.Now()); err != nil {
 		return reply{"ok": false, "error": "undo: " + err.Error()}
 	}

@@ -301,6 +301,7 @@ Each service runs as its own Linux user, with only the access it needs.
 - The same profile allows only Unix, IPv4, IPv6 and routing netlink sockets, and blocks new namespaces.
   It starts from a pinned copy of podman's upstream default profile, not the one the distro ships.
 - An admin starts a task with `agentbox task new --agent <name>`, with the prompt on stdin.
+  The task records the admin's user name, so an admin with no entry in `/etc/passwd` can't start or undo a task.
 - A top-level task has a 2-hour deadline by default.
   The design caps its output at 50 MB; today the result keeps the last 16 KiB.
   A child task never outlives its parent's deadline.
@@ -347,7 +348,7 @@ Each service runs as its own Linux user, with only the access it needs.
   The task's processes are gone within 20 s, and its container and sockets within 5 s.
 - It also stops every child task.
 - It never waits for the audit service, because it only removes capability.
-- If processes survive the stop, rootd blocks new tasks for that agent and sends an alert.
+- If processes survive the stop, or rootd can't read whether any did, rootd blocks new tasks for that agent and sends an alert.
   The block survives a rootd restart. `agentbox attach rescan --agent <name>` lifts it once the processes are gone.
 
 ### Undoing a task
@@ -360,6 +361,7 @@ Each service runs as its own Linux user, with only the access it needs.
   It never deletes other snapshots, such as the one an undo takes.
 - `agentbox task undo --task <id>` puts the workspace back as it was when that task started.
   It refuses while a task or a session of that agent runs.
+  While it runs, no task or session of that agent starts, even after `agentbox attach rescan`.
   It first snapshots the current tree, so the undo can be undone by hand.
 - The restored workspace is tainted if the snapshot was, even if the workspace was clean before the undo.
 
@@ -374,9 +376,11 @@ Each service runs as its own Linux user, with only the access it needs.
   Remove the file, or start the task with `agentbox task new --ack-secrets <n>`, where `<n>` is the number of hits the refusal reported.
 - The scan stops at 1000 hits. Files after that are not read, so the list is not complete and `--ack-secrets` can't acknowledge it.
   Tasks stay blocked until the workspace holds fewer.
-- An `egress allow` reply names each credential that works against the host being allowed.
-  Each one blocks the agent's next task until it is removed or acknowledged again, even if it was acknowledged before.
-- A scan that fails, at a grant or before a task, leaves the agent's next task to scan again, so the failure blocks it.
+- `agentbox egress allow` is refused while a workspace holds a credential that works against the host. The refusal names each one.
+  A grant reaches running tasks at once, so a running task could use that credential.
+  Remove the credentials, or grant with `--ack-secrets <n>`, where `<n>` is the number the refusal reported.
+  After such a grant, each credential blocks the agent's next task until it is removed or acknowledged again.
+- A scan that fails refuses the grant, and leaves the agent's next task to scan again, so the failure blocks that task too.
 - The scan is a detection aid. See the residuals in the [threat model](../../docs/THREAT-MODEL.md).
 
 ### Interactive sessions

@@ -41,7 +41,8 @@ func TestTaskOpIntentBeforeEffect(t *testing.T) {
 		return nil
 	}}
 	seg := func() string { b, _ := os.ReadFile(filepath.Join(dir, audit.SegName(1))); return string(b) }
-	req := request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"path":"/srv/a/x","content":"top secret body"}`)}
+	req := request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Chain: []string{"human:boxadmin", "agent:claude"},
+		Args: json.RawMessage(`{"path":"/srv/a/x","content":"top secret body"}`)}
 	// code is the denial's code, once it passes the in-task check (§5.6) for the request that got it
 	code := func(r request, rep reply) string {
 		d, ok := rep["denial"].(ops.Denial)
@@ -57,7 +58,8 @@ func TestTaskOpIntentBeforeEffect(t *testing.T) {
 	if rep := s.taskOp(req); rep["ok"] != true || ran != 1 {
 		t.Fatalf("clean op: %v, ran %d", rep, ran)
 	}
-	if strings.Contains(seg(), "top secret") || !strings.Contains(seg(), `"content":{"len":15,"sha256":"`) || !strings.Contains(seg(), `"status":"executed"`) {
+	if strings.Contains(seg(), "top secret") || !strings.Contains(seg(), `"content":{"len":15,"sha256":"`) || !strings.Contains(seg(), `"status":"executed"`) ||
+		!strings.Contains(seg(), `"chain":["human:boxadmin","agent:claude"]`) {
 		t.Fatalf("chain: %s", seg())
 	}
 
@@ -91,6 +93,9 @@ func TestTaskOpIntentBeforeEffect(t *testing.T) {
 		{request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"path":"/srv/a/x"}`)}, "INVALID_ARGS"},
 		{request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"path":"p","content":"c","x":1}`)}, "INVALID_ARGS"},
 		{request{Op: "task.op", Name: "file.write", Task: "../T1", Agent: "claude", Args: req.Args}, "INVALID_ARGS"},
+		// #222: the chain goes into the INTENT too, so it is held to rootd's grammar and length
+		{request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Chain: []string{"human:boxadmin", "agent:claude\n\x1b[2J"}, Args: req.Args}, "INVALID_ARGS"},
+		{request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Chain: strings.Fields(strings.Repeat("agent:claude ", maxChain+1)), Args: req.Args}, "INVALID_ARGS"},
 		// UNKNOWN_OP is the gate's code: what the floor never runs (an op the gate should have refused, or one with no
 		// effect yet) is FLOOR_NEVER{never_available}, by floor
 		{request{Op: "task.op", Name: "secret.set", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"name":"k","value":"v"}`)}, "FLOOR_NEVER"},

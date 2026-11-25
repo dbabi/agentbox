@@ -525,9 +525,17 @@ func (s *server) admin(r request, p peer) reply {
 		// §9: INTENT, its ACK, the effect, RESULT. auditd down means the list stays as it is.
 		// shortcut: rootd logs the edit as an admin op itself; weeks 9-10's net.allow_domain flow replaces this.
 		var found []map[string]any
-		var failed []string
 		if r.Op == "egress.allow" && s.tasks != nil {
-			found, failed = s.tasks.grantScan(s.activeAgents(), e.Host) // #104: a workspace token for this host
+			agents := s.activeAgents()
+			var failed []string
+			found, failed = s.tasks.grantScan(agents, e.Host) // #104: a workspace token for this host
+			// the grant reaches running tasks at once, so a credential for host refuses it unless acknowledged (#222)
+			if rep := grantRefusal(found, failed, r.AckSecrets, e.Host); rep != nil {
+				return rep
+			}
+			if err := s.tasks.dropAcks(agents, e.Host); err != nil {
+				return reply{"ok": false, "reason": SecretScanFailed, "error": "nothing changed: the acknowledgements for " + e.Host + ": " + err.Error()}
+			}
 		}
 		id := newDenyID()
 		if err := s.audit(map[string]any{"type": "INTENT", "opId": id, "name": r.Op, "origin": "admin",
@@ -546,10 +554,8 @@ func (s *server) admin(r request, p peer) reply {
 		rep := s.refill(r) // even with no RESULT ACK: a removal must still revoke
 		rep["changed"] = changed
 		if len(found) > 0 {
-			rep["secrets"], rep["warning"] = found, grantWarning(found, e.Host)
-		}
-		if len(failed) > 0 {
-			rep["secretScanFailed"] = failed
+			rep["secrets"], rep["warning"] = found, "with "+e.Host+" allowed, a task can use "+grantWarning(found)+
+				". Tasks running now can use it at once; the agent's next task is refused until it is removed or acknowledged again (--ack-secrets)"
 		}
 		if aerr != nil {
 			log.Printf("%s %s %s: RESULT not audited: %v", r.Op, r.Svc, r.Entry, aerr)
@@ -632,10 +638,13 @@ func (s *server) taskAdmin(r request, p peer) reply {
 		}
 		return s.tasks.stop(r.Task, r.Reason)
 	}
-	human := "root"
-	if u, err := user.LookupId(strconv.Itoa(int(p.uid))); err == nil {
-		human = u.Username
+	// the name goes into the task chain and the undo signer: a uid with no passwd entry is refused, never recorded as
+	// another user (#222)
+	u, err := user.LookupId(strconv.Itoa(int(p.uid)))
+	if err != nil {
+		return reply{"ok": false, "error": fmt.Sprintf("uid %d has no passwd entry, so the audit can't name the human: %v", p.uid, err)}
 	}
+	human := u.Username
 	if r.Op == "task.undo" {
 		return s.tasks.undo(r.Task, "rootd-admin:"+human)
 	}

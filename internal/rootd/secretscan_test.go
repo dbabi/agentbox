@@ -2,6 +2,7 @@ package rootd
 
 import (
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"agentbox/internal/ids"
 	"agentbox/internal/rootd/accounts"
+	"agentbox/internal/rootd/resolve"
 	"agentbox/internal/secrets"
 )
 
@@ -46,8 +48,11 @@ func TestSecretGate(t *testing.T) {
 	if len(failed) != 0 || len(found) != 1 || found[0]["type"] != "github-pat" || found[0]["path"] != gh.Path {
 		t.Fatalf("grant scan: %v %v", found, failed)
 	}
-	// #222 R52: the ack came while github was not allowed, so the grant drops it and the next task blocks, as the
+	// #222 R52: the ack came while github was not allowed, so a github grant drops it and the next task blocks, as the
 	// grant's warning says, until a new --ack-secrets
+	if err := r.t.dropAcks([]string{"claude"}, "api.github.com"); err != nil {
+		t.Fatal(err)
+	}
 	if rep := start(); rep["reason"] != SecretsInWorkspace {
 		t.Fatalf("a task after the grant, on the ack from before it: %v", rep)
 	}
@@ -56,6 +61,9 @@ func TestSecretGate(t *testing.T) {
 	}
 	if found, _ := r.t.grantScan([]string{"claude"}, "pypi.org"); len(found) != 0 {
 		t.Fatalf("a grant for another host named it: %v", found)
+	}
+	if err := r.t.dropAcks([]string{"claude"}, "pypi.org"); err != nil {
+		t.Fatal(err)
 	}
 	if st, _, _ := r.t.loadScan(accounts.WorkspaceSubject("claude", int(acct.UID))); !slices.Equal(st.acked, []secrets.Hit{gh}) {
 		t.Fatalf("a grant for another host changed the acks: %v", st.acked)
@@ -91,6 +99,65 @@ func TestSecretGate(t *testing.T) {
 	scanErr = nil
 	if rep := r.t.secretGate(acct, 1); rep != nil {
 		t.Fatalf("a whole scan again, acknowledged: %v", rep)
+	}
+}
+
+// #222: an egress grant that would let a task use a workspace credential against the new host is refused, with nothing
+// sent to auditd and the lists and acks as they were, until --ack-secrets gives the count; the acked grant drops the
+// matching acks. A failed scan refuses any grant.
+func TestEgressGrantRefused(t *testing.T) {
+	r := newRig(t)
+	if _, err := accounts.Add(r.db, "claude", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	gh := secrets.Hit{Path: "notes/token.txt", Rule: "github-pat", Line: 3}
+	var scanErr error
+	r.t.cfg.SecretScan = func(Account) ([]secrets.Hit, error) { return []secrets.Hit{gh}, scanErr }
+	acct, _ := r.t.cfg.Accounts.Lookup("claude")
+	if rep := r.t.secretGate(acct, 1); rep != nil {
+		t.Fatal(rep)
+	}
+	dir := r.t.cfg.EgressDir
+	os.MkdirAll(dir, 0o700)
+	s := &server{db: r.db, tasks: r.t, cfg: Config{EgressDir: dir}, svc: &resolve.Service{DB: r.db, Dir: dir}, audit: r.t.audit}
+	start := func() reply {
+		req, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
+		return r.t.start(ids.New(ids.Task), "claude", "admin:"+req)
+	}
+	listed := func(host string) bool {
+		l, err := resolve.LoadLists(dir)
+		return err == nil && l.AllowedAny("proxy", resolve.Entry{Host: host, Port: 443})
+	}
+	grant := func(host string, ack int) reply {
+		return s.admin(request{Op: "egress.allow", Svc: "proxy", Entry: host + ":443", AckSecrets: ack}, peer{})
+	}
+	r.reset()
+	for ack, want := range map[int]string{0: SecretsInWorkspace, 2: SecretsAckMismatch} {
+		rep := grant("api.github.com", ack)
+		if rep["ok"] != false || rep["reason"] != want || listed("api.github.com") || len(r.recs()) != 0 {
+			t.Fatalf("--ack-secrets %d: %v, listed %v, records %v", ack, rep, listed("api.github.com"), r.recs())
+		}
+		if ack == 0 && !strings.Contains(rep["error"].(string), "a github-pat in claude's workspace (notes/token.txt:3)") {
+			t.Fatalf("the refusal does not name the token: %v", rep)
+		}
+	}
+	if rep := start(); rep["ok"] != true {
+		t.Fatalf("a refused grant dropped the ack: %v", rep)
+	}
+	r.reset()
+	rep := grant("api.github.com", 1)
+	if rep["changed"] != true || !listed("api.github.com") || !strings.Contains(rep["warning"].(string), "Tasks running now can use it") ||
+		!slices.Equal(r.types(), []string{"INTENT", "RESULT"}) {
+		t.Fatalf("--ack-secrets 1: %v, records %v", rep, r.recs())
+	}
+	if rep := start(); rep["reason"] != SecretsInWorkspace {
+		t.Fatalf("a task after the acked grant, on the ack from before it: %v", rep)
+	}
+	scanErr = errors.New("boom")
+	r.reset()
+	if rep := grant("pypi.org", 1); rep["reason"] != SecretScanFailed || !slices.Equal(rep["secretScanFailed"].([]string), []string{"claude"}) ||
+		listed("pypi.org") || len(r.recs()) != 0 {
+		t.Fatalf("a grant whose scan failed: %v, records %v", rep, r.recs())
 	}
 }
 

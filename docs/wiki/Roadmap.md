@@ -104,7 +104,7 @@ Every milestone 4 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
   - The seccomp profile allows only the socket families tasks need.
   - System policy files keep Claude Code and Codex from running workspace hooks, MCP servers and plugins.
   - rootd pauses the agents while btrfs repairs its quota counts.
-  - rootd scans the workspace for credentials before an agent's first task and at each egress grant. A hit blocks the task until an admin acknowledges it.
+  - rootd scans the workspace for credentials before an agent's first task and at each egress grant. A hit blocks the task, or refuses a grant for a host it works against, until an admin acknowledges it.
   - rootd checks the task image against the release's checksums before it loads it, and refuses an image with unsafe settings.
 
 ## Milestone 4: what has not run

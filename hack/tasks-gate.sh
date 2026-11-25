@@ -51,10 +51,11 @@
 #            and repairs, and with the file and its snapshot gone the next task starts (#205);
 #          - a new agent's workspace is scanned for credentials (gitleaks rules) in a unit with only loopback; a
 #            GitHub token planted before its first task blocks it, naming the file and type; --ack-secrets 1 lets it
-#            start; an egress grant for github.com names the token type and drops that ack, so the next task is
-#            refused (#222); once removed, the next task starts (#104);
-#            an egress grant whose scan fails (a dir chain past 256 levels) leaves the next task to scan again, and
-#            that failure blocks it; with the chain gone the next task starts (#208).
+#            start; an egress grant for github.com is refused, naming the token type, and keeps that ack; with
+#            --ack-secrets 1 it applies and drops that ack, so the next task is refused (#222); once removed, the next
+#            task starts (#104);
+#            an egress grant whose scan fails (a dir chain past 256 levels) is refused (#222) and leaves the next task
+#            to scan again, and that failure blocks it; with the chain gone the next task starts (#208).
 # PASS/FAIL lines go to .vm/tasks-gate.txt, command output to .vm/tasks-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -584,11 +585,17 @@ check "  ... --ack-secrets 2 (not the count) is refused; --ack-secrets 1 lets th
   ! $B task new --agent gs --cli sh --deadline 2m --ack-secrets 2 < /tmp/tg-p > /tmp/tg-sec2 2>&1; grep -q secrets_ack_mismatch /tmp/tg-sec2 &&
   $B task new --agent gs --cli sh --deadline 2m --ack-secrets 1 < /tmp/tg-p > /tmp/tg-new && t=$(sed -n "s/.*\"task\":\"\(task_[0-9A-Z]*\)\".*/\1/p" /tmp/tg-new) &&
   wait_end $t 60 && [ "$(field $t end_reason)" = completed ] && [ -e $W2/gs.ran ]'
-check "  ... an egress grant for github.com:443 names the token type, agent and file; one for pypi.org:443 names none" '
-  $B egress allow --svc proxy --entry github.com:443 > /tmp/tg-eg; $B egress remove --svc proxy --entry github.com:443 >/dev/null; cat /tmp/tg-eg;
-  grep -qF "a github-pat in gs'"'"'s workspace (notes/creds.txt:2)" /tmp/tg-eg && ! grep -qF "$GHT" /tmp/tg-eg &&
+EL=/var/lib/agentbox/control/egress/common.list
+check "  ... an egress grant for github.com:443 is refused, naming the token type, agent and file, and the list is unchanged (#222); one for pypi.org:443 names none" '
+  ! $B egress allow --svc proxy --entry github.com:443 > /tmp/tg-eg; cat /tmp/tg-eg; ! grep -qx "github.com:443" $EL &&
+  grep -q "\"reason\":\"secrets_in_workspace\"" /tmp/tg-eg && grep -qF "a github-pat in gs'"'"'s workspace (notes/creds.txt:2)" /tmp/tg-eg && ! grep -qF "$GHT" /tmp/tg-eg &&
   $B egress allow --svc proxy --entry pypi.org:443 > /tmp/tg-eg2; $B egress remove --svc proxy --entry pypi.org:443 >/dev/null; cat /tmp/tg-eg2;
   grep -q "\"ok\":true" /tmp/tg-eg2 && ! grep -q github-pat /tmp/tg-eg2'
+check "  ... #222: the refused grant kept the ack: the next task with no new --ack-secrets starts" 'rm -f $W2/gs.ran && t=$(newg < /tmp/tg-p) &&
+  wait_end $t 60 && [ -e $W2/gs.ran ]'
+check "  ... #222: with --ack-secrets 1 the github.com grant applies, and says running tasks can use the token" '
+  $B egress allow --svc proxy --entry github.com:443 --ack-secrets 1 > /tmp/tg-eg4; r=$?; cat /tmp/tg-eg4; grep -qx "github.com:443" $EL; l=$?
+  $B egress remove --svc proxy --entry github.com:443 >/dev/null; [ $r = 0 ] && [ $l = 0 ] && grep -qF "Tasks running now can use it" /tmp/tg-eg4'
 check "  ... #222: the github.com grant dropped the ack from before it: the next task with no new --ack-secrets is refused" '
   ! $B task new --agent gs --cli sh --deadline 2m < /tmp/tg-p > /tmp/tg-sec3 2>&1; cat /tmp/tg-sec3;
   grep -q "\"reason\":\"secrets_in_workspace\"" /tmp/tg-sec3 && grep -qF "notes/creds.txt:2 (github-pat)" /tmp/tg-sec3'
@@ -599,10 +606,10 @@ check "  ... the scanner had no network: each scan saw only lo; run on the host 
   $B secretscan --dir $W2 | grep -q "\"netdevs\":\[\"lo\",\""'
 # #208: a scan that fails at a grant must not leave the last task's pass standing; a dir chain past the walk's 256
 # levels fails the scan
-check "#208 an egress grant whose scan fails leaves the next task to scan again, and that scan's failure blocks it" '
+check "#208 an egress grant whose scan fails is refused (#222) and leaves the next task to scan again, and that scan's failure blocks it" '
   runuser -u ag-gs -- mkdir -p $W2/$(printf "d/%.0s" $(seq 260)) && rm -f $W2/gs.ran || exit 1
-  $B egress allow --svc proxy --entry pypi.org:443 > /tmp/tg-eg3; $B egress remove --svc proxy --entry pypi.org:443 >/dev/null; cat /tmp/tg-eg3
-  grep -q "secretScanFailed.*\"gs\"" /tmp/tg-eg3 || exit 1
+  ! $B egress allow --svc proxy --entry pypi.org:443 > /tmp/tg-eg3; cat /tmp/tg-eg3
+  grep -q "secretScanFailed.*\"gs\"" /tmp/tg-eg3 && ! grep -qx "pypi.org:443" $EL || exit 1
   ! $B task new --agent gs --cli sh --deadline 2m < /tmp/tg-p > /tmp/tg-sec3 2>&1; cat /tmp/tg-sec3
   grep -q "\"reason\":\"secret_scan_failed\"" /tmp/tg-sec3 && [ ! -e $W2/gs.ran ]'
 check "  ... with the chain gone, the next task scans clean and starts" 'rm -rf $W2/d && t=$(newg < /tmp/tg-p) && wait_end $t 60 && [ -e $W2/gs.ran ]'

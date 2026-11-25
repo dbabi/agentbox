@@ -2,10 +2,13 @@ package rootd
 
 import (
 	"bytes"
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -206,5 +209,99 @@ func TestTaskLeftovers(t *testing.T) {
 	}
 	if left, _ := attach.Leftovers(db, "claude"); !slices.Equal(left, []string{t1}) {
 		t.Fatalf("leftovers: %v", left)
+	}
+}
+
+// #222: a cgroup.events rootd can't read counts as populated, never as empty. task.stop blocks the agent and alerts,
+// attach rescan keeps that block and says why, and waitEmpty waits for its backstop. A cgroup that is gone is empty.
+func TestPopulatedReadError(t *testing.T) {
+	if p, err := populated(filepath.Join(t.TempDir(), "gone")); p || err != nil {
+		t.Fatalf("a cgroup that is gone: %v %v", p, err)
+	}
+	r := newRig(t)
+	alerts := make(chan string, 1)
+	r.t.alert = func(_, m string) error { alerts <- m; return nil }
+	id := ids.New(ids.Task)
+	if rep := r.t.start(id, "claude", "daemon"); rep["ok"] != true {
+		t.Fatal(rep)
+	}
+	cg := filepath.Join(r.t.cfg.Cgroup, task.CgroupDir(70001, id))
+	os.MkdirAll(filepath.Join(cg, "cgroup.events"), 0o755) // a read fails (EISDIR), also as root
+	if p, err := populated(cg); !p || err == nil {
+		t.Fatalf("an unreadable cgroup.events: %v %v", p, err)
+	}
+	if got := waitEmpty(cg, time.Now()); got != "deadline" {
+		t.Fatalf("waitEmpty on an unreadable cgroup.events: %q", got)
+	}
+	if rep := r.t.stop(id, "canceled"); rep["ok"] != true || rep["empty"] != false {
+		t.Fatalf("stop: %v", rep)
+	}
+	select {
+	case m := <-alerts:
+		if !strings.Contains(m, "not empty") {
+			t.Fatalf("alert %q", m)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no alert")
+	}
+	s := &server{db: r.db, tasks: r.t, audit: r.t.audit}
+	if rep := s.rescan("claude", true); rep["ok"] != false || rep["blocked"] != true || !strings.Contains(fmt.Sprint(rep["error"]), "cgroup.events") {
+		t.Fatalf("rescan: %v", rep)
+	}
+	if left, _ := attach.Leftovers(r.db, "claude"); !slices.Equal(left, []string{id}) {
+		t.Fatalf("leftovers after the rescan: %v", left)
+	}
+}
+
+// #222: watchTask times the task on the monotonic clock. A wall clock that steps past the deadline while the task runs
+// doesn't make its exit a timeout.
+func TestWatchTaskClockStep(t *testing.T) {
+	r := newRig(t)
+	var wall atomic.Int64
+	wall.Store(1_800_000_000_000)
+	r.t.cfg.Now = func() time.Time { return time.UnixMilli(wall.Load()) }
+	id := ids.New(ids.Task)
+	if rep := r.t.start(id, "claude", "daemon"); rep["ok"] != true {
+		t.Fatal(rep)
+	}
+	cg := filepath.Join(r.t.cfg.Cgroup, task.CgroupDir(70001, id))
+	os.MkdirAll(cg, 0o755)
+	os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 1\n"), 0o644)
+	var dl int64
+	r.db.QueryRow(`SELECT deadline FROM task_registry WHERE task=?`, id).Scan(&dl)
+	r.t.noWatch = false
+	r.t.watchTask(id, 70001, dl)
+	wall.Add((3 * time.Hour).Milliseconds()) // the clock steps 3 h, past the 2 h deadline
+	os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 0\n"), 0o644)
+	var why sql.NullString
+	for i := 0; i < 100 && !why.Valid; i++ {
+		time.Sleep(50 * time.Millisecond)
+		r.db.QueryRow(`SELECT end_reason FROM task_registry WHERE task=?`, id).Scan(&why)
+	}
+	if why.String != "failed" {
+		t.Fatalf("end_reason %q, want failed: the task exited 2 h before its deadline", why.String)
+	}
+}
+
+// #222: an admin whose uid has no passwd entry is refused, never recorded as root.
+func TestTaskAdminUnknownUID(t *testing.T) {
+	r := newRig(t)
+	s := &server{db: r.db, tasks: r.t}
+	for _, op := range []string{"task.new", "task.undo"} {
+		if rep := s.taskAdmin(request{Op: op, Agent: "claude", Task: ids.New(ids.Task)}, peer{uid: 3999999999}); rep["ok"] != false ||
+			!strings.Contains(fmt.Sprint(rep["error"]), "uid 3999999999 has no passwd entry") {
+			t.Fatalf("%s: %v", op, rep)
+		}
+	}
+	var n int
+	if r.db.QueryRow(`SELECT count(*) FROM task_requests`).Scan(&n); n != 0 {
+		t.Fatalf("%d requests recorded", n)
+	}
+	if rep := s.taskAdmin(request{Op: "task.new", Agent: "claude"}, peer{}); rep["ok"] != true {
+		t.Fatalf("uid 0: %v", rep)
+	}
+	var human string
+	if r.db.QueryRow(`SELECT human FROM task_requests`).Scan(&human); human != "root" {
+		t.Fatalf("uid 0 recorded as %q", human)
 	}
 }

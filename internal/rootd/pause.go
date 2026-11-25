@@ -80,23 +80,27 @@ func pauseWhy(dfd int, proc string, a Account) (string, error) {
 	if err != nil || pid <= 1 {
 		return "bad_pid", nil
 	}
-	p := filepath.Join(proc, strconv.Itoa(pid))
-	status, err := os.ReadFile(p + "/status")
-	if err != nil {
-		return "dead", nil
+	var pf [3]string // status, uid_map, cgroup
+	for i, name := range []string{"status", "uid_map", "cgroup"} {
+		b, err := os.ReadFile(filepath.Join(proc, strconv.Itoa(pid), name))
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
+			return "dead", nil
+		}
+		if err != nil { // the process may be live (EMFILE, ENOMEM): keep pause.pid, and fail the launch or attach (#222)
+			return "", fmt.Errorf("pause.pid: %v", err)
+		}
+		pf[i] = string(b)
 	}
 	u := strconv.Itoa(int(a.UID))
-	if !strings.Contains(string(status), "\nUid:\t"+u+"\t"+u+"\t"+u+"\t"+u+"\n") {
+	if !strings.Contains(pf[0], "\nUid:\t"+u+"\t"+u+"\t"+u+"\t"+u+"\n") {
 		return "wrong_uid", nil
 	}
 	// uid 0 is the agent and 1-65536 its sub-id block (/etc/subuid): the namespace podman made, not one the agent did
-	m, err := os.ReadFile(p + "/uid_map")
-	if err != nil || strings.Join(strings.Fields(string(m)), " ") != fmt.Sprintf("0 %d 1 1 %d %d", a.UID, a.SubID, accounts.SubSize) {
+	if strings.Join(strings.Fields(pf[1]), " ") != fmt.Sprintf("0 %d 1 1 %d %d", a.UID, a.SubID, accounts.SubSize) {
 		return "wrong_userns", nil
 	}
-	cg, err := os.ReadFile(p + "/cgroup")
 	mgr := "0::/user.slice/user-" + u + ".slice/user@" + u + ".service/"
-	if err != nil || !strings.HasPrefix(string(cg), mgr) || strings.Contains(string(cg), "/agentbox-task-") {
+	if !strings.HasPrefix(pf[2], mgr) || strings.Contains(pf[2], "/agentbox-task-") {
 		return "outside_user_manager", nil
 	}
 	return "", nil

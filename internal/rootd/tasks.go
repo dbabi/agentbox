@@ -129,6 +129,7 @@ type tasks struct {
 	witMu   sync.Mutex
 	wit     map[string]*witness.W // the live tasks' witnesses, by task id
 	scans   sync.Map              // workspace subject -> *sync.Mutex: one credential scan at a time per workspace
+	undos   sync.Map              // agent -> the hold of the undo of it running in this process (attach rescan keeps it)
 }
 
 type auditReply struct {
@@ -407,13 +408,17 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 }
 
 // probeFailed records a task whose isolation probe found a way out (taskrun.Probe): an ALERT to auditd and ntfy. The
-// check name comes from the task, so only a known one is passed on.
+// check name comes from the task, so only a known one is passed on. The id goes into the alert text, so only a task in
+// the registry alerts (#222).
 func (t *tasks) probeFailed(id, check string) {
 	if !slices.Contains(taskrun.ProbeChecks, check) {
 		check = "unknown"
 	}
 	var agent string
-	t.db.QueryRow(`SELECT agent FROM task_registry WHERE task=?`, id).Scan(&agent)
+	if !ids.Is(ids.Task, id) || t.db.QueryRow(`SELECT agent FROM task_registry WHERE task=?`, id).Scan(&agent) != nil {
+		log.Printf("task.stop: an isolation probe failure for an id that is no registered task: no alert")
+		return
+	}
 	msg := fmt.Sprintf("task %s (agent %s): %s: the %s check failed inside the task; it stopped before the CLI started", id, agent, taskrun.ProbeFailed, check)
 	log.Printf("ALERT %s", msg)
 	go t.audit(map[string]any{"type": "ALERT", "reason": taskrun.ProbeFailed, "task": id, "check": check})
@@ -459,11 +464,16 @@ func (t *tasks) stop(id, reason string) reply {
 		log.Printf("task %s: cgroup.kill: %v", id, err)
 	}
 	empty := false
+	var perr error
 	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
-		if !populated(cg) {
+		var p bool
+		if p, perr = populated(cg); !p {
 			empty = true
 			break
 		}
+	}
+	if perr != nil {
+		log.Printf("task %s: cgroup.events: %v: counted as not empty", id, perr)
 	}
 	if !empty {
 		// in rootd.db at once, so a restart keeps it; step 5 writes it again with ended_at. attach.rescan lifts it once
@@ -645,14 +655,16 @@ func (t *tasks) watchTask(id string, uid uint32, deadline int64) {
 	}
 	t.watch[id] = true
 	t.mu.Unlock()
+	// on the monotonic clock, as the unit's RuntimeMaxSec is: a wall-clock step neither ends the task early nor moves
+	// the backstop (#222)
+	dl := time.Now().Add(time.UnixMilli(deadline).Sub(t.cfg.Now()))
 	go func() {
 		defer func() { t.mu.Lock(); delete(t.watch, id); t.mu.Unlock() }()
 		cg := filepath.Join(t.cfg.Cgroup, task.CgroupDir(uid, id))
-		backstop := time.UnixMilli(deadline).Add(task.StopTimeout + 5*time.Second)
-		reason := waitEmpty(cg, backstop)
+		reason := waitEmpty(cg, dl.Add(task.StopTimeout+5*time.Second))
 		if reason == "" {
 			reason = "failed"
-			if t.cfg.Now().UnixMilli() >= deadline-1000 {
+			if time.Until(dl) <= time.Second {
 				reason = "timeout"
 			}
 		}
