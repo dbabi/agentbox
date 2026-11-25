@@ -112,7 +112,7 @@ hack/fuzz-all.sh -l          # list the fuzz tests
 caffeinate -i hack/fuzz-all.sh 24h
 ```
 
-- The script runs the fuzz tests at low priority, `FUZZ_JOBS` at a time, each for the full duration. Then it writes `summary.txt` under `.fuzz/<start time>/`. It exits 1 if any test fails.
+- The script runs the fuzz tests at low priority, `FUZZ_JOBS` at a time, each for the full duration. A crash stops only that test; the rest still run. Then it writes `summary.txt` under `.fuzz/<start time>/`, or under `$OUT`, which must not hold an earlier run. It exits 1 if any test fails.
 - `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 53 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
 - Each `go test` process and each fuzz worker gets `GOMEMLIMIT=$FUZZ_MEM` (default `1GiB`). `FUZZ_PARALLEL` sets the workers per test (default 1).
 - It records the commit the run started on, and each test's CPU seconds (`cpu_s`, the build included).
