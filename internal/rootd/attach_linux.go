@@ -106,6 +106,15 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 		refuse("control paths: %s", escaped(err.Error())) // a walk error names a workspace path
 		return
 	}
+	// the token versions before the session can rotate them; a credential file the scan can't read refuses (#224)
+	seen := s.agentSeen(r.Name)
+	ts, err := attach.Tokens(p.SessionHome)
+	seen.Add(ts)
+	if err != nil {
+		unblock()
+		refuse("%s: make it a regular JSON file, or remove it, then attach again", escaped(err.Error()))
+		return
+	}
 	o, _ := ops.Lookup("agent.attach")
 	args := map[string]any{"name": r.Name, "workspace": r.Name}
 	holder, ws := "session:"+id, accounts.WorkspaceSubject(r.Name, uid)
@@ -148,12 +157,11 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 		return
 	}
 	defer master.Close()
-	seen := s.agentSeen(r.Name)
-	seen.Add(attach.Tokens(p.SessionHome)) // before the session can rotate it
 	s.watched.Store(r.Name, id)
 	stop := make(chan struct{})
 	watched := make(chan struct{})
-	go func() { seen.Watch(p.SessionHome, 2*time.Second, stop); close(watched) }()
+	var werr error // the credential files' last read: one the session left unreadable fails the scan
+	go func() { werr = seen.Watch(p.SessionHome, 2*time.Second, stop); close(watched) }()
 
 	log.Printf("agent.attach %s: session %s on %s, cli %s", r.Name, id, slave.Name(), r.CLI)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -197,6 +205,7 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 	<-watched
 
 	tokens, serr := seen.All()
+	serr = errors.Join(werr, serr)
 	var hits []attach.Hit
 	if serr == nil {
 		hits, serr = attach.Scan(p.Workspace, start, tokens)

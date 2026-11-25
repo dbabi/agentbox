@@ -51,8 +51,8 @@ func TestHostileWorkspace(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if got := Tokens(home); len(got) != 0 {
-			t.Errorf("Tokens read through a link or FIFO: %q", got)
+		if got, err := Tokens(home); len(got) != 0 || err == nil {
+			t.Errorf("Tokens read through a link or FIFO, or gave no error for them: %q %v", got, err)
 		}
 		hits, err := Scan(ws, time.Time{}, []string{outTok})
 		if err != nil || len(hits) != 0 {

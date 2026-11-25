@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,10 +56,15 @@ func TestSecretGate(t *testing.T) {
 	if rep := start(); rep["ok"] != true {
 		t.Fatalf("fixed: %v", rep)
 	}
-	r.db.Exec(`UPDATE secret_scan SET checked=0`)
+	// #208: a scan that fails at a grant leaves the workspace unchecked, so the next task scans again, and a failed
+	// scan blocks it
 	scanErr = errors.New("boom")
-	if rep := start(); rep["reason"] != SecretScanFailed {
-		t.Fatalf("a failed scan must block: %v", rep)
+	if _, failed := r.t.grantScan([]string{"claude"}, "api.github.com"); !slices.Equal(failed, []string{"claude"}) {
+		t.Fatalf("a failed grant scan: %v", failed)
+	}
+	n = scans
+	if rep := start(); rep["reason"] != SecretScanFailed || scans != n+1 {
+		t.Fatalf("after a failed grant scan: %v, scans %d -> %d (want a new scan)", rep, n, scans)
 	}
 	// a scan cut off at MaxHits read only part of the workspace: tasks stay blocked, and no --ack-secrets passes it
 	hits, scanErr = []secrets.Hit{gh}, errTooManyHits
@@ -73,6 +79,41 @@ func TestSecretGate(t *testing.T) {
 	scanErr = nil
 	if rep := r.t.secretGate(acct, 1); rep != nil {
 		t.Fatalf("a whole scan again, acknowledged: %v", rep)
+	}
+}
+
+// #224: scans of one workspace run one at a time, so an older, slower scan can't save its result over a newer one's.
+func TestSecretScanSerial(t *testing.T) {
+	r := newRig(t)
+	acct, _ := r.t.cfg.Accounts.Lookup("claude")
+	key := secrets.Hit{Path: ".env", Rule: "aws-access-token", Line: 1}
+	began, release := make(chan struct{}), make(chan struct{})
+	var mu sync.Mutex
+	calls := 0
+	r.t.cfg.SecretScan = func(Account) ([]secrets.Hit, error) {
+		mu.Lock()
+		calls++
+		c := calls
+		mu.Unlock()
+		if c == 1 { // a task's scan, slow, that read the workspace before .env was written
+			close(began)
+			<-release
+			return nil, nil
+		}
+		return []secrets.Hit{key}, nil // the grant's, after it
+	}
+	task := make(chan reply)
+	go func() { task <- r.t.secretGate(acct, 0) }()
+	<-began
+	grant := make(chan struct{})
+	go func() { r.t.grantScan([]string{"claude"}, "sts.amazonaws.com"); close(grant) }()
+	time.Sleep(50 * time.Millisecond) // time for the grant's scan to finish first, if nothing makes it wait
+	close(release)
+	<-task
+	<-grant
+	st, _, err := r.t.loadScan("workspace:claude#1")
+	if err != nil || st.checked || !slices.Equal(st.hits, []secrets.Hit{key}) {
+		t.Fatalf("after both: %+v %v, want the grant's hit and the workspace unchecked", st, err)
 	}
 }
 

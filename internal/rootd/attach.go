@@ -68,7 +68,11 @@ func (s *server) rescan(agent string, ack bool) reply {
 	}
 	p := attach.AgentPaths(s.attachRoot(), agent, b.Session)
 	seen := s.agentSeen(agent)
-	seen.Add(attach.Tokens(p.SessionHome))
+	ts, err := attach.Tokens(p.SessionHome)
+	seen.Add(ts)
+	if err != nil { // the scan can't know every token: the block stays until the file is readable
+		return reply{"ok": false, "blocked": true, "error": escaped(err.Error()) + ": make it a regular JSON file, or remove it, then rescan"}
+	}
 	tokens, err := seen.All()
 	if err != nil {
 		return reply{"ok": false, "blocked": true, "error": err.Error()}

@@ -49,7 +49,9 @@
 #            and repairs, and with the file and its snapshot gone the next task starts (#205);
 #          - a new agent's workspace is scanned for credentials (gitleaks rules) in a unit with only loopback; a
 #            GitHub token planted before its first task blocks it, naming the file and type; --ack-secrets 1 lets it
-#            start; an egress grant for github.com names the token type; once removed, the next task starts (#104).
+#            start; an egress grant for github.com names the token type; once removed, the next task starts (#104);
+#            an egress grant whose scan fails (a dir chain past 256 levels) leaves the next task to scan again, and
+#            that failure blocks it; with the chain gone the next task starts (#208).
 # PASS/FAIL lines go to .vm/tasks-gate.txt, command output to .vm/tasks-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -573,6 +575,15 @@ check "  ... once the token is removed, the next task scans clean and starts" 'r
 check "  ... the scanner had no network: each scan saw only lo; run on the host instead it sees the NIC, which rootd would refuse (the control)" '
   scans "[a-z]*" | tee /tmp/tg-scans | tail -3; [ "$(wc -l < /tmp/tg-scans)" -ge 5 ] && ! grep -v "netdevs \[lo\]$" /tmp/tg-scans &&
   $B secretscan --dir $W2 | grep -q "\"netdevs\":\[\"lo\",\""'
+# #208: a scan that fails at a grant must not leave the last task's pass standing; a dir chain past the walk's 256
+# levels fails the scan
+check "#208 an egress grant whose scan fails leaves the next task to scan again, and that scan's failure blocks it" '
+  runuser -u ag-gs -- mkdir -p $W2/$(printf "d/%.0s" $(seq 260)) && rm -f $W2/gs.ran || exit 1
+  $B egress allow --svc proxy --entry pypi.org:443 > /tmp/tg-eg3; $B egress remove --svc proxy --entry pypi.org:443 >/dev/null; cat /tmp/tg-eg3
+  grep -q "secretScanFailed.*\"gs\"" /tmp/tg-eg3 || exit 1
+  ! $B task new --agent gs --cli sh --deadline 2m < /tmp/tg-p > /tmp/tg-sec3 2>&1; cat /tmp/tg-sec3
+  grep -q "\"reason\":\"secret_scan_failed\"" /tmp/tg-sec3 && [ ! -e $W2/gs.ran ]'
+check "  ... with the chain gone, the next task scans clean and starts" 'rm -rf $W2/d && t=$(newg < /tmp/tg-p) && wait_end $t 60 && [ -e $W2/gs.ran ]'
 $B agent remove --name gs >/dev/null 2>&1 || :
 
 # --- the box afterwards ---

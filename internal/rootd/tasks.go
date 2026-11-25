@@ -127,6 +127,7 @@ type tasks struct {
 	fenced  func() bool // the qgroup fence (fence.go); nil: none
 	witMu   sync.Mutex
 	wit     map[string]*witness.W // the live tasks' witnesses, by task id
+	scans   sync.Map              // workspace subject -> *sync.Mutex: one credential scan at a time per workspace
 }
 
 type auditReply struct {

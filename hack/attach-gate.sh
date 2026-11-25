@@ -29,10 +29,13 @@
 #          live, and task.start refuses. A session that copies its token into the workspace (into a file, a commit that
 #          git gc packs, and a loose object), copies a version that lives 0.5 s (inotify, not the poll, sees it), and then rotates it leaves
 #          tasks blocked with an ntfy alert, a second attach is refused, and rescan lifts the block only once the token
-#          is gone; after a rootd restart a clean rescan keeps it until --ack-restart. A hostile workspace (links to
-#          /etc/shadow, rootd.db and a token file outside, a symlinked .claude/, FIFOs, a 2 GiB sparse go.sum and
-#          CLAUDE.md) and a session-home credential file linked outside: the control-path gate names the link, not
-#          what is behind it, and the attach and its token scan finish clean within 120 s (#107). Every attach is INTENT, a tainted session writer, RESULT; no session unit is left; the chain verifies.
+#          is gone; after a rootd restart a clean rescan keeps it until --ack-restart. A session that leaves its
+#          credential file a symlink fails the token scan (tasks stay blocked, an alert), and rescan keeps the block
+#          until the file is regular again (#224). A hostile workspace (links to /etc/shadow, rootd.db and a token
+#          file outside, a symlinked .claude/, FIFOs, a 2 GiB sparse go.sum and CLAUDE.md): the control-path gate
+#          names the link, not what is behind it; a session-home credential file linked outside refuses the attach,
+#          naming it; with that link gone the attach and its token scan finish clean within 120 s (#107). Every
+#          attach is INTENT, a tainted session writer, RESULT; no session unit is left; the chain verifies.
 # PASS/FAIL lines go to .vm/attach-gate.txt, command output to .vm/attach-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -243,6 +246,17 @@ check "  ... each rescan that changed the block is an INTENT with the ack and a 
   op=$(grep -F "\"args\":{\"ackRestart\":true,\"name\":\"at\"},\"name\":\"attach.rescan\"" /tmp/gate-audit | sed -n "s/.*\"opId\":\"\([^\"]*\)\".*/\1/p" | tail -1) &&
   [ -n "$op" ] && grep "\"opId\":\"$op\"" /tmp/gate-audit | grep "\"type\":\"RESULT\"" | grep -q "\"outputs\":{\"hits\":0}.*\"status\":\"executed\"" &&
   grep "\"type\":\"RESULT\"" /tmp/gate-audit | grep -q "\"outputs\":{\"hits\":[1-9]" && ! grep -q -e notes.json -e mid.json /tmp/gate-audit'
+# #224: a credential file the token scan can't read is not "no login": a CLI still follows a link
+printf 'cd ~/.claude && mv .credentials.json c2.json && ln -s c2.json .credentials.json; echo "linked=$?"\nexit\n' > /tmp/gate-in5
+printf 'exit\n' > /tmp/gate-in5b
+typed /tmp/gate-in5b | attach --cli bash >/tmp/gate-a5b 2>&1 # a refusal's digest, if attach 3 changed a control path
+check "#224 a session that leaves its credential file a symlink fails the token scan: tasks stay blocked, with an alert" '
+  typed /tmp/gate-in5 | attach --cli bash --ack-control-changes=$(digest /tmp/gate-a5b) >/tmp/gate-a5 2>&1; cat -v /tmp/gate-a5;
+  grep -q "linked=0" /tmp/gate-a5 && grep -qF "token scan failed, tasks stay blocked" /tmp/gate-a5 && B=$B sh /tmp/gate-blocked.sh attach_live &&
+  journalctl -b -u agentbox-rootd -o cat | grep -q "alert sent: token scan failed after an attach"'
+check "  ... rescan keeps the block while it is a link, naming it, and lifts it once it is a regular file again" '
+  $B attach rescan --agent at > /tmp/gate-rs5; cat /tmp/gate-rs5; grep -q "\"blocked\":true" /tmp/gate-rs5 && grep -qF ".claude/.credentials.json" /tmp/gate-rs5 &&
+  mv -f $H/.claude/c2.json $H/.claude/.credentials.json && $B attach rescan --agent at | grep -q "\"blocked\":false"'
 # #199, #201: a git dir in session-home, behind a .git link or a relative gitdir:, refuses the attach
 as sh -c "mkdir -p $W/gl && ln -s /home/agent/g $W/gl/.git"
 check "#199 a .git link into session-home refuses the attach, naming it" '! attach --cli bash </dev/null >/tmp/gate-g1 2>&1; cat /tmp/gate-g1;
@@ -291,7 +305,11 @@ printf 'cd /workspace && touch go.sum CLAUDE.md out-copy package-lock.json sub/.
 check "hostile workspace: attach is refused naming the .claude link, the FIFO .mcp.json and the 2 GiB CLAUDE.md, nothing behind the link" '! attach --cli bash </dev/null >/tmp/gate-h0 2>&1; cat /tmp/gate-h0;
   grep -q "control paths changed" /tmp/gate-h0 && grep -qE "[ :,]\"\.claude\"[,;]" /tmp/gate-h0 && grep -qE "[ :,]\"sub/\.mcp\.json\"[,;]" /tmp/gate-h0 &&
   grep -qE "[ :,]\"CLAUDE\.md\"[,;]" /tmp/gate-h0 && ! grep -q "outside-only" /tmp/gate-h0'
-check "  ... with the ack the session touches it all, and the token scan is clean within 120 s: no link or FIFO was followed or blocked on, no 2 GiB file read whole" '
+check "  ... with the ack, the session-home credential file linked outside refuses the attach, naming it; nothing behind it is read" '
+  ! attach --cli bash --ack-control-changes=$(digest /tmp/gate-h0) </dev/null >/tmp/gate-h0b 2>&1; cat /tmp/gate-h0b;
+  grep -qF ".claude/.credentials.json can" /tmp/gate-h0b && ! grep -qF "$OTOK" /tmp/gate-h0b && $B attach status | grep -qF "\"blocks\":[]"'
+rm -f $H/.claude/.credentials.json # Codex's auth.json is left: the scan has a token to look for
+check "  ... with the link gone, the session touches it all, and the token scan is clean within 120 s: no link or FIFO was followed or blocked on, no 2 GiB file read whole" '
   s=$(date +%s); typed /tmp/gate-h-in | attach --cli bash --ack-control-changes=$(digest /tmp/gate-h0) >/tmp/gate-h1 2>&1; e=$(( $(date +%s) - s )); cat -v /tmp/gate-h1; echo "took ${e}s";
   grep -q "touched=0" /tmp/gate-h1 && grep -qF "[agentbox] session ended; token scan: clean, tasks may start" /tmp/gate-h1 && [ $e -lt 120 ]'
 (cd $W && rm -rf $HF) && rm -f $H/.claude/.credentials.json $H/.codex/auth.json && mv $W/.claude.gate $W/.claude && rm -rf $O

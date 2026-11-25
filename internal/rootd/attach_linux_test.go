@@ -198,6 +198,45 @@ func TestAttach(t *testing.T) {
 		}
 	}
 
+	// #224: a credential file the token scan can't read refuses the attach, with no block left. A session that leaves
+	// it so fails the scan: tasks stay blocked, with an alert, and rescan keeps the block until the file is regular.
+	cred := filepath.Join(p.SessionHome, ".claude", ".credentials.json")
+	link := func() { os.Rename(cred, cred+".real"); os.Symlink(".credentials.json.real", cred) }
+	link()
+	fr.run = func(attach.Session) error { t.Error("a session ran with a linked credential file"); return nil }
+	cli, srv = pair(t)
+	go s.attach(srv, request{Op: "agent.attach", Name: "at", CLI: "bash"}, nil)
+	if l, _ := bufio.NewReader(cli).ReadString('\n'); !strings.Contains(l, ".credentials.json can't be read for the token scan") {
+		t.Fatalf("a linked credential file: %s", l)
+	}
+	if _, ok, _ := attach.Blocked(db, "at"); ok {
+		t.Fatal("a refused attach left a block")
+	}
+	os.Remove(cred)
+	os.Rename(cred+".real", cred)
+	alerts = nil
+	fr.run = func(attach.Session) error { link(); return nil }
+	cli, srv = pair(t)
+	done = make(chan struct{})
+	go func() { s.attach(srv, request{Op: "agent.attach", Name: "at", CLI: "bash"}, nil); close(done) }()
+	out, _ = io.ReadAll(cli)
+	cli.CloseWrite()
+	<-done
+	if !strings.Contains(string(out), "token scan failed, tasks stay blocked") {
+		t.Fatalf("a session that linked its credential file: %q", out)
+	}
+	if b, ok, _ := attach.Blocked(db, "at"); !ok || b.Reason != attach.Live || len(alerts) != 1 {
+		t.Fatalf("after it: block %+v %v, alerts %q", b, ok, alerts)
+	}
+	if rep := s.rescan("at", false); rep["blocked"] != true || !strings.Contains(rep["error"].(string), ".credentials.json") {
+		t.Fatalf("rescan with the link: %v", rep)
+	}
+	os.Remove(cred)
+	os.Rename(cred+".real", cred)
+	if rep := s.rescan("at", false); rep["blocked"] != false {
+		t.Fatalf("rescan once it is regular: %v", rep)
+	}
+
 	// auditd down: no session, no block left behind
 	s.audit = func(map[string]any) error { return io.ErrUnexpectedEOF }
 	cli, srv = pair(t)

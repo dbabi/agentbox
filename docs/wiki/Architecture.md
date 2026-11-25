@@ -373,6 +373,7 @@ Each service runs as its own Linux user, with only the access it needs.
 - The scan stops at 1000 hits. Files after that are not read, so the list is not complete and `--ack-secrets` can't acknowledge it.
   Tasks stay blocked until the workspace holds fewer.
 - An `egress allow` reply names each credential that works against the host being allowed.
+- A scan that fails, at a grant or before a task, leaves the agent's next task to scan again, so the failure blocks it.
 - The scan is a detection aid. See the residuals in the [threat model](../../docs/THREAT-MODEL.md).
 
 ### Interactive sessions
@@ -402,6 +403,8 @@ Each service runs as its own Linux user, with only the access it needs.
 - When the session ends, rootd scans the workspace for every login token the session held.
   rootd watches the login files during the session, so a token the CLI rotated away counts too, and the scan reads git objects and packfiles.
   Tasks stay blocked until the scan is clean, and a hit sends an alert.
+  A login file the scan can't read, such as a symlink, refuses the attach.
+  A session that leaves one so keeps tasks blocked until it is a regular file again and `agentbox attach rescan` runs.
 - `agentbox attach rescan --agent <name>` scans again and lifts a clean block.
   After a rootd restart, the token versions rootd saw are gone, so it lifts the block only with `--ack-restart`, once you have checked the workspace by hand.
   Each rescan that changes a block is audited: it records the ack and the number of hits, never a file name.

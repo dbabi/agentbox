@@ -37,20 +37,86 @@ func creds(t *testing.T, home, acc string) {
 func TestTokens(t *testing.T) {
 	home := t.TempDir()
 	creds(t, home, access)
-	got := Tokens(home)
+	got, err := Tokens(home)
 	slices.Sort(got)
 	want := []string{"codex-access-CCCCCCCCCCCCCCCC", access, refresh}
 	slices.Sort(want)
-	if !slices.Equal(got, want) {
-		t.Fatalf("tokens %q, want %q", got, want)
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("tokens %q %v, want %q", got, err, want)
 	}
-	// a symlinked credential file is not read: it could point anywhere
-	os.Remove(filepath.Join(home, ".codex", "auth.json"))
+	// a symlinked credential file is not read: it could point anywhere. The CLI still reads it, so the token list is
+	// not known, and that is an error (#224); the other file's tokens still count
+	auth := filepath.Join(home, ".codex", "auth.json")
+	os.Remove(auth)
 	other := filepath.Join(t.TempDir(), "x.json")
 	os.WriteFile(other, []byte(`{"token":"outside-session-home-DDDDDDDDD"}`), 0o600)
-	os.Symlink(other, filepath.Join(home, ".codex", "auth.json"))
-	if slices.Contains(Tokens(home), "outside-session-home-DDDDDDDDD") {
-		t.Fatal("followed a symlink")
+	os.Symlink(other, auth)
+	if got, err := Tokens(home); slices.Contains(got, "outside-session-home-DDDDDDDDD") || !slices.Contains(got, access) || err == nil ||
+		!strings.Contains(err.Error(), ".codex/auth.json") {
+		t.Fatalf("a linked credential file: %q %v", got, err)
+	}
+	for name, mk := range map[string]func() error{
+		"a FIFO":     func() error { return syscall.Mkfifo(auth, 0o600) },
+		"over 1 MiB": func() error { return os.WriteFile(auth, bytes.Repeat([]byte(" "), 1<<20+1), 0o600) },
+		"not JSON":   func() error { return os.WriteFile(auth, []byte(`{"tokens":{"access_token":"codex-access-`), 0o600) },
+		"a dir":      func() error { return os.Mkdir(auth, 0o700) },
+		"in a linked dir": func() error {
+			os.RemoveAll(filepath.Join(home, ".codex"))
+			return os.Symlink(t.TempDir(), filepath.Join(home, ".codex"))
+		},
+	} {
+		os.RemoveAll(auth)
+		if err := mk(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Tokens(home); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+		os.RemoveAll(filepath.Join(home, ".codex"))
+		os.MkdirAll(filepath.Join(home, ".codex"), 0o700)
+	}
+	// no file, no dir, or an empty file: no login
+	os.WriteFile(auth, []byte(" \n"), 0o600)
+	if got, err := Tokens(home); err != nil || len(got) != 2 {
+		t.Fatalf("an empty file: %q %v", got, err)
+	}
+	os.RemoveAll(filepath.Join(home, ".codex"))
+	os.Remove(filepath.Join(home, ".claude", ".credentials.json"))
+	if got, err := Tokens(home); err != nil || len(got) != 0 {
+		t.Fatalf("no login: %q %v", got, err)
+	}
+}
+
+// #224: the credential files a session leaves must be readable: Watch returns the last read's error. A read that
+// fails mid-session (a CLI mid-write) does not count.
+func TestWatchLastRead(t *testing.T) {
+	home := t.TempDir()
+	creds(t, home, access)
+	cred := filepath.Join(home, ".claude", ".credentials.json")
+	watch := func(during func()) error {
+		var s Seen
+		stop, done := make(chan struct{}), make(chan error)
+		go func() { done <- s.Watch(home, 5*time.Millisecond, stop) }()
+		time.Sleep(30 * time.Millisecond)
+		during()
+		time.Sleep(30 * time.Millisecond)
+		close(stop)
+		return <-done
+	}
+	if err := watch(func() { os.WriteFile(cred, []byte(`{"claudeAiOauth":`), 0o600) }); err == nil {
+		t.Fatal("a credential file left as broken JSON: no error")
+	}
+	if err := watch(func() { os.Rename(cred, cred+".real"); os.Symlink(".credentials.json.real", cred) }); err == nil {
+		t.Fatal("a credential file left a symlink: no error")
+	}
+	os.Remove(cred)
+	creds(t, home, access)
+	if err := watch(func() {
+		os.WriteFile(cred, []byte(`{"claudeAiOauth":`), 0o600)
+		time.Sleep(20 * time.Millisecond)
+		creds(t, home, access)
+	}); err != nil {
+		t.Fatalf("a bad read mid-session, a good one at the end: %v", err)
 	}
 }
 
