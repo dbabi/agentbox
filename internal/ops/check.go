@@ -1,117 +1,15 @@
 package ops
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	"agentbox/internal/ids"
 )
-
-// CheckArgs is the gate's schema check of one request (§5.6): nil if args fit op's registry schema, else UNKNOWN_OP or
-// INVALID_ARGS with the JSON pointer and the expected kind, never the value.
-func CheckArgs(op string, args []byte) *Denial {
-	o, ok := opDef(op)
-	if !ok || o.Group == "" || o.Human {
-		d := Deny(UnknownOp, "", Slots{By: "gate"})
-		return &d
-	}
-	if ptr, exp := checkObj(o, args, ""); exp != "" {
-		d := Deny(InvalidArgs, "", Slots{Op: op, By: "gate", Subject: Subject{Pointer: ptr}, Expect: exp})
-		return &d
-	}
-	return nil
-}
-
-// opMarker is the gh.* op marker rootd appends; an agent body that already holds one is refused (§5.6 INVALID_ARGS).
-const opMarker = "agentbox-op:"
-
-// checkObj returns the pointer and expect of the first problem, or "" "" when args fit.
-func checkObj(o Op, args []byte, at string) (string, string) {
-	var m map[string]json.RawMessage
-	if json.Unmarshal(args, &m) != nil || m == nil || noDupKeys(args) != nil {
-		return at, "object"
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	for _, k := range keys {
-		if !slices.ContainsFunc(o.Args, func(f Field) bool { return f.Name == k }) {
-			return at + "/" + k, "absent"
-		}
-	}
-	for _, f := range o.Args {
-		raw, ok := m[f.Name]
-		p := at + "/" + f.Name
-		if !ok {
-			if !f.Opt {
-				return p, "present"
-			}
-			continue
-		}
-		if !jsonType(raw, f.Type) {
-			return p, f.Type
-		}
-		if f.Audit == Hash && f.Type == "string" && bytes.Contains(raw, []byte(opMarker)) {
-			return p, "valid"
-		}
-		if f.Audit == Members {
-			var items []map[string]json.RawMessage
-			if json.Unmarshal(raw, &items) != nil || len(items) < 1 || len(items) > 8 {
-				return p, "array"
-			}
-			for i, it := range items {
-				ip := p + "/" + strconv.Itoa(i)
-				if it == nil {
-					return ip, "object"
-				}
-				for _, k := range slices.Sorted(maps.Keys(it)) {
-					if k != "name" && k != "args" {
-						return ip + "/" + k, "absent"
-					}
-				}
-				var name string
-				if json.Unmarshal(it["name"], &name) != nil || !memberOK(o, name) {
-					return ip + "/name", "valid"
-				}
-				mo, _ := opDef(name)
-				if ptr, exp := checkObj(mo, it["args"], ip+"/args"); exp != "" {
-					return ptr, exp
-				}
-			}
-		}
-	}
-	return "", ""
-}
-
-func jsonType(raw json.RawMessage, t string) bool {
-	switch t {
-	case "string":
-		var s string
-		return json.Unmarshal(raw, &s) == nil
-	case "integer":
-		var n int64
-		return json.Unmarshal(raw, &n) == nil
-	case "boolean":
-		var b bool
-		return json.Unmarshal(raw, &b) == nil
-	case "array":
-		var a []json.RawMessage
-		return json.Unmarshal(raw, &a) == nil && a != nil
-	case "object":
-		var m map[string]json.RawMessage
-		return json.Unmarshal(raw, &m) == nil && m != nil
-	}
-	return false
-}
 
 // CheckDenial is the in-task check of a gate denial (§5.6 Integrity), run by the in-task agentbox binary before any
 // tool or model sees the reply. req is the request it sent. ok=false means the reply failed: the caller shows the

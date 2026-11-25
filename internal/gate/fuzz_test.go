@@ -7,7 +7,6 @@ import (
 	"os"
 	"testing"
 
-	"agentbox/internal/denial"
 	"agentbox/internal/ops"
 )
 
@@ -17,14 +16,14 @@ func quietLog(f *testing.F) {
 }
 
 // FuzzCall is a task's request line on its gate socket and rootd's reply line (issue #10). The reply is one JSON-RPC
-// object; a refusal carries a valid agentbox-denial/v1; only an agent-callable, rootd-run op whose args pass the
-// registry schema reaches rootd, with the socket's provenance.
+// object; a refusal carries an agentbox-denial/v1 that passes the in-task check for that request; only an
+// agent-callable, rootd-run op whose args pass the registry schema reaches rootd, with the socket's provenance.
 func FuzzCall(f *testing.F) {
 	quietLog(f)
 	var fwd map[string]any
 	var reply []byte
 	s, tk := newServer(f, func(req map[string]any) ([]byte, error) { fwd = req; return reply, nil })
-	d, _ := json.Marshal(denial.New(denial.AuditUnavailable, "floor", "audit.no_ack", "file.write", "", ""))
+	d := ops.Deny(ops.AuditUnavailable, "", ops.Slots{Op: "file.write", By: "floor"}).JSON()
 	for _, c := range [][2]string{
 		{`{"jsonrpc":"2.0","id":"a","method":"file.write","params":{"path":"/srv/a/x","content":"c"}}`, `{"ok":true,"opId":"op_01M7YTS6V13PDAY7ZA2V14TKFS","result":{"n":1}}`},
 		{`{"jsonrpc":"2.0","id":1,"method":"file.write","params":{"path":"p","content":"c"}}`, `{"ok":false,"denial":` + string(d) + `}`},
@@ -50,8 +49,8 @@ func FuzzCall(f *testing.F) {
 		if err := json.Unmarshal(out, &r); err != nil || r.JSONRPC != "2.0" || (r.Error == nil) == (r.Result == nil) {
 			t.Fatalf("reply %s: %v", out, err)
 		}
-		if r.Error != nil && r.Error.Code == denial.RPCCode && !denial.Valid(r.Error.Data) {
-			t.Fatalf("denial not agentbox-denial/v1: %s", out)
+		if r.Error != nil && r.Error.Code == ops.RPCDenial && !inTask(line, r.Error.Message, r.Error.Data) {
+			t.Fatalf("%s: the denial fails the in-task check: %s", line, out)
 		}
 		if fwd == nil {
 			return

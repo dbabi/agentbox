@@ -250,11 +250,9 @@ func TestDenyLeaks(t *testing.T) {
 }
 
 // C-G1: a schema-invalid call gives INVALID_ARGS with the pointer only, an unknown op UNKNOWN_OP, and agentbox mcp
-// shows both as isError with one agentbox-denial/v1 block.
-func TestCheckArgs(t *testing.T) {
-	if d := CheckArgs("file.write", []byte(`{"path":"/srv/a/x","content":"hi"}`)); d != nil {
-		t.Fatalf("a valid call: %+v", d)
-	}
+// shows both as isError with one agentbox-denial/v1 block. The INVALID_ARGS is the one the gate and the floor build
+// from ValidateArgs' error.
+func TestArgsDenial(t *testing.T) {
 	for _, c := range []struct{ op, args, ptr, expect string }{
 		{"file.write", `{"path":"/srv/a/x"}`, "/content", "present"},
 		{"file.write", `{"path":7,"content":"SECRETVALUE"}`, "/path", "string"},
@@ -263,27 +261,39 @@ func TestCheckArgs(t *testing.T) {
 		{"ask.batch", `{"shape":"push+pr","ops":[{"name":"file.write","args":{}}]}`, "/ops/0/name", "valid"},
 		{"ask.quote", `{"ops":[{"name":"repo.push","args":{"remote":"o","ref":7,"oid":"x"}}]}`, "/ops/0/args/ref", "string"},
 		{"ask.status", `[]`, "", "object"},
-		{"ask.quote", `{"ops":[{"name":"file.write","args":{"path":"/srv/a/x","content":"x"},"note":"SECRETVALUE"}]}`, "/ops/0/note", "absent"},
-		{"ask.quote", `{"ops":[{"NAME":"file.write","Args":{"path":"/srv/a/x","content":"x"}}]}`, "/ops/0/Args", "absent"},
-		{"ask.quote", `{"ops":[7]}`, "/ops", "array"},
+		{"ask.quote", `{"ops":[{"name":"file.write","args":{"path":"/srv/a/x","content":"x"},"note":"SECRETVALUE"}]}`, "/ops/0", "object"},
+		{"ask.quote", `{"ops":[{"NAME":"file.write","Args":{"path":"/srv/a/x","content":"x"}}]}`, "/ops/0/name", "valid"},
+		{"ask.quote", `{"ops":[7]}`, "/ops/0", "object"},
 		{"file.write", `{"path":"/srv/a/x","content":"x","content":7}`, "", "object"},
 	} {
-		d := CheckArgs(c.op, []byte(c.args))
-		if d == nil || d.Code != "INVALID_ARGS" || d.Remedy[0].Expect != c.expect || c.ptr != "" && d.Subject.Pointer != c.ptr {
-			t.Fatalf("%s %s: %+v", c.op, c.args, d)
+		o, _ := Lookup(c.op)
+		_, e := o.ValidateArgs([]byte(c.args))
+		if e == nil {
+			t.Fatalf("%s %s: passes", c.op, c.args)
+		}
+		d := e.Denial(c.op, "gate")
+		if d.Code != "INVALID_ARGS" || d.Remedy[0].Expect != c.expect || c.ptr != "" && (d.Subject == nil || d.Subject.Pointer != c.ptr) ||
+			c.ptr == "" && d.Subject != nil {
+			t.Fatalf("%s %s: %s", c.op, c.args, d.JSON())
 		}
 		if bytes.Contains(d.JSON(), []byte("SECRETVALUE")) && c.ptr != "/SECRETVALUE" {
 			t.Fatalf("a value leaked: %s", d.JSON())
 		}
-		checkMCP(t, *d, true)
+		if _, _, ok := CheckDenial(c.op, []byte(c.args), d.JSON()); !ok {
+			t.Fatalf("%s %s: the in-task check refuses %s", c.op, c.args, d.JSON())
+		}
+		checkMCP(t, d, true)
 	}
 	for _, op := range []string{"no.such", "secret.set", "taint.clear", "os.update"} {
-		d := CheckArgs(op, []byte(`{}`))
-		if d == nil || d.Code != "UNKNOWN_OP" || d.Op != "" {
-			t.Fatalf("%s: %+v", op, d)
+		if o, ok := Lookup(op); ok && o.AgentCallable() {
+			t.Fatalf("%s: an agent may call it", op)
 		}
-		checkMCP(t, *d, true)
 	}
+	d := Deny(UnknownOp, "", Slots{By: "gate"})
+	if d.Code != "UNKNOWN_OP" || d.Op != "" || d.By != "gate" {
+		t.Fatalf("UNKNOWN_OP: %s", d.JSON())
+	}
+	checkMCP(t, d, true)
 	checkMCP(t, Deny(MemoryQuarantined, "", Slots{Op: "memory.write"}), false)
 	var rpc struct {
 		Code    int

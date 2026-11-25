@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"agentbox/internal/denial"
+	"agentbox/internal/ids"
 	"agentbox/internal/ops"
 	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/attach"
@@ -60,7 +60,7 @@ func (s *server) attach(c *net.UnixConn, r request, pending []byte) {
 		return
 	}
 	root := s.attachRoot()
-	id, opID := denial.NewID("ses"), denial.NewID("op")
+	id, opID := ids.New(ids.Session), ids.New(ids.Op)
 	start := time.Now()
 	if err := attach.Begin(s.db, r.Name, id, start); err != nil {
 		refuse("%v", err)

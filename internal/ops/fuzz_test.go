@@ -140,13 +140,25 @@ func FuzzBatchArgs(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
 		for _, op := range askOps {
-			if d := CheckArgs(op, b); d != nil {
-				if j := d.JSON(); len(j) > MaxDenial || !printable(j) || (d.Code != "INVALID_ARGS") {
-					t.Fatalf("%s: %s", op, j)
-				}
+			o, _ := Lookup(op)
+			if _, e := o.ValidateArgs(b); e != nil {
+				checkArgsDenial(t, op, b, e)
 			}
 		}
 	})
+}
+
+// checkArgsDenial: the gate's denial for a refused request is an INVALID_ARGS within the limits, and the in-task check
+// accepts it for that request.
+func checkArgsDenial(t *testing.T, op string, args []byte, e *ArgError) {
+	t.Helper()
+	d := e.Denial(op, "gate")
+	if j := d.JSON(); len(j) > MaxDenial || !printable(j) || d.Code != "INVALID_ARGS" {
+		t.Fatalf("%s: %s", op, j)
+	}
+	if _, _, ok := CheckDenial(op, args, d.JSON()); !ok {
+		t.Fatalf("%s %q: the in-task check refuses %s", op, args, d.JSON())
+	}
 }
 
 func FuzzWitness(f *testing.F) {
@@ -199,7 +211,9 @@ func FuzzDenyRecord(f *testing.F) {
 	})
 }
 
-// FuzzCheckArgs is the gate's schema check and the sink's args check for every registry op, not just the ask ops.
+// FuzzCheckArgs is the gate's and the floor's schema check for every registry op, not just the ask ops, and the live
+// sink check behind it: a refusal is an INVALID_ARGS the in-task check accepts, and args it passes, with classes
+// applied, pass auditd's CheckAudit, so the INTENT rootd sends for them is never NACKed.
 func FuzzCheckArgs(f *testing.F) {
 	h := `{"sha256":"` + strings.Repeat("a", 64) + `","len":3}`
 	f.Add(uint16(0), []byte(`{"remote":"origin","ref":"refs/heads/agent/a/x","oid":"`+strings.Repeat("a", 40)+`"}`))
@@ -209,16 +223,16 @@ func FuzzCheckArgs(f *testing.F) {
 		f.Add(uint16(i), []byte(s))
 	}
 	f.Fuzz(func(t *testing.T, oi uint16, args []byte) {
-		op := Registry[int(oi)%len(Registry)].Name
-		if d := CheckArgs(op, args); d != nil {
-			if j := d.JSON(); len(j) > MaxDenial || !printable(j) || (d.Code != "INVALID_ARGS" && d.Code != "UNKNOWN_OP") {
-				t.Fatalf("%s: %s", op, j)
-			}
-			if _, err := ParseDenial(d.JSON()); err != nil {
-				t.Fatalf("%s: %s does not parse: %v", op, d.JSON(), err)
+		o := Registry[int(oi)%len(Registry)]
+		if m, e := o.ValidateArgs(args); e != nil {
+			checkArgsDenial(t, o.Name, args, e)
+		} else {
+			b, _ := json.Marshal(Classify(o.Args, m))
+			v, _ := Decode(b)
+			if err := CheckAudit(o.Args, v, "/args"); err != nil {
+				t.Fatalf("%s %q passes the gate, but its INTENT args %s fail the sink: %v", o.Name, args, b, err)
 			}
 		}
-		CheckAuditArgs(op, args)
 		for _, a := range []string{"ask.quote", "ask.status"} {
 			if out, _, _, ok := CheckAskReply(a, args, args); ok && !printable(out) {
 				t.Fatalf("%s: %q", a, out)

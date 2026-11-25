@@ -28,10 +28,16 @@ func Lookup(name string) (Op, bool) {
 // AgentCallable is false for ops no agent may submit on a gate socket: admin ops and Human-only ops (§5.6 UNKNOWN_OP).
 func (o Op) AgentCallable() bool { return o.Class != Admin && !o.Human }
 
-// ArgError is a schema failure: Field is the JSON pointer, Expect a static description. Neither holds a request value.
+// ArgError is a schema failure: Field is the JSON pointer, Expect one of the denial's INVALID_ARGS expect values
+// (§5.6). Neither holds a request value.
 type ArgError struct{ Field, Expect string }
 
 func (e *ArgError) Error() string { return e.Field + ": expected " + e.Expect }
+
+// Denial is the INVALID_ARGS that enforcer by (gate or floor) returns for e on op: the pointer and the expected kind.
+func (e *ArgError) Denial(op, by string) Denial {
+	return Deny(InvalidArgs, "", Slots{Op: op, By: by, Subject: Subject{Pointer: e.Field}, Expect: e.Expect})
+}
 
 func decode(raw []byte) (any, error) {
 	d := json.NewDecoder(bytes.NewReader(raw))
@@ -40,7 +46,9 @@ func decode(raw []byte) (any, error) {
 	if err := d.Decode(&v); err != nil {
 		return nil, err
 	}
-	if d.More() {
+	// More is false at a stray } or ], so check the rest is JSON whitespace, as json.Unmarshal (the in-task check's
+	// parser) does.
+	if len(bytes.TrimLeft(raw[d.InputOffset():], " \t\r\n")) != 0 {
 		return nil, fmt.Errorf("trailing data")
 	}
 	// Go keeps the last copy of a repeated key, so a check of v would pass bytes whose first copy is still forwarded
@@ -51,110 +59,102 @@ func decode(raw []byte) (any, error) {
 	return v, nil
 }
 
-// ValidateArgs checks raw against o's args schema: an object with every required field, no other field, each of its
-// declared type, no keep-class string over MaxKeep (the sink would NACK it); a members field holds 1 to 8 {name, args} items of agent-callable ops, each checked against its own
-// schema. It is the gate's and the floor's check (§5.2); the decoded args come back with numbers as json.Number.
+// ValidateArgs is the gate's and the floor's schema check (§5.2, §5.6): raw is an object with every required field
+// of o, no other field, each of its declared type, and no keep-class string over MaxKeep (the sink would NACK it). A
+// body field may not hold the op marker, which only rootd appends (§5.3). A members field holds 1 to 8 {name, args}
+// items: each name an op memberOK allows (a quotable op; for ask.batch, one with a batch shape), each args checked
+// against that op's own schema. The decoded args come back with numbers as json.Number.
 func (o Op) ValidateArgs(raw []byte) (map[string]any, *ArgError) {
 	v, err := decode(raw)
 	if err != nil {
-		return nil, &ArgError{"", "a JSON object"}
+		return nil, &ArgError{"", "object"}
 	}
-	m, aerr := checkFields(o.Args, v, "", true)
-	return m, aerr
+	return checkFields(o, v, "", true)
 }
 
-func checkFields(fs []Field, v any, at string, nested bool) (map[string]any, *ArgError) {
+func checkFields(o Op, v any, at string, nested bool) (map[string]any, *ArgError) {
 	m, ok := v.(map[string]any)
 	if !ok {
-		return nil, &ArgError{at, "an object"}
+		return nil, &ArgError{at, "object"}
 	}
 	for k := range m {
-		if fieldOf(fs, k) == nil {
-			return nil, &ArgError{at + "/" + Escape(k), "no such field"}
+		if fieldOf(o.Args, k) == nil {
+			return nil, &ArgError{at + "/" + Escape(k), "absent"}
 		}
 	}
-	for _, f := range fs {
+	for _, f := range o.Args {
 		x, ok := m[f.Name]
 		p := at + "/" + f.Name
 		if !ok {
 			if !f.Opt {
-				return nil, &ArgError{p, "a required " + f.Type}
+				return nil, &ArgError{p, "present"}
 			}
 			continue
 		}
-		if e := checkType(f, x, p, nested); e != nil {
+		if e := checkType(o, f, x, p, nested); e != nil {
 			return nil, e
 		}
 	}
 	return m, nil
 }
 
-func checkType(f Field, x any, p string, nested bool) *ArgError {
+func checkType(o Op, f Field, x any, p string, nested bool) *ArgError {
 	if f.Audit == Keep && CheckKeep(x, p) != nil {
-		return &ArgError{p, fmt.Sprintf("no string over %d bytes", MaxKeep)}
+		return &ArgError{p, "valid"} // a string over MaxKeep
 	}
 	switch f.Type {
 	case "string":
 		s, ok := x.(string)
 		if !ok {
-			return &ArgError{p, "a string"}
+			return &ArgError{p, "string"}
 		}
 		if f.Name == "body" && bytes.Contains([]byte(s), []byte("agentbox-op:")) {
-			return &ArgError{p, "no agentbox-op: marker"} // §5.6: the op marker is rootd's (§5.3)
+			return &ArgError{p, "valid"}
 		}
 	case "integer":
 		n, ok := x.(json.Number)
 		if !ok {
-			return &ArgError{p, "an integer"}
+			return &ArgError{p, "integer"}
 		}
 		if _, err := strconv.ParseInt(string(n), 10, 64); err != nil {
-			return &ArgError{p, "an integer"}
+			return &ArgError{p, "integer"}
 		}
 	case "boolean":
 		if _, ok := x.(bool); !ok {
-			return &ArgError{p, "a boolean"}
+			return &ArgError{p, "boolean"}
 		}
 	case "object":
 		if _, ok := x.(map[string]any); !ok {
-			return &ArgError{p, "an object"}
+			return &ArgError{p, "object"}
 		}
 	case "array":
 		a, ok := x.([]any)
 		if !ok {
-			return &ArgError{p, "an array"}
+			return &ArgError{p, "array"}
 		}
 		if f.Audit != Members {
 			return nil
 		}
 		if !nested || len(a) < 1 || len(a) > 8 {
-			return &ArgError{p, "1 to 8 {name, args} items"}
+			return &ArgError{p, "array"} // 1 to 8 items
 		}
 		for i, it := range a {
 			ip := p + "/" + strconv.Itoa(i)
 			mm, ok := it.(map[string]any)
 			if !ok || len(mm) != 2 {
-				return &ArgError{ip, "{name, args}"}
+				return &ArgError{ip, "object"} // exactly {name, args}
 			}
 			name, _ := mm["name"].(string)
-			mo, ok := Lookup(name)
-			if !ok || !mo.AgentCallable() || hasMembers(mo) {
-				return &ArgError{ip + "/name", "an op an agent may call"}
+			if !memberOK(o, name) {
+				return &ArgError{ip + "/name", "valid"}
 			}
-			if _, e := checkFields(mo.Args, mm["args"], ip+"/args", false); e != nil {
+			mo, _ := Lookup(name)
+			if _, e := checkFields(mo, mm["args"], ip+"/args", false); e != nil {
 				return e
 			}
 		}
 	}
 	return nil
-}
-
-func hasMembers(o Op) bool {
-	for _, f := range o.Args {
-		if f.Audit == Members {
-			return true
-		}
-	}
-	return false
 }
 
 func fieldOf(fs []Field, name string) *Field {

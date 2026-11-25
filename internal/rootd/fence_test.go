@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"agentbox/internal/denial"
 	"agentbox/internal/ids"
+	"agentbox/internal/ops"
 	"agentbox/internal/rootd/accounts"
 )
 
@@ -41,10 +41,11 @@ func TestQuotaFence(t *testing.T) {
 		inconsistent: func() (bool, error) { return flag, nil },
 		qrescan:      func() error { rescans++; return rescanErr },
 		qlimit:       func() error { limits++; return nil }}
+	// a BUSY that passes the denial schema and names no reason (§5.6 leak rule 6)
 	busy := func(rep reply) bool {
-		d, ok := rep["denial"].(denial.Denial)
-		b, _ := json.Marshal(d)
-		return ok && d.Code == denial.Busy && denial.Valid(b)
+		d, ok := rep["denial"].(ops.Denial)
+		_, err := ops.ParseDenial(d.JSON())
+		return ok && d.Code == "BUSY" && err == nil && d.Rule == "" && d.What == ""
 	}
 	write := request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"path":"/srv/a/x","content":"x"}`)}
 
@@ -55,7 +56,7 @@ func TestQuotaFence(t *testing.T) {
 		!busy(s.admin(request{Op: "task.new", Agent: "claude"}, peer{})) || !busy(s.admin(request{Op: "task.undo", Task: "T1"}, peer{})) {
 		t.Fatal("writing ops not refused BUSY while fenced")
 	}
-	if d, _ := s.taskOp(request{Op: "task.op", Name: "disk.usage", Task: "T1", Agent: "claude", Args: json.RawMessage(`{}`)})["denial"].(denial.Denial); d.Rule != "floor.not_built" {
+	if d, _ := s.taskOp(request{Op: "task.op", Name: "disk.usage", Task: "T1", Agent: "claude", Args: json.RawMessage(`{}`)})["denial"].(ops.Denial); d.Code != "FLOOR_NEVER" {
 		t.Fatalf("a read must pass the fence (and stop at not_built): %+v", d)
 	}
 	s.checkQuota()
@@ -138,8 +139,8 @@ func TestSnapshotFences(t *testing.T) {
 		if c.lowered {
 			s.fenceMu.Unlock()
 		}
-		d, ok := rep["denial"].(denial.Denial)
-		if rep["ok"] != false || !ok || d.Code != denial.Busy || d.Rule != "floor.quota_fence" || len(r.launch) != 0 {
+		d, ok := rep["denial"].(ops.Denial)
+		if rep["ok"] != false || !ok || d.Code != "BUSY" || rep["reason"] != "quota_fence" || len(r.launch) != 0 {
 			t.Fatalf("%s: start %v, launches %d", c.name, rep, len(r.launch))
 		}
 		os.Remove(hold)

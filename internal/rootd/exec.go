@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"agentbox/internal/audit"
-	"agentbox/internal/denial"
+	"agentbox/internal/ids"
 	"agentbox/internal/ops"
 )
 
@@ -22,10 +22,16 @@ var (
 	agentRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 )
 
-func deny(code denial.Code, rule, op, field, expect string) reply {
-	d := denial.New(code, "floor", rule, op, field, expect)
-	log.Printf("DENY by=floor op=%s code=%s rule=%s id=%s", d.Op, d.Code, d.Rule, d.ID)
+// deny logs and returns a floor denial (§5.6). rule says why, for the journal only: an agent sees a rule only from
+// Cedar (leak rule 5), and a BUSY never names its reason (leak rule 6).
+func deny(d ops.Denial, rule string) reply {
+	log.Printf("DENY by=floor op=%s code=%s rule=%s id=%s", d.Op, d.Code, rule, d.ID)
 	return reply{"ok": false, "denial": d}
+}
+
+// floor is the floor's denial of code on op, with no other slot.
+func floor(c ops.Code, what, op string) ops.Denial {
+	return ops.Deny(c, what, ops.Slots{Op: op, By: "floor"})
 }
 
 // taskOp is §5.2's rootd half for a forwarded op: rootd checks the request against the registry itself (it never
@@ -36,29 +42,31 @@ func deny(code denial.Code, rule, op, field, expect string) reply {
 // takes agentboxd's task, agent and chain as given (the §5.2 compromise bound) and runs only ops that have an Effect.
 // Check the task's live row here once every gate registration comes from task.start (`agentbox gate register` skips it).
 func (s *server) taskOp(r request) reply {
+	// UNKNOWN_OP is the gate's code (§5.6), so an op the floor never runs here, one the gate should have refused or one
+	// with no effect yet, is FLOOR_NEVER{never_available}.
 	o, ok := ops.Lookup(r.Name)
 	if !ok || !o.AgentCallable() || !o.Rootd {
-		return deny(denial.UnknownOp, "floor.unknown_op", r.Name, "", "")
+		return deny(floor(ops.FloorNever, "never_available", ""), "floor.unknown_op")
 	}
 	if !taskRe.MatchString(r.Task) || !agentRe.MatchString(r.Agent) {
-		return deny(denial.InvalidArgs, "floor.provenance", r.Name, "", "")
+		return deny(floor(ops.InvalidArgs, "", o.Name), "floor.provenance")
 	}
 	args, aerr := o.ValidateArgs(r.Args)
 	if aerr != nil {
-		return deny(denial.InvalidArgs, "floor.schema", r.Name, aerr.Field, aerr.Expect)
+		return deny(aerr.Denial(o.Name, "floor"), "floor.schema")
 	}
 	if rep := s.fenceDeny(o.Name); o.Class != ops.Read && rep != nil {
 		return rep
 	}
 	eff := s.cfg.Effects[o.Name]
 	if eff == nil {
-		return deny(denial.UnknownOp, "floor.not_built", r.Name, "", "")
+		return deny(floor(ops.FloorNever, "never_available", o.Name), "floor.not_built")
 	}
 	logged := ops.Classify(o.Args, args)
 	if s.cfg.RawAudit {
 		logged = args // AGENTBOX_TEST_AUDIT_RAW: a producer that forgot its classes; the sink must NACK it
 	}
-	id := denial.NewID("op")
+	id := ids.New(ids.Op)
 	chain := r.Chain
 	if chain == nil {
 		chain = []string{}
@@ -67,15 +75,15 @@ func (s *server) taskOp(r request) reply {
 		"agent": r.Agent, "task": r.Task, "chain": chain, "taintEpochs": map[string]int64{}, "ts": time.Now().UnixMilli()}); err != nil {
 		log.Printf("%s %s task %s: INTENT not ACKed, nothing ran: %v", id, o.Name, r.Task, err)
 		if nack, ok := err.(*auditNACK); ok && nack.code == audit.CodeBadRecord {
-			return deny(denial.EffectFailed, "audit.bad_record", o.Name, "", "") // a rootd bug: a human must look
+			return deny(floor(ops.EffectFailed, "", o.Name), "audit.bad_record") // a rootd bug: a human must look
 		}
-		return deny(denial.AuditUnavailable, "audit.no_ack", o.Name, "", "")
+		return deny(floor(ops.AuditUnavailable, "", o.Name), "audit.no_ack")
 	}
 	out, err := eff(id, args)
 	res := map[string]any{"type": "RESULT", "opId": id, "status": "executed"}
 	if err != nil {
 		log.Printf("%s %s task %s: effect failed: %v", id, o.Name, r.Task, err)
-		res["status"], res["errorCode"] = "failed", string(denial.EffectFailed)
+		res["status"], res["errorCode"] = "failed", ops.EffectFailed.String()
 	} else if out != nil {
 		res["outputs"] = ops.Classify(o.Out, out)
 	}
@@ -84,10 +92,10 @@ func (s *server) taskOp(r request) reply {
 		// shortcut: no rootd.db executing row yet, so nothing retries the RESULT; a human reconciles the op id from this
 		// line until weeks 9-10's executing rows do it at restart.
 		log.Printf("%s %s task %s: effect ran (err %v) but RESULT not ACKed: %v", id, o.Name, r.Task, err, aerr)
-		return deny(denial.EffectFailed, "audit.result_unacked", o.Name, "", "")
+		return deny(floor(ops.EffectFailed, "", o.Name), "audit.result_unacked")
 	}
 	if err != nil {
-		return deny(denial.EffectFailed, "floor.effect", o.Name, "", "")
+		return deny(floor(ops.EffectFailed, "", o.Name), "floor.effect")
 	}
 	rep := reply{"ok": true, "opId": id}
 	if out != nil {

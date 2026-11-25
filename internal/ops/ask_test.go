@@ -221,20 +221,24 @@ func TestAskSchemas(t *testing.T) {
 	}
 }
 
-// D-G2, the gate half: ESC/CSI, U+009B, U+202E, U+2066-U+2069 and U+E0001 in a quoted arg never reach the denial
-// CheckArgs returns, which passes or refuses on the pointer alone. The other half (the quote reply is byte-identical
-// with and without them) needs the ask.quote producer, which lands with the gate in weeks 9-10.
+// D-G2, the gate half: ESC/CSI, U+009B, U+202E, U+2066-U+2069 and U+E0001 in a quoted arg never reach the denial the
+// gate returns for ValidateArgs' error, which passes or refuses on the pointer alone. The other half (the quote reply
+// is byte-identical with and without them) needs the ask.quote producer, which lands with the gate in weeks 9-10.
 func TestQuoteArgsInert(t *testing.T) {
+	o, _ := Lookup("ask.quote")
 	for _, s := range []string{"\x1b[31m", "\u009b2J", "\u202e", "\u2066", "\u2067", "\u2068", "\u2069", "\U000E0001"} {
 		for _, args := range []map[string]any{
 			{"ops": []any{map[string]any{"name": "gh.pr.comment", "args": map[string]any{"remote": "o" + s, "number": 1, "body": s}}}},
 			{"ops": []any{map[string]any{"name": "gh.pr.comment", "args": map[string]any{"remote": "o", "number": s, "body": s}}}},
 			{"ops": []any{map[string]any{"name": "gh.pr.comment" + s, "args": map[string]any{}}}},
+			{"ops": []any{map[string]any{"name": "gh.pr.comment", "args": map[string]any{"remote": "o", "number": 1, "body": "b", s: 1}}}},
 		} {
 			b, _ := json.Marshal(args)
 			esc, _ := json.Marshal(s)
-			if d := CheckArgs("ask.quote", b); d != nil && (bytes.Contains(d.JSON(), []byte(s)) || bytes.Contains(d.JSON(), esc[1:len(esc)-1])) {
-				t.Fatalf("%q echoed: %s", s, d.JSON())
+			if _, e := o.ValidateArgs(b); e != nil {
+				if d := e.Denial(o.Name, "gate"); bytes.Contains(d.JSON(), []byte(s)) || bytes.Contains(d.JSON(), esc[1:len(esc)-1]) {
+					t.Fatalf("%q echoed: %s", s, d.JSON())
+				}
 			}
 		}
 	}

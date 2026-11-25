@@ -19,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"agentbox/internal/denial"
 	"agentbox/internal/ids"
 	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/attach"
@@ -173,7 +172,7 @@ func (t *tasks) newRequest(human, agent string, asks int, deadline time.Duration
 	if deadline < minDeadline || deadline > DefaultDeadline {
 		return "", errors.New("--deadline must be 10s to 2h")
 	}
-	id := denial.NewID("req")
+	id := ids.New(ids.Request)
 	_, err := t.db.Exec(`INSERT INTO task_requests(id, human, agent, asks, deadline, created_at) VALUES(?,?,?,?,?,?)`,
 		id, human, agent, asks, t.now()+deadline.Milliseconds(), t.now())
 	return id, err
@@ -282,7 +281,7 @@ func (t *tasks) provenance(id, agent, origin string) (startInfo, string) {
 	switch {
 	case origin == "daemon":
 		// no parent and no human request: registered tainted, so every non-read, non-Safe op needs a signature
-		si.chain, si.trace, si.deadline, si.asks = []string{"agent:" + agent}, denial.NewID("trace"), now+DefaultDeadline.Milliseconds(), 1
+		si.chain, si.trace, si.deadline, si.asks = []string{"agent:" + agent}, ids.New(ids.Trace), now+DefaultDeadline.Milliseconds(), 1
 		si.taint, si.source = true, "origin:daemon"
 	case strings.HasPrefix(origin, "admin:"):
 		req := origin[6:]
@@ -294,7 +293,7 @@ func (t *tasks) provenance(id, agent, origin string) (startInfo, string) {
 			return si, "no_unused_request"
 		}
 		si.request = req
-		si.chain, si.trace, si.deadline, si.asks = []string{"human:" + human, "agent:" + agent}, denial.NewID("trace"), dl, asks
+		si.chain, si.trace, si.deadline, si.asks = []string{"human:" + human, "agent:" + agent}, ids.New(ids.Trace), dl, asks
 	case strings.HasPrefix(origin, "parent:"):
 		p := origin[7:]
 		var pchain, ptrace string
