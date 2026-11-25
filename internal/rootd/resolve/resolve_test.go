@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -105,6 +107,90 @@ func TestParseEntry(t *testing.T) {
 	}
 	if _, err := ParseEntry("xn--bcher-kva.de:443"); err != nil {
 		t.Errorf("A-label refused: %v", err)
+	}
+}
+
+// An edit matches rows as LoadLists parses them: a removal takes every row that names the entry, in any spelling, and
+// an add finds an entry that is already listed in another spelling.
+func TestEditListParsedRows(t *testing.T) {
+	dir := t.TempDir()
+	svcList, common := filepath.Join(dir, "service.list"), filepath.Join(dir, "common.list")
+	os.WriteFile(svcList, []byte("keys API.Example.com:443 # by hand\ngit a.example.com:443\ngit a.example.com:443\nkeys a.example.com:443\n"), 0o644)
+	os.WriteFile(common, []byte("GitHub.com:443\ngithub.com:443\n"), 0o644)
+	allowed := func(svc string, e Entry) bool {
+		l, err := LoadLists(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l.Allowed(svc, "", e)
+	}
+	for _, c := range []struct {
+		svc string
+		e   Entry
+	}{{"keys", Entry{"api.example.com", 443}}, {"git", Entry{"a.example.com", 443}}, {"proxy", Entry{"github.com", 443}}} {
+		if ch, err := EditList(dir, c.svc, c.e, true); err != nil || ch {
+			t.Errorf("allow %s %s: listed already, got changed=%v %v", c.svc, c.e, ch, err)
+		}
+		if ch, err := EditList(dir, c.svc, c.e, false); err != nil || !ch || allowed(c.svc, c.e) {
+			t.Errorf("remove %s %s: changed=%v %v, still allowed: %v", c.svc, c.e, ch, err, allowed(c.svc, c.e))
+		}
+	}
+	if !allowed("keys", Entry{"a.example.com", 443}) {
+		t.Error("removing git's a.example.com:443 took keys' row too")
+	}
+	if ch, err := EditList(dir, "keys", Entry{"B.Example.com", 443}, true); err != nil || !ch {
+		t.Fatalf("allow B.Example.com: %v %v", ch, err)
+	}
+	if b, _ := os.ReadFile(svcList); string(b) != "# managed by agentbox egress allow/remove (rootd)\nkeys a.example.com:443\nkeys b.example.com:443\n" {
+		t.Errorf("service.list is not canonical:\n%s", b)
+	}
+	// a row whose entry does not parse fails the edit, and the file stays as it was
+	os.WriteFile(common, []byte("example.com:080\n"), 0o644)
+	if _, err := EditList(dir, "proxy", Entry{"b.example.com", 443}, true); err == nil {
+		t.Error("an edit of a list with a bad row went through")
+	}
+	if b, _ := os.ReadFile(common); string(b) != "example.com:080\n" {
+		t.Errorf("the failed edit wrote common.list:\n%s", b)
+	}
+}
+
+// Concurrent edits each keep the others' changes: no removed entry comes back and no added one is lost.
+func TestEditListConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	const n = 16
+	host := func(s string, i int) Entry { return Entry{fmt.Sprintf("%s%d.example.com", s, i), 443} }
+	for i := range n {
+		if _, err := EditList(dir, "keys", host("old", i), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	for i := range n {
+		for _, c := range []struct {
+			s   string
+			add bool
+		}{{"old", false}, {"new", true}} {
+			wg.Go(func() {
+				if ch, err := EditList(dir, "keys", host(c.s, i), c.add); err != nil || !ch {
+					t.Errorf("%s%d: %v %v", c.s, i, ch, err)
+				}
+			})
+		}
+	}
+	wg.Wait()
+	l, err := LoadLists(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []Entry
+	for i := range n {
+		want = append(want, host("new", i))
+	}
+	got := l.Service["keys"]
+	slices.SortFunc(got, func(a, b Entry) int { return strings.Compare(a.Host, b.Host) })
+	slices.SortFunc(want, func(a, b Entry) int { return strings.Compare(a.Host, b.Host) })
+	if !slices.Equal(got, want) {
+		t.Fatalf("after concurrent edits keys has %v, want %v", got, want)
 	}
 }
 
