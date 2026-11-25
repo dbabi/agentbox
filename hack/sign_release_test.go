@@ -244,7 +244,7 @@ func TestSignReleaseBuildUser(t *testing.T) {
 	os.WriteFile(filepath.Join(bin, "go"), fmt.Appendf(nil, `#!/bin/sh
 echo "rebuild: runs as $(id -un)" >&2
 cat %[1]q >/dev/null 2>&1 && echo "rebuild: read the key" >&2
-: > %[2]q/minisign 2>/dev/null && echo "rebuild: put a minisign on PATH" >&2
+touch %[2]q/minisign 2>/dev/null && echo "rebuild: put a minisign on PATH" >&2
 while [ $# -gt 0 ]; do [ "$1" = -out ] && o=$2; shift; done; mkdir -p "$o" && cp %[3]q/agentbox-1.0.0.tgz "$o"/
 `, key, bin, rel), 0o755)
 	root := filepath.Join(out, "checkout")
