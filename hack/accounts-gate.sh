@@ -115,9 +115,11 @@ check "drop_subtree_threshold 1, a snapshot deleted: qgroups/inconsistent reads 
 check "  ... rootd fences: quota check says fenced, ag-$QA's user slice is frozen" 'for i in $(seq 30); do grep -qx "frozen 1" $CG/cgroup.events && break; sleep 1; done &&
   grep -qx "frozen 1" $CG/cgroup.events && fenced true'
 install -d -o agentbox -g ag-$QA -m 2750 /run/agentbox-gate/t/QF$X && $A gate register --task QF$X --agent $QA >/dev/null
-check "  ... a file.write through the task gate gets the typed denial BUSY (by floor, rule floor.quota_fence)" '
-  setpriv --reuid ag-$QA --regid ag-$QA --init-groups $A gate call --socket /run/agentbox-gate/t/QF$X/gate.sock "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"file.write\",\"params\":{\"path\":\"/srv/x\",\"content\":\"x\"}}" > /run/qf.json;
-  grep -qF "\"code\":-32010" /run/qf.json && grep -qF "\"code\":\"BUSY\"" /run/qf.json && grep -qF "\"rule\":\"floor.quota_fence\"" /run/qf.json'
+check "  ... a file.write through the task gate gets the typed denial BUSY by floor, with no reason (rootd logged floor.quota_fence for its id)" '
+  setpriv --reuid ag-$QA --regid ag-$QA --init-groups $A gate call --socket /run/agentbox-gate/t/QF$X/gate.sock "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"file.write\",\"params\":{\"path\":\"/srv/x\",\"content\":\"x\"}}" > /run/qf.json &&
+  grep -qF "\"code\":-32010" /run/qf.json && grep -qF "\"code\":\"BUSY\"" /run/qf.json && grep -qF "\"by\":\"floor\"" /run/qf.json &&
+  ! grep -qE "quota|\"rule\"" /run/qf.json && id=$(sed -n "s/.*\"id\":\"\(dn_[0-9A-Z]*\)\".*/\1/p" /run/qf.json) && [ -n "$id" ] &&
+  for n in 1 2 3 4 5; do journalctl -b -u agentbox-rootd -o cat | grep -qF "rule=floor.quota_fence id=$id" && exit 0; sleep 1; done; exit 1'
 check "  ... task new is refused with the same denial" '! echo hi | $A task new --agent $QA > /run/qt.json 2>&1; grep -qF "\"code\":\"BUSY\"" /run/qt.json'
 check "  ... rootd sent the ALERT" 'journalctl -b -u agentbox-rootd -o cat | grep -q "ALERT quota: qgroups are inconsistent"'
 rm -f /run/agentbox-quota-hold

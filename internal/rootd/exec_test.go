@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"agentbox/internal/audit"
-	"agentbox/internal/denial"
+	"agentbox/internal/ops"
 )
 
 // plainSeal creates segments without chattr, so the real auditd runs unprivileged in a test.
@@ -42,11 +42,16 @@ func TestTaskOpIntentBeforeEffect(t *testing.T) {
 	}}
 	seg := func() string { b, _ := os.ReadFile(filepath.Join(dir, audit.SegName(1))); return string(b) }
 	req := request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"path":"/srv/a/x","content":"top secret body"}`)}
-	code := func(rep reply) denial.Code {
-		if d, ok := rep["denial"].(denial.Denial); ok {
-			return d.Code
+	// code is the denial's code, once it passes the in-task check (§5.6) for the request that got it
+	code := func(r request, rep reply) string {
+		d, ok := rep["denial"].(ops.Denial)
+		if !ok {
+			return ""
 		}
-		return ""
+		if _, _, ok := ops.CheckDenial(r.Name, r.Args, d.JSON()); !ok {
+			t.Fatalf("%+v: the denial fails the in-task check: %s", r, d.JSON())
+		}
+		return d.Code
 	}
 
 	if rep := s.taskOp(req); rep["ok"] != true || ran != 1 {
@@ -64,13 +69,13 @@ func TestTaskOpIntentBeforeEffect(t *testing.T) {
 		}
 		return ack(r)
 	}
-	if rep := s.taskOp(req); rep["ok"] != false || code(rep) != denial.EffectFailed || ran != 2 {
+	if rep := s.taskOp(req); rep["ok"] != false || code(req, rep) != "EFFECT_FAILED" || ran != 2 {
 		t.Fatalf("RESULT not ACKed: %v, ran %d", rep, ran)
 	}
 	s.audit = ack
 
 	s.cfg.RawAudit = true
-	if rep := s.taskOp(req); rep["ok"] != false || code(rep) != denial.EffectFailed || ran != 2 {
+	if rep := s.taskOp(req); rep["ok"] != false || code(req, rep) != "EFFECT_FAILED" || ran != 2 {
 		t.Fatalf("unhashed body: %v, ran %d", rep, ran)
 	}
 	if strings.Contains(seg(), "top secret") {
@@ -81,16 +86,22 @@ func TestTaskOpIntentBeforeEffect(t *testing.T) {
 	before := seg()
 	for _, c := range []struct {
 		r    request
-		want denial.Code
+		want string
 	}{
-		{request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"path":"/srv/a/x"}`)}, denial.InvalidArgs},
-		{request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"path":"p","content":"c","x":1}`)}, denial.InvalidArgs},
-		{request{Op: "task.op", Name: "file.write", Task: "../T1", Agent: "claude", Args: req.Args}, denial.InvalidArgs},
-		{request{Op: "task.op", Name: "secret.set", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"name":"k","value":"v"}`)}, denial.UnknownOp},
-		{request{Op: "task.op", Name: "app.start", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"app":"a"}`)}, denial.UnknownOp},
+		{request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"path":"/srv/a/x"}`)}, "INVALID_ARGS"},
+		{request{Op: "task.op", Name: "file.write", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"path":"p","content":"c","x":1}`)}, "INVALID_ARGS"},
+		{request{Op: "task.op", Name: "file.write", Task: "../T1", Agent: "claude", Args: req.Args}, "INVALID_ARGS"},
+		// UNKNOWN_OP is the gate's code: what the floor never runs (an op the gate should have refused, or one with no
+		// effect yet) is FLOOR_NEVER{never_available}, by floor
+		{request{Op: "task.op", Name: "secret.set", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"name":"k","value":"v"}`)}, "FLOOR_NEVER"},
+		{request{Op: "task.op", Name: "app.start", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"app":"a"}`)}, "FLOOR_NEVER"},
 	} {
-		if rep := s.taskOp(c.r); code(rep) != c.want {
+		rep := s.taskOp(c.r)
+		if code(c.r, rep) != c.want {
 			t.Fatalf("%+v: %v, want %s", c.r, rep, c.want)
+		}
+		if d := rep["denial"].(ops.Denial); d.By != "floor" || c.want == "FLOOR_NEVER" && d.What != "never_available" || strings.Contains(string(d.JSON()), "sk-") {
+			t.Fatalf("%+v: %s", c.r, d.JSON())
 		}
 	}
 	if seg() != before || ran != 2 {

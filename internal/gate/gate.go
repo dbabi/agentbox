@@ -27,7 +27,6 @@ import (
 	"sync"
 	"syscall"
 
-	"agentbox/internal/denial"
 	"agentbox/internal/ids"
 	"agentbox/internal/ops"
 )
@@ -274,8 +273,9 @@ func rpcError(id json.RawMessage, code int, msg string, data any) []byte {
 	return b
 }
 
-func denied(id json.RawMessage, d any, code denial.Code) []byte {
-	return rpcError(id, denial.RPCCode, string(code), d)
+// denied is the gate JSON-RPC form of a denial (§5.6 Surfaces): error -32010, message the code, data the denial.
+func denied(id json.RawMessage, d ops.Denial) []byte {
+	return rpcError(id, ops.RPCDenial, d.Code, d)
 }
 
 // call is one JSON-RPC request on task t's socket. The task, agent and chain come from the socket, never the request:
@@ -290,13 +290,14 @@ func (s *Server) call(t *task, line []byte) []byte {
 	if r.JSONRPC != "2.0" || !rpcID.Match(r.ID) {
 		return rpcError(nil, -32600, "invalid request", nil)
 	}
-	gd := func(code denial.Code, rule, field, expect string) []byte {
-		dn := denial.New(code, "gate", rule, r.Method, field, expect)
-		log.Printf("DENY by=gate task=%s op=%s code=%s rule=%s id=%s", t.id, dn.Op, dn.Code, dn.Rule, dn.ID)
-		return denied(r.ID, dn, code)
+	// gd logs and returns one of the gate's own denials; rule says why, for the journal only (a denial carries a rule
+	// only for Cedar, §5.6 leak rule 5).
+	gd := func(d ops.Denial, rule string) []byte {
+		log.Printf("DENY by=gate task=%s op=%s code=%s rule=%s id=%s", t.id, d.Op, d.Code, rule, d.ID)
+		return denied(r.ID, d)
 	}
 	if !s.live(t) {
-		return gd(denial.TaskEnded, "gate.task_ended", "", "")
+		return gd(ops.Deny(ops.TaskEnded, "", ops.Slots{Op: r.Method, By: "gate"}), "gate.task_ended")
 	}
 	switch r.Method {
 	case "task.fetch", "task.probed", "task.result":
@@ -304,16 +305,20 @@ func (s *Server) call(t *task, line []byte) []byte {
 	}
 	o, ok := ops.Lookup(r.Method)
 	if !ok || !o.AgentCallable() {
-		return gd(denial.UnknownOp, "gate.unknown_op", "", "")
+		return gd(ops.Deny(ops.UnknownOp, "", ops.Slots{By: "gate"}), "gate.unknown_op")
 	}
 	if r.Params == nil {
 		r.Params = json.RawMessage("{}")
 	}
 	if _, aerr := o.ValidateArgs(r.Params); aerr != nil {
-		return gd(denial.InvalidArgs, "gate.schema", aerr.Field, aerr.Expect)
+		return gd(aerr.Denial(o.Name, "gate"), "gate.schema")
 	}
 	if !o.Rootd {
-		return gd(denial.UnknownOp, "gate.not_built", "", "")
+		return gd(ops.Deny(ops.UnknownOp, "", ops.Slots{By: "gate"}), "gate.not_built")
+	}
+	// No gate code says rootd is unreachable: the task gets what its own forwarder shows for an unreachable gate.
+	unavailable := func(rule string) []byte {
+		return gd(ops.Deny(ops.BrokerUnavailable, "gate", ops.Slots{Op: o.Name, By: "forwarder"}), rule)
 	}
 	chain := t.chain
 	if chain == nil {
@@ -322,7 +327,7 @@ func (s *Server) call(t *task, line []byte) []byte {
 	rep, err := s.Forward(map[string]any{"op": "task.op", "name": o.Name, "args": r.Params, "task": t.id, "agent": t.agent, "chain": chain})
 	if err != nil {
 		log.Printf("task %s %s: rootd: %v", t.id, o.Name, err)
-		return gd(denial.BrokerUnavailable, "gate.rootd_unreachable", "", "")
+		return unavailable("gate.rootd_unreachable")
 	}
 	var rr struct {
 		OK     bool            `json:"ok"`
@@ -331,15 +336,17 @@ func (s *Server) call(t *task, line []byte) []byte {
 		Denial json.RawMessage `json:"denial"`
 	}
 	if json.Unmarshal(rep, &rr) != nil {
-		return gd(denial.BrokerUnavailable, "gate.rootd_reply", "", "")
+		return unavailable("gate.rootd_reply")
 	}
 	if !rr.OK {
-		var dn denial.Denial
-		if !denial.Valid(rr.Denial) || json.Unmarshal(rr.Denial, &dn) != nil {
+		// rootd's denial, relayed only if it passes the in-task check for this request (§5.6 Integrity), and sent as Deny
+		// encodes it: the bytes rootd built, with no repeated or case-folded key that another reader would read apart
+		dn, _, ok := ops.CheckDenial(o.Name, r.Params, rr.Denial)
+		if !ok {
 			log.Printf("task %s %s: rootd refused without a valid denial: %s", t.id, o.Name, bytes.TrimSpace(rep))
-			return gd(denial.BrokerUnavailable, "gate.rootd_reply", "", "")
+			return unavailable("gate.rootd_reply")
 		}
-		return denied(r.ID, rr.Denial, dn.Code) // rootd's denial, relayed unchanged (§5.2)
+		return denied(r.ID, dn)
 	}
 	res := map[string]any{"opId": rr.OpID}
 	if rr.Result != nil {

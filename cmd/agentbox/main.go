@@ -50,7 +50,7 @@ const usage = `usage:
   agentbox accounts apply   (agentbox-accounts.service: rootd's ids table onto /etc, on the box)
   agentbox agentboxd [--gen-dir DIR]   (agentboxd.service: the task gate, on the box)
   agentbox gate register --task T --agent A [--chain T1,T2] | revoke --task T | list   (as root: rootd's task registration)
-  agentbox gate call --socket /run/agentbox-gate/t/<task>/gate.sock JSON-RPC...   (a task-side test client)
+  agentbox gate call --socket /run/agentbox-gate/t/<task>/gate.sock JSON-RPC...   (a task-side test client; fails on a denial the in-task check refuses)
   agentbox task new --agent A [--cli claude|codex] [--asks N] [--deadline 2h] [--ack-secrets N] < prompt   (admin, on the box)
   agentbox task stop --task T | list   (admin, on the box)
   agentbox task undo --task T   (admin: restore the workspace from the snapshot taken when that task started)

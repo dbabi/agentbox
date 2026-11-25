@@ -67,6 +67,33 @@ func cmdAgentboxd(args []string) error {
 	return s.ServeControl(ctl)
 }
 
+// checkDenial runs the in-task check (§5.6 Integrity) on a gate reply line, as the in-task binary will: a -32010 error
+// whose denial fails it for the request sent, or whose message is not its code, is an error.
+func checkDenial(req, line []byte) error {
+	var rep struct {
+		Error *struct {
+			Code    int             `json:"code"`
+			Message string          `json:"message"`
+			Data    json.RawMessage `json:"data"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(line, &rep) != nil || rep.Error == nil || rep.Error.Code != ops.RPCDenial {
+		return nil
+	}
+	var r struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	json.NewDecoder(bytes.NewReader(req)).Decode(&r) // the first value, as the gate reads it
+	if r.Params == nil {
+		r.Params = json.RawMessage("{}")
+	}
+	if d, w, ok := ops.CheckDenial(r.Method, r.Params, rep.Error.Data); !ok || d.Code != rep.Error.Message {
+		return fmt.Errorf("gate call: the denial fails the in-task check: %s", w)
+	}
+	return nil
+}
+
 // encodeLine is req as one line with no HTML escaping: json.Marshal would turn each <, > and & in forwarded args or a
 // task new prompt into 6 bytes, so a request the gate or the CLI accepted could pass rootd's line limit.
 func encodeLine(req any) []byte {
@@ -143,6 +170,9 @@ func cmdGate(args []string) error {
 				return fmt.Errorf("no reply: %v", err)
 			}
 			os.Stdout.Write(line)
+			if err := checkDenial([]byte(r), line); err != nil {
+				return err
+			}
 		}
 		return nil
 	default:

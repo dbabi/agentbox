@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"agentbox/internal/denial"
+	"agentbox/internal/ops"
 	"agentbox/internal/rootd/accounts"
 	"agentbox/internal/rootd/quota"
 )
@@ -125,10 +125,11 @@ func (s *server) fenceDeny(op string) reply {
 	return fenceReply(op)
 }
 
+// fenceReply is the fence's BUSY; reason and error are for the human CLIs (task new, attach), never relayed to a task.
 func fenceReply(op string) reply {
-	d := denial.New(denial.Busy, "floor", "floor.quota_fence", op, "", "")
-	log.Printf("DENY by=floor op=%s code=%s rule=%s id=%s", d.Op, d.Code, d.Rule, d.ID)
-	return reply{"ok": false, "reason": "quota_fence", "error": "qgroups are inconsistent: writing ops wait for the rescan", "denial": d}
+	rep := deny(floor(ops.Busy, "", op), "floor.quota_fence")
+	rep["reason"], rep["error"] = "quota_fence", "qgroups are inconsistent: writing ops wait for the rescan"
+	return rep
 }
 
 // fenceAfter is the qgroup check after a subvolume change rootd made (#79, #205). It reads the flag at once and, when

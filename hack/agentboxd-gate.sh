@@ -8,8 +8,9 @@
 #          task.start will) gets its gate socket, usable by that agent's uid only. With rootd's test effect for
 #          file.write (AGENTBOX_TEST_GATE_EFFECT): a valid request is INTENT (body hashed), ACK, effect, RESULT, with the
 #          task and agent from the socket. A request that fails its schema, spoofs provenance or names an op no agent may
-#          call gets a typed agentbox-denial/v1 and no INTENT and no effect. With AGENTBOX_TEST_AUDIT_RAW=1 rootd sends
-#          the body unhashed: auditd NACKs the INTENT and no effect runs. An INTENT carrying a secret (secret.set's
+#          call gets a typed agentbox-denial/v1 that passes the in-task check and names no rule, and no INTENT and no
+#          effect; a floor denial's rule is only in rootd's journal, under its id. With AGENTBOX_TEST_AUDIT_RAW=1 rootd
+#          sends the body unhashed: auditd NACKs the INTENT and no effect runs. An INTENT carrying a secret (secret.set's
 #          drop-class value) or an unhashed gh.* body is NACKed too, and no RESULT can follow it. No refused value is
 #          in the audit dir. Revoke removes the socket. The chain verifies.
 # PASS/FAIL lines go to .vm/agentboxd-gate.txt, command output to .vm/agentboxd-gate.log; exit 1 on any FAIL.
@@ -60,10 +61,15 @@ S=/run/agentbox-gate/t/G1/gate.sock
 intents() { cat $A/seg-*.jsonl | grep -c '"type":"INTENT"' || :; }
 effects() { ls $E | wc -l; }
 call() { runuser -u ag-gt -- $B gate call --socket $S "$1" > /tmp/gate-reply; r=$?; cat /tmp/gate-reply; return $r; }
-# denied CODE REQ [FIELD]: a -32010 error with that code, a denial from the gate, no new INTENT and no effect
+# denied CODE REQ [FIELD]: a -32010 error with that code; its denial passes the in-task check (gate call runs it),
+# names no rule, and points at FIELD with a fix remedy; no new INTENT and no effect
 denied() { i=$(intents) e=$(effects); call "$2" && grep -qF '"code":-32010' /tmp/gate-reply && grep -qF "\"message\":\"$1\"" /tmp/gate-reply &&
-  grep -qF "\"code\":\"$1\"" /tmp/gate-reply && grep -qF '"v":1,"id":"dn_' /tmp/gate-reply &&
-  { [ -z "${3:-}" ] || grep -qF "\"subject\":{\"field\":\"$3\"}" /tmp/gate-reply; } && [ "$(intents)" = "$i" ] && [ "$(effects)" = "$e" ]; }
+  grep -qF "\"code\":\"$1\"" /tmp/gate-reply && grep -qF '"v":1,"id":"dn_' /tmp/gate-reply && ! grep -qF '"rule":' /tmp/gate-reply &&
+  { [ -z "${3:-}" ] || { grep -qF "\"subject\":{\"pointer\":\"$3\"}" /tmp/gate-reply && grep -qF "{\"kind\":\"fix\",\"field\":\"$3\",\"expect\":\"" /tmp/gate-reply; }; } &&
+  [ "$(intents)" = "$i" ] && [ "$(effects)" = "$e" ]; }
+# logged RULE: the last reply is a floor denial, and rootd's journal has its DENY line with RULE under the same id
+logged() { id=$(sed -n 's/.*"id":"\(dn_[0-9A-Z]*\)".*/\1/p' /tmp/gate-reply); [ -n "$id" ] && grep -qF '"by":"floor"' /tmp/gate-reply &&
+  for n in 1 2 3 4 5; do journalctl -b -u agentbox-rootd.service -o cat | grep -qF "rule=$1 id=$id" && return 0; sleep 1; done; return 1; }
 rootd_env() { mkdir -p $D && printf '[Service]\nEnvironment=%s\n' "$@" > $D/50-gate-test.conf && systemctl daemon-reload &&
   systemctl restart agentbox-rootd.service && systemctl is-active -q agentbox-rootd.service; }
 
@@ -103,15 +109,15 @@ check "schema: a body with the op marker is INVALID_ARGS /body" 'denied INVALID_
 check "an unknown op is UNKNOWN_OP" 'denied UNKNOWN_OP "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"file.delete\",\"params\":{}}"'
 check "an admin op (secret.set) is UNKNOWN_OP and its value is never logged" 'denied UNKNOWN_OP "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"secret.set\",\"params\":{\"name\":\"k\",\"value\":\"sk-gate-secret-1\"}}" &&
   ! grep -rqF sk-gate-secret-1 $A && ! journalctl -b -o cat | grep -qF sk-gate-secret-1'
-check "a registry op rootd can't run yet is UNKNOWN_OP from the floor, relayed unchanged" 'denied UNKNOWN_OP "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"app.start\",\"params\":{\"app\":\"a\"}}" &&
-  grep -qF "\"by\":\"floor\",\"rule\":\"floor.not_built\"" /tmp/gate-reply'
+check "a registry op rootd can't run yet is FLOOR_NEVER{never_available} from the floor (rule floor.not_built), relayed" 'denied FLOOR_NEVER "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"app.start\",\"params\":{\"app\":\"a\"}}" &&
+  grep -qF "\"what\":\"never_available\"" /tmp/gate-reply && logged floor.not_built'
 check "  ... and the gate logged a DENY line per refusal" '[ "$(journalctl -b -u $U -o cat | grep -c "DENY by=gate task=G1")" -ge 6 ]'
 
 raw="raw-body-$$-plaintext"
 check "rootd sending the body unhashed (AGENTBOX_TEST_AUDIT_RAW=1)" "rootd_env AGENTBOX_TEST_GATE_EFFECT=$E AGENTBOX_TEST_AUDIT_RAW=1"
 check "  ... auditd NACKs the INTENT: EFFECT_FAILED, no INTENT, no effect, the body is nowhere in the audit dir" '
   denied EFFECT_FAILED "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"file.write\",\"params\":{\"path\":\"/srv/gt/a\",\"content\":\"$raw\"}}" &&
-  grep -qF "\"rule\":\"audit.bad_record\"" /tmp/gate-reply && ! grep -rqF "$raw" $A &&
+  logged audit.bad_record && ! grep -rqF "$raw" $A &&
   journalctl -b -u agentbox-auditd.service -o cat | grep -qF "INTENT from rootd NACKed: /args/content: hash-class field not in {sha256, len} form"'
 check "an INTENT with a secret (secret.set value) is NACKed BAD_RECORD; no RESULT can follow it" '
   ! $B audit send --socket /run/agentbox-audit/rootd.sock "{\"type\":\"INTENT\",\"opId\":\"gate-sec-1\",\"name\":\"secret.set\",\"origin\":\"admin\",\"args\":{\"name\":\"k\",\"value\":\"sk-gate-secret-2\"}}" > /tmp/gate-a &&
@@ -124,7 +130,8 @@ check "an INTENT with an unhashed gh.pr.comment body is NACKed BAD_RECORD" '
 
 rm -f $D/50-gate-test.conf; systemctl daemon-reload
 check "rootd back without the test hooks" 'systemctl restart agentbox-rootd.service && systemctl is-active -q agentbox-rootd.service'
-check "  ... and without an effect a valid file.write is UNKNOWN_OP (floor.not_built), no INTENT" 'denied UNKNOWN_OP "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"file.write\",\"params\":{\"path\":\"/srv/gt/a\",\"content\":\"x\"}}"'
+check "  ... and without an effect a valid file.write is FLOOR_NEVER (rule floor.not_built), no INTENT" 'denied FLOOR_NEVER "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"file.write\",\"params\":{\"path\":\"/srv/gt/a\",\"content\":\"x\"}}" &&
+  logged floor.not_built'
 check "revoke G1: the socket is gone and a connect fails" '$B gate revoke --task G1 && [ ! -e $S ] && ! call "{}"'
 check "the audit chain verifies" '$B audit verify'
 systemctl start multi-user.target
