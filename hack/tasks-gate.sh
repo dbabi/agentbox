@@ -7,7 +7,8 @@
 # checks   An agent (`agentbox agent add`, rootd's agent.add) runs tasks started with `agentbox task new` on
 #          rootd-admin.sock, dispatched by agentboxd, launched by rootd; prompts reach the task on stdin and run as sh
 #          scripts (AGENTBOX_TEST_CLI=sh on agentboxd). A prompt of gate.MaxPrompt bytes as JSON counts it, full of '<'
-#          and newlines, reaches the task whole; one byte more, the CLI refuses (#213). Each gate item of #13 and #14:
+#          and newlines, reaches the task whole; one byte more, the CLI refuses (#213). A task whose output is 16 KiB of
+#          ESC bytes, 96 KiB as JSON, still posts its result and completes (#223). Each gate item of #13 and #14:
 #          - a task plants Claude, Codex and opencode hooks, settings and MCP config, in HOME and in the workspace,
 #            and a SKILL.md frontmatter hook: the next task's HOME holds only the generated configs and hooks are off.
 #            The real Claude Code CLI (linux-arm64, pinned in hack/SHA256SUMS, as in attach-gate.sh) run without the
@@ -189,6 +190,12 @@ check "task new: a prompt of 64512 bytes as JSON, full of < and newlines, reache
   wait_end $T 60 && [ "$(field $T end_reason)" = completed ] && cmp /tmp/tg-big.body $W/tbig.out'
 check "  ... one byte more: the CLI refuses it, naming the limit" '! $B task new --agent gt --cli sh --deadline 2m < /tmp/tg-big1 > /tmp/tg-big1.out 2>&1;
   cat /tmp/tg-big1.out; grep -q "over 64512 bytes as JSON" /tmp/tg-big1.out'
+# #223: as JSON the output can be 6 times its raw size (ESC is \u001b); taskrun cuts it until the post fits one gate line
+cat > /tmp/tg-p <<'P'
+head -c 16384 /dev/zero | tr '\0' '\033'
+P
+check "a task whose output is 16 KiB of ESC bytes, 96 KiB as JSON, still posts its result and completes (#223)" 'T=$(new 2m < /tmp/tg-p) &&
+  wait_end $T 60 && [ "$(field $T end_reason)" = completed ] && journalctl -b -u agentboxd -o cat | grep -q "task $T result: exit 0, 16384 output bytes, "'
 
 # --- #13: planted hooks and MCP config don't reach the next task ---
 cat > /tmp/tg-p <<'P'

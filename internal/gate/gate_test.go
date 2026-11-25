@@ -1,8 +1,11 @@
 package gate
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,6 +243,22 @@ func TestDispatchFetchResult(t *testing.T) {
 	}
 	if last := sent[len(sent)-1]; last["op"] != "task.stop" || last["reason"] != "failed" || last["probe"] != nil {
 		t.Fatalf("task.stop after task.probed: %v", last)
+	}
+}
+
+// #223: task.result takes the denials taskrun sends, and the log names the sha256 of the params as sent: the END line
+// taskrun wrote to the witness.
+func TestResultLog(t *testing.T) {
+	s, tk := newServer(t, func(map[string]any) ([]byte, error) { return []byte(`{"ok":true}`), nil })
+	var lb strings.Builder
+	log.SetOutput(&lb)
+	defer log.SetOutput(os.Stderr)
+	p := `{"exit":0,"output":"o\u001b","outputLen":2,"probeMs":2,"denials":[{"v":1},{"v":1}]}`
+	if r := call(t, s, tk, `{"jsonrpc":"2.0","id":1,"method":"task.result","params":`+p+`}`); r.Error != nil || r.Result["stopped"] != "completed" {
+		t.Fatalf("result with denials: %+v", r)
+	}
+	if want := fmt.Sprintf(", 2 output bytes, 2 denials, sha256 %x, ", sha256.Sum256([]byte(p))); !strings.Contains(lb.String(), want) {
+		t.Fatalf("log %q lacks %q", lb.String(), want)
 	}
 }
 

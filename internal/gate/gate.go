@@ -14,6 +14,7 @@ package gate
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -352,6 +353,9 @@ func (s *Server) call(t *task, line []byte) []byte {
 // isolation probe passed, just before the CLI starts, and task.result ends the task through rootd's task.stop
 // (completed for exit 0, failed otherwise) before it answers. A failed isolation probe goes on to rootd, which audits it
 // and alerts, unless it comes after task.probed: then the CLI sent it, and the task just fails.
+//
+// shortcut: the result is only logged, with the sha256 of its params, which taskrun wrote to the witness as END (§5.6);
+// the bus result rows of weeks 7-8 keep it.
 func (s *Server) taskCall(t *task, r rpcReq) []byte {
 	ok := func(v any) []byte {
 		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": r.ID, "result": v})
@@ -378,11 +382,12 @@ func (s *Server) taskCall(t *task, r rpcReq) []byte {
 		return ok(map[string]any{})
 	}
 	var res struct {
-		Exit      int    `json:"exit"`
-		Output    string `json:"output"`
-		OutputLen int64  `json:"outputLen"`
-		Probe     string `json:"probe"`
-		ProbeMS   int64  `json:"probeMs"`
+		Exit      int               `json:"exit"`
+		Output    string            `json:"output"`
+		OutputLen int64             `json:"outputLen"`
+		Probe     string            `json:"probe"`
+		ProbeMS   int64             `json:"probeMs"`
+		Denials   []json.RawMessage `json:"denials"`
 	}
 	if r.Params == nil || d.Decode(&res) != nil {
 		return rpcError(r.ID, -32602, "invalid params", nil)
@@ -403,7 +408,8 @@ func (s *Server) taskCall(t *task, r rpcReq) []byte {
 			stop["probe"] = res.Probe
 		}
 	}
-	log.Printf("task %s result: exit %d, %d output bytes, isolation probe %d ms %q", t.id, res.Exit, res.OutputLen, res.ProbeMS, res.Probe)
+	log.Printf("task %s result: exit %d, %d output bytes, %d denials, sha256 %x, isolation probe %d ms %q", t.id, res.Exit,
+		res.OutputLen, len(res.Denials), sha256.Sum256(r.Params), res.ProbeMS, res.Probe)
 	if _, err := s.Forward(stop); err != nil {
 		log.Printf("task %s: task.stop: %v", t.id, err) // rootd still stops it on unit exit
 	}

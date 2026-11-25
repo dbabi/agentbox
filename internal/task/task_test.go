@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -14,8 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"agentbox/internal/gate"
 	"agentbox/internal/ops"
 	"agentbox/internal/taskenv"
+	"agentbox/internal/taskrun"
 )
 
 // The launch is Appendix C's: one systemd-run over the agent's user bus, --cgroups=split with Delegate=yes, no network,
@@ -195,6 +199,97 @@ func TestCallRetries(t *testing.T) {
 		Sleep: func(d time.Duration) { now = now.Add(d) }}
 	if err := r.Call("task.fetch", nil, nil); err == nil || !strings.Contains(err.Error(), "60 s before the deadline") {
 		t.Fatalf("want a give-up error, got %v", err)
+	}
+}
+
+// #223: 16 KiB of ESC is 96 KiB as JSON. With the most denials the result can carry, the post still fits one gate
+// line: only the oldest output bytes go, and a logged denial over 1 KiB is left out.
+func TestResultFits(t *testing.T) {
+	d := ops.Deny(ops.BrokerUnavailable, "egress", ops.Slots{By: "forwarder"})
+	d.Msg += strings.Repeat("<", (ops.MaxDenial-len(d.JSON()))/6) // '<' is 6 bytes as JSON
+	d.Msg += strings.Repeat("a", ops.MaxDenial-len(d.JSON()))
+	big := d
+	big.Msg += "a"
+	if len(d.JSON()) != ops.MaxDenial || len(big.JSON()) != ops.MaxDenial+1 {
+		t.Fatalf("denials of %d and %d bytes", len(d.JSON()), len(big.JSON()))
+	}
+	var lines []string
+	for range taskrun.LogMax - 1 {
+		lines = append(lines, string(d.JSON()))
+	}
+	log := filepath.Join(t.TempDir(), "denials.jsonl")
+	if err := os.WriteFile(log, []byte(strings.Join(append(lines, string(big.JSON())), "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := strings.Repeat("x", 100) + strings.Repeat("\x1b", MaxResultOutput-100)
+	res := Result{Exit: 0, Output: out, OutputLen: 1 << 30, ProbeMS: 5, Denials: denials(log)}
+	if len(res.Denials) != MaxResultDenials {
+		t.Fatalf("%d denials", len(res.Denials))
+	}
+	b := fit(res)
+	if n := len(request("task.result", json.RawMessage(b))); n > gate.MaxRequest || n <= gate.MaxRequest-6 {
+		t.Fatalf("a request of %d bytes", n)
+	}
+	var got Result
+	if err := json.Unmarshal(b, &got); err != nil || !strings.HasSuffix(out, got.Output) || len(got.Output) < 5000 ||
+		got.OutputLen != 1<<30 || len(got.Denials) != MaxResultDenials {
+		t.Fatalf("%v: %d output bytes, %d denials", err, len(got.Output), len(got.Denials))
+	}
+	small := Result{Exit: 3, Output: "done\n", OutputLen: 5}
+	if b, _ := json.Marshal(small); !bytes.Equal(fit(small), b) {
+		t.Fatal("a result that fits must be sent as it is")
+	}
+}
+
+// #223: post writes END <sha256 of the params> to the witness before the gate gets them, since the gate stops the task
+// before it answers.
+func TestPostWritesEND(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "post") // sun_path is 104 bytes on macOS
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock, wit := filepath.Join(dir, "gate.sock"), filepath.Join(dir, "witness")
+	if err := os.WriteFile(wit, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	type got struct{ line, witness []byte }
+	ch := make(chan got, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		line, _ := bufio.NewReader(c).ReadBytes('\n')
+		w, _ := os.ReadFile(wit)
+		ch <- got{line, w}
+		c.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopped":"completed"}}` + "\n"))
+		c.Close()
+	}()
+	rec := &taskrun.Recorder{Log: filepath.Join(dir, "denials.jsonl"), Witness: wit}
+	r := &Runner{Sock: sock, Deadline: time.Now().Add(time.Hour), Now: time.Now, Sleep: time.Sleep}
+	if err := r.post(rec, Result{Exit: 0, Output: "<ok>\n", OutputLen: 5}); err != nil {
+		t.Fatal(err)
+	}
+	g := <-ch
+	var req struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(g.line, &req); err != nil || req.Method != "task.result" {
+		t.Fatalf("%v: %s", err, g.line)
+	}
+	sum := sha256.Sum256(req.Params)
+	if want := "END " + hex.EncodeToString(sum[:]) + "\n"; string(g.witness) != want {
+		t.Fatalf("witness %q when the post arrived, want %q", g.witness, want)
+	}
+	if _, err := ops.ParseWitness(strings.TrimSuffix(string(g.witness), "\n")); err != nil {
+		t.Fatal(err)
 	}
 }
 
