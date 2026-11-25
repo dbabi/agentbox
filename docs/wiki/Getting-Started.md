@@ -1,6 +1,6 @@
 This page takes you from a fresh Apple Silicon Mac to a passing install gate in a QEMU VM. Part 2 then shows a first install on a real PC with the zero-touch USB stick.
 
-> **Early alpha. Not for production use.** agentbox runs no AI agents yet. Today it is an installer and an OS layer: an unattended Ubuntu Server 26.04.1 install with optional disk encryption and btrfs A/B generations, plus the first host services (a firewall, an audit daemon and a root daemon skeleton). It has been tested in QEMU VMs only. No real hardware has run it yet.
+> **Early alpha. Not for production use.** agentbox runs no AI agents yet: no task can reach a model. Today it is an installer and an OS layer: an unattended Ubuntu Server 26.04.1 install with optional disk encryption and btrfs A/B generations. It also has the first host services (a firewall, an audit daemon and a root daemon), the checks for agent requests, agent accounts and sealed task containers. It has been tested in QEMU VMs only. No real hardware has run it yet.
 
 A *gate* is a test script. It installs agentbox in a VM, boots it, and checks the result. `hack/gate.sh none` is the shortest gate that installs a whole box. It installs with no disk encryption.
 
@@ -265,7 +265,7 @@ rm -rf .vm bin
 
 Know this before you install on real hardware:
 
-- The host firewall drops inbound traffic except SSH from the address ranges in the seed (`--ssh-from`). Put the box on a network you trust.
+- Inbound, the host firewall drops new connections, except SSH from the address ranges in the seed (`--ssh-from`) and Tailscale traffic. Put the box on a network you trust.
 - There are no automatic security updates. Nothing updates packages by itself. An admin can upgrade named packages with `os plan --install PKG`, then `os apply`. There is no upgrade-all command yet.
 - The agentbox release on the box cannot be updated. A new release means a reinstall.
 - amd64 UEFI has not run anywhere yet. On amd64, only legacy BIOS has run, in a VM.

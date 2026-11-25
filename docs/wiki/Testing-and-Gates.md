@@ -52,9 +52,9 @@ What they check:
 | `internal/seed` | The seed's input rules: what it accepts and what it refuses. The rendered seed for every mode and boot type. The seed's shell pieces, run under `dash` with fake tools: the disk guard, the GRUB script `09_agentbox`, the commit deadline, driver detection, the kernel swap. The seeds for all three modes and both boot types pass `hack/verify-seed.py`. |
 | `internal/recovery` | Recovery key generation. Weak or malformed public keys are refused. Encryption and decryption round-trip, including through `openssl`. |
 | `internal/rootd/gens` | Generation logic: numbering, GRUB entries and grubenv, kernel order, retention, the fstab rewrite, initrd checks, plan parsing and the plan hash. |
-| `internal/fw` | The rendered ruleset, the table hash and the per-set comparisons that `fwcheck` makes, the refill script, the reserved-ports check, and a wall-clock step between writes. |
+| `internal/fw` | The rendered ruleset, the table hash and the per-set comparisons that `fwcheck` makes, the refill script, the reserved-ports check, a wall-clock step between writes, and that each broker unit, once it exists, hides systemd-resolved. |
 | `internal/audit` | auditd: the hash chain, segment rotation and sealing, torn tails, clock steps, crashes at each seal step, disk-full mode, taint epochs and write rules, the checks on denial records and audit classes, and `audit verify`. On Linux, the tests that need `chattr` skip unless they run with `CAP_LINUX_IMMUTABLE`. |
-| `internal/rootd`, `internal/rootd/resolve`, `internal/rootd/quota`, `internal/rootd/nl` | rootd: audited egress edits, one at a time and matched on the parsed entry, the fixed port pairs, throttled denial records, and the broker units that will hide systemd-resolved; the resolver's refusal rules (private, special-purpose and NAT64-wrapped answers, the route check); the quota limits and `btrfs qgroup show` parsing; the netlink messages for sets and conntrack. Task start and stop, the rule that an attach and a task of one agent exclude each other, the task block that survives a restart, and `rootd.db`'s mode and STRICT tables. The alert queue: an alert ntfy refused survives a restart and goes out later, one that keeps failing doesn't hold back the rest, and the queue is bounded. |
+| `internal/rootd`, `internal/rootd/resolve`, `internal/rootd/quota`, `internal/rootd/nl` | rootd: audited egress edits, one at a time and matched on the parsed entry, the fixed port pairs and throttled denial records; the resolver's refusal rules (private, special-purpose and NAT64-wrapped answers, the route check); the quota limits and `btrfs qgroup show` parsing; the netlink messages for sets and conntrack. Task start and stop, the rule that an attach and a task of one agent exclude each other, the task block that survives a restart, and `rootd.db`'s mode and STRICT tables. The alert queue: an alert ntfy refused survives a restart and goes out later, one that keeps failing doesn't hold back the rest, and the queue is bounded. |
 | `internal/ops` | The operation registry: every operation's fields, the generated files in `gen/` and the startup check against them, the denial codes table and its append-only golden list, the denial constructor, the argument and audit-class checks, and the reply checks a task will run on denials. |
 | `internal/gate`, `internal/ids` | agentboxd's task gate: per-task sockets, caller identity from the socket, schema checks and typed denials, and the in-task check on each rootd denial before the gate relays it. The `<kind>_<ULID>` ids. |
 | `internal/task`, `internal/seccomp` | The task container's launch command, its generated CLI configs, the PAM line that skips motd for agent users and goes away with the motd lines, how the task's PID 1 retries the gate, and how it posts its result: cut to fit one gate line, with its newest denials, after the witness line that carries the result's SHA-256. The task seccomp profile: no unconditional `ioctl` rule, and every 16-bit command, with and without high bits set, gets `EOPNOTSUPP` for btrfs and is allowed otherwise. The upstream profile is pinned by its SHA-256. Only Unix, IPv4, IPv6 and routing netlink sockets and Unix socket pairs are allowed, compared on the low 32 bits. `clone` and `unshare` get `EPERM` for every namespace flag, `setns` gets `EPERM` and `clone3` gets `ENOSYS`. |
@@ -70,7 +70,7 @@ What they check:
 | `hack/release` | Two builds of one release give the same bytes, and minisign verifies the signature. |
 | `hack` | The test harness itself. The QEMU command line is right even from a path with spaces, commas and glob characters. The ISO pin check and `remaster-iso.sh` work. The `dup-serial` disk check works on real qcow2 images. No `apply-gate.sh` check runs a value from the VM as code on the host. `powercut.sh boot` puts the VM disk back whether its checks pass or fail. |
 
-At the time of writing there are 207 top-level tests and 49 fuzz tests.
+At the time of writing there are 311 top-level tests and 51 fuzz tests.
 
 Some tests need outside tools: `dash`, `sha256sum`, `xorriso`, `openssl`, `minisign`, `qemu-img` and `qemu-io`, `uv` (or `python3` with PyYAML), and the `agentbox-powercut` image in the podman machine.
 
@@ -114,7 +114,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 ```
 
 - The script runs the fuzz tests at low priority, `FUZZ_JOBS` at a time, each for the full duration. A crash stops only that test; the rest still run. Then it writes `summary.txt` under `.fuzz/<start time>/`, or under `$OUT`, which must not hold an earlier run. It exits 1 if any test fails.
-- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 53 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
+- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 51 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
 - Each `go test` process and each fuzz worker gets `GOMEMLIMIT=$FUZZ_MEM` (default `1GiB`). `FUZZ_PARALLEL` sets the workers per test (default 1).
 - It records the commit the run started on, and each test's CPU seconds (`cpu_s`, the build included).
 - Go keeps each test's corpus in `$(go env GOCACHE)/fuzz`, so the next run starts from it. `go clean -fuzzcache` deletes it.
@@ -122,7 +122,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 - A crash input lands in its package's `testdata/fuzz/<test>/`. Commit it with the fix, so it stays a regression test.
 - On a Mac, `caffeinate -i` keeps the machine from idle sleep. Keep it on power with the lid open.
 
-The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 53 tests take about 22 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
+The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 51 tests take about 21 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds. `FuzzScanSegment` skips there: its test needs `chattr`, which needs root on Linux.
 
 ### The 24 h gate
 
@@ -629,6 +629,7 @@ The raw logs stay in the maintainer's local evidence store, not in the repo.
 | Logged apply in `cuts` | Passed: each run replayed more than 1,000 writes to `/bootpart`, and none left GRUB without a bootable entry. Each of the 4 splits found also booted clean. | `c4ecfa6`. The split boots ran on a fix branch before it merged. |
 | Several gates at once | Passed: four VMs at once, one per worktree | `e2e53af` |
 | amd64 UEFI | Not run anywhere | |
+| amd64 zero-touch image as an emulated USB stick, with no install | Two one-off probes. Under legacy BIOS (SeaBIOS), it reached GRUB and the live installer. Under UEFI with Secure Boot off (OVMF), it reached the installer kernel. | branches before they merged |
 | Real hardware | Not run | |
 | CI: `test` and `lint` | Passed on every push to `main` from `12b9e54`, which added `lint`, to `ad5338c`. Failed at `d375331`, the milestone 2 merge, for three causes: staticcheck SA4016; the `chattr` tests on an unprivileged runner; and govulncheck, which flagged 25 standard-library vulnerabilities in go1.26.0 (fixed by pinning `toolchain go1.26.11`); the staticcheck failure stopped `lint` before govulncheck, so it first showed on the next run. Fixed in the pull request for issue #45. The `chattr` tests run as root in `test` since issue #47. | `ad5338c`, `d375331` |
 
@@ -659,7 +660,8 @@ All VM gates on a fresh `none`-mode install, arm64 UEFI, Secure Boot on, with fo
 | Milestone 2 suites | Passed again: `w3-firewall` 54, `w3-auditd` 112, `w3-rootd` 104 and `w3-quota-ntfy` 54 PASS, 0 FAIL each | `ac68bc8` |
 | Milestone 1 smoke: `gates-none`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `zero-touch-iso` | Passed | `ac68bc8`; `zero-touch-iso` at `008e121`, which adds only docs and the docs lint |
 | Fuzz tests, short run | All 45 for 12 minutes at once on macOS: 43 passed and 2 crashed. Both bugs are fixed, each crash input is a committed test, and the 4 affected fuzz tests then ran 12 minutes each with no crash. | the pull request branch before it merged as `ac68bc8` |
-| Fuzz tests, 24 hours | Not run yet. A 24-hour local run stopped when the host restarted, with no result. The first nightly `fuzz` run: 41 of 46 fuzz tests ran 5 hours each with no crash, and 5 were still running. | `a6897c0` |
+| Fuzz tests, a 24-hour local run on macOS | Stopped after 5 h 25 min, when the host restarted. It wrote 4 crash inputs. One was a real bug: `ParseSetJSON` accepted a zoned IPv6 address. The other 3 came from the host running out of memory, not from the code. The fix and all 4 inputs merged in pull request #86 (issue #85). | `3706f96` |
+| Fuzz tests, nightly `fuzz` runs on Linux | No crash. 45 of 46 fuzz tests ran 5 hours each at `a6897c0`, and 49 of 50 ran 3 hours each at `d7a5e8d`. Both times `FuzzScanSegment` skipped: its test needs `chattr`, which needs root on Linux. | `a6897c0`, `d7a5e8d` |
 | CI: `internal/audit` as root | Passed: 28 PASS, 0 SKIP | `3b4c438` |
 | `go vet ./...` and `go test ./...` | Passed on the Mac | `ac68bc8` |
 | Milestone 3 gates on amd64 BIOS, in CI under KVM (`host-gates`), on the same install | Passed: `w4-registry` 11, `w4-agentboxd` 29 and `w4-sockets` 38 PASS, 0 FAIL each | the branch of pull request #178, before it merged |

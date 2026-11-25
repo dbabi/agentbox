@@ -64,11 +64,12 @@ Risky operations wait for a human to sign them.
 The design has two layers:
 
 1. **The OS layer (Built).** It installs Ubuntu, encrypts the disk and keeps the OS in btrfs A/B generations.
-2. **The agent runtime (Designed).** It runs each task in its own container. A few small services decide what the task may do outside that container.
+2. **The agent runtime (Mostly designed).** It runs each task in its own container. A few small services decide what the task may do outside that container.
 
 In the diagram, everything above the OS layer is designed, with these exceptions:
 `agentbox-auditd`, the host firewall, and a skeleton of `agentbox-rootd` (its name resolver, the brokers' firewall sets and audit-segment sealing), built in milestone 2;
-and the task gate in `agentboxd`, built in milestone 3.
+the task gate in `agentboxd`, built in milestone 3;
+and the task container, with rootd's agent accounts, task start and stop, and attach sessions, built in milestone 4.
 None of the other services exists yet.
 
 ## Principles
@@ -238,7 +239,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 
 ## The services
 
-**Status:** Mostly designed. `agentbox-auditd`, a skeleton of `agentbox-rootd` and the packaged ntfy are built (milestone 2). The other services don't exist yet. [Units on the box today](#units-on-the-box-today) lists what runs today.
+**Status:** Mostly designed. `agentbox-auditd` and the packaged ntfy are built, and so are parts of `agentbox-rootd` and `agentboxd` (milestones 2-4). The table says which parts. The brokers, approvald, the local-model units and tailscaled don't exist yet. [Units on the box today](#units-on-the-box-today) lists what runs today.
 
 In the design, rootd, agentboxd, auditd, approvald and the three brokers are all subcommands of the one `agentbox` binary.
 The local-model units run llama-server, and ntfy and tailscaled come from their own packages.
@@ -622,7 +623,7 @@ The brokers that will use it are not built.
 |---|---|---|
 | LUKS disk key | Unlocked through clevis: the TPM, plus Tang in `tpm2+tang`. The 48-digit install key opens its own key slot. It is kept only in `recovery.bin`, encrypted to your offline recovery key. | Built |
 | LLM API keys | `agentbox-keys` only | Designed |
-| Subscription logins | `session-home`, for interactive sessions only | Designed |
+| Subscription logins | `session-home`, for interactive sessions only | Built. A login can't reach its servers from an attach yet (issue #90). |
 | GitHub token | `agentbox-git` only, scoped to registered repos | Designed |
 | Approval keys | Your laptop (SSH key) and your phone (passkey). Never on the box. | Designed |
 

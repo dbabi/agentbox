@@ -40,9 +40,9 @@ These parts of the path have not run in any test:
 
 Know these limits before the box joins your network:
 
-- It runs no AI agents yet. Today agentbox is an installer, an OS layer and the first host services.
-- The host firewall drops inbound traffic except SSH from the address ranges in the seed (`--ssh-from`). Put the box on a network you trust.
-- The milestone 2 services (firewall, audit daemon, root daemon, quotas, ntfy) have passed their gates in `none` mode on arm64 UEFI only.
+- It runs no AI agents yet: no task can reach a model. Today agentbox is an installer, an OS layer, the first host services, the checks for agent requests, agent accounts and sealed task containers.
+- Inbound, the host firewall drops new connections, except SSH from the address ranges in the seed (`--ssh-from`) and Tailscale traffic: everything on `tailscale0`, and UDP port 41641 from any address. Put the box on a network you trust.
+- The host services (firewall, audit daemon, root daemon, quotas, ntfy) and the request checks have passed their gates in `none` mode only. They ran on arm64 UEFI, and on amd64 BIOS in a weekly CI job. Agent accounts and task containers have passed theirs on arm64 UEFI only.
 - Nothing updates packages by itself. An admin updates them with `os plan` and `os apply`. See [Generations and Updates](Generations-and-Updates.md).
 - The agentbox release on the box cannot be updated. A new release means a reinstall.
 

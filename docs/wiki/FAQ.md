@@ -1,6 +1,6 @@
 Short answers to common questions. For an overview, start at [Home](README.md).
 
-agentbox is early alpha. Answers about agents, brokers and approvals describe the design. Those parts are not built yet.
+agentbox is early alpha. Answers about the brokers, policy and approvals describe the design. Those parts are not built yet.
 
 ## The basics
 
@@ -10,10 +10,10 @@ No. It is early alpha. Do not use it for production, or for data you cannot affo
 
 At the time of writing:
 
-- Milestones 1, 2 and 4 of 9 are built: the installer, the OS layer, the first host services (a firewall, an audit daemon and a root daemon skeleton), agent accounts and task containers. Milestone 3, the request checks, waits for its 24-hour fuzz run.
+- Milestones 1, 2 and 4 of 9 are built: the installer, the OS layer, the first host services (a firewall, an audit daemon and a root daemon), agent accounts and task containers. Milestone 3, the request checks, waits for its 24-hour fuzz run.
 - No AI agent can do useful work on it yet: no task can reach a model.
 - It has run only in QEMU virtual machines. No real hardware has run it.
-- The host firewall drops inbound traffic except SSH from the address ranges in the seed. By default those are the private LAN ranges and the Tailscale range.
+- Inbound, the host firewall drops new connections, except SSH from the address ranges in the seed and Tailscale traffic (everything on `tailscale0`, and UDP port 41641 from any address). By default the SSH ranges are the private LAN ranges, `100.64.0.0/10` (Tailscale's range) and IPv6 link-local. [Security Model](Security-Model.md) lists the other exceptions.
 - There are no automatic security updates: apt's daily timers are masked. Packages do not change on their own. To change them, an admin runs `agentbox os plan`, then `agentbox os apply`, as root on the box. The binary is not on `PATH`, so give its full path, for example `sudo /var/lib/agentbox/current/bin/agentbox os plan --install <pkg>`.
 - An installed box cannot update its agentbox release. A new release means a reinstall.
 
@@ -39,12 +39,12 @@ agentbox is the operating system of a dedicated machine. Its goal is to let agen
 |---|---|---|
 | Runs on | Your workstation or a hosted dev service | A dedicated machine that agentbox installs from scratch |
 | Covers | One project's tools | The whole OS: install, disk encryption, OS changes, automatic fallback |
-| Network in the container | Usually full access | None (planned) |
+| Network in the container | Usually full access | None (built) |
 | Credentials in the container | Whatever you mount or forward | None. Brokers outside the container hold them (planned) |
-| Effects outside the container | Whatever its network and mounts allow | Only typed operations, checked by policy and audited (planned) |
+| Effects outside the container | Whatever its network and mounts allow | Only typed operations. The request checks and the audit log are built. Policy and the operations themselves are planned. |
 | OS package changes | Rebuild the image | Built offline into a new OS generation, kept only if it boots healthy (built) |
 
-Inside its task container, an agent will run without permission prompts. It can write to its workspace and to a temporary home directory. The container is thrown away when the task ends. Today only the OS layer exists.
+Inside its task container, an agent runs without permission prompts. It can write to its workspace and to a temporary home directory. The container is thrown away when the task ends. This part is built, but no task can reach a model yet.
 
 ## Design choices
 
@@ -79,7 +79,8 @@ btrfs makes OS generations cheap. It also keeps the OS and your data apart, in o
 - Each OS generation is a btrfs subvolume. `agentbox os apply` starts a new one with a copy-on-write snapshot of the running generation, so the copy is fast and small.
 - Data that must survive a fallback lives in its own subvolumes. They include `/home`, `/var/log`, `/srv` and `/var/lib/agentbox`. A fallback does not touch them.
 - All subvolumes share one pool with zstd compression. In the encrypted modes, that pool sits inside one LUKS2 volume.
-- btrfs quotas keep a disk reserve: one parent quota group, `2/0`, caps every store agents and apps can fill, so the OS and agentbox's control state always have room (built in milestone 2). Per-agent limits and read-only snapshots for agent workspaces are designed, not built.
+- btrfs quotas keep a disk reserve: one parent quota group, `2/0`, caps every store agents and apps can fill, so the OS and agentbox's control state always have room (built in milestone 2). Each agent also gets its own quota group under `2/0`, with its own limit (built in milestone 4).
+- Before each task starts, agentbox takes a read-only snapshot of the agent's workspace. `agentbox task undo` restores the workspace from it (built).
 
 The power-cut test harness replays the VM disk at each flush. It runs `btrfs check --readonly` on every replayed state. At the time of writing, every checked state passed. Those checks ran only on an unencrypted (`none`) disk. The harness does not model writes that land out of order between flushes, torn (partly written) sectors, or disks that ignore flushes. [Testing and Gates](Testing-and-Gates.md) has the full list.
 
@@ -109,14 +110,14 @@ The planned path after the first version is a unified kernel image (UKI) with a 
 
 ### Can I run it in the cloud?
 
-Not today. No cloud VM has run agentbox. It is designed for a dedicated machine on your own network.
+Not today. No cloud provider's VM has booted agentbox. It is designed for a dedicated machine on your own network.
 
 - The installer boots the Ubuntu Server ISO and wipes one disk, matched by its exact serial. Most cloud VMs boot from a provider image, not from an installer ISO.
 - The encrypted modes need a TPM 2.0. The default mode, `tpm2+tang`, also needs a Tang server on the same LAN, at a private IPv4 address.
 - The disk encryption targets disk removal and whole-machine theft. Those are threats to a box you own.
 - The host firewall takes SSH from private LAN ranges by default. Do not give the box a public IP address.
 
-So far, agentbox has run only in QEMU VMs on an Apple Silicon Mac.
+So far, agentbox has run only in QEMU VMs: on an Apple Silicon Mac, and under KVM on CI's amd64 Linux runners.
 
 ### Does it need the internet?
 
@@ -133,4 +134,4 @@ Yes, for the install and for package changes. The first boot also needs your rel
 Two more points:
 
 - A new generation commits only if the box has an IPv4 default route. That is part of the health check.
-- In the design, agent tasks get no network at all. Brokers reach allowlisted hosts for them, so agents that use hosted LLM APIs will still need the internet.
+- Agent tasks get no network at all (built). In the design, brokers reach allowlisted hosts for them, so agents that use hosted LLM APIs will still need the internet.
