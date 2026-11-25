@@ -605,6 +605,28 @@ func TestManifestContentRoots(t *testing.T) {
 	}
 }
 
+// #206, #207: the config of a git dir behind a .git file padded past 4 KiB, and of git dirs planted in another one's
+// refs or objects, need an ack; what those git dirs keep as inert, and the real ones' refs and objects, don't.
+func TestManifestPlantedGitDirs(t *testing.T) {
+	ws := t.TempDir()
+	for f, b := range map[string]string{"p/.git": "gitdir: ../gd" + strings.Repeat("\n", 5000), "gd/HEAD": "", "gd/commondir": "../gd2", "gd2/config": "",
+		"gd2/objects/ab": "o", ".git/HEAD": "", ".git/refs/heads/main": "r", ".git/objects/cd/ef": "o", "sub/.git": "gitdir: ../.git/refs/evil\n",
+		".git/refs/evil/HEAD": "", ".git/refs/evil/commondir": ".", ".git/refs/evil/refs/heads/main": "r", ".git/refs/evil/config": "",
+		"q/.git": "gitdir: ../.git/objects/fake\n", ".git/objects/fake/HEAD": "", ".git/objects/fake/hooks/post-checkout": ""} {
+		os.MkdirAll(filepath.Join(ws, filepath.Dir(f)), 0o755)
+		os.WriteFile(filepath.Join(ws, f), []byte(b), 0o644)
+	}
+	m, err := Manifest(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := slices.Sorted(maps.Keys(m))
+	want := []string{".git/objects/fake/hooks/post-checkout", ".git/refs/evil/commondir", ".git/refs/evil/config", "gd/commondir", "gd2/config", "p/.git", "q/.git", "sub/.git"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("manifest %q, want %q", got, want)
+	}
+}
+
 // #202: a symlink at or under a control path is recorded by its target and by what it resolves to in the session, so
 // an edit behind an acked link needs an ack too; a link into session-home is followed there, and refused without it.
 func TestManifestLinks(t *testing.T) {

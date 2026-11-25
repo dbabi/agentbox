@@ -19,7 +19,9 @@
 #          next attach, and only that one is listed: AGENTS.md in the workspace, and a skill, a CLAUDE.md, a rewritten
 #          ~/.bashrc and the removed ~/.profile and ~/.bash_profile in session-home. The session's CODEX_HOME is in
 #          session-home (the agent's quota) and is gone after it. A .git link into session-home, and a relative
-#          gitdir: that climbs into it, each refuse the attach. A CLAUDE.md symlink, its target and the file that
+#          gitdir: that climbs into it, each refuse the attach. Git reads the config of the git dir behind a .git file
+#          padded past 4 KiB and of one planted in .git/refs, and the attach lists both; a .git file over git's 1 MiB
+#          limit refuses the attach. A CLAUDE.md symlink, its target and the file that
 #          target imports, CLAUDE.local.md and AGENTS.override.md are each listed; once acked, an edit to the
 #          imported file alone refuses the next attach.
 #          The session can't write, remove or move session-home's settings, which stay byte-for-byte unchanged. The
@@ -238,6 +240,19 @@ as sh -c "rm $W/gl/.git && echo 'gitdir: ../../home/agent/g' > $W/gl/.git"
 check "#201 so does a relative gitdir: that climbs out of /workspace into it" '! attach --cli bash </dev/null >/tmp/gate-g2 2>&1; cat /tmp/gate-g2;
   grep -q "gl/.git\" names \"../../home/agent/g\", a git dir in session-home" /tmp/gate-g2'
 as rm -rf $W/gl
+# #206, #207: the git dir behind a .git file padded past 4 KiB, and one planted in .git/refs, as git reads them
+as sh -c "cd $W && mkdir -p gp gd gd2/objects gd2/refs sub .git/refs/evil/objects .git/refs/evil/refs &&
+  { printf 'gitdir: ../gd'; head -c 5000 /dev/zero | tr '\0' '\n'; } > gp/.git && cp .git/HEAD gd/HEAD && echo ../gd2 > gd/commondir &&
+  printf '[alias]\n\tgp = !echo gate-gd2\n' > gd2/config && echo 'gitdir: ../.git/refs/evil' > sub/.git && cp .git/HEAD .git/refs/evil/HEAD &&
+  echo . > .git/refs/evil/commondir && printf '[alias]\n\tgp = !echo gate-evil\n' > .git/refs/evil/config"
+check "#206 #207 (the control) git reads the config of the git dir behind a .git file padded past 4 KiB, and of one planted in .git/refs" '
+  [ "$(as git -C $W/gp gp)" = gate-gd2 ] && [ "$(as git -C $W/sub gp)" = gate-evil ]'
+check "  ... and the attach lists both configs" '! attach --cli bash </dev/null >/tmp/gate-g3 2>&1; cat /tmp/gate-g3;
+  grep -qE "[ :,]\"gd2/config\"[,;]" /tmp/gate-g3 && grep -qE "[ :,]\"\.git/refs/evil/config\"[,;]" /tmp/gate-g3'
+as sh -c "{ printf 'gitdir: ../gd'; head -c 1048576 /dev/zero | tr '\0' '\n'; } > $W/gp/.git"
+check "  ... a .git file over git's 1 MiB limit refuses the attach, naming it" '! attach --cli bash </dev/null >/tmp/gate-g4 2>&1; cat /tmp/gate-g4;
+  grep -q "\"gp/.git\" can.t be read in full" /tmp/gate-g4'
+as rm -rf $W/gp $W/gd $W/gd2 $W/sub $W/.git/refs/evil
 # #202, #210: what a control path leads to is one too
 as sh -c "cd $W && mkdir -p docs && echo 'Follow @docs/style.md' > docs/guide.md && echo tabs > docs/style.md && ln -s docs/guide.md CLAUDE.md &&
   echo x > CLAUDE.local.md && echo x > AGENTS.override.md"
