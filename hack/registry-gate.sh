@@ -6,8 +6,9 @@
 #          box by the real path (make release, install.sh).
 # checks   rootd starts on the shipped gen/ and logs the match. Then, one at a time: one byte appended to
 #          gen/cedar.schema, an MCP tool renamed, an op added to the JSON schemas, gen/ops.schema.json deleted, and an extra
-#          file in gen/: each time rootd refuses to start (no READY=1, the unit is not active) and the journal names the
-#          mismatch. With the files restored, rootd starts again and no unit is failed.
+#          file in gen/: each time rootd refuses to start and the journal names the mismatch. The restart fails at once,
+#          and the unit stays failed with rootd's refusal status, never restarted. With the files restored, rootd starts
+#          again and no unit is failed.
 # PASS/FAIL lines go to .vm/registry-gate.txt, command output to .vm/registry-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -51,8 +52,11 @@ G=$(readlink -f /var/lib/agentbox/current)/gen
 U=agentbox-rootd.service
 B=/run/registry-gate-gen
 rm -rf $B && cp -a "$G" $B
-# refused MSG: rootd's restart fails, it never gets active, and its journal since the restart has MSG
-refused() { t=$(date +%s); sleep 1; ! systemctl restart $U && sleep 3 && ! systemctl is-active -q $U &&
+# refused MSG: rootd's restart fails, its journal since the restart has MSG, and the unit stays failed with rootd's
+# refusal status (78, RestartPreventExitStatus=), never restarted (#256). A start job that never ends fails the check
+# at the timeout instead of hanging the gate.
+refused() { t=$(date +%s); sleep 1; ! timeout 60 systemctl restart $U && sleep 3 && systemctl is-failed -q $U &&
+  [ "$(systemctl show -P ExecMainStatus $U)" = 78 ] && [ "$(systemctl show -P NRestarts $U)" = 0 ] &&
   journalctl -u $U -o cat --since "@$t" | grep -F "op registry mismatch, refusing to start" | grep -qF "$1"; }
 restore() { systemctl stop $U; rm -rf "$G" && cp -a $B "$G"; systemctl reset-failed $U; }
 check "the release ships gen/ with the six generated files" '[ "$(ls "$G" | tr "\n" " ")" = "ask.v1.json audit-deny.v1.json cedar.schema denial.v1.json mcp-tools.json ops.schema.json " ]'

@@ -19,6 +19,9 @@ Sockets=agentbox-rootd-admin.socket agentbox-rootd-gate.socket agentbox-audit-se
 # task and attach session (#218). An explicit restart still restarts them.
 RestartMode=direct
 Restart=on-failure
+# a start check's refusal (rootd.ExitRefused) ends the start as failed: in direct mode a restart never ends the start
+# job, so systemctl start and restart would hang for as long as rootd refuses (#256). A crash still restarts it.
+RestartPreventExitStatus=78
 RestartSec=2s
 UMask=0077
 RestrictAddressFamilies=AF_UNIX AF_NETLINK

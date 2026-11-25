@@ -108,7 +108,9 @@ main)
   check "SCM_RIGHTS on rootd-admin.sock: connection closed, no reply" '$RG sendfd $R/rootd-admin.sock'
   check "an unknown op gets bad_request"          '$RG req $R/rootd-admin.sock "{\"op\":\"nope\"}" | grep -q bad_request'
   usermod -aG agentbox-admin agentbox-approve
-  check "rootd refuses to start while agentbox-approve is in agentbox-admin" '! systemctl restart agentbox-rootd.service && journalctl -u agentbox-rootd.service -n 20 -o cat | grep -q "agentbox-approve is a member of agentbox-admin"'
+  # the timeout: a start job that never ends fails the check instead of hanging the gate (#256)
+  check "rootd refuses to start while agentbox-approve is in agentbox-admin" '! timeout 60 systemctl restart agentbox-rootd.service && journalctl -u agentbox-rootd.service -n 20 -o cat | grep -q "agentbox-approve is a member of agentbox-admin"'
+  check "  ... the unit stays failed with rootd's refusal status (78), and systemd does not restart it" 'sleep 3; systemctl is-failed -q agentbox-rootd.service && [ "$(systemctl show -P ExecMainStatus agentbox-rootd.service)" = 78 ] && [ "$(systemctl show -P NRestarts agentbox-rootd.service)" = 0 ]'
   gpasswd -d agentbox-approve agentbox-admin >/dev/null
   systemctl reset-failed agentbox-rootd.service; systemctl start agentbox-rootd.service
   check "and starts once it is not"                'systemctl is-active -q agentbox-rootd.service'

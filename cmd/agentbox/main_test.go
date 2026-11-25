@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -311,5 +312,26 @@ func TestFWCheckRepair(t *testing.T) {
 	fwCheck = func() ([]string, error) { return []string{"altered"}, nil }
 	if err := cmdFWCheck(nil); err == nil {
 		t.Error("fwcheck passed an altered table")
+	}
+}
+
+// #256: a start check's refusal exits with rootd.ExitRefused, which agentbox-rootd.service lists in
+// RestartPreventExitStatus=, so the start ends as failed instead of under a start job that never ends. Any other
+// start error still exits 1, and systemd restarts rootd.
+func TestRootdRefusalExitStatus(t *testing.T) {
+	err := run([]string{"rootd", "--gen-dir", t.TempDir()}) // an empty gen/: an op registry mismatch
+	if !errors.Is(err, rootd.ErrRefused) || !strings.HasPrefix(err.Error(), "op registry mismatch, refusing to start (§5.1): ") || exitStatus(err) != rootd.ExitRefused {
+		t.Fatalf("empty gen/: exit %d: %v", exitStatus(err), err)
+	}
+	// the repo's gen/ matches, so rootd passes the check and fails later: no sockets from systemd
+	if err := run([]string{"rootd", "--gen-dir", filepath.Join("..", "..", "gen")}); err == nil || exitStatus(err) != 1 {
+		t.Fatalf("matching gen/: exit %d: %v", exitStatus(err), err)
+	}
+	u, err := os.ReadFile(filepath.Join("..", "..", "systemd", "agentbox-rootd.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(strings.Split(string(u), "\n"), "RestartPreventExitStatus="+strconv.Itoa(rootd.ExitRefused)) {
+		t.Errorf("agentbox-rootd.service has no RestartPreventExitStatus=%d line", rootd.ExitRefused)
 	}
 }

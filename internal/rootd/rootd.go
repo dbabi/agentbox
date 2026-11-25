@@ -139,16 +139,24 @@ func approveNotAdmin() error {
 		return fmt.Errorf("agentbox-approve's groups: %v", err)
 	}
 	if slices.Contains(ids, strconv.Itoa(int(g))) {
-		return errors.New("agentbox-approve is a member of agentbox-admin: refusing to start (§2.1)")
+		return fmt.Errorf("agentbox-approve is a member of agentbox-admin: %w (§2.1)", ErrRefused)
 	}
 	return nil
 }
+
+// ErrRefused marks a start check's refusal (§2.1, §5.1): the box is set up wrong, so a restart would refuse again.
+var ErrRefused = errors.New("refusing to start")
+
+// ExitRefused (EX_CONFIG) is agentbox rootd's exit status for ErrRefused. agentbox-rootd.service lists it in
+// RestartPreventExitStatus=: in RestartMode=direct an automatic restart never ends the start job, so without it
+// systemctl start and restart would hang for as long as rootd refuses (#256).
+const ExitRefused = 78
 
 // Run is agentbox-rootd.service (Type=notify): check, open the store, make the dst sets match it, serve the
 // activated sockets, and only then send READY=1.
 func Run(cfg Config) error {
 	if err := ops.Check(cfg.GenDir); err != nil {
-		return fmt.Errorf("op registry mismatch, refusing to start (§5.1): %v", err)
+		return fmt.Errorf("op registry mismatch, %w (§5.1): %v", ErrRefused, err)
 	}
 	log.Printf("op registry matches %s: %d ops", cfg.GenDir, len(ops.Registry))
 	if err := approveNotAdmin(); err != nil {
