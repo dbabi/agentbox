@@ -39,6 +39,7 @@ Built controls cover part of this today:
 - the agentbox release that firstboot installs;
 - the integrity of OS package changes;
 - outbound traffic from agentbox's own service users, which the host firewall holds to the addresses rootd resolved;
+- inbound traffic, which the host firewall drops, except SSH from the seed's address ranges, Tailscale traffic, DHCP replies and IPv6 neighbor discovery;
 - an audit log that records each rootd effect before it runs, and a taint ledger that only rootd's admin path can clear;
 - the host and other agents, from code in a task: each task runs under its agent's own account, in a disposable container with no network, no capabilities and a seccomp profile;
 - the admin's terminal and later tasks, from an interactive session: its output is filtered, and tasks wait until a scan finds no copy of its login token.
@@ -52,8 +53,8 @@ Everything else depends on parts that are designed, not built.
 | Prompt injection, the most likely attacker | Web pages, package READMEs, issues and pull requests, logs, other agents' messages, shared memory | Tasks are sealed: no network, and nothing but the workspace carries over to the next task. No task can reach a model or the internet yet. An agent you run outside a task is not confined. | The brokers, policy and approvals (milestones 5-8) |
 | A compromised agent CLI or dependency | Code that runs inside a task | One disposable rootless container per task, with no network, no capabilities and a seccomp profile. **Built.** All tasks share the host kernel. | microVM tasks (v2) |
 | A thief | The disk alone, or the whole powered-off machine | Disk encryption. **Built.** | A signed PCR 11 policy for `tpm2` mode (v2) |
-| Someone on your LAN or Tailscale network | Open ports, the approval page | SSH accepts keys only. The host firewall filters outbound traffic only, so it does not narrow what the LAN can reach. Tailscale and the approval page are not installed or built. | The approval page comes in milestone 6. Each approval needs a passkey, and the page handles low-risk operations only. |
-| A bug in agentbox's own code | Today: the seed generator, the installer, firstboot and `agentbox os`. Designed: the parsers in every agentbox service and in the local model server. | Strict input checks in `agentbox seed`. OS changes build offline. agentbox itself listens on no network port. | Fuzzers for agentbox's own parsers: JSON-RPC, WebAuthn, git pkt-line, HTTP and nft JSON (milestone 3). The local model server runs with no network and no secrets. |
+| Someone on your LAN or Tailscale network | Open ports, the approval page | SSH accepts keys only. The host firewall drops inbound traffic by default. From the LAN it accepts only SSH from the seed's `--ssh-from` ranges, DHCP replies, IPv6 neighbor discovery and Tailscale's UDP port 41641. It accepts everything that arrives over Tailscale. Tailscale and the approval page are not installed or built. | The approval page comes in milestone 6. Each approval needs a passkey, and the page handles low-risk operations only. |
+| A bug in agentbox's own code | Today: the seed generator, the installer, firstboot, `agentbox os`, and the parsers in rootd, auditd and agentboxd. Designed: the parsers in the brokers and in the local model server. | Strict input checks in `agentbox seed`. OS changes build offline. agentbox itself listens on no network port. Fuzz tests for the built services' parsers. The 24-hour fuzz run is pending (milestone 3). | Fuzz tests for the brokers' parsers as they are built. The local model server runs with no network and no secrets. |
 
 ## Trust boundaries
 
@@ -69,7 +70,8 @@ A trust boundary is a place where data or control passes between parts that trus
 | Running generation to a new generation | Package changes | An offline build in `systemd-nspawn`, with a private user-ID range and no network. One trial boot, then a commit only if the health check passes. |
 | OS generation to persistent data | `/home`, `/var/log`, `/srv`, `/var/lib/agentbox` | This data lives outside the generations. A fallback does not roll it back. |
 | Disk to thief | The disk, or the whole machine | LUKS2, unlocked by clevis with the TPM 2.0 chip, or with the TPM plus Tang |
-| LAN to box | SSH, and Tang requests during boot | SSH accepts keys only. The host firewall has no inbound rules. |
+| LAN to box | SSH, and Tang requests during boot | SSH accepts keys only. The host firewall drops inbound traffic by default. From the LAN it accepts SSH only from the seed's `--ssh-from` ranges, by default the private LAN ranges, the Tailscale range and link-local. It also accepts DHCP replies, IPv6 neighbor discovery, and Tailscale's UDP port 41641 from any address. A port that a service opens stays closed to the LAN. `fwcheck` checks the input chain and the SSH ranges like the rest of the table. |
+| Tailnet to box | Everything that arrives on the `tailscale0` interface | The host firewall accepts all of it, on every port. agentbox does not install Tailscale yet. |
 | agentbox service users to the network | Outbound connections from the broker uids and `_ntfy` | The `inet agentbox` nftables table: each uid reaches only the address and port pairs in its own set. Private and special-purpose ranges are dropped unless that exact uid, address and port is on an allow list. Only rootd fills the sets, from names it resolved. `fwcheck` restores an altered table within 60 s, and agent units can't start while it fails. |
 | Producers to the audit log | Audit records | One socket per producer, checked with `SO_PEERCRED`. auditd acknowledges a record only after it is on disk, and the effect waits for that. rootd seals each finished segment immutable. |
 | Console to box | The keyboard and boot media | Console login needs the admin password. GRUB has no password. |
@@ -168,6 +170,7 @@ This protects the box from a broken update. It does not protect the box from a h
 ### Login
 
 - SSH accepts key login only. Password login over SSH is off.
+- From the LAN, the host firewall accepts SSH only from the seed's `--ssh-from` ranges.
 - The seed accepts these SSH key types: `ssh-ed25519`, `sk-ssh-ed25519@openssh.com` (FIDO security keys), `ecdsa-sha2-nistp256`, `ecdsa-sha2-nistp384`, `ecdsa-sha2-nistp521`, and `ssh-rsa` of 3072 bits or more.
 - The admin password works only on the console and for `sudo`.
 - Ubuntu's root account stays locked.
@@ -199,11 +202,14 @@ These are the known risks. They are listed so you can decide where agentbox fits
 
 ### In the built parts
 
-**Outside tasks: no sandbox, and an outbound-only firewall**
+**Outside tasks: no sandbox, and a firewall that trusts the tailnet**
 
 - agentbox confines only tasks and interactive sessions. Any other program you run on the box is a normal Linux process.
-- The host firewall (milestone 2) filters only outbound traffic, and only from agentbox's own service users. It has no inbound rules, and it does not filter your admin account or root.
-- Any port that a service opens is reachable from every network the box is on. Do not give the box a public IP address.
+- Outbound, the host firewall (milestone 2) filters only agentbox's own service users. It does not filter your admin account or root.
+- Inbound, it accepts everything that arrives on `tailscale0`. Once Tailscale runs, every port that a service opens is reachable from every device on your tailnet.
+- The default `--ssh-from` ranges hold every private LAN range, so any device on your LAN can reach SSH. Narrow them with `--ssh-from` when you make the seed.
+- UDP port 41641 is open from any address, for Tailscale's direct connections.
+- Rootful Docker is unsupported. The ports it publishes go through the forward hook, which the host firewall does not filter.
 - The brokers don't exist yet, so nothing yet hides systemd-resolved's local Varlink and D-Bus interfaces from the broker uids. The broker units will do that (`docs/THREAT-MODEL.md` lists it).
 - While the disk is full, auditd refuses best-effort records such as denials, so those leave no audit record.
 - The milestone 2 gates ran in `none` mode on arm64 UEFI only, not in the encrypted modes or on amd64.
@@ -289,7 +295,7 @@ After the install:
    ```
 
 6. Remove the install stick and the seed stick. Keep any copies of `user-data` and `seed.iso` private.
-7. Keep the box on a network you trust. The host firewall has no inbound rules.
+7. Keep the box on a network you trust. The host firewall accepts SSH from every private LAN range unless you narrow `--ssh-from`, and everything from your tailnet once Tailscale runs.
 8. Apply updates yourself, and read every plan before you approve it. `os plan` takes package names. It has no option yet to plan every pending update at once. `os apply` reboots into the trial generation unless you pass `--no-reboot`:
 
    ```sh
@@ -330,7 +336,7 @@ Never send:
 
 Remove any disk serials, host names and addresses that you do not want to share.
 
-In scope: the code in the repository. That covers `agentbox seed`, the installer it renders, firstboot and `install.sh`. It also covers `agentbox os`, `agentbox recovery`, `make release`, and the test harness, which runs on your machine.
+In scope: the code in the repository. That covers `agentbox seed`, the installer it renders, firstboot and `install.sh`. It also covers the host services (the firewall, auditd, rootd and agentboxd), task containers, interactive sessions, `agentbox os`, `agentbox recovery`, `make release`, and the test harness, which runs on your machine.
 
 Out of scope:
 
