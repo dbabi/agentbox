@@ -298,7 +298,7 @@ Then run the gate that covers what you changed:
 | `internal/rootd/` (outside `gens/`), `cmd/agentbox/rootd.go` | `hack/rootd-gate.sh`, and `hack/fw-gate.sh` if it touches the firewall sets |
 | `internal/rootd/quota/`, `internal/ntfy/` | `hack/quota-ntfy-gate.sh` |
 | `internal/ops/`, `gen/` | `hack/registry-gate.sh` |
-| `internal/gate/`, `internal/denial/`, `internal/ids/` | `hack/agentboxd-gate.sh` |
+| `internal/gate/`, `internal/ids/` | `hack/agentboxd-gate.sh` |
 | `internal/sockets/`, `tmpfiles.d/` | `hack/sockets-gate.sh` |
 | `internal/rootd/accounts/` | `hack/accounts-gate.sh` |
 | `internal/task/`, `internal/seccomp/`, task start and stop in `internal/rootd/` | `hack/tasks-gate.sh` |

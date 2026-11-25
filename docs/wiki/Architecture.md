@@ -796,7 +796,7 @@ Read [Security Model](Security-Model.md) and the one-page threat model in the re
 | `internal/audit` | auditd: segments, the hash chain, the taint database, sealing, `audit verify` | Built (milestone 2) |
 | `internal/ntfy` | ntfy's config, ACLs, unit drop-in and fwcheck's ntfy check | Built (milestone 2) |
 | `internal/ops`, `gen/` | The operation registry, the denial codes table, and the files generated from them: the Cedar schema, the JSON schemas and the MCP tool list | Built (milestone 3) |
-| `internal/gate`, `internal/denial`, `internal/ids` | agentboxd's task gate, the denial encoder, and the `<kind>_<ULID>` ids | Built (milestone 3) |
+| `internal/gate`, `internal/ids` | agentboxd's task gate and the `<kind>_<ULID>` ids | Built (milestone 3) |
 | `internal/sockets` | The socket inventory, the generated tmpfiles.d and `.socket` units, and `agentbox sockets check` | Built (milestone 3) |
 | `internal/rootd/accounts`, `internal/task`, `internal/seccomp`, `internal/rootd/attach`, `internal/controlpaths` | Agent accounts, the task container and its seccomp profile, interactive sessions, and the workspace control-file list | Built (milestone 4) |
 | `internal/taskenv`, `internal/taskrun`, `internal/rootd/witness` | The task environment, the in-task forwarders and `agentbox why`, and the witness pipe rootd reads | Built (milestone 4) |
