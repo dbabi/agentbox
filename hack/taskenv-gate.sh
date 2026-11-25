@@ -185,6 +185,26 @@ task() { o=$WS/$1/.gate-out; rm -f $o $WS/$1/.gate-rc
   cat $o; return "$(cat $WS/$1/.gate-rc)"; }
 check "the task container runs the gate's image, with taskrun's forwarders on 127.0.0.1:8080-8082" '
   task ga "for p in 1F90 1F91 1F92; do grep -q \" 0100007F:\$p 00000000:0000 0A \" /proc/net/tcp || exit 1; done; command -v go"'
+# #218: a crash restarts rootd alone (RestartMode=direct). In the default mode, systemd's automatic restart also
+# restarts every user@ that Requires= rootd, which ends the agent's task. NRestarts counts only automatic restarts.
+# It runs early: the explicit restart near the end restarts the user managers mid-task, and after it the agent's next
+# launch failed with "task image: exit status 1".
+rm -f $WS/ga/wready $WS/ga/wgo $G/last
+task ga "touch /workspace/wready; while [ ! -e /workspace/wgo ]; do sleep 0.1; done; echo outlived" > $G/r7 2>&1 &
+wt=$!
+for i in $(seq 600); do [ -e $WS/ga/wready ] && [ -s $G/last ] && break; sleep 0.1; done
+T7=$(cat $G/last) UM=user@$(id -u ag-ga).service
+um=$(systemctl show -P MainPID $UM) nr=$(systemctl show -P NRestarts agentbox-rootd.service)
+t7=$(date +%s); systemctl kill -s KILL agentbox-rootd.service
+for i in $(seq 300); do [ "$(systemctl show -P NRestarts agentbox-rootd.service)" -gt "$nr" ] && systemctl is-active -q agentbox-rootd.service && break; sleep 0.1; done
+touch $WS/ga/wgo; wait $wt
+# to the host's log: what the check below compares, and the journal around the crash
+echo "rootd crash: NRestarts $nr -> $(systemctl show -P NRestarts agentbox-rootd.service); $UM MainPID $um -> $(systemctl show -P MainPID $UM); task $T7: $(tr '\n' ' ' < $G/r7)"
+$B task list | python3 -c 'import json,sys; print(*[t for t in json.load(sys.stdin)["tasks"] if t["task"]==sys.argv[1]])' "$T7"
+journalctl -b -o short-monotonic -u agentbox-rootd.service -u "$UM" --since @$t7 | grep -v -E "agentbox: (witness|audit)" | tail -25
+check "a rootd crash mid-task (SIGKILL): systemd restarts rootd alone, the agent's user manager keeps its PID, and the task completes" '
+  [ "$(systemctl show -P NRestarts agentbox-rootd.service)" -gt "$nr" ] && [ -n "$um" ] && [ "$um" != 0 ] && [ "$(systemctl show -P MainPID $UM)" = "$um" ] &&
+  grep -qx outlived $G/r7 && [ "$($B task list | python3 -c "import json,sys; print(*[t.get(\"end_reason\") for t in json.load(sys.stdin)[\"tasks\"] if t[\"task\"]==sys.argv[1]])" $T7)" = completed ]'
 
 # --- A-G1: the task env ---
 check "go.private.set{ga, corp.example/*} through rootd-admin.sock, audited" '$B goprivate set --agent ga --patterns "corp.example/*" &&
@@ -293,24 +313,6 @@ systemctl restart agentbox-rootd.service; sleep 1; touch $WS/ga/wgo; wait $wt
 check "C-G2 a rootd restart mid-task marks that witness incomplete" 'wrec $T4 | grep -q "\"incomplete\":true" &&
   journalctl -b -u agentbox-rootd.service -o cat | grep -q "witness $T4: reopened after a restart, marked incomplete"'
 check "  ... and raises no alert: no GATE_MISMATCH record and no ALERT for that task" '! cat $A/seg-*.jsonl | grep "\"task\":\"$T4\"" | grep -q "\"type\":\"\(GATE_MISMATCH\|ALERT\)\""'
-# #218: a crash restarts rootd alone (RestartMode=direct). In the default mode, systemd's automatic restart also
-# restarts every user@ that Requires= rootd, which ends the agent's task. NRestarts counts only automatic restarts.
-rm -f $WS/ga/wready $WS/ga/wgo $G/last
-task ga "touch /workspace/wready; while [ ! -e /workspace/wgo ]; do sleep 0.1; done; echo outlived" > $G/r7 2>&1 &
-wt=$!
-for i in $(seq 600); do [ -e $WS/ga/wready ] && [ -s $G/last ] && break; sleep 0.1; done
-T7=$(cat $G/last) UM=user@$(id -u ag-ga).service
-um=$(systemctl show -P MainPID $UM) nr=$(systemctl show -P NRestarts agentbox-rootd.service)
-t7=$(date +%s); systemctl kill -s KILL agentbox-rootd.service
-for i in $(seq 300); do [ "$(systemctl show -P NRestarts agentbox-rootd.service)" -gt "$nr" ] && systemctl is-active -q agentbox-rootd.service && break; sleep 0.1; done
-touch $WS/ga/wgo; wait $wt
-# to the host's log: what the check below compares, and the journal around the crash
-echo "rootd crash: NRestarts $nr -> $(systemctl show -P NRestarts agentbox-rootd.service); $UM MainPID $um -> $(systemctl show -P MainPID $UM); task $T7: $(tr '\n' ' ' < $G/r7)"
-$B task list | python3 -c 'import json,sys; print(*[t for t in json.load(sys.stdin)["tasks"] if t["task"]==sys.argv[1]])' "$T7"
-journalctl -b -o short-monotonic -u agentbox-rootd.service -u "$UM" --since @$t7 | grep -v -E "agentbox: (witness|audit)" | tail -25
-check "a rootd crash mid-task (SIGKILL): systemd restarts rootd alone, the agent's user manager keeps its PID, and the task completes" '
-  [ "$(systemctl show -P NRestarts agentbox-rootd.service)" -gt "$nr" ] && [ -n "$um" ] && [ "$um" != 0 ] && [ "$(systemctl show -P MainPID $UM)" = "$um" ] &&
-  grep -qx outlived $G/r7 && [ "$($B task list | python3 -c "import json,sys; print(*[t.get(\"end_reason\") for t in json.load(sys.stdin)[\"tasks\"] if t[\"task\"]==sys.argv[1]])" $T7)" = completed ]'
 
 # --- cleanup: the stand-ins go; the box's own state stays ---
 for v in proxy keys; do kill "$(cat $G/svc-$v.pid)" 2>/dev/null; rm -f /run/agentbox-rootd/svc-$v.sock; done
