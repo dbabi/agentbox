@@ -401,13 +401,28 @@ A release is made in two halves. CI builds it, and the owner signs it. The minis
    - The draft's tarball matches `SHA256SUMS`.
    - `gh attestation verify` shows the tarball was built by `release.yml` from the tag's commit.
    - The `ci` and `release` workflows both have a successful push run on that commit. Wait for `ci`, including its BIOS gates, to finish before you sign.
-   - A rebuild of that commit with the same Go version, run with `-unsigned`, is byte-identical to CI's tarball. The tagged code is not given the secret key's path, but it runs as you and can read your files.
+   - A rebuild of that commit with the same Go version, run with `-unsigned`, is byte-identical to CI's tarball. The script hashes CI's tarball before the rebuild starts. The rebuild is the only place the tagged code runs, and it runs as the build user (below), not as you.
    - The script then signs CI's tarball with `minisign`. The signature must have the key ID of `keys/release-minisign.pub`, verify with that key and carry the trusted comment `agentbox <ver>`. The key comes from the clone you run the script from, not from the tagged commit.
 
    Then it uploads `agentbox-<ver>.tgz.minisig` and publishes the release.
 4. The script prints the seed flags: `--release-url https://github.com/dbabi/agentbox/releases/download/v<ver>/agentbox-<ver>.tgz --release-sha256 <sum>`.
 
 `MINISIGN_KEY` defaults to `~/agentbox-keys/minisign.key`. It must be the secret half of `keys/release-minisign.pub`. A draft stays unsigned, and a seed refuses it, until step 3 runs.
+
+### The build user
+
+The rebuild runs code from the tag, so `hack/sign-release.sh` runs it as another user on your machine, through `sudo`. That user is `agentbox-build`, or the one that `AGENTBOX_BUILD_USER` names. Make it once, as a standard user, not an admin:
+
+- On a Mac: `sudo sysadminctl -addUser agentbox-build -password -`. It asks for a password for the new user.
+- On Linux: `sudo useradd --system --no-create-home agentbox-build`.
+
+Before the rebuild starts, the script checks three things as that user. It builds nothing if one fails:
+
+- The user can't read your secret key.
+- The user can't write any directory on your `PATH`. A fake `minisign` or `gh` there would run with your key. On a Mac, an admin can write `/opt/homebrew/bin`.
+- `sudo` runs the user's commands on a terminal of their own, so they can't read what you type. That is `Defaults use_pty`, on by default since `sudo` 1.9.14.
+
+The rebuild gets the clone on its standard input. Of your environment it gets only `PATH`, `GOPROXY` and `GOSUMDB`. It builds in a temp dir of its own, with its own Go caches, and uses `~/sdk/<goversion>` if it can run the `go` there. Otherwise it needs a `go` on your `PATH` that it can run, which downloads that Go version. The build user can still read any file that other users on your machine can, and it can reach the network.
 
 ## The release key
 
