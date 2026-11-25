@@ -139,3 +139,24 @@ func TestCLIPins(t *testing.T) {
 		}
 	}
 }
+
+// host-gates.yml installs one box with the sockets gate and runs the firewall gate's checks on it, so its install must
+// seed the --ssh-from prefixes those checks expect: the ones fw-gate.sh's own install seeds, SSH_FROM.
+func TestHostGatesSSHFrom(t *testing.T) {
+	fw, err := os.ReadFile("fw-gate.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf, err := os.ReadFile("../.github/workflows/host-gates.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := regexp.MustCompile(`(?m)^SSH_FROM="([^"]+)"$`).FindSubmatch(fw)
+	got := regexp.MustCompile(`(?m)^ +- run: hack/sockets-gate\.sh bios install check\n +env:.*\n +SEED_SSH_FROM: '([^']+)'$`).FindSubmatch(wf)
+	if want == nil || got == nil {
+		t.Fatal("no SSH_FROM in fw-gate.sh, or no SEED_SSH_FROM on host-gates.yml's install step")
+	}
+	if string(got[1]) != string(want[1]) {
+		t.Errorf("host-gates.yml seeds --ssh-from %q, but fw-gate.sh's checks expect %q", got[1], want[1])
+	}
+}

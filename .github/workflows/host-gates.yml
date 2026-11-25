@@ -32,6 +32,8 @@ jobs:
       # the sockets gate installs (hack/gate.sh none bios); every later gate runs its checks on that box, so one
       # failing gate still lets the rest run. The order puts the gates that reboot or fill the disk last.
       - run: hack/sockets-gate.sh bios install check
+        env: # the firewall gate's checks need the box seeded with its --ssh-from prefixes, SSH_FROM in hack/fw-gate.sh
+          SEED_SSH_FROM: '10.0.2.0/24 192.0.2.0/25 fd00:ab::/112'
       - if: '!cancelled()'
         run: hack/registry-gate.sh bios checks
       - if: '!cancelled()'
