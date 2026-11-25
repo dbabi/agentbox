@@ -638,11 +638,11 @@ func (s *server) taskAdmin(r request, p peer) reply {
 		}
 		return s.tasks.stop(r.Task, r.Reason)
 	}
-	// the name goes into the task chain and the undo signer: a uid with no passwd entry is refused, never recorded as
+	// the name goes into the task chain and the undo signer: a uid that names no user is refused, never recorded as
 	// another user (#222)
 	u, err := user.LookupId(strconv.Itoa(int(p.uid)))
 	if err != nil {
-		return reply{"ok": false, "error": fmt.Sprintf("uid %d has no passwd entry, so the audit can't name the human: %v", p.uid, err)}
+		return reply{"ok": false, "error": fmt.Sprintf("uid %d names no user on this box, so the audit can't name the human: %v", p.uid, err)}
 	}
 	human := u.Username
 	if r.Op == "task.undo" {

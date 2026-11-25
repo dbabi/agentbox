@@ -283,13 +283,13 @@ func TestWatchTaskClockStep(t *testing.T) {
 	}
 }
 
-// #222: an admin whose uid has no passwd entry is refused, never recorded as root.
+// #222: an admin whose uid names no user is refused, never recorded as root.
 func TestTaskAdminUnknownUID(t *testing.T) {
 	r := newRig(t)
 	s := &server{db: r.db, tasks: r.t}
 	for _, op := range []string{"task.new", "task.undo"} {
 		if rep := s.taskAdmin(request{Op: op, Agent: "claude", Task: ids.New(ids.Task)}, peer{uid: 3999999999}); rep["ok"] != false ||
-			!strings.Contains(fmt.Sprint(rep["error"]), "uid 3999999999 has no passwd entry") {
+			!strings.Contains(fmt.Sprint(rep["error"]), "uid 3999999999 names no user") {
 			t.Fatalf("%s: %v", op, rep)
 		}
 	}
