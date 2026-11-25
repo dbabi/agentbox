@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +30,7 @@ func (fakeAccounts) Lookup(a string) (Account, error) {
 type rig struct {
 	t       *tasks
 	db      *sql.DB
+	mu      sync.Mutex // guards records: task.stop sends some records from its own goroutines
 	records []map[string]any
 	calls   []string
 	launch  [][]string
@@ -60,6 +62,8 @@ func newRig(t *testing.T) *rig {
 			return map[string]any{"ok": true}, nil
 		}},
 		audit: func(m map[string]any) error {
+			r.mu.Lock()
+			defer r.mu.Unlock()
 			if !r.auditUp {
 				return errors.New("auditd down")
 			}
@@ -77,9 +81,23 @@ func newRig(t *testing.T) *rig {
 	return r
 }
 
+// recs is a copy of the audit records so far, safe to read while task.stop's goroutines still send.
+func (r *rig) recs() []map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.records)
+}
+
+// reset drops the audit records so far.
+func (r *rig) reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records = nil
+}
+
 func (r *rig) types() []string {
 	var out []string
-	for _, m := range r.records {
+	for _, m := range r.recs() {
 		out = append(out, m["type"].(string))
 	}
 	return out
@@ -107,8 +125,8 @@ func TestTaskStartAdmin(t *testing.T) {
 	if rep["ok"] != true || !slices.Equal(rep["chain"].([]string), []string{"human:boxadmin", "agent:claude"}) || rep["tainted"] != false {
 		t.Fatalf("start: %v", rep)
 	}
-	if got := r.types(); !slices.Equal(got, []string{"WRITER_ADD"}) || r.records[0]["workspace"] != "workspace:claude#1" {
-		t.Fatalf("audit: %v", r.records)
+	if got := r.types(); !slices.Equal(got, []string{"WRITER_ADD"}) || r.recs()[0]["workspace"] != "workspace:claude#1" {
+		t.Fatalf("audit: %v", r.recs())
 	}
 	argv := strings.Join(r.launch[0], " ")
 	if len(r.launch) != 1 || !strings.Contains(argv, "--unit="+task.Unit(id)) || !strings.Contains(argv, " -e GOPROXY=off ") ||
@@ -145,8 +163,8 @@ func TestTaskStartTaint(t *testing.T) {
 	if rep := r.t.start(d, "claude", "daemon"); rep["ok"] != true || rep["tainted"] != true {
 		t.Fatalf("daemon: %v", rep)
 	}
-	if got := r.types(); !slices.Equal(got, []string{"WRITER_ADD", "TAINT"}) || r.records[1]["source"] != "origin:daemon" {
-		t.Fatalf("audit: %v", r.records)
+	if got := r.types(); !slices.Equal(got, []string{"WRITER_ADD", "TAINT"}) || r.recs()[1]["source"] != "origin:daemon" {
+		t.Fatalf("audit: %v", r.recs())
 	}
 	c := ids.New(ids.Task)
 	if rep := r.t.start(c, "claude", "parent:"+d); rep["reason"] != "no_delegation" {
@@ -383,7 +401,7 @@ func TestTaskWitness(t *testing.T) {
 	}
 	f.WriteString(line + "\n")
 	f.Close()
-	r.records = nil
+	r.reset()
 	r.t.stop(id, "completed")
 	if _, err := os.Stat(filepath.Join(r.t.cfg.WitnessRoot, id)); !os.IsNotExist(err) {
 		t.Fatal("task.stop left the witness dir")
@@ -391,12 +409,12 @@ func TestTaskWitness(t *testing.T) {
 	for i := 0; i < 100 && !slices.Contains(r.types(), "WITNESS"); i++ {
 		time.Sleep(10 * time.Millisecond)
 	}
-	for _, m := range r.records {
+	for _, m := range r.recs() {
 		if m["type"] == "WITNESS" && m["task"] == id && m["incomplete"] == true && slices.Equal(m["lines"].([]string), []string{line}) {
 			return
 		}
 	}
-	t.Fatalf("no incomplete WITNESS for %s: %v", id, r.records)
+	t.Fatalf("no incomplete WITNESS for %s: %v", id, r.recs())
 }
 
 // #106: a failed isolation probe is an ALERT to auditd and to ntfy naming the check; a check name rootd doesn't know is

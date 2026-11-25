@@ -199,6 +199,12 @@ Run every test again, without the cache:
 go test -count=1 ./...
 ```
 
+Run every test under the race detector, as CI does. This takes a few minutes:
+
+```sh
+go test -race ./...
+```
+
 Test one package:
 
 ```sh

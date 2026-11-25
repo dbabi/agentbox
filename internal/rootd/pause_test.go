@@ -99,7 +99,7 @@ func TestEnsurePodman(t *testing.T) {
 		t.Errorf("setup calls = %v", setups)
 	}
 	n := 0
-	for _, m := range r.records {
+	for _, m := range r.recs() {
 		if m["type"] == "PAUSE_PID_STALE" {
 			n++
 			if m["agent"] != "claude" || m["reason"] != "dead" {

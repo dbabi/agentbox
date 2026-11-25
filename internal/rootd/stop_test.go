@@ -154,9 +154,9 @@ func TestTaskLeftovers(t *testing.T) {
 		t.Fatalf("attach with leftover tasks: %v", err)
 	}
 	s := &server{db: r.db, tasks: r.t, audit: r.t.audit}
-	r.records = nil
-	if rep := s.rescan("claude", false); rep["blocked"] != true || len(r.records) != 0 {
-		t.Fatalf("rescan with both populated changes nothing, so it sends no INTENT: %v, records %v", rep, r.records)
+	r.reset()
+	if rep := s.rescan("claude", false); rep["blocked"] != true || len(r.recs()) != 0 {
+		t.Fatalf("rescan with both populated changes nothing, so it sends no INTENT: %v, records %v", rep, r.recs())
 	}
 	os.WriteFile(filepath.Join(cg[t1], "cgroup.events"), []byte("populated 0\n"), 0o644)
 	// §9: lifting a leftover is an admin effect. auditd down: the INTENT gets no ACK, and the leftover stays.
@@ -167,14 +167,15 @@ func TestTaskLeftovers(t *testing.T) {
 	if left, _ := attach.Leftovers(r.db, "claude"); len(left) != 2 {
 		t.Fatalf("auditd down lifted a leftover: %v", left)
 	}
-	r.auditUp, r.records = true, nil
+	r.auditUp = true
+	r.reset()
 	if rep := s.rescan("claude", false); rep["blocked"] != true {
 		t.Fatalf("rescan with %s still populated: %v", t2, rep)
 	}
-	if len(r.records) != 2 || r.records[0]["type"] != "INTENT" || r.records[0]["name"] != "attach.rescan" || r.records[0]["origin"] != "admin" ||
-		r.records[1]["type"] != "RESULT" || r.records[1]["opId"] != r.records[0]["opId"] || r.records[1]["status"] != "executed" ||
-		!slices.Equal(r.records[1]["outputs"].(map[string]any)["tasks"].([]string), []string{t1}) {
-		t.Fatalf("rescan records %v", r.records)
+	if recs := r.recs(); len(recs) != 2 || recs[0]["type"] != "INTENT" || recs[0]["name"] != "attach.rescan" || recs[0]["origin"] != "admin" ||
+		recs[1]["type"] != "RESULT" || recs[1]["opId"] != recs[0]["opId"] || recs[1]["status"] != "executed" ||
+		!slices.Equal(recs[1]["outputs"].(map[string]any)["tasks"].([]string), []string{t1}) {
+		t.Fatalf("rescan records %v", recs)
 	}
 	if rep := r.t.start(ids.New(ids.Task), "claude", "daemon"); rep["reason"] != "agent_blocked" {
 		t.Fatalf("start with %s still populated: %v", t2, rep)
