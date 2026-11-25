@@ -18,6 +18,7 @@ import (
 	"agentbox/internal/ntfy"
 	"agentbox/internal/recovery"
 	"agentbox/internal/rootd/quota"
+	"agentbox/internal/rootd/resolve"
 	"agentbox/internal/seed"
 	"agentbox/internal/task"
 )
@@ -234,8 +235,8 @@ func cmdSeed(args []string) error {
 
 // cmdReconcile is agentbox-reconcile.service (ARCHITECTURE.md §3.2): it re-applies the persistent control store to
 // whichever generation booted, before every agentbox unit: the disk reserve (§4.1), the agent accounts from rootd's
-// ids table (§4.1), the PAM login line that keeps task launches from running update-motd.d (Appendix C) and packaged
-// ntfy (§2).
+// ids table (§4.1), the PAM login line that keeps task launches from running update-motd.d (Appendix C), the networkd
+// drop-ins that record PREF64 (Appendix B check 2) and packaged ntfy (§2).
 func cmdReconcile(args []string) error {
 	if err := parse(flag.NewFlagSet("reconcile", flag.ContinueOnError), args); err != nil {
 		return err
@@ -248,6 +249,19 @@ func cmdReconcile(args []string) error {
 	}
 	if err := task.EnsureSkipMotd(task.PAMLogin); err != nil {
 		return fmt.Errorf("%s: %v", task.PAMLogin, err)
+	}
+	ch, err := resolve.WritePref64DropIns(resolve.NetworkDirs)
+	if err != nil {
+		return fmt.Errorf("networkd PREF64 drop-ins: %v", err)
+	}
+	if ch {
+		// the unit runs after networkd; a networkd that is not running reads the drop-ins when it starts. A reload
+		// reconfigures only the links whose .network changed.
+		if _, err := quota.Run("systemctl", "is-active", "-q", "systemd-networkd.service"); err == nil {
+			if _, err := quota.Run("networkctl", "reload"); err != nil {
+				return err
+			}
+		}
 	}
 	return ntfy.Setup()
 }

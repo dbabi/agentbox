@@ -91,6 +91,9 @@ func FuzzParseVarlink(f *testing.F) {
 func FuzzParsePref64(f *testing.F) {
 	f.Add([]byte(`{"parameters":{"Interfaces":[{"Name":"lo"},{"Name":"eth0","NDisc":{"PREF64":[{"Prefix":[42,1,5,192,0,100,0,0,0,0,0,0,0,0,0,0],"PrefixLength":96,"LifetimeUSec":1800000000}]}}]}}`))
 	f.Add([]byte(`{"parameters":{"Interfaces":[{"NDisc":{"PREF64":[{"Prefix":[1,2,3,4],"PrefixLength":-1}]}}]}}`))
+	f.Add([]byte(`{"parameters":{"Interfaces":[{"Name":"eth0","NetworkFile":"/run/systemd/network/10-netplan-eth0.network",` +
+		`"NetworkFileDropins":["/etc/systemd/network/10-netplan-eth0.network.d/90-agentbox-pref64.conf"]},` +
+		`{"Name":"eth1","NetworkFile":"/etc/systemd/network/50-lan.network","NetworkFileDropins":[]}]}}`))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		ps, err := parsePref64(b)
 		if err != nil {

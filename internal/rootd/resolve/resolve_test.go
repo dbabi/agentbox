@@ -80,7 +80,9 @@ func TestNAT64Prefixes(t *testing.T) {
 }
 
 func TestParsePref64(t *testing.T) {
-	msg := `{"parameters":{"Interfaces":[{"Name":"lo"},{"Name":"eth0","NDisc":{"PREF64":[{"Prefix":[42,1,5,192,0,100,0,0,0,0,0,0,0,0,0,0],"PrefixLength":96,"LifetimeUSec":1800000000}]}}]}}`
+	msg := `{"parameters":{"Interfaces":[{"Name":"lo"},{"Name":"eth0","NetworkFile":"/run/systemd/network/10-netplan-eth0.network",` +
+		`"NetworkFileDropins":["/etc/systemd/network/10-netplan-eth0.network.d/90-agentbox-pref64.conf"],` +
+		`"NDisc":{"PREF64":[{"Prefix":[42,1,5,192,0,100,0,0,0,0,0,0,0,0,0,0],"PrefixLength":96,"LifetimeUSec":1800000000}]}}]}}`
 	got, err := parsePref64([]byte(msg))
 	if err != nil || !slices.Equal(got, []netip.Prefix{netip.MustParsePrefix("2a01:5c0:64::/96")}) {
 		t.Fatalf("%v %v", got, err)
@@ -92,6 +94,51 @@ func TestParsePref64(t *testing.T) {
 			t.Errorf("%s parsed", bad)
 		}
 	}
+	// networkd drops the PREF64 options of a link it runs without the drop-in: its prefixes are unknown, not none
+	for _, d := range []string{`[]`, `["/etc/systemd/network/10-netplan-eth1.network.d/50-other.conf"]`} {
+		m := `{"parameters":{"Interfaces":[{"Name":"eth1","NetworkFile":"/run/systemd/network/10-netplan-eth1.network","NetworkFileDropins":` + d + `}]}}`
+		if _, err := parsePref64([]byte(m)); err == nil || !strings.Contains(err.Error(), "eth1 runs /run/systemd/network/10-netplan-eth1.network without 90-agentbox-pref64.conf") {
+			t.Errorf("drop-ins %s: %v", d, err)
+		}
+	}
+}
+
+// reconcile gives every .network file networkd may read the drop-in, in /etc, and rewrites only what changed.
+func TestWritePref64DropIns(t *testing.T) {
+	root := t.TempDir()
+	etc, run, lib := filepath.Join(root, "etc"), filepath.Join(root, "run"), filepath.Join(root, "lib")
+	for _, f := range []string{filepath.Join(run, "10-netplan-eth0.network"), filepath.Join(run, "10-netplan-eth0.link"),
+		filepath.Join(lib, "80-container-ve.network"), filepath.Join(lib, "10-netplan-eth0.network"), filepath.Join(etc, "50-lan.network")} {
+		os.MkdirAll(filepath.Dir(f), 0o755)
+		os.WriteFile(f, []byte("[Match]\n"), 0o644)
+	}
+	dirs := []string{etc, run, filepath.Join(root, "none"), lib}
+	want := []string{"10-netplan-eth0.network.d", "50-lan.network", "50-lan.network.d", "80-container-ve.network.d"}
+	if ch, err := WritePref64DropIns(dirs); err != nil || !ch {
+		t.Fatalf("first run: %v %v", ch, err)
+	}
+	if got, _ := os.ReadDir(etc); !slices.Equal(names(got), want) {
+		t.Fatalf("%s holds %v, want %v", etc, names(got), want)
+	}
+	p := filepath.Join(etc, "10-netplan-eth0.network.d", Pref64DropIn)
+	if b, err := os.ReadFile(p); err != nil || !strings.Contains(string(b), "[IPv6AcceptRA]\nUsePREF64=yes\n") {
+		t.Fatalf("%s: %q %v", p, b, err)
+	}
+	if ch, err := WritePref64DropIns(dirs); err != nil || ch {
+		t.Fatalf("second run: %v %v, want no change", ch, err)
+	}
+	os.WriteFile(p, []byte("[IPv6AcceptRA]\nUsePREF64=no\n"), 0o644)
+	if ch, err := WritePref64DropIns(dirs); err != nil || !ch {
+		t.Fatalf("an edited drop-in: %v %v, want it rewritten", ch, err)
+	}
+}
+
+func names(es []os.DirEntry) []string {
+	var out []string
+	for _, e := range es {
+		out = append(out, e.Name())
+	}
+	return out
 }
 
 func TestParseEntry(t *testing.T) {

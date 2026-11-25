@@ -9,6 +9,11 @@
 #                                            line in LOG is "<unix time> ok|cut <detail>"; exit 0 if never cut
 #   rg.py vresolve HOST                      io.systemd.Resolve.ResolveHostname on resolved's Varlink socket, as the caller
 #                                            (the AF_UNIX DNS path nft never sees); exit 0 if it returns addresses
+#   rg.py links                              networkd's links (io.systemd.Network.Describe), one line each: name, .network
+#                                            file, its drop-ins (comma-separated) and its PREF64 prefixes; - for none
+#   rg.py ra IFACE PREFIX                    one router advertisement out of IFACE to ff02::1: router lifetime 0 (no
+#                                            default route), no prefix to autoconfigure, a PREF64 option (RFC 8781) for
+#                                            PREFIX (/96 to /32) that lasts 30 min
 #   rg.py sendfd SOCK                        sends a request with an SCM_RIGHTS fd; exit 0 if rootd closed without a reply
 #                                            (not if it went silent)
 #   rg.py chain SEG PREV N [close|torn|broken] appends N records in auditd's record format to SEG (O_APPEND): an open
@@ -16,7 +21,7 @@
 #                                            close{seq, last_hash}; torn first writes a partial line, "\n" and its
 #                                            torn{offset, len, sha256}; broken adds a record whose prev is wrong. Prints
 #                                            the hash of the last record.
-import array, hashlib, json, os, socket, sys, time
+import array, hashlib, ipaddress, json, os, socket, struct, sys, time
 
 TIMEOUT = object()  # rootd neither answered nor closed: not a refusal
 
@@ -41,6 +46,31 @@ def req(path, obj, fds=None):
             return None
         buf += b
     return buf.decode().strip()
+
+def varlink(path, method, params):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(10)
+    s.connect(path)
+    s.sendall(json.dumps({"method": method, "parameters": params}).encode() + b"\0")
+    buf = b""
+    while not buf.endswith(b"\0"):
+        b = s.recv(65536)
+        if not b:
+            break
+        buf += b
+    return json.loads(buf.rstrip(b"\0"))
+
+def ra(iface, prefix):
+    net = ipaddress.IPv6Network(prefix)
+    plc = {96: 0, 64: 1, 56: 2, 48: 3, 40: 4, 32: 5}[net.prefixlen]
+    # type, code, checksum (the kernel's), hop limit, flags, router lifetime, reachable time, retransmit timer
+    msg = struct.pack("!BBHBBHII", 134, 0, 0, 64, 0, 0, 0, 0)
+    # PREF64: type 38, length 2 (16 bytes), the lifetime in 8 s units above the 3-bit prefix length code, 96 prefix bits
+    msg += struct.pack("!BBH", 38, 2, (1800 // 8) << 3 | plc) + net.network_address.packed[:12]
+    s = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode())
+    s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, 255)  # a receiver drops an RA with any other
+    s.sendto(msg, ("ff02::1", 0, 0, socket.if_nametoindex(iface)))
 
 def h(line):
     return hashlib.sha256(line).hexdigest()
@@ -137,22 +167,19 @@ def main(a):
             return 1
     elif a[0] == "vresolve":
         try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.settimeout(10)
-            s.connect("/run/systemd/resolve/io.systemd.Resolve")
-            s.sendall(json.dumps({"method": "io.systemd.Resolve.ResolveHostname", "parameters": {"name": a[1]}}).encode() + b"\0")
-            buf = b""
-            while not buf.endswith(b"\0"):
-                b = s.recv(65536)
-                if not b:
-                    break
-                buf += b
-            r = json.loads(buf.rstrip(b"\0"))
+            r = varlink("/run/systemd/resolve/io.systemd.Resolve", "io.systemd.Resolve.ResolveHostname", {"name": a[1]})
         except (OSError, ValueError) as e:
             print(e)
             return 1
         print(json.dumps(r))
         return 0 if r.get("parameters", {}).get("addresses") else 1
+    elif a[0] == "links":
+        for l in varlink("/run/systemd/netif/io.systemd.Network", "io.systemd.Network.Describe", {})["parameters"]["Interfaces"]:
+            p64 = ["%s/%d" % (socket.inet_ntop(socket.AF_INET6, bytes(p["Prefix"])), p["PrefixLength"])
+                   for p in l.get("NDisc", {}).get("PREF64", [])]
+            print(l["Name"], l.get("NetworkFile") or "-", ",".join(l.get("NetworkFileDropins") or []) or "-", ",".join(p64) or "-")
+    elif a[0] == "ra":
+        ra(a[1], a[2])
     elif a[0] == "flow":
         return flow(a[1], int(a[2]), a[3], a[4], int(a[5]))
     elif a[0] == "sendfd":

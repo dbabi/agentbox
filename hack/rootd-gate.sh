@@ -10,7 +10,9 @@
 # checks   copies the fixtures in hack/rootd-gate/ (and gate-dns, built for the guest) to /run/rg, then runs
 #          checks.sh setup and main, reboots, runs after-reboot and cleanup. Covers: the units and their sandbox, the
 #          sockets' owners and SO_PEERCRED checks, SCM_RIGHTS refusal, the approve-in-admin start refusal; the resolver
-#          refusing private, special-purpose, NAT64-wrapped, own, on-link and off-interface answers; a broker reaching
+#          refusing private, special-purpose, NAT64-wrapped, own, on-link and off-interface answers, and addresses under
+#          a NAT64 prefix that only a router advertisement (PREF64) on a test veth announces; reconcile's networkd
+#          drop-in that records PREF64, and every name refused while networkd runs a link without it; a broker reaching
 #          only what rootd resolved; READY=1 after the sets match rootd.db, timer and notify refills, a reboot refill; a
 #          keys-like flow surviving element expiry and cut by removing its entry; audit segment creation and sealing.
 # FLOW=host:port (default example.com:80) is the public HTTP server the flow check holds a connection to; the VM reaches
