@@ -6,7 +6,8 @@
 #          profile and the PAM line arrive the real way.
 # checks   An agent (`agentbox agent add`, rootd's agent.add) runs tasks started with `agentbox task new` on
 #          rootd-admin.sock, dispatched by agentboxd, launched by rootd; prompts reach the task on stdin and run as sh
-#          scripts (AGENTBOX_TEST_CLI=sh on agentboxd). Each gate item of #13 and #14:
+#          scripts (AGENTBOX_TEST_CLI=sh on agentboxd). A prompt of gate.MaxPrompt bytes as JSON counts it, full of '<'
+#          and newlines, reaches the task whole; one byte more, the CLI refuses (#213). Each gate item of #13 and #14:
 #          - a task plants Claude, Codex and opencode hooks, settings and MCP config, in HOME and in the workspace,
 #            and a SKILL.md frontmatter hook: the next task's HOME holds only the generated configs and hooks are off.
 #            The real Claude Code CLI (linux-arm64, pinned in hack/SHA256SUMS, as in attach-gate.sh) run without the
@@ -168,6 +169,24 @@ check "  ... read-only root, HOME a 4g tmpfs owned by the agent, /tmp a tmpfs" '
   grep -q "^tmpfs /home/agent tmpfs .*size=4194304k" $W/t1.mounts && grep -q "^tmpfs /tmp tmpfs" $W/t1.mounts'
 check "  ... stopped: container, unit cgroup, socket dirs and registrations gone" 'clean $T1 && socks_gone $T1 && ! pod container exists task-$T1 &&
   ! $B gate list | grep -q $T1'
+
+# #213: the prompt limit (gate.MaxPrompt, 64512 bytes) counts a prompt as JSON carries it, '<' 1 byte, a newline 2. One
+# at the limit passes rootd-admin.sock and svc-gate.sock and reaches the task whole; one byte more, the CLI refuses.
+python3 - <<'P'
+import json
+n = lambda s: len(json.dumps(s, ensure_ascii=False).encode())
+head, tail = "cat > /workspace/tbig.out <<'E'\n", "E\n"
+body = "<<<<<<<<<\n" * 5800
+body += "<" * (64512 - n(head + body + "\n" + tail)) + "\n"
+assert n(head + body + tail) == 64512
+open("/tmp/tg-big.body", "w").write(body)
+open("/tmp/tg-big", "w").write(head + body + tail)
+open("/tmp/tg-big1", "w").write(head + "<" + body + tail)
+P
+check "task new: a prompt of 64512 bytes as JSON, full of < and newlines, reaches the task whole (#213)" 'T=$(new 2m < /tmp/tg-big) &&
+  wait_end $T 60 && [ "$(field $T end_reason)" = completed ] && cmp /tmp/tg-big.body $W/tbig.out'
+check "  ... one byte more: the CLI refuses it, naming the limit" '! $B task new --agent gt --cli sh --deadline 2m < /tmp/tg-big1 > /tmp/tg-big1.out 2>&1;
+  cat /tmp/tg-big1.out; grep -q "over 64512 bytes as JSON" /tmp/tg-big1.out'
 
 # --- #13: planted hooks and MCP config don't reach the next task ---
 cat > /tmp/tg-p <<'P'

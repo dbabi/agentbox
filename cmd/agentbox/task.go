@@ -42,8 +42,8 @@ func cmdTask(args []string) error {
 		if err != nil {
 			return err
 		}
-		if len(p) > gate.MaxPrompt {
-			return fmt.Errorf("task new: the prompt on stdin is over %d bytes", gate.MaxPrompt)
+		if gate.PromptLen(string(p)) > gate.MaxPrompt {
+			return fmt.Errorf("task new: the prompt on stdin is over %d bytes as JSON, where a newline or quote counts 2 bytes and another control byte 6", gate.MaxPrompt)
 		}
 		req["agent"], req["cli"], req["asks"], req["deadline"], req["prompt"] = *agent, *cli, *asks, deadline.String(), string(p)
 	case "stop":

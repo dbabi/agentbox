@@ -698,6 +698,16 @@ func runFor(d time.Duration, argv ...string) error {
 	return nil
 }
 
+// svcLine is req as one line with no HTML escaping: json.Marshal would turn each <, > and & of a dispatch prompt into
+// 6 bytes, so a prompt within gate.MaxPrompt could pass svc-gate.sock's line limit.
+func svcLine(req map[string]any) []byte {
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false)
+	e.Encode(req) // Encode ends the line with '\n'
+	return b.Bytes()
+}
+
 // svcCall sends one line to svc-<svc>.sock (uid 0 only, §2.1) and decodes the reply.
 func svcCall(svc string, req map[string]any) (map[string]any, error) {
 	p := "/run/agentbox-rootd/svc-" + svc + ".sock"
@@ -710,8 +720,7 @@ func svcCall(svc string, req map[string]any) (map[string]any, error) {
 	}
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(60 * time.Second)) // dispatch waits for task.start
-	b, _ := json.Marshal(req)
-	if _, err := c.Write(append(b, '\n')); err != nil {
+	if _, err := c.Write(svcLine(req)); err != nil {
 		return nil, err
 	}
 	line, err := bufio.NewReader(c).ReadBytes('\n')

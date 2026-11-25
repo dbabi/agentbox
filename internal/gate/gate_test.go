@@ -164,6 +164,28 @@ func TestRegisterChecksDir(t *testing.T) {
 	}
 }
 
+// #213: PromptLen counts a prompt as a request line carries it, and dispatch takes one up to MaxPrompt of that.
+func TestDispatchPromptLimit(t *testing.T) {
+	for p, n := range map[string]int{"a<>&": 6, "\n\"\\": 8, "\x01": 8, "\xff": 8, "\u00e9": 4} {
+		if got := PromptLen(p); got != n {
+			t.Errorf("PromptLen(%q) = %d, want %d", p, got, n)
+		}
+	}
+	s, _ := newServer(t, func(map[string]any) ([]byte, error) { return []byte(`{"ok":true}`), nil })
+	s.CLIs = []string{"claude"}
+	p := strings.Repeat("<<<<<<<<<\n", MaxPrompt/11-1) // 11 bytes each as JSON
+	p += strings.Repeat("<", MaxPrompt-PromptLen(p))
+	for _, tc := range []struct {
+		prompt string
+		ok     bool
+	}{{p, true}, {p + "<", false}, {p[:len(p)-1] + "\n", false}} {
+		line, _ := json.Marshal(map[string]any{"call": "dispatch", "request": "req_1", "agent": "claude", "cli": "claude", "prompt": tc.prompt})
+		if rep := s.Control(line); (rep["ok"] == true) != tc.ok {
+			t.Fatalf("a prompt of %d bytes as JSON: %v", PromptLen(tc.prompt), rep)
+		}
+	}
+}
+
 // dispatch keeps the prompt for the task id it picked and asks rootd for task.start with origin admin:<request>;
 // task.fetch serves it to that task only, and task.result ends the task through rootd's task.stop.
 func TestDispatchFetchResult(t *testing.T) {

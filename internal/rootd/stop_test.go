@@ -1,12 +1,15 @@
 package rootd
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"agentbox/internal/gate"
 	"agentbox/internal/ids"
 	"agentbox/internal/rootd/attach"
 	"agentbox/internal/task"
@@ -69,6 +72,26 @@ func TestTaskStartUntrustedInput(t *testing.T) {
 	s := &server{db: r.db, tasks: r.t}
 	if rep := s.taskAdmin(request{Op: "task.new", Agent: "claude"}, peer{}); rep["ok"] != false || rep["error"] != "agentboxd: no reply object" {
 		t.Fatalf("null dispatch reply: %v", rep)
+	}
+}
+
+// #213: for a task new prompt at gate.MaxPrompt, full of '<' and newlines, the dispatch line rootd sends agentboxd
+// fits svc-gate.sock's line limit (gate.MaxRequest): svcLine leaves each '<' 1 byte, where json.Marshal makes it 6.
+func TestDispatchLineFits(t *testing.T) {
+	r := newRig(t)
+	var line []byte
+	r.t.cfg.Svc = func(_ string, req map[string]any) (map[string]any, error) {
+		line = svcLine(req)
+		return map[string]any{"ok": true}, nil
+	}
+	p := strings.Repeat("<<<<<<<<<\n", gate.MaxPrompt/11-1) // 11 bytes each as JSON
+	p += strings.Repeat("<", gate.MaxPrompt-gate.PromptLen(p))
+	s := &server{db: r.db, tasks: r.t}
+	if rep := s.taskAdmin(request{Op: "task.new", Agent: "claude", CLI: "claude", Prompt: p}, peer{}); rep["ok"] != true {
+		t.Fatalf("task.new: %v", rep)
+	}
+	if gate.PromptLen(p) != gate.MaxPrompt || len(line) == 0 || len(line)-1 > gate.MaxRequest || line[len(line)-1] != '\n' || bytes.Contains(line, []byte(`\u003c`)) {
+		t.Fatalf("a %d-byte dispatch line for a prompt of %d bytes as JSON", len(line), gate.PromptLen(p))
 	}
 }
 
