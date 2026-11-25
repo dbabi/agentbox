@@ -40,7 +40,8 @@
 #          - taskrun's isolation probe: a network interface, a default route, a sibling task's socket dir and an
 #            abstract socket, each added on its own through a wrapper over podman, stop the task with
 #            TASK_ISOLATION_PROBE before the CLI runs, with an audit ALERT and an ntfy alert; a normal task passes it in
-#            under 100 ms (#106); a probe failure the CLI posts itself fails its task with no alert (#183);
+#            under 100 ms (#106); a probe failure the CLI posts itself fails its task with no alert (#183); with the
+#            bonding and ipip modules loaded, a task sees bonding_masters and a down tunl0 and still passes (#223);
 #          - every task start takes a read-only snapshot of the workspace in qgroup 1/N; after a task runs
 #            rm -rf /workspace/*, agentbox task undo restores a tree with the same digest, keeping the taint the
 #            snapshot had; 7 tasks later 5 task-start snapshots are left, and no clean-baseline or pre-restore one is
@@ -441,6 +442,16 @@ check "  ... a probe failure the CLI posts itself, after the probe passed, fails
   sleep 2 && ! journalctl -b -u agentbox-rootd -o cat | grep -q "ALERT task $T" && ! grep -h "\"task\":\"$T\"" /var/lib/agentbox/audit/seg-*.jsonl | grep -q TASK_ISOLATION_PROBE'
 check "  ... and every task that passed it took under 100 ms in the probe" 'journalctl -b -u agentboxd -o cat | sed -n "s/.* result: .*isolation probe \([0-9]*\) ms \"\"$/\1/p" > /tmp/tg-pms &&
   cat /tmp/tg-pms | tr "\n" " " && [ "$(wc -l < /tmp/tg-pms)" -ge 10 ] && [ "$(sort -n /tmp/tg-pms | tail -1)" -lt 100 ]'
+# #223: bonding adds a bonding_masters file to every netns's /sys/class/net, and ipip a down tunl0 (the kernel's
+# fallback tunnel, while net.core.fb_tunnels_only_for_init_net is 0, its default). Neither is a way out.
+fb=$(sysctl -n net.core.fb_tunnels_only_for_init_net)
+echo 'ls /sys/class/net > /workspace/tnet; cat /sys/class/net/tunl0/flags >> /workspace/tnet' > /tmp/tg-p
+check "isolation probe: with bonding and ipip loaded, a task sees bonding_masters and a down tunl0, and passes (#223)" '
+  sysctl -qw net.core.fb_tunnels_only_for_init_net=0 && modprobe bonding && modprobe ipip && rm -f $W/tnet &&
+  T=$(new 2m < /tmp/tg-p) && wait_end $T 60 && cat $W/tnet && [ "$(field $T end_reason)" = completed ] &&
+  [ "$(sed -n 1,3p $W/tnet | tr "\n" " ")" = "bonding_masters lo tunl0 " ] && [ $(( $(sed -n 4p $W/tnet) & 1 )) = 0 ]'
+check "  ... and both modules unload, so the box has no tunl0 again" 'modprobe -r ipip bonding && [ ! -e /sys/class/net/tunl0 ] &&
+  sysctl -qw net.core.fb_tunnels_only_for_init_net=$fb'
 
 # --- #13: 20 consecutive launches ---
 printf '#!/bin/sh\ntouch /run/tg-motd-ran\n' > /etc/update-motd.d/00-tg-marker && chmod 0755 /etc/update-motd.d/00-tg-marker
