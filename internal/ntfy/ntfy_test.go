@@ -25,6 +25,14 @@ func TestServerYML(t *testing.T) {
 	if !strings.Contains(dropIn, "After=agentbox-firewall.service agentbox-rootd.service\n") { // #220: fwcheck compares rootd's refill
 		t.Error("drop-in does not order ntfy after rootd")
 	}
+	// #257: each rootd restart restarts ntfy, so systemd's default start limit left it failed
+	unit, svc, _ := strings.Cut(dropIn, "\n[Service]\n")
+	if !strings.Contains(unit+"\n", "\nStartLimitIntervalSec=0\n") {
+		t.Error("drop-in keeps systemd's start limit in [Unit]")
+	}
+	if !strings.Contains("\n"+svc, "\nRestartSec=2s\n") {
+		t.Error("drop-in has no RestartSec=2s in [Service]")
+	}
 	if !strings.Contains(tmpfiles, "d /run/ntfy 2750 _ntfy agentbox-notify -\n") {
 		t.Error("tmpfiles lost the setgid socket dir")
 	}

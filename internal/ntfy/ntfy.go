@@ -64,14 +64,19 @@ func BaseURL(host string) string { return "https://" + host + ":8443" }
 var tmpfiles = "# Written by agentbox-reconcile (ARCHITECTURE.md §2).\n" + sockets.TmpfilesLines(sockets.Inventory(), sockets.NtfyTmpfiles)
 
 // dropIn: the packaged unit orders only After=network.target, so without it ntfy starts outside the firewall gate.
-// It starts after rootd's READY=1 too, which waits for the refill its fwcheck compares (§6.1, #220).
+// It starts after rootd's READY=1 too, which waits for the refill its fwcheck compares (§6.1, #220). No start limit,
+// as rootd's own unit: systemd's default (5 starts in 10 s) left ntfy failed after six rootd restarts (#257).
 const dropIn = `# Written by agentbox-reconcile (ARCHITECTURE.md §2).
 [Unit]
 Requires=agentbox-firewall.service agentbox-rootd.service
 After=agentbox-firewall.service agentbox-rootd.service
+# every rootd restart restarts ntfy through Requires=; the start limit must never leave it down
+StartLimitIntervalSec=0
 
 [Service]
 ExecStartPre=+` + agentboxBin + ` fwcheck
+# with no start limit, a failing ntfy restarts every 2 s, not every 100 ms
+RestartSec=2s
 `
 
 func run(name string, args ...string) ([]byte, error) {

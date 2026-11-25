@@ -18,7 +18,8 @@
 #          its fwcheck passes the first time (#220). The stand-in starts; with ntfy's unit set to any other user, or a
 #          ntfy_dst element rootd didn't add, fwcheck fails and it can't start. With ntfy stopped, the alert of a
 #          `fwcheck --repair` waits in rootd.db's outbox, through the rootd restart the repair makes, and reaches ntfy
-#          once ntfy is back (#220).
+#          once ntfy is back (#220). ntfy has no start limit: after 8 rootd restarts in a row, the first 6 within 10 s,
+#          it is up, and an alert queued in rootd.db after them reaches it (#257).
 # PASS/FAIL lines go to .vm/quota-ntfy-gate.txt, command output to .vm/quota-ntfy-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -171,6 +172,22 @@ check "#220 ntfy stopped, the ruleset flushed: fwcheck --repair can't send its a
 check "  ... the repair restarted rootd and started ntfy, and rootd sent the alert: once in ntfy's cache, the outbox empty" 'systemctl is-active -q ntfy &&
   for i in $(seq 30); do [ "$(fwalerts)" = 1 ] && [ "$(outbox)" = 0 ] && break; sleep 1; done; echo "ntfy has $(fwalerts), the outbox $(outbox)";
   [ "$(fwalerts)" = 1 ] && [ "$(outbox)" = 0 ] && journalctl -u agentbox-rootd -o cat --since @$t0 | grep -q "alert sent: the firewall was altered at runtime"'
+# #257: each rootd restart restarts ntfy (Requires=). systemd's default start limit, 5 starts in 10 s, left ntfy failed
+# at the 6th, and alerts waited in rootd.db until a reboot. reset-failed starts ntfy's count from 0. The stand-in keeps
+# that limit, as an agent's user@ does, so it sits the restarts out.
+check "#257 ntfy has no start limit, and restarts 2 s after a failure" '[ "$(systemctl show -P StartLimitIntervalUSec ntfy)" = 0 ] && [ "$(systemctl show -P RestartUSec ntfy)" = 2s ]'
+systemctl stop agentbox-agent-stub; systemctl reset-failed ntfy
+check "  ... 8 rootd restarts in a row, the first 6 within 10 s: ntfy is up after them" 't1=$(date +%s%N); for i in $(seq 8); do
+  systemctl restart agentbox-rootd.service || exit 1; [ $i != 6 ] || t6=$(date +%s%N); done; echo "6 restarts in $(( (t6 - t1) / 1000000 )) ms"
+  for i in $(seq 50); do systemctl is-active -q ntfy && break; sleep 0.2; done; systemctl show -p ActiveState -p Result ntfy
+  [ $((t6 - t1)) -lt 10000000000 ] && systemctl is-active -q ntfy'
+# an alert in rootd.db's outbox, as fwcheck or agentbox os leave one that ntfy didn't take (rootd.QueueAlert)
+queue_alert() { python3 -c "import sqlite3,time; c=sqlite3.connect(\"$M/rootd.db\", timeout=10); c.execute(\"insert into alert_outbox(title, msg, queued_at) values (?, ?, ?)\", (\"agentbox: gate\", \"queued after 8 rootd restarts\", int(time.time() * 1000))); c.commit()"; }
+gatealerts() { python3 -c "import sqlite3; print(sqlite3.connect(\"file:/var/lib/ntfy/cache.db?mode=ro\", uri=True).execute(\"select count(*) from messages where topic=\x27agentbox-alerts\x27 and title=\x27agentbox: gate\x27 and time >= $t0\").fetchone()[0])"; }
+check "  ... and rootd sends an alert queued in rootd.db after them: once in ntfy's cache, the outbox empty" 'queue_alert &&
+  for i in $(seq 30); do [ "$(gatealerts)" = 1 ] && [ "$(outbox)" = 0 ] && break; sleep 1; done; echo "ntfy has $(gatealerts), the outbox $(outbox)"
+  [ "$(gatealerts)" = 1 ] && [ "$(outbox)" = 0 ]'
+systemctl start agentbox-agent-stub
 systemctl start agentbox-health.timer
 check "no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 echo "fails=$fails"

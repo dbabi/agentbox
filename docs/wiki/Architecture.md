@@ -227,7 +227,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 | `agentbox-auditd.service` and its sockets | the release | The audit daemon. Socket-activated: one socket per producer (agentboxd, rootd, proxy, keys, git). |
 | `agentbox-rootd.service` and its sockets | the release | The root daemon: agent accounts, task start and stop, attach sessions, the resolver sockets for the three brokers, the admin socket, and the seal socket auditd calls. |
 | `agentboxd.service` and its socket | the release | The task gate: one socket per task, with no network. |
-| `ntfy.service` | the Ubuntu `ntfy` package | Notifications, as `_ntfy`, on a Unix socket only. `install.sh` installs the package; reconcile configures and enables it. It starts after rootd, once rootd has filled the firewall sets that ntfy's `fwcheck` compares. |
+| `ntfy.service` | the Ubuntu `ntfy` package | Notifications, as `_ntfy`, on a Unix socket only. `install.sh` installs the package; reconcile configures and enables it. It starts after rootd, once rootd has filled the firewall sets that ntfy's `fwcheck` compares. A rootd restart restarts it too. It has no systemd start limit, so many rootd restarts in a row can't leave it failed. |
 | `agentbox-agent-stub.service` | the release | A stand-in for an agent unit, for the gates. Not enabled. |
 
 ### Designed parts of the OS layer
