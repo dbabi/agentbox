@@ -262,4 +262,5 @@ The follow-up gates and a review of the merged follow-ups found these. Each is f
 | host-gates (#100) | Gates chained on one disk exited right after `poweroff`, and two left `agentbox-agent-stub` enabled at boot | `4a13934` (#178) | `m4h/issue-100/amd64-run3/` |
 | tasks gate (#104) | The scan unit died `200/CHDIR` under rootd's `UMask=0077`, and `openat2` got `ENOSYS` under `RestrictSUIDSGID` | Not merged: on the #104 branch, with unit tests | `m4h/104/` |
 | the #182 fix | A file a git config includes (`include.path`, `includeIf`) can change after the include line is acked | Not fixed: #193; a THREAT-MODEL residual | |
-| tasks gate, CI, audit gate | Flakes: the pause PID takeover check on a busy host (#169), `TestReverseProxyRetryAndUnavailable` (#168), `TestVMInstallSleep` (#171), an `EPIPE` before `NOT_ALLOWED` (#170) | Not fixed: each filed | |
+| tasks gate (#169) | The pause PID takeover check read the owner of `/proc/<pid>` right after the fork, while `setpriv` was still root, so on a busy host it saw uid 0 (3 of about 32 runs) | #267: the check waits for the exec of `sleep`; `TestTasksGatePIDTakeover` runs it as root with a slow `setpriv` | `review/test/issue-169-pause-pid/` |
+| CI, audit gate | Flakes: `TestReverseProxyRetryAndUnavailable` (#168), `TestVMInstallSleep` (#171), an `EPIPE` before `NOT_ALLOWED` (#170) | Not fixed: each filed | |
