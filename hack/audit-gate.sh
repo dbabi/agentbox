@@ -11,7 +11,8 @@
 #          taint.clear and agent.remove still run; a torn tail, a backward clock step across UTC midnight, and SIGKILL
 #          at each of the four seal steps (auditd after close and after the seal, rootd's seal after +i and after
 #          creating the next segment), and rootd's after +i and mid-create with auditd restarted at once, don't stop
-#          ACKs; then a reboot rotates; `agentbox audit verify` passes after each.
+#          ACKs; then a reboot rotates, and its shutdown stopped rootd before auditd (#273); `agentbox audit verify`
+#          passes after each.
 # Checks print PASS/FAIL to .vm/audit-gate.txt, command output goes to .vm/audit-gate.log; exit 1 on any FAIL. The VM is
 # powered off at the end. AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -213,6 +214,11 @@ check "after a reboot: auditd ACKs, and its first start in the new boot rotated 
   send "{\"type\":\"TAINT\",\"subject\":\"task:reboot\",\"source\":\"s\"}" && [ $(nsegs) -gt $(cat /var/tmp/gate-nsegs) ] &&
   head -n 1 $D/$(newest) | grep -qF "\"boot_id\":\"$(cat /proc/sys/kernel/random/boot_id)\""'
 check "audit verify after the reboot" verify
+# #273: rootd starts after auditd, so the shutdown stopped it first: the RESULTs its drain sends still reach auditd
+check "the shutdown before it stopped rootd before auditd began to stop" 'j=$(journalctl -b -1 -o cat -u agentbox-rootd.service -u agentbox-auditd.service) &&
+  r=$(printf "%s\n" "$j" | grep -n "^Stopped agentbox-rootd.service" | tail -n 1 | cut -d: -f1) &&
+  a=$(printf "%s\n" "$j" | grep -n "^Stopping agentbox-auditd.service" | tail -n 1 | cut -d: -f1) && echo "rootd stopped at line $r, auditd stopping at $a" &&
+  [ -n "$r" ] && [ -n "$a" ] && [ "$r" -lt "$a" ]'
 check "no failed units after the reboot" 'f=$(systemctl --failed --no-legend --plain); echo "$f"; [ -z "$f" ]'
 cat /run/audit-verify.txt; rm -f /var/tmp/gate-nsegs
 echo "audit-fails=$fails"
