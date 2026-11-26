@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -95,6 +96,57 @@ func TestReverseProxyRetryAndUnavailable(t *testing.T) {
 	}
 	if ds := Recent(rec.Log, 10); len(ds) != 1 || ds[0].Code != "BROKER_UNAVAILABLE" || ds[0].ID != env.Agentbox.ID {
 		t.Fatalf("log: %+v", ds)
+	}
+}
+
+// #168: a broker can answer before it reads the body, as keys does for an endpoint it refuses. The client gets that
+// answer, not 503 BROKER_UNAVAILABLE: the forwarder doesn't send Connection: close, which made a Go broker hang up at
+// once and fail the forwarder's body write. Each request still gets its own connection. The body is bigger than a
+// socket buffer, and no bigger than the 256 KiB a Go server reads past an unread body.
+func TestReverseProxyEarlyAnswer(t *testing.T) {
+	f, sock, rec := setup(t, "llm", 2*time.Second)
+	deny := ops.Deny(ops.KeysRequestRejected, "endpoint", ops.Slots{By: "keys"})
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conns atomic.Int32
+	s := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Close {
+				t.Error("the forwarder sent Connection: close")
+			}
+			w.Header().Set(ops.DenialHeaderName, ops.DenialHeader(deny))
+			w.WriteHeader(http.StatusForbidden)
+			w.Write(ops.KeysBody(deny))
+		}),
+		ConnState: func(_ net.Conn, st http.ConnState) {
+			if st == http.StateNew {
+				conns.Add(1)
+			}
+		},
+	}
+	go s.Serve(ln)
+	defer s.Close()
+	srv := httptest.NewServer(f.Handler())
+	defer srv.Close()
+	body := bytes.Repeat([]byte("x"), 240<<10)
+	for range 2 {
+		resp, err := http.Post(srv.URL+"/v1/files", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden || !bytes.Equal(b, ops.KeysBody(deny)) {
+			t.Fatalf("%d %q", resp.StatusCode, b)
+		}
+	}
+	if ds := Recent(rec.Log, 10); len(ds) != 2 || ds[0].Code != "KEYS_REQUEST_REJECTED" || ds[0].ID != deny.ID {
+		t.Fatalf("log: %+v", ds)
+	}
+	if n := conns.Load(); n != 2 {
+		t.Fatalf("%d broker connections for 2 requests", n)
 	}
 }
 
