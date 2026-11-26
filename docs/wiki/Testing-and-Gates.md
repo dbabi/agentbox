@@ -70,7 +70,7 @@ What they check:
 | `hack/release` | Two builds of one release give the same bytes, and minisign verifies the signature. |
 | `hack` | The test harness itself. The QEMU command line is right even from a path with spaces, commas and glob characters. The ISO pin check and `remaster-iso.sh` work. The `dup-serial` disk check works on real qcow2 images. No `apply-gate.sh` check runs a value from the VM as code on the host. `powercut.sh boot` puts the VM disk back whether its checks pass or fail. |
 
-At the time of writing there are 319 top-level tests and 51 fuzz tests.
+At the time of writing there are 319 top-level tests and 54 fuzz tests.
 
 Some tests need outside tools: `dash`, `sha256sum`, `xorriso`, `openssl`, `minisign`, `qemu-img` and `qemu-io`, `uv` (or `python3` with PyYAML), and the `agentbox-powercut` image in the podman machine.
 
@@ -98,7 +98,7 @@ What unit tests do not prove: they never boot anything. They do not run the Ubun
 
 ## Fuzz tests
 
-Each parser has a Go fuzz test, for example for seed files, keys, apt and GRUB output, nftables JSON, audit records, rootd and gate requests, denials, socket names and more. In normal `go test` runs, each fuzz test runs only its seed inputs.
+Each parser has a Go fuzz test, for example for seed files, keys, apt and GRUB output, nftables JSON, audit records, rootd and gate requests, denials, socket names, the task image and more. In normal `go test` runs, each fuzz test runs only its seed inputs.
 
 To fuzz one test, from the repository root:
 
@@ -114,7 +114,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 ```
 
 - The script runs the fuzz tests at low priority, `FUZZ_JOBS` at a time, each for the full duration. A crash stops only that test; the rest still run. Then it writes `summary.txt` under `.fuzz/<start time>/`, or under `$OUT`, which must not hold an earlier run. It exits 1 if any test fails.
-- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 51 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
+- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 54 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
 - Each `go test` process and each fuzz worker gets `GOMEMLIMIT=$FUZZ_MEM` (default `1GiB`). `FUZZ_PARALLEL` sets the workers per test (default 1).
 - It records the commit the run started on, and each test's CPU seconds (`cpu_s`, the build included).
 - Go keeps each test's corpus in `$(go env GOCACHE)/fuzz`, so the next run starts from it. `go clean -fuzzcache` deletes it.
@@ -122,7 +122,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 - A crash input lands in its package's `testdata/fuzz/<test>/`. Commit it with the fix, so it stays a regression test.
 - On a Mac, `caffeinate -i` keeps the machine from idle sleep. Keep it on power with the lid open.
 
-The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 51 tests take about 21 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds. `FuzzScanSegment` skips there: its test needs `chattr`, which needs root on Linux.
+The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 54 tests take about 21 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
 
 ### The 24 h gate
 
@@ -588,7 +588,7 @@ Share only the `.txt` and `.log` files. `.vm/keys`, `.vm/id_vm` and `.vm/gate-se
 `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. The `unit` job runs twice, on `ubuntu-26.04` (amd64) and `ubuntu-26.04-arm` (arm64), because the release ships both. The other jobs use `ubuntu-26.04`.
 
 - **`unit`** installs `minisign`, `xorriso`, `python3-yaml` and `qemu-utils`, then runs `go vet ./...` and `go test -json ./...` through `hack/ciskips`. GitHub sets `CI=true`. So if `minisign`, `dash` or PyYAML were missing, `TestBuild` and `TestRenderedSeedsVerify` would fail instead of skipping.
-- **`unit`** fails if any test skips that `hack/testdata/ci-skips.txt` does not list. A new test that skips in CI fails until someone lists it, with the reason. `TestGateUnwritten` needs `qemu-img` and `qemu-io`, so it runs in CI.
+- **`unit`** fails if any test skips that `hack/testdata/ci-skips.txt` does not list. A new test that skips in CI fails until someone lists it, with the reason. The `internal/audit` line covers that package's tests only. Its fuzz tests must not skip, because the nightly `fuzz` jobs also run them without root. `TestGateUnwritten` needs `qemu-img` and `qemu-io`, so it runs in CI.
 - **`unit`** then runs `go test -v ./internal/audit/...` again as root (`sudo env PATH=... GOTOOLCHAIN=...`). The unprivileged run skips the `chattr` tests, because `chattr +a` needs `CAP_LINUX_IMMUTABLE`. The root run covers them, and fails if any test still skips.
 - **`unit`** then runs `TestTasksGatePIDTakeover` as root. It runs the tasks gate's PID takeover check in a new PID namespace, with a slow `setpriv`. The unprivileged run skips it, and the root step fails unless it passes.
 - **`unit`** then runs every test once more under the race detector, with `go test -race -count=1 ./...`. A data race fails the job.
