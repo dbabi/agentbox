@@ -54,7 +54,10 @@ type Config struct {
 	Attach         attach.Runner     // runs agent.attach sessions; nil: attach.Podman with the task image
 	AttachRoot     string            // /var/lib/agentbox (attach.Root) unless a test sets it
 	Alert          func(title, msg string) error
-	QuotaHold      string // AGENTBOX_TEST_QUOTA_HOLD: while this file exists, a qgroup repair waits before its rescan (test VMs only)
+	QuotaHold      string        // AGENTBOX_TEST_QUOTA_HOLD: while this file exists, a qgroup repair waits before its rescan (test VMs only)
+	SweepInterval  time.Duration // the cache stores' nested-subvolume sweep (§4.1: hourly); 0: an hour
+	Budgets        string        // budgets.toml; "" is budgets.Path
+	Shares         string        // the day shares rootd writes for keys; "" is budgets.SharesPath
 }
 
 // Socket names: each .socket unit sets FileDescriptorName= to one of these.
@@ -87,7 +90,7 @@ func OpenDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
-	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, snapSchema, secretSchema, attach.Schema, attach.BaselineSchema, alertSchema} {
+	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, snapSchema, secretSchema, attach.Schema, attach.BaselineSchema, alertSchema, cacheAlertSchema} {
 		if _, err := db.Exec(schema); err != nil {
 			db.Close()
 			return nil, err
@@ -227,7 +230,10 @@ func Run(cfg Config) error {
 		audit: func(r map[string]any) error { return auditSend(cfg.AuditSocket, r) },
 		store: accounts.EnsureStore, nested: nestedIn,
 		applyOS:      func() error { _, err := quota.Run("systemctl", "start", accounts.Unit); return err },
-		inconsistent: quota.Inconsistent, qrescan: quota.Rescan, qlimit: quota.Refresh}
+		inconsistent: quota.Inconsistent, qrescan: quota.Rescan, qlimit: quota.Refresh,
+		proxyActive: func() bool { _, err := quota.Run("systemctl", "is-active", "-q", ProxyUnit); return err == nil },
+		limitCache:  quota.LimitSubvol}
+	s.recreateCache = s.recreateCacheStore
 	if cfg.Tasks.Accounts == nil {
 		cfg.Tasks.Accounts = idsAccounts{db}
 	}
@@ -266,10 +272,19 @@ func Run(cfg Config) error {
 		return err
 	}
 	s.refresh(ctx) // ntfy_dst at start, then on the timer
+	s.refreshShares()
 	t := time.NewTicker(cfg.RefillInterval)
 	defer t.Stop()
+	sweep := cfg.SweepInterval
+	if sweep <= 0 {
+		sweep = time.Hour
+	}
+	sw := time.NewTicker(sweep)
+	defer sw.Stop()
 	for {
 		select {
+		case <-sw.C:
+			go s.sweepCaches()
 		case <-ctx.Done():
 			// the listeners stay open: a new request gets "stopping" instead of waiting for the next rootd, and the
 			// seal socket keeps serving the RESULTs in flight
@@ -328,6 +343,12 @@ type server struct {
 	inconsistent func() (bool, error)
 	qrescan      func() error
 	qlimit       func() error // quota.Refresh, on each consistent check; nil: none
+
+	// the Go module cache (cache.go): whether the proxy unit runs, how rootd re-makes an empty store without it, and the
+	// store's own limit (quota.LimitSubvol)
+	proxyActive   func() bool
+	recreateCache func(accounts.Agent) error
+	limitCache    func(path string, max uint64) error
 }
 
 // drainTimeout bounds the wait at stop for requests in flight, below the unit's TimeoutStopSec=90s.
@@ -460,6 +481,8 @@ type request struct {
 	AckRestart        bool   `json:"ackRestart,omitempty"`
 	// go.private.set (§5.3)
 	Patterns *string `json:"patterns,omitempty"`
+	// budget.set (§5.3): the whole budgets.toml
+	Budgets *string `json:"budgets,omitempty"`
 	// task new --ack-secrets (#104): the credential count the admin acknowledges
 	AckSecrets int `json:"ackSecrets,omitempty"`
 }
@@ -493,6 +516,8 @@ func (s *server) handle(sock string, p peer, r request) reply {
 		return s.admin(r, p)
 	case sock == sockGate && r.Op == "task.op":
 		return s.taskOp(r)
+	case sock == "resolve-proxy" && r.Op == "cache.alert":
+		return s.cacheAlert(r)
 	case len(sock) > 8 && sock[:8] == "resolve-" && r.Op == "resolve":
 		svc := sock[8:]
 		e, err := resolve.ParseEntry(r.Host + ":" + strconv.Itoa(r.Port))
@@ -610,6 +635,10 @@ func (s *server) admin(r request, p peer) reply {
 		return reply{"ok": true, "agents": all}
 	case "go.private.set":
 		return s.goPrivateSet(r)
+	case "cache.purge":
+		return s.cachePurge(r)
+	case "budget.set":
+		return s.budgetSet(r)
 	case "sets.refill":
 		return s.refill(r)
 	case "quota.check":

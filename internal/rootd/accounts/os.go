@@ -227,6 +227,9 @@ func Reconcile(db *sql.DB, live bool) error {
 			return err
 		}
 		reload = reload || ch
+		if err := RemoveCache(a); err != nil { // rootd purged it in the proxy first (agent.remove)
+			return err
+		}
 		if err := archive(a); err != nil {
 			return err
 		}

@@ -60,6 +60,8 @@ const usage = `usage:
   agentbox proxy   (agentbox-proxy.service: the tasks' CONNECT egress, on the box)
   agentbox broker-stub --svc proxy|keys|git   (test boxes: a broker stand-in for the restart gate)
   agentbox goprivate set --agent A --patterns 'corp.example/*,...'   (admin: go.private.set; "" clears)
+  agentbox cache purge --agent A   (admin: cache.purge, empties the agent's Go module cache)
+  agentbox budget set [--file budgets.toml]   (admin: budget.set, replaces budgets.toml; default: standard input)
   agentbox why [<CODE> | --errno <E>]   (in a task: recent denials, or fixed guidance; no gate call)
 `
 
@@ -181,6 +183,10 @@ func run(args []string) error {
 		return cmdBrokerStub(args[1:])
 	case "goprivate":
 		return cmdGoPrivate(args[1:])
+	case "cache":
+		return cmdCache(args[1:])
+	case "budget":
+		return cmdBudget(args[1:])
 	case "why":
 		return cmdWhy(args[1:])
 	case "-h", "--help", "help":

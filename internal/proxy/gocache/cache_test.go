@@ -447,6 +447,22 @@ func TestPurgeRevokeSweep(t *testing.T) {
 	}
 }
 
+// A store rootd deleted and made again (agent.remove, a purge with the proxy stopped) is opened afresh: the cache never
+// serves or writes the old one.
+func TestStoreRemade(t *testing.T) {
+	x := newFixture(t)
+	x.do(t, "T1", "ga", zipA)
+	os.RemoveAll(filepath.Join(x.root, "ga"))
+	if st, _ := x.do(t, "T1", "ga", zipA); st != 404 {
+		t.Fatalf("a deleted store: %d", st)
+	}
+	os.Mkdir(filepath.Join(x.root, "ga"), 0o700)
+	x.up.Log()
+	if st, _ := x.do(t, "T1", "ga", zipA); st != 200 || x.moduleGets() != 1 {
+		t.Fatalf("a new store: %d, it must miss", st)
+	}
+}
+
 // The nightly eviction drops rows idle past MaxIdleDays, with no network.
 func TestNightly(t *testing.T) {
 	x := newFixture(t)

@@ -44,6 +44,7 @@ type row struct {
 // store is one agent's: its index, its blobs, its fills in flight and their slots, and its checksum database state.
 type store struct {
 	agent, dir string
+	id         string // the store's id file: rootd may delete the store and make a new one (agent.remove, a purge)
 	db         *sql.DB
 	blobs, tmp *os.File // dir handles: blobs open beneath blobs
 	slots      chan struct{}
@@ -91,7 +92,12 @@ func openStore(root, agent string, slots int) (*store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &store{agent: agent, dir: dir, db: db, slots: make(chan struct{}, slots), fills: map[string]*fill{}}
+	id, err := storeID(dir, true)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	s := &store{agent: agent, dir: dir, id: id, db: db, slots: make(chan struct{}, slots), fills: map[string]*fill{}}
 	if s.blobs, err = os.Open(filepath.Join(dir, blobsDir)); err == nil {
 		s.tmp, err = os.Open(filepath.Join(dir, tmpDir))
 	}
@@ -101,6 +107,32 @@ func openStore(root, agent string, slots int) (*store, error) {
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	return s, s.sweep()
+}
+
+// storeID is the random id in the store's id file, made if create is set and there is none. A subvolume made again
+// has a new id even where it has the same inode and device numbers.
+func storeID(dir string, create bool) (string, error) {
+	p := filepath.Join(dir, "id")
+	b, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) && create {
+		r := newID()
+		if err = writeFile(p, []byte(r)); err == nil {
+			return r, nil
+		}
+	}
+	return string(b), err
+}
+
+func newID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// current reports whether the store on disk is still the one s opened.
+func (s *store) current() bool {
+	id, err := storeID(s.dir, false)
+	return err == nil && id == s.id
 }
 
 func (s *store) close() {

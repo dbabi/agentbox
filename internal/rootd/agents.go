@@ -61,7 +61,14 @@ func (s *server) agentOp(r request) reply {
 		}
 	} else if a, err = accounts.Retire(s.db, name, time.Now()); err == nil {
 		s.forget(name)
+		// §4.1 Removal: the proxy purges the cache (cancelling its fills) before the OS half deletes data/cache/<name>
+		if _, perr := s.proxyPurge(name); perr != nil {
+			log.Printf("agent.remove %s: %v; its cache is deleted anyway", name, perr)
+		}
 		err = s.applyOS()
+	}
+	if err == nil {
+		s.refreshShares() // §6.3: the day shares are recomputed at agent.add and agent.remove
 	}
 	if err == nil && r.Op == "agent.add" && s.tasks != nil {
 		if acct, lerr := s.tasks.cfg.Accounts.Lookup(name); lerr == nil {

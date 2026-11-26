@@ -195,7 +195,11 @@ func (c *Cache) store(agent string) (*store, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if s := c.stores[agent]; s != nil {
-		return s, nil
+		if s.current() {
+			return s, nil
+		}
+		s.close() // rootd deleted the store, and maybe made a new one: never write into the old one
+		delete(c.stores, agent)
 	}
 	s, err := openStore(c.cfg.Root, agent, c.cfg.Limits.Slots)
 	if err != nil {

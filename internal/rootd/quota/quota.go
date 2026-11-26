@@ -433,6 +433,42 @@ func EnsureAgent(n int, limit uint64, subvols ...string) error {
 	return err
 }
 
+// LimitSubvol sets subvolume p's own exclusive limit, on its level-0 qgroup, unless it already has max (§4.1: an
+// agent's data/cache/<name> has one besides its 1/N's).
+func LimitSubvol(p string, max uint64) error {
+	id, err := rootID(p)
+	if err != nil {
+		return err
+	}
+	qs, err := Show()
+	if err != nil {
+		return err
+	}
+	if qs[id].MaxExcl == max {
+		return nil
+	}
+	_, err = run("btrfs", "qgroup", "limit", "-e", strconv.FormatUint(max, 10), id, Agentbox)
+	return err
+}
+
+// Owner is the agent N whose qgroup 1/N holds subvolume p, or 0 if no 1/N does.
+func Owner(p string) (int, error) {
+	id, err := rootID(p)
+	if err != nil {
+		return 0, err
+	}
+	qs, err := Show()
+	if err != nil {
+		return 0, err
+	}
+	for _, par := range qs[id].Parents {
+		if n, ok := strings.CutPrefix(par, "1/"); ok {
+			return strconv.Atoi(n)
+		}
+	}
+	return 0, nil
+}
+
 // Inconsistent reads the file system's qgroups/inconsistent flag (#79). Full mode marks qgroups inconsistent when it
 // skips the accounting of a large dropped subtree (qgroup_drop_subtree_thres), and from then on 2/0 limits nothing
 // until a rescan. Simple quotas never get there, but they don't count shared extents (Ensure).
