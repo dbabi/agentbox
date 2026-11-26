@@ -161,9 +161,12 @@ stand() { systemctl stop agentbox-proxy.service agentbox-proxy.socket 2>/dev/nul
 pdrops() { nft list chain inet agentbox output | grep '"agentbox-proxy"' | sed -n 's/.* counter packets \([0-9]*\) .* drop$/\1/p' | awk '{n += $1} END {print n + 0}'; }
 
 # --- setup: the image with the test CA, five agents, the proxy stand-in ---
-# right after boot the slirp DNS can miss a first lookup: wait for it, and try the build again once
+# right after boot the slirp DNS can miss a first lookup: wait for it, and try the build again once. The build's RUN
+# steps use the box's own resolver (--network=host): on some host networks slirp answers DNS over IPv6 only, and a
+# build container gets the IPv4 server
 for i in $(seq 30); do getent hosts registry-1.docker.io >/dev/null && break; sleep 2; done
-build() { podman build -q -t $IMG /tmp/gate-image/task </dev/null >/dev/null || { sleep 10; podman build -q -t $IMG /tmp/gate-image/task </dev/null >/dev/null; }; }
+build() { podman build -q --network=host -t $IMG /tmp/gate-image/task </dev/null >/dev/null ||
+  { sleep 10; podman build -q --network=host -t $IMG /tmp/gate-image/task </dev/null >/dev/null; }; }
 check "image/task builds on the box, with the gate's CA in its trust store" 'build &&
   cp $K/ca.pem $G/gate-ca.crt && printf "FROM %s\nCOPY gate-ca.crt /usr/local/share/ca-certificates/gate-ca.crt\nRUN update-ca-certificates >/dev/null\n" $IMG > $G/Containerfile &&
   podman build -q -t $IMG-ca -f $G/Containerfile $G </dev/null >/dev/null && podman save -o $G/image.tar $IMG-ca && chmod 0644 $G/image.tar'
