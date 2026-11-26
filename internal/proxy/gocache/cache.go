@@ -192,6 +192,9 @@ func (c *Cache) taint(ts *taskState, task string) error {
 }
 
 func (c *Cache) store(agent string) (*store, error) {
+	if !reAgent.MatchString(agent) {
+		return nil, fmt.Errorf("gocache: bad agent name %q", agent)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if s := c.stores[agent]; s != nil {
@@ -532,42 +535,30 @@ func (c *Cache) Purge(agent string) error {
 	return err
 }
 
-// Open opens every agent's store under Root, as the proxy does at start: each open is the start sweep (no temp file,
-// no blob without a row, no row without a blob).
-func (c *Cache) Open() error {
-	ents, err := os.ReadDir(c.cfg.Root)
-	if err != nil {
-		return err
-	}
+// Open opens the stores of agents, as the proxy does at start: each open is the start sweep (no temp file, no blob
+// without a row, no row without a blob). data/cache is root-owned 0711, so the proxy can't list it: it names the
+// agents whose lists hold proxy.golang.org:443, the only ones that can fill. A missing store is skipped.
+func (c *Cache) Open(agents ...string) error {
 	var errs []error
-	for _, e := range ents {
-		if e.IsDir() && reAgent.MatchString(e.Name()) {
-			if _, err := c.store(e.Name()); err != nil {
-				errs = append(errs, fmt.Errorf("%s: %v", e.Name(), err))
-			}
+	for _, a := range agents {
+		if _, err := c.store(a); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("%s: %v", a, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// Nightly is the idle eviction of every store under Root: rows unused for more than MaxIdleDays, then the blobs no row
-// names. It makes no network request.
-func (c *Cache) Nightly() error {
-	ents, err := os.ReadDir(c.cfg.Root)
-	if err != nil {
-		return err
-	}
+// Nightly is the idle eviction of agents' stores: rows unused for more than MaxIdleDays, then the blobs no row names.
+// It makes no network request.
+func (c *Cache) Nightly(agents ...string) error {
 	var errs []error
-	for _, e := range ents {
-		if !e.IsDir() || !reAgent.MatchString(e.Name()) {
-			continue
-		}
-		s, err := c.store(e.Name())
+	for _, a := range agents {
+		s, err := c.store(a)
 		if err == nil {
 			err = s.evictIdle(c.now(), c.cfg.Limits.MaxIdleDays)
 		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %v", e.Name(), err))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("%s: %v", a, err))
 		}
 	}
 	return errors.Join(errs...)

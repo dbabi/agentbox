@@ -236,7 +236,7 @@ task $A1 "cd fx && t0=\$(date +%s%N); go mod download; r=\$?; echo dl_ms=\$(( (\
 cat $G/w1 $G/w2
 d1=$(sed -n 's/^dl_ms=//p' $G/w1) d2=$(sed -n 's/^dl_ms=//p' $G/w2)
 echo "warm start: first go mod download $d1 ms, second $d2 ms"
-check "A-G4 a 64-module fixture: both tasks pass go test" 'grep -q "^ok  *example.com/fx" $G/w1 && grep -q "^ok  *example.com/fx" $G/w2'
+check "A-G4 a 64-module fixture: both tasks pass go test" 'grep -q "^ok[[:space:]]*example.com/fx" $G/w1 && grep -q "^ok[[:space:]]*example.com/fx" $G/w2'
 check "A-G4 the first task's fills: one ACKed fill record per file (64 .mod, 64 .zip)" '
   [ "$(arec CACHE event=fill task=$T1 | grep -c "\"key\": \"go:example.com/w/m[0-9]*@v1.0.0.mod\"")" = 64 ] &&
   [ "$(arec CACHE event=fill task=$T1 | grep -c "\"key\": \"go:example.com/w/m[0-9]*@v1.0.0.zip\"")" = 64 ]'
@@ -262,13 +262,13 @@ task $A1 "cu() { curl -s -o /dev/null -w \"%{http_code} \$*\n\" --unix-socket $S
   cu --request-target http://proxy/_cache/go/example.com/m/@v/v1.0.0.mod http://proxy/
   cu -X GET -d x http://proxy/_cache/go/example.com/m/@v/v1.0.0.mod
   cu --path-as-is http://proxy/_cache/go/example.com/../m/@v/v1.0.0.mod
-  cu http://proxy/_cache/go/example.com/%2e%2e/@v/v1.0.0.mod
+  cu --path-as-is http://proxy/_cache/go/example.com/%2e%2e/@v/v1.0.0.mod
   for p in @v/v1.0.0.info @latest @v/list '@v/v1.0.0.mod?v=1'; do cu \"http://proxy/_cache/go/example.com/m/\$p\"; done
   cu http://proxy/_cache/go/Example.com/m/@v/v1.0.0.mod
   cu http://proxy/_cache/go/corp.example/x/@v/v1.0.0.mod" > $G/g2; T=$(cat $G/last); cat $G/g2
 check "A-G5 straight to the proxy socket, a non-GET, absolute form, a body, ../, %2e, .info, @latest, @v/list, a version query, a bad escape and a GOPRIVATE path get 404, 405 (or 400 plain_http for absolute form), with no taint, no upstream request and no store change" '
   [ "$(grep -c "^40[045] " $G/g2)" = 12 ] && head -1 $G/g2 | grep -q "^405 " && [ -z "$(arec TAINT subject=task:$T producer=proxy)" ] &&
-  [ -z "$(uplog)" ] && [ "$(store $A1)" = "$s0" ]'
+  ul=$(uplog) && s1=$(store $A1) && echo "upstream: [$ul] store: $s0 -> $s1" && [ -z "$ul" ] && [ "$s1" = "$s0" ]'
 check "A-G5 a +incompatible version and a pseudo-version are both served through the filter" '
   task $A1 "curl -sf http://127.0.0.1:8083/example.com/inc/@v/v2.0.0+incompatible.mod && curl -sf http://127.0.0.1:8083/example.com/pseudo/@v/v0.0.0-20260101000000-abcdefabcdef.mod" > $G/g3 &&
   grep -qx "module example.com/inc" $G/g3 && grep -qx "module example.com/pseudo" $G/g3'
@@ -312,14 +312,14 @@ systemctl stop agentboxd.service; touch $WS/$A1/go2
 for i in $(seq 1200); do [ -e $WS/$A1/done2 ] && break; sleep 0.1; done
 systemctl start agentboxd.service; wait $tp; cat $G/ab
 check "A-G6 with agentboxd stopped, the filter serves nothing and go falls back to CONNECT: go test passes, with no cache request" '
-  grep -q "^ok  *example.com/fx" $G/ab && [ "$(grep -c " REQ $T $A1 GET /_cache/" $P)" = 0 ] && grep -q " REQ $T $A1 CONNECT proxy.golang.org:443" $P'
+  grep -q "^ok[[:space:]]*example.com/fx" $G/ab && [ "$(grep -c " REQ $T $A1 GET /_cache/" $P)" = 0 ] && grep -q " REQ $T $A1 CONNECT proxy.golang.org:443" $P'
 # --- A-G7: parity ---
 task $A3 'env | grep ^GOPROXY=; curl -s -o /dev/null -w "%{http_code}\n" --unix-socket /run/agentbox/egress/proxy.sock http://proxy/_cache/go/example.com/w/m01/@v/v1.0.0.mod' > $G/p7; T=$(cat $G/last); cat $G/p7
 check "A-G7 off the allowlist: GOPROXY=off, and a direct /_cache/ request gets 404 with no taint and no lookup" '
   grep -qx GOPROXY=off $G/p7 && grep -qx 404 $G/p7 && [ -z "$(arec TAINT subject=task:$T)" ] && [ "$(store $A3)" = "0 0 0" ]'
 task $A1 'cd fx && go clean -modcache && GOPROXY=https://proxy.golang.org,direct go test ./... 2>&1' > $G/p8; T=$(cat $G/last)
 check "A-G7 without the filter entry, go test gives the same result and the task is tainted all the same" '
-  grep -q "^ok  *example.com/fx" $G/p8 && grep "^ok" $G/w2 | cut -f1-2 > $G/ok2 && grep "^ok" $G/p8 | cut -f1-2 | cmp -s - $G/ok2 &&
+  grep -q "^ok[[:space:]]*example.com/fx" $G/p8 && grep "^ok" $G/w2 | cut -f1-2 > $G/ok2 && grep "^ok" $G/p8 | cut -f1-2 | cmp -s - $G/ok2 &&
   arec TAINT subject=task:$T source=proxy:proxy.golang.org:443 | grep -q .'
 
 # --- A-G8: poisoning and a hostile proxy ---
@@ -351,9 +351,11 @@ c.commit()
 PY
 task $A1 'cd fx && go clean -modcache; go build ./... > /tmp/o 2>&1; echo with_sum=$?; grep -m1 -i "checksum\|security" /tmp/o
   mkdir -p /tmp/ns && cp go.mod fx.go /tmp/ns/ && grep -v "^example.com/w/m05 " go.sum > /tmp/ns/go.sum && cd /tmp/ns && go clean -modcache
-  GOSUMDB=$(cat /workspace/.vkey) go build ./... > /tmp/o2 2>&1; echo no_sum=$?; grep -m1 -i "checksum\|security\|verifying" /tmp/o2' > $G/b8 2>&1; cat $G/b8
+  GOSUMDB=$(cat /workspace/.vkey) go mod download example.com/w/m05 > /tmp/o2 2>&1; echo no_sum=$?; grep -m1 -i "checksum\|security\|verifying" /tmp/o2
+  go build ./... > /tmp/o3 2>&1; echo no_sum_build=$?' > $G/b8 2>&1; cat $G/b8
 check "A-G8 (b) a blob altered with its row: go stops with a checksum error and builds nothing, with and without a go.sum line" '
-  grep -q "^with_sum=[1-9]" $G/b8 && grep -q "^no_sum=[1-9]" $G/b8 && [ "$(grep -ci "checksum mismatch\|security error\|verifying" $G/b8)" -ge 2 ]'
+  grep -q "^with_sum=[1-9]" $G/b8 && grep -q "^no_sum=[1-9]" $G/b8 && grep -q "^no_sum_build=[1-9]" $G/b8 &&
+  [ "$(grep -ci "checksum mismatch\|security error\|verifying" $G/b8)" -ge 2 ]'
 $B cache purge --agent $A1 >/dev/null
 # (c): one byte of a blob alone
 task $A1 'cd fx && go mod download && echo filled' >/dev/null
@@ -367,7 +369,7 @@ import os; os.chmod(p, 0o644); open(p, "wb").write(b); os.chmod(p, 0o444)
 PY
 task $A1 'cd fx && go clean -modcache && go test ./... 2>&1' > $G/c8; T=$(cat $G/last)
 check "A-G8 (c) one flipped byte in a blob: the entry is deleted and filled again, and the task passes" '
-  grep -q "^ok  *example.com/fx" $G/c8 && arec CACHE event=blob_corrupt agent=$A1 | grep -q "example.com/w/m07@v1.0.0.zip" &&
+  grep -q "^ok[[:space:]]*example.com/fx" $G/c8 && arec CACHE event=blob_corrupt agent=$A1 | grep -q "example.com/w/m07@v1.0.0.zip" &&
   arec CACHE event=fill task=$T | grep -q "example.com/w/m07@v1.0.0.zip"'
 mkdir -p $WS/$A1/mg && printf 'module example.com/mg\n\ngo 1.21\n' > $WS/$A1/mg/go.mod && printf 'package mg\n\nimport _ "example.com/m"\n' > $WS/$A1/mg/mg.go && chown -R ag-$A1:ag-$A1 $WS/$A1/mg
 task $A1 'cp -r /workspace/mg /tmp/mg && cd /tmp/mg && export GOSUMDB=$(cat /workspace/.vkey) GOPROXY=https://proxy.golang.org,direct; go list -m -json example.com/m@v1.1.0 | grep -E "\"(Version|Time)\""; go get example.com/m 2>&1 | tail -1' > $G/d0
@@ -400,10 +402,14 @@ ctl "slow?ms=0&rate=0"
 # --- A-G11: private paths ---
 mkdir -p $WS/$A1/pv && printf 'module example.com/pv\n\ngo 1.21\n\nrequire corp.example/x v1.0.0\n' > $WS/$A1/pv/go.mod && chown -R ag-$A1:ag-$A1 $WS/$A1/pv
 uplog > /dev/null; pl=$(wc -l < $P)
-task $A1 'cd pv && env | grep ^GOPRIVATE=; go mod download 2>&1 | tail -2; curl -s -o /dev/null -w "%{http_code}\n" --unix-socket /run/agentbox/egress/proxy.sock http://proxy/_cache/go/corp.example/x/@v/v1.0.0.mod' > $G/pv; cat $G/pv
-check "A-G11 after go.private.set{$A1, corp.example/*}: no request naming corp.example reaches the cache path, the checksum client or the upstream, and a direct /_cache/ request for it gets 404" '
-  grep -qx "GOPRIVATE=corp.example/\*" $G/pv && tail -1 $G/pv | grep -qx 404 && ! tail -n +$((pl + 1)) $P | grep "/_cache/" | grep -q corp.example &&
+task $A1 'cd pv && env | grep ^GOPRIVATE=; go mod download 2>&1 | tail -2' > $G/pv; cat $G/pv
+check "A-G11 after go.private.set{$A1, corp.example/*}: building a module that needs corp.example/x sends no request naming it to the cache path, the checksum client or the upstream" '
+  grep -qx "GOPRIVATE=corp.example/\*" $G/pv && ! tail -n +$((pl + 1)) $P | grep "/_cache/" | grep -q corp.example &&
   ! uplog | grep -q corp.example && ! arec CACHE | grep -q corp.example'
+
+check "  ... and a direct /_cache/ request for corp.example/x gets 404, with no upstream request" '
+  task $A1 "curl -s -o /dev/null -w \"%{http_code}\n\" --unix-socket /run/agentbox/egress/proxy.sock http://proxy/_cache/go/corp.example/x/@v/v1.0.0.mod" | grep -qx 404 &&
+  ! uplog | grep -q corp.example'
 
 # --- A-G12: lifecycle ---
 check "A-G12 agent.remove deletes data/cache/<agent>; agent.add made it" '$B agent add --name $A6 >/dev/null && [ -d $C/$A6 ] && $B agent remove --name $A6 >/dev/null && [ ! -e $C/$A6 ]'
@@ -431,16 +437,17 @@ check "C-G4 budget.set refuses day shares that sum above the box cap, and change
   [ ! -e /var/lib/agentbox/control/budgets.toml ]'
 check "C-G4 budget.set with a box cap: the day shares split it equally, an explicit one first, and agent.add recomputes them" '
   printf "keys.day_cap_cents = 1000\nkeys.agent_day_share.$A1 = 600\n" | $B budget set >/dev/null && cat /var/lib/agentbox/control/day-shares.json &&
-  python3 -c "import json,sys; s=json.load(open(\"/var/lib/agentbox/control/day-shares.json\")); sys.exit(not (s[\"capCents\"] == 1000 and s[\"agents\"][\"$A1\"] == 600 and s[\"agents\"][\"$A2\"] == 100))" &&
-  arec INTENT name=budget.set | grep -q day_cap_cents && $B agent add --name $A7 >/dev/null &&
-  python3 -c "import json,sys; s=json.load(open(\"/var/lib/agentbox/control/day-shares.json\")); sys.exit(not (s[\"agents\"][\"$A2\"] == 80 and s[\"agents\"][\"$A7\"] == 80 and s[\"agents\"][\"$A1\"] == 600))" &&
+  n=$($B agent list | python3 -c "import json,sys; print(sum(a[\"active\"] for a in json.load(sys.stdin)[\"agents\"]))") &&
+  python3 -c "import json,sys; s=json.load(open(\"/var/lib/agentbox/control/day-shares.json\")); sys.exit(not (s[\"capCents\"] == 1000 and s[\"agents\"][\"$A1\"] == 600 and s[\"agents\"][\"$A2\"] == 400 // ($n - 1)))" &&
+  arec INTENT name=budget.set | grep -q day_cap_cents && $B agent add --name $A7 >/dev/null && cat /var/lib/agentbox/control/day-shares.json &&
+  python3 -c "import json,sys; s=json.load(open(\"/var/lib/agentbox/control/day-shares.json\")); sys.exit(not (s[\"agents\"][\"$A2\"] == 400 // $n and s[\"agents\"][\"$A7\"] == 400 // $n and s[\"agents\"][\"$A1\"] == 600))" &&
   $B agent remove --name $A7 >/dev/null'
 printf 'cache.task_fill_max_files = 3\n' | $B budget set >/dev/null; stand
 task $A5 'for i in $(seq -w 41 46); do curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8083/example.com/w/m$i/@v/v1.0.0.mod; done' > $G/c10; T=$(cat $G/last); cat $G/c10
 check "A-G10 past cache.task_fill_max_files (3) new misses get 404" '[ "$(head -3 $G/c10 | grep -cx 200)" = 3 ] && [ "$(tail -3 $G/c10 | grep -cx 404)" = 3 ] &&
   [ "$(arec CACHE event=fill task=$T | wc -l)" = 3 ]'
 cp -r $K/fixture $WS/$A5/fx && chown -R ag-$A5:ag-$A5 $WS/$A5/fx
-check "  ... and go test still passes, over CONNECT" 'task $A5 "cd fx && go test ./... 2>&1" | grep -q "^ok  *example.com/fx"'
+check "  ... and go test still passes, over CONNECT" 'task $A5 "cd fx && go test ./... 2>&1" | grep -q "^ok[[:space:]]*example.com/fx"'
 printf 'cache.agent_fill_day_bytes = 1\n' | $B budget set >/dev/null; stand
 check "A-G10 past the agent's cache.agent_fill_day_bytes, a miss gets 404" 'task $A5 "curl -s -o /dev/null -w \"%{http_code}\n\" http://127.0.0.1:8083/example.com/w/m50/@v/v1.0.0.zip" | grep -qx 404'
 printf 'disk.reserve_bytes = 1125899906842624\n' | $B budget set >/dev/null; stand
@@ -452,7 +459,7 @@ task $A4 'for i in $(seq -w 1 64); do curl -s -o /dev/null http://127.0.0.1:8083
 check "A-G10 the store never passes cache.agent_max_bytes, and LRU keeps the newest entries" '
   python3 -c "
 import sqlite3,sys; c=sqlite3.connect(\"file:$C/$A4/index.db?mode=ro\", uri=True)
-u=c.execute(\"select sum(size) from (select max(size) size from entries group by sha256)\").fetchone()[0] or 0
+import os; u=sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(\"$C/$A4\") for f in fs)
 k={r[0] for r in c.execute(\"select key from entries\")}; print(u, len(k))
 sys.exit(not (u <= 4194304 and \"go:example.com/w/m64@v1.0.0.zip\" in k and \"go:example.com/w/m01@v1.0.0.zip\" not in k))"'
 check "A-G10 a direct write past the kernel limit as agentbox-proxy gets EDQUOT" '

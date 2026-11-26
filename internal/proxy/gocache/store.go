@@ -83,7 +83,8 @@ func openStore(root, agent string, slots int) (*store, error) {
 			return nil, err
 		}
 	}
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, indexDB)+"?_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(10000)&_txlock=immediate")
+	// journal_size_limit: a checkpoint truncates the WAL, which the store's kernel limit counts
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, indexDB)+"?_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(10000)&_pragma=journal_size_limit(1048576)&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
@@ -282,16 +283,33 @@ func (s *store) usage() (int64, error) {
 	return n.Int64, err
 }
 
+// overhead is what the store holds besides its blobs: the index and its WAL, the checksum database state and temp
+// files. The kernel limit counts them too.
+func (s *store) overhead() int64 {
+	var n int64
+	for _, d := range []string{"", sumdbDir, tmpDir} {
+		ents, _ := os.ReadDir(filepath.Join(s.dir, d))
+		for _, e := range ents {
+			if fi, err := e.Info(); err == nil && fi.Mode().IsRegular() {
+				n += fi.Size()
+			}
+		}
+	}
+	return n
+}
+
 // makeRoom is §6.2's eviction: before a fill of n bytes would pass 90% of max, it deletes least-recently-used rows
-// until usage is under 80%, then each blob no row names. An open stream keeps its file.
+// until usage is under 80%, then each blob no row names. Usage is the blobs plus the overhead, so the kernel limit,
+// which counts every byte of the store, is never what stops a fill. An open stream keeps its file.
 func (s *store) makeRoom(n, max int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, err := s.usage()
-	if err != nil || u+n <= max*9/10 {
+	o := s.overhead()
+	if err != nil || u+o+n <= max*9/10 {
 		return err
 	}
-	for u+n > max*8/10 {
+	for u+o+n > max*8/10 {
 		var k string
 		if err := s.db.QueryRow(`SELECT key FROM entries ORDER BY used_at, filled_at LIMIT 1`).Scan(&k); err != nil {
 			break // no rows left
@@ -303,6 +321,7 @@ func (s *store) makeRoom(n, max int64) error {
 			return err
 		}
 	}
+	s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`) // the WAL counts against the limit too
 	return s.dropUnnamed(nil)
 }
 

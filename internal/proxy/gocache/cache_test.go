@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	mrand "math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -54,13 +55,19 @@ type fixture struct {
 	live    map[string]bool
 }
 
+// mods are two modules at two versions, each zip about 100 KiB of incompressible data, so blobs dwarf the index.
 func mods() []goproxytest.Module {
+	r := mrand.New(mrand.NewPCG(1, 2))
 	var m []goproxytest.Module
 	for _, p := range []string{"example.com/a", "example.com/b"} {
 		for _, v := range []string{"v1.0.0", "v1.1.0"} {
+			b := make([]byte, 100<<10)
+			for i := range b {
+				b[i] = byte(r.Uint32())
+			}
 			m = append(m, goproxytest.Module{Path: p, Version: v, Files: map[string]string{
 				"go.mod": "module " + p + "\n\ngo 1.21\n", "a.go": "package a\n\n// " + v + "\nconst V = \"" + v + "\"\n",
-				"data.txt": strings.Repeat(v, 2000)}})
+				"data.bin": string(b)}})
 		}
 	}
 	return m
@@ -372,7 +379,8 @@ func TestCapsAndEviction(t *testing.T) {
 	x.c.cfg.Free = nil // statfs
 	x.c.cfg.Limits.ReserveBytes = 0
 	z := int64(len(x.up.Zip("example.com/a", "v1.0.0")))
-	x.c.cfg.Limits.AgentMaxBytes = 3 * z // three zips pass 90%
+	s0, _ := x.c.store("ga")
+	x.c.cfg.Limits.AgentMaxBytes = 3*z + s0.overhead() + z/2 // three zips and the index pass 90%
 	for _, l := range []string{zipA, zipA1, "GET /_cache/go/example.com/b/@v/v1.0.0.zip", "GET /_cache/go/example.com/b/@v/v1.1.0.zip"} {
 		if st, _ := x.do(t, "T2", "ga", l); st != 200 {
 			t.Fatalf("%s: %d", l, st)
@@ -380,8 +388,8 @@ func TestCapsAndEviction(t *testing.T) {
 		time.Sleep(2 * time.Millisecond) // filled_at orders them
 	}
 	s, _ := x.c.store("ga")
-	if u, _ := s.usage(); u > x.c.cfg.Limits.AgentMaxBytes {
-		t.Errorf("usage %d over the limit %d", u, x.c.cfg.Limits.AgentMaxBytes)
+	if u, _ := s.usage(); u+s.overhead() > x.c.cfg.Limits.AgentMaxBytes {
+		t.Errorf("usage %d and overhead %d over the limit %d", u, s.overhead(), x.c.cfg.Limits.AgentMaxBytes)
 	}
 	if _, ok := s.row("go:example.com/b@v1.1.0.zip"); !ok {
 		t.Error("eviction dropped the newest entry")
@@ -436,7 +444,7 @@ func TestPurgeRevokeSweep(t *testing.T) {
 	os.WriteFile(filepath.Join(x.root, "ga", blobsDir, strings.Repeat("0", 64)), []byte("orphan"), 0o444)
 	s.db.Exec(`INSERT INTO entries VALUES('go:example.com/z@v1.0.0.zip', ?, 1, 'h1:x', 'proxy.golang.org', 'T9', 0, 0)`, strings.Repeat("1", 64))
 	x.c.Close()
-	if err := x.c.Open(); err != nil { // the proxy's start
+	if err := x.c.Open("ga", "gb", "gz"); err != nil { // the proxy's start; gz has no store
 		t.Fatal(err)
 	}
 	if rows, blobs := x.stats(t, "ga"); rows != 1 || blobs != 1 {
@@ -470,7 +478,7 @@ func TestNightly(t *testing.T) {
 	now := time.Now().Add(31 * 24 * time.Hour)
 	x.c.cfg.Now = func() time.Time { return now }
 	x.up.Log()
-	if err := x.c.Nightly(); err != nil {
+	if err := x.c.Nightly("ga"); err != nil {
 		t.Fatal(err)
 	}
 	if rows, blobs := x.stats(t, "ga"); rows != 0 || blobs != 0 || len(x.up.Log()) != 0 {

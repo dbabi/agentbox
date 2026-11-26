@@ -9,7 +9,8 @@
 //	standin serve -upstream 10.0.2.2:7801 -vkey FILE -ca FILE -log FILE [-no-taint] [-hostile]
 //	standin btrfs-probe [-no-filter] DIR   BTRFS_IOC_SUBVOL_CREATE on DIR under the service filter, plain and with
 //	                                       0xdead00000000 in cmd; prints each errno
-//	standin watch DIR SECONDS              counts inotify events on DIR and its subdirs for SECONDS
+//	standin watch DIR SECONDS              counts inotify events on DIR and its subdirs for SECONDS, but a dir's own
+//	                                       open, read and close
 //
 // -no-taint is the test proxy build that writes no taint record (A-G6); -hostile answers every /_cache/ path the cache
 // would refuse with forged lists, @latest, .info and checksum data (A-G8 d).
@@ -153,7 +154,16 @@ func serve(args []string) {
 		Live:    s.live,
 	})
 	log.Printf("standin: limits %+v, upstream %s, no-taint %v, hostile %v", lim, s.upstream, s.noTaint, s.hostile)
-	if err := s.cache.Open(); err != nil { // the start sweep
+	// the start sweep, for each agent whose list can fill: data/cache itself is closed to this uid
+	var agents []string
+	if l, err := resolve.LoadLists(resolve.EgressDir); err == nil {
+		for a := range l.Agent {
+			if l.Allowed("proxy", a, taskenv.GoProxyEntry) {
+				agents = append(agents, a)
+			}
+		}
+	}
+	if err := s.cache.Open(agents...); err != nil {
 		log.Printf("cache open: %v", err)
 	}
 	if rep, err := line(rootdSock, map[string]any{"op": "task.list_live"}); err != nil {
@@ -416,7 +426,11 @@ func watch(args []string) {
 		k, err := unix.Read(fd, buf)
 		for off := 0; err == nil && off+unix.SizeofInotifyEvent <= k; {
 			ev := (*unix.InotifyEvent)(unsafe.Pointer(&buf[off]))
-			n++
+			// a listing of a dir (rootd's nested-subvolume sweep, this walk) reads nothing of the store
+			if ev.Mask&unix.IN_ISDIR == 0 || ev.Mask&(unix.IN_OPEN|unix.IN_ACCESS|unix.IN_CLOSE_NOWRITE) == 0 {
+				n++
+				fmt.Printf("event %#x %s\n", ev.Mask, unix.ByteSliceToString(buf[off+unix.SizeofInotifyEvent:off+unix.SizeofInotifyEvent+int(ev.Len)]))
+			}
 			off += unix.SizeofInotifyEvent + int(ev.Len)
 		}
 		time.Sleep(50 * time.Millisecond)
