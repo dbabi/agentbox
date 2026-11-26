@@ -149,7 +149,7 @@ func ensureUser(a Agent) error {
 
 // stopCmds are the live teardown's best-effort stops: linger, the sessions, user@. A stop that lands while user@ still
 // runs its ExecStartPre fails the unit (result signal), and the box reads degraded until a reboot, so reset-failed
-// follows it (#276). For a unit that stopped clean, reset-failed answers "not loaded".
+// follows it (#276).
 func (a Agent) stopCmds() [][]string {
 	u := "user@" + strconv.Itoa(a.UID()) + ".service"
 	return [][]string{{"loginctl", "disable-linger", a.User()}, {"loginctl", "terminate-user", a.User()},
