@@ -489,10 +489,12 @@ check "#149: user@$U restarted while rootd runs; the next 3 tasks all start and 
 
 # --- #125: a reused pause PID ---
 PP=/run/user/$U/libpod/tmp/pause.pid
-# kill the pause process, then start an agent-uid process with no user namespace at its PID (ns_last_pid = PID-1)
+# kill the pause process, then start an agent-uid process with no user namespace at its PID (ns_last_pid = PID-1).
+# The fork at the PID runs as root until setpriv drops to the agent uid, so wait for its exec of sleep first (#169)
 check "#125: pause process killed, and an agent-uid process outside its user namespace takes the PID" 'P=$(cat $PP) && kill -9 $P &&
   while kill -0 $P 2>/dev/null; do sleep 0.1; done && i=0 && while [ $i -lt 500 ]; do echo $((P-1)) > /proc/sys/kernel/ns_last_pid
     setpriv --reuid=$U --regid=$U --clear-groups sleep 600 </dev/null >/dev/null 2>&1 & q=$!; [ $q = $P ] && break; kill $q; i=$((i+1)); done &&
+  i=0 && until [ "$(cat /proc/$P/comm 2>/dev/null)" = sleep ]; do i=$((i+1)); [ $i -lt 50 ] || exit 1; sleep 0.1; done &&
   [ "$(cat $PP)" = $P ] && [ "$(stat -c %u /proc/$P)" = $U ] && echo $P > /tmp/tg-reused'
 check "  ... control: the agent's podman then fails with cannot set user namespace (the upstream bug)" '! pod info >/tmp/tg-userns 2>&1 && cat /tmp/tg-userns &&
   grep -q "cannot set user namespace" /tmp/tg-userns'
