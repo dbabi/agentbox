@@ -83,19 +83,9 @@ func OpenDB(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // one writer; every transaction is BEGIN IMMEDIATE
-	var mode string
-	var syncv int
-	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+	if err := walFull(db); err != nil {
 		db.Close()
 		return nil, err
-	}
-	if err := db.QueryRow(`PRAGMA synchronous`).Scan(&syncv); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if mode != "wal" || syncv != 2 {
-		db.Close()
-		return nil, fmt.Errorf("rootd.db: journal_mode=%s synchronous=%d, need wal and FULL (2)", mode, syncv)
 	}
 	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, snapSchema, secretSchema, attach.Schema, attach.BaselineSchema, alertSchema} {
 		if _, err := db.Exec(schema); err != nil {
@@ -104,6 +94,34 @@ func OpenDB(path string) (*sql.DB, error) {
 		}
 	}
 	return db, nil
+}
+
+// walFull is App. E's mode for rootd.db: WAL with synchronous=FULL. A store in another mode is set up wrong, so a
+// restart would refuse again: ErrRefused.
+func walFull(db *sql.DB) error {
+	var mode string
+	var syncv int
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`PRAGMA synchronous`).Scan(&syncv); err != nil {
+		return err
+	}
+	if mode != "wal" || syncv != 2 {
+		return fmt.Errorf("rootd.db: journal_mode=%s synchronous=%d, need wal and FULL (2): %w", mode, syncv, ErrRefused)
+	}
+	return nil
+}
+
+// auditIDs is agentbox-audit's uid and gid, the owner of every segment rootd creates. sysusers.d makes them, so a box
+// without them is set up wrong: ErrRefused.
+func auditIDs() (uint32, uint32, error) {
+	uid, uok := lookupUID("agentbox-audit")
+	gid, gok := lookupGID("agentbox-audit")
+	if !uok || !gok {
+		return 0, 0, fmt.Errorf("no agentbox-audit user or group (sysusers.d/agentbox.conf): %w", ErrRefused)
+	}
+	return uid, gid, nil
 }
 
 func lookupUID(name string) (uint32, bool) {
@@ -201,10 +219,9 @@ func Run(cfg Config) error {
 	log.Printf("sets match rootd.db: %d live elements re-added, %d revoked, %d expired, %d unknown removed",
 		res.Added, res.Revoked, res.Expired, res.Extra)
 
-	auid, aok := lookupUID("agentbox-audit")
-	agid, gok := lookupGID("agentbox-audit")
-	if !aok || !gok {
-		return errors.New("no agentbox-audit user or group (sysusers.d/agentbox.conf)")
+	auid, agid, err := auditIDs()
+	if err != nil {
+		return err
 	}
 	s := &server{cfg: cfg, db: db, svc: svc, seal: &audit.Files{Dir: cfg.AuditDir, UID: int(auid), GID: int(agid), Crash: cfg.SealCrash},
 		audit: func(r map[string]any) error { return auditSend(cfg.AuditSocket, r) },
@@ -253,9 +270,8 @@ func Run(cfg Config) error {
 	for {
 		select {
 		case <-ctx.Done():
-			for _, ln := range lns {
-				ln.Close()
-			}
+			// the listeners stay open: a new request gets "stopping" instead of waiting for the next rootd, and the
+			// seal socket keeps serving the RESULTs in flight
 			s.drain(drainTimeout) // a request past its INTENT ACK gets its effect and RESULT before rootd exits
 			return nil
 		case <-t.C:
@@ -293,8 +309,10 @@ type server struct {
 	// applyOS runs accounts.Reconcile in agentbox-accounts.service: rootd's ProtectSystem=strict keeps /etc read-only here
 	applyOS func() error
 
-	// reqs is held shared while a request line is handled (serve); drain takes it to wait for those in flight
-	reqs sync.RWMutex
+	// reqs is held shared while a request line is handled and its reply written (answer); drain takes it to wait for
+	// those in flight. stopping is set once the drain begins: a new attach is refused.
+	reqs     sync.RWMutex
+	stopping atomic.Bool
 
 	live sync.Map // agent -> session id of each running attach
 	seen sync.Map // agent -> *attach.Seen: every session-home token version since rootd started, in memory only
@@ -314,9 +332,12 @@ type server struct {
 // drainTimeout bounds the wait at stop for requests in flight, below the unit's TimeoutStopSec=90s.
 const drainTimeout = 60 * time.Second
 
-// drain waits up to d for the request lines being handled, and holds new ones back. It reports whether they all ended.
+// drain waits up to d for the request lines being handled and their replies; a new one gets the stopping refusal. It
+// reports whether they all ended.
 // shortcut: an attach session is not waited for; its block stays, and attach rescan finishes it after a restart.
 func (s *server) drain(d time.Duration) bool {
+	s.stopping.Store(true)
+	log.Printf("stop: new requests get stopping; waiting up to %v for those in flight", d)
 	done := make(chan struct{})
 	go func() { s.reqs.Lock(); close(done) }()
 	select {
@@ -525,16 +546,17 @@ func (s *server) admin(r request, p peer) reply {
 		// §9: INTENT, its ACK, the effect, RESULT. auditd down means the list stays as it is.
 		// shortcut: rootd logs the edit as an admin op itself; weeks 9-10's net.allow_domain flow replaces this.
 		var found []map[string]any
-		if r.Op == "egress.allow" && s.tasks != nil {
-			agents := s.activeAgents()
+		grant := r.Op == "egress.allow" && s.tasks != nil
+		var agents []string
+		if grant {
+			if agents, err = s.activeAgents(); err != nil {
+				return reply{"ok": false, "reason": SecretScanFailed, "error": "nothing changed: no agent list, so no workspace credential scan: " + err.Error()}
+			}
 			var failed []string
 			found, failed = s.tasks.grantScan(agents, e.Host) // #104: a workspace token for this host
 			// the grant reaches running tasks at once, so a credential for host refuses it unless acknowledged (#222)
 			if rep := grantRefusal(found, failed, r.AckSecrets, e.Host); rep != nil {
 				return rep
-			}
-			if err := s.tasks.dropAcks(agents, e.Host); err != nil {
-				return reply{"ok": false, "reason": SecretScanFailed, "error": "nothing changed: the acknowledgements for " + e.Host + ": " + err.Error()}
 			}
 		}
 		id := newDenyID()
@@ -542,14 +564,29 @@ func (s *server) admin(r request, p peer) reply {
 			"args": map[string]string{"svc": r.Svc, "entry": e.String()}}); err != nil {
 			return reply{"ok": false, "error": "audit: the INTENT was not ACKed, nothing changed: " + err.Error()}
 		}
-		changed, err := resolve.EditList(s.cfg.EgressDir, r.Svc, e, r.Op == "egress.allow")
+		// the acks go after the ACK, so a grant auditd refuses keeps them, and before the list changes, so no task
+		// starts on an ack from before the grant once host is allowed
+		changed, dropped := false, ""
+		if grant {
+			dropped = "are"
+			if err = s.tasks.dropAcks(agents, e.Host); err != nil {
+				err, dropped = fmt.Errorf("the acknowledgements for %s: %v", e.Host, err), "may be"
+			}
+		}
+		if err == nil {
+			changed, err = resolve.EditList(s.cfg.EgressDir, r.Svc, e, r.Op == "egress.allow")
+		}
 		status, detail := "executed", ""
 		if err != nil {
 			status, detail = "failed", err.Error()
 		}
 		aerr := s.audit(map[string]any{"type": "RESULT", "opId": id, "status": status, "detail": detail, "changed": changed})
 		if err != nil {
-			return reply{"ok": false, "error": err.Error()}
+			msg := "the list did not change: " + err.Error()
+			if dropped != "" {
+				msg += "; the task acknowledgements of credentials for " + e.Host + " " + dropped + " dropped, so a task that needs one is refused until --ack-secrets again"
+			}
+			return reply{"ok": false, "error": msg}
 		}
 		rep := s.refill(r) // even with no RESULT ACK: a removal must still revoke
 		rep["changed"] = changed
@@ -624,6 +661,46 @@ func (s *server) lineFrom(name string, p peer, b []byte) []byte {
 		rep = s.handle(name, p, r)
 	}
 	return encode(rep)
+}
+
+// replyTimeout bounds a reply's write: a client that never reads can't hold up the drain. A var: tests shorten it.
+var replyTimeout = 5 * time.Second
+
+// answer handles one request line from c and writes its reply. The seal socket is outside the drain: auditd's seal
+// calls carry no INTENT, and a RESULT in flight may need one. Any other line that comes once rootd is stopping gets
+// the stopping refusal. One in flight writes its reply before it lets the drain end, so rootd can't exit first.
+func (s *server) answer(c net.Conn, name string, p peer, line []byte) error {
+	var out []byte
+	switch {
+	case name == sockSeal:
+		out = s.lineFrom(name, p, line)
+	case !s.reqs.TryRLock(): // only drain's Lock makes it fail
+		var r request
+		json.Unmarshal(line, &r) // only for the op a denial names: a line that doesn't decode is refused the same
+		out = encode(stopped(name, r))
+	default:
+		defer s.reqs.RUnlock()
+		out = s.lineFrom(name, p, line)
+	}
+	c.SetWriteDeadline(time.Now().Add(replyTimeout))
+	defer c.SetWriteDeadline(time.Time{})
+	_, err := c.Write(out)
+	return err
+}
+
+// stopped is the reply to a request that comes while rootd stops: nothing ran, and the client may send it again once
+// rootd is back. A broker gets its own unavailable (§6.2); a task op gets BUSY, a typed denial that agentboxd relays
+// and that never names its reason (§5.6).
+func stopped(name string, r request) reply {
+	switch {
+	case strings.HasPrefix(name, "resolve-"):
+		return fail(resolve.Unavailable)
+	case name == sockGate && r.Op == "task.op":
+		rep := deny(floor(ops.Busy, "", r.Name), "floor.stopping")
+		rep["reason"] = "stopping"
+		return rep
+	}
+	return reply{"ok": false, "reason": "stopping", "error": "rootd is stopping, so nothing ran: send it again once rootd is back"}
 }
 
 // taskAdmin is the human side (§4.2): `agentbox task new` records a request and passes it to agentboxd, which starts

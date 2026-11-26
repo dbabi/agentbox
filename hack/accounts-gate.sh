@@ -15,7 +15,9 @@
 #          agent deletes its user, sub-ids and drop-ins and archives its subvolumes; adding another never reuses its
 #          uid or sub-id range, and re-adding its name gets a new N. A nested subvolume refuses agent.remove with
 #          NESTED_SUBVOLUME and taints workspace:<name>#<N>; re-adding that name gets a clean workspace subject while the
-#          old one stays tainted. A foreign /etc/subuid entry inside the agentbox span stops reconcile. After a reboot reconcile rebuilds the same accounts and nothing failed.
+#          old one stays tainted. An agent add that a rootd restart catches in its agentbox-accounts.service start
+#          (held 20 s) finishes, with an executed RESULT, and a request during that drain is refused "stopping" at once
+#          (#273). A foreign /etc/subuid entry inside the agentbox span stops reconcile. After a reboot reconcile rebuilds the same accounts and nothing failed.
 # PASS/FAIL lines go to .vm/accounts-gate.txt, command output to .vm/accounts-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -156,6 +158,26 @@ NC2=$(f n)
 check "  ... its workspace subject workspace:$QC#$NC2 starts clean, while workspace:$QC#$NC stays tainted" '
   [ -z "$(taint "workspace:$QC#$NC2")" ] && [ "$(taint "workspace:$QC#$NC")" = 1 ] && [ -z "$(taint "workspace:$QC")" ]'
 ag remove --name $QC >/dev/null
+# #273: a rootd stop waits for the agent add in flight, and SIGTERM reaches rootd alone (KillMode=mixed), so the
+# systemctl start of agentbox-accounts.service it waits for, held here 20 s, keeps running
+QD=qd$X DR=/run/systemd/system/agentbox-accounts.service.d
+mkdir -p $DR && printf '[Service]\nExecStartPre=/bin/sleep 20\n' > $DR/50-gate-slow.conf && systemctl daemon-reload
+( $A agent add --name $QD > /run/qd.json 2>&1; echo $? > /run/qd.rc ) &
+for i in $(seq 100); do [ "$(systemctl show -P ActiveState agentbox-accounts.service)" = activating ] && break; sleep 0.1; done
+t0=$(date +%s)
+( systemctl restart agentbox-rootd.service; echo $? > /run/qd-restart.rc ) &
+for i in $(seq 150); do journalctl -u agentbox-rootd --since "@$t0" -o cat | grep -q "^stop: new requests get stopping" && break; sleep 0.1; done
+t1=$(date +%s%N); $A agent list > /run/qd-list.json 2>&1; echo $? > /run/qd-list.rc; t2=$(date +%s%N)
+wait
+check "a rootd restart while agent add $QD waits for agentbox-accounts.service: the add ends ok, ag-$QD exists" '
+  cat /run/qd.json; [ "$(cat /run/qd.rc)" = 0 ] && grep -q "\"ok\":true" /run/qd.json && getent passwd ag-$QD'
+check "  ... and its audit RESULT says executed" 'id=$(python3 -c "import json; print(json.load(open(\"/run/qd.json\"))[\"opId\"])") &&
+  cat $M/audit/seg-*.jsonl | grep -F "\"opId\":\"$id\"" | grep -F "\"type\":\"RESULT\"" | grep -qF "\"status\":\"executed\""'
+check "  ... a request during the drain is refused \"stopping\" at once, nothing run" 'cat /run/qd-list.json; [ "$(cat /run/qd-list.rc)" != 0 ] &&
+  grep -qF "\"reason\":\"stopping\"" /run/qd-list.json && [ $(( (t2 - t1) / 1000000 )) -lt 2000 ]'
+check "  ... and the restart ends with rootd active" '[ "$(cat /run/qd-restart.rc)" = 0 ] && systemctl is-active -q agentbox-rootd.service'
+rm -f $DR/50-gate-slow.conf; systemctl daemon-reload
+ag remove --name $QD >/dev/null
 check "agent list shows every row, retired ones included" 'ag list && for n in $QA $QB $QC; do grep -q "\"name\":\"$n\"" /run/ag.json || exit 1; done'
 cp /etc/subuid /run/subuid.ok
 echo "evil:$((0x70000000)):65536" >> /etc/subuid

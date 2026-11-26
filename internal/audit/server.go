@@ -70,6 +70,12 @@ type Server struct {
 	torn     bool  // a failed append may have left bytes past end
 	unsynced error // an fdatasync of the segment failed: the head may name bytes that never reached the disk
 	diskFull bool
+
+	// seal work Start leaves for rootd, which starts after auditd (Settle): create, no segment yet, so seg 1 waits for
+	// audit.create; reseal, the close hash of the segment before the newest, an empty one that a seal made just before
+	// a crash: that seal is done again before the newest gets its open
+	create bool
+	reseal string
 }
 
 func (s *Server) logf(format string, args ...any) {
@@ -84,8 +90,9 @@ func (s *Server) crash(p string) {
 	}
 }
 
-// Start opens taint.db and the chain: it marks a torn tail, finishes a seal a crash interrupted, and rotates at its
-// first start in a new boot. Only then may it ACK.
+// Start opens taint.db and the chain: it marks a torn tail, and at its first start in a new boot it closes the open
+// segment. It calls no rootd: the first segment, and the seal a new boot or a crash left, wait for Settle or the
+// first record, since rootd starts after auditd. Nothing is ACKed before them.
 func (s *Server) Start() error {
 	if s.SegmentBytes == 0 {
 		s.SegmentBytes = DefaultSegmentBytes
@@ -132,16 +139,22 @@ func (s *Server) Start() error {
 	return s.openChain()
 }
 
+// Settle does what Start left for rootd (ready): the daemon calls it after READY=1. Until it succeeds nothing is
+// ACKed, and each record tries again.
+func (s *Server) Settle() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ready()
+}
+
 func (s *Server) openChain() error {
 	ns, err := Segments(s.Dir)
 	if err != nil {
 		return err
 	}
 	if len(ns) == 0 {
-		if err := s.Seal.Create(1); err != nil {
-			return err
-		}
-		ns = []uint64{1}
+		s.create = true // ready asks rootd for seg 1
+		return nil
 	}
 	n := ns[len(ns)-1]
 	path := filepath.Join(s.Dir, SegName(n))
@@ -169,9 +182,7 @@ func (s *Server) openChain() error {
 		if err != nil || !p.Closed {
 			return fmt.Errorf("%s: newest segment is empty and the one before it does not end in close: %v", SegName(n), err)
 		}
-		if err := s.Seal.Seal(n-1, p.LastHash); err != nil { // idempotent: it may have stopped before +i
-			return err
-		}
+		s.reseal = p.LastHash // the seal is idempotent: it may have stopped before +i; ready asks rootd for it again
 		s.seq, s.last = p.Last.Seq, p.LastHash
 		if p.Last.BootID == s.BootID { // so writeOpen logs a clock step since that close
 			s.lastWall, s.lastBoot = p.Last.TsWall, p.Last.TsBoot
@@ -199,13 +210,13 @@ func (s *Server) openChain() error {
 	}
 	switch {
 	case sc.Closed:
-		s.sealing = true
-		err = s.finishSeal()
+		s.sealing = true // ready asks rootd for the seal
+	case s.reseal != "": // the open waits for the seal again (ready)
 	case sc.OpenRec == nil:
 		s.needOpen = true
 		return s.writeOpen()
 	case sc.OpenRec.BootID != s.BootID:
-		err = s.rotate() // first start in a new boot
+		err = s.closeSegment() // first start in a new boot; ready asks rootd for the seal
 	}
 	if err != nil && s.sealing {
 		s.logf("audit: %v; nothing is ACKed until the seal succeeds", err) // retried at every request
@@ -273,6 +284,14 @@ func (s *Server) writeOpen() error {
 // rotate: stop ACKing (the caller holds mu), append close, fdatasync, close the fd, ask rootd to seal, open the next
 // segment with open{prev = hash(close)} (§9).
 func (s *Server) rotate() error {
+	if err := s.closeSegment(); err != nil {
+		return err
+	}
+	return s.finishSeal()
+}
+
+// closeSegment is rotate up to the seal: once close is written, nothing else may follow it.
+func (s *Server) closeSegment() error {
 	if err := s.noteClockStep(); err != nil { // before close's body: close must name the record right before it
 		return err
 	}
@@ -286,7 +305,7 @@ func (s *Server) rotate() error {
 		return err
 	}
 	s.crash("close-written")
-	return s.finishSeal()
+	return nil
 }
 
 func (s *Server) finishSeal() error {
@@ -318,7 +337,7 @@ func (s *Server) reopen() error {
 		s.f.Close()
 		s.f = nil
 	}
-	s.torn, s.sealing, s.needOpen, s.unsynced = false, false, false, nil
+	s.torn, s.sealing, s.needOpen, s.unsynced, s.reseal = false, false, false, nil, ""
 	s.lastWall, s.lastBoot = 0, 0 // as at start: openChain takes them from the last record on disk, after any torn
 	err := s.openChain()
 	if err == nil {
@@ -330,13 +349,29 @@ func (s *Server) reopen() error {
 	return err
 }
 
-// ready brings the chain to a state that can take a record: the head reread after a failed fdatasync, a pending seal
-// done, a torn tail declared, a full segment rotated.
+// ready brings the chain to a state that can take a record: the first segment created, the head reread after a failed
+// fdatasync, a pending seal done, a torn tail declared, a full segment rotated.
 func (s *Server) ready() error {
+	if s.create {
+		if err := s.Seal.Create(1); err != nil {
+			return err
+		}
+		s.create = false
+		if err := s.openChain(); err != nil {
+			s.unsynced = err // reopen reads the chain again before the next record
+			return err
+		}
+	}
 	if s.unsynced != nil {
 		if err := s.reopen(); err != nil {
 			return err
 		}
+	}
+	if s.reseal != "" {
+		if err := s.Seal.Seal(s.seg-1, s.reseal); err != nil {
+			return fmt.Errorf("audit.seal %s: %w", SegName(s.seg-1), err)
+		}
+		s.reseal = ""
 	}
 	if s.sealing {
 		if err := s.finishSeal(); err != nil {
@@ -474,7 +509,7 @@ func (s *Server) enterDiskFull(why string) {
 
 // alert writes a critical alert record when the chain can take it; the journal line above is the fallback.
 func (s *Server) alert(reason string) {
-	if (s.unsynced != nil && s.reopen() != nil) || s.f == nil || s.sealing || (s.torn && s.repairTail() != nil) || (s.needOpen && s.writeOpen() != nil) {
+	if (s.unsynced != nil && s.reopen() != nil) || s.f == nil || s.sealing || s.reseal != "" || (s.torn && s.repairTail() != nil) || (s.needOpen && s.writeOpen() != nil) {
 		return
 	}
 	b, _ := json.Marshal(map[string]string{"reason": reason})

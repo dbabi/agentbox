@@ -254,32 +254,47 @@ func TestPopulatedReadError(t *testing.T) {
 }
 
 // #222: watchTask times the task on the monotonic clock. A wall clock that steps past the deadline while the task runs
-// doesn't make its exit a timeout.
+// doesn't make its exit a timeout, and a deadline set by a wall clock hours behind the real one doesn't end the task
+// at once (#273: the backstop must not use the wall clock either).
 func TestWatchTaskClockStep(t *testing.T) {
-	r := newRig(t)
-	var wall atomic.Int64
-	wall.Store(1_800_000_000_000)
-	r.t.cfg.Now = func() time.Time { return time.UnixMilli(wall.Load()) }
-	id := ids.New(ids.Task)
-	if rep := r.t.start(id, "claude", "daemon"); rep["ok"] != true {
-		t.Fatal(rep)
-	}
-	cg := filepath.Join(r.t.cfg.Cgroup, task.CgroupDir(70001, id))
-	os.MkdirAll(cg, 0o755)
-	os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 1\n"), 0o644)
-	var dl int64
-	r.db.QueryRow(`SELECT deadline FROM task_registry WHERE task=?`, id).Scan(&dl)
-	r.t.noWatch = false
-	r.t.watchTask(id, 70001, dl)
-	wall.Add((3 * time.Hour).Milliseconds()) // the clock steps 3 h, past the 2 h deadline
-	os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 0\n"), 0o644)
-	var why sql.NullString
-	for i := 0; i < 100 && !why.Valid; i++ {
-		time.Sleep(50 * time.Millisecond)
-		r.db.QueryRow(`SELECT end_reason FROM task_registry WHERE task=?`, id).Scan(&why)
-	}
-	if why.String != "failed" {
-		t.Fatalf("end_reason %q, want failed: the task exited 2 h before its deadline", why.String)
+	for _, tc := range []struct {
+		name       string
+		wall, step time.Duration // the wall clock at the start, against the real one, and its step while the task runs
+	}{
+		{"a step past the deadline", time.Until(time.UnixMilli(1_800_000_000_000)), 3 * time.Hour},
+		{"a wall clock 3 h behind", -3 * time.Hour, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			var wall atomic.Int64
+			wall.Store(time.Now().Add(tc.wall).UnixMilli())
+			r.t.cfg.Now = func() time.Time { return time.UnixMilli(wall.Load()) }
+			id := ids.New(ids.Task)
+			if rep := r.t.start(id, "claude", "daemon"); rep["ok"] != true {
+				t.Fatal(rep)
+			}
+			cg := filepath.Join(r.t.cfg.Cgroup, task.CgroupDir(70001, id))
+			os.MkdirAll(cg, 0o755)
+			os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 1\n"), 0o644)
+			var dl int64
+			r.db.QueryRow(`SELECT deadline FROM task_registry WHERE task=?`, id).Scan(&dl)
+			r.t.noWatch = false
+			r.t.watchTask(id, 70001, dl)
+			wall.Add(tc.step.Milliseconds())
+			var why sql.NullString
+			time.Sleep(1500 * time.Millisecond) // the task runs on
+			if r.db.QueryRow(`SELECT end_reason FROM task_registry WHERE task=?`, id).Scan(&why); why.Valid {
+				t.Fatalf("end_reason %q 1.5 s into a 2 h task", why.String)
+			}
+			os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 0\n"), 0o644)
+			for i := 0; i < 100 && !why.Valid; i++ {
+				time.Sleep(50 * time.Millisecond)
+				r.db.QueryRow(`SELECT end_reason FROM task_registry WHERE task=?`, id).Scan(&why)
+			}
+			if why.String != "failed" {
+				t.Fatalf("end_reason %q, want failed: the task exited 2 h before its deadline", why.String)
+			}
+		})
 	}
 }
 

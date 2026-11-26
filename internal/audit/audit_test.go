@@ -21,7 +21,8 @@ type box struct {
 	boot   int64
 	bootID string
 	avail  uint64
-	crash  string // point at which the next server panics, once
+	crash  string              // point at which the next server panics, once
+	sealer func(Sealer) Sealer // if set, wraps rootd's half for the next start
 }
 
 type crashed struct{ point string }
@@ -42,19 +43,38 @@ func (b *box) hook(p string) {
 // start runs a fresh auditd process on the box's directory, as systemd would after a crash or reboot.
 func (b *box) start() {
 	b.t.Helper()
+	b.up()
+	b.settle()
+}
+
+// up is start until READY=1.
+func (b *box) up() {
+	b.t.Helper()
 	if b.s != nil {
 		b.s.Close()
 	}
-	files := &Files{Dir: b.dir, UID: os.Getuid(), GID: os.Getgid(), Crash: b.hook}
+	var files Sealer = &Files{Dir: b.dir, UID: os.Getuid(), GID: os.Getgid(), Crash: b.hook}
+	if b.sealer != nil {
+		files = b.sealer(files)
+	}
 	b.s = &Server{Dir: b.dir, Seal: files, SegmentBytes: 2048, ReserveBytes: 1 << 20, Crash: b.hook, BootID: b.bootID,
 		Wall: func() int64 { b.wall += 10; return b.wall }, Boot: func() int64 { b.boot += 10; return b.boot },
 		Avail: func() (uint64, error) { return b.avail, nil }, Logf: b.t.Logf}
 	if err := b.s.Start(); err != nil {
-		if errors.Is(err, syscall.EPERM) && strings.Contains(err.Error(), "chattr") {
-			// the unprivileged CI go test lands here; CI's sudo step reruns this package and fails on any skip
-			b.t.Skipf("skipped: chattr needs CAP_LINUX_IMMUTABLE, as rootd has (§9); run as root to cover it: %v", err)
-		}
 		b.t.Fatalf("Start: %v", err)
+	}
+}
+
+// settle is the daemon's Settle after READY=1: an error only logs, as each record tries again.
+func (b *box) settle() {
+	b.t.Helper()
+	err := b.s.Settle()
+	if errors.Is(err, syscall.EPERM) && strings.Contains(err.Error(), "chattr") {
+		// the unprivileged CI go test lands here; CI's sudo step reruns this package and fails on any skip
+		b.t.Skipf("skipped: chattr needs CAP_LINUX_IMMUTABLE, as rootd has (§9); run as root to cover it: %v", err)
+	}
+	if err != nil {
+		b.t.Logf("Settle: %v", err)
 	}
 }
 
@@ -218,6 +238,63 @@ func TestClockStepBackAcrossMidnight(t *testing.T) {
 	rep := b.verify()
 	if len(rep) != 1 || rep[0].ClockSteps != 2 {
 		t.Fatalf("want one segment with 2 clock_step records, got %+v", rep)
+	}
+}
+
+// rootdDown is rootd's half while rootd is not up yet: every call fails, and counts.
+type rootdDown struct {
+	Sealer
+	down  *bool
+	calls *int
+}
+
+func (r rootdDown) Create(seg uint64) error {
+	if *r.calls++; *r.down {
+		return errors.New("rootd is not up")
+	}
+	return r.Sealer.Create(seg)
+}
+
+func (r rootdDown) Seal(seg uint64, h string) error {
+	if *r.calls++; *r.down {
+		return errors.New("rootd is not up")
+	}
+	return r.Sealer.Seal(seg, h)
+}
+
+// #273: rootd starts after auditd, so Start calls no rootd. The first segment, a new boot's seal and the seals a crash
+// left (after close, or after the seal made the next segment) wait for Settle, which the daemon runs after READY=1.
+// Until rootd answers, no record is ACKed; then the chain verifies.
+func TestStartCallsNoRootd(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		prep func(b *box)
+	}{
+		{"first start", func(b *box) { b.dir = tempDir(b.t) }},
+		{"new boot", func(b *box) {
+			b.ok("proxy", `{"type":"TAINT","subject":"task:T1","source":"s"}`)
+			b.bootID, b.boot = "boot-2", 100
+		}},
+		{"crash after close", func(b *box) { b.rotate("close-written") }},
+		{"crash after the seal", func(b *box) { b.rotate("sealed") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newBox(t)
+			tc.prep(b)
+			down, calls := true, 0
+			b.sealer = func(s Sealer) Sealer { return rootdDown{s, &down, &calls} }
+			b.up()
+			if calls != 0 {
+				t.Fatalf("Start called rootd %d times", calls)
+			}
+			b.nack("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`, CodeUnavailable)
+			down = false
+			b.settle()
+			b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`)
+			if rep := b.verify(); len(rep) < 2 && tc.name != "first start" {
+				t.Fatalf("no seal: %+v", rep)
+			}
+		})
 	}
 }
 
@@ -750,9 +827,11 @@ func TestCloseSyncFailsTwice(t *testing.T) {
 	syncFault(t, `"type":"close"`, syscall.EIO, true)
 	syncFault(t, `"type":"close"`, syscall.EIO, true)
 	b.bootID = "boot-2"
-	b.start()
+	b.up()
 	b.s.Seal = sealOnDisk{t, b.s.Seal}
-	b.nack("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`, CodeUnavailable)
+	if err := b.s.Settle(); err == nil {
+		t.Fatal("Settle went on past the reread's lost close")
+	}
 	b.ok("proxy", `{"type":"TAINT","subject":"task:T2","source":"s"}`)
 	if rep := b.verify(); len(rep) != 2 || !rep[0].Closed || len(rep[0].Torn) != 2 {
 		t.Fatalf("want seg 1 sealed with both lost closes declared torn, got %+v", rep)

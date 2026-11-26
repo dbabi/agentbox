@@ -1,8 +1,11 @@
 package rootd
 
 import (
+	"bufio"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -204,5 +207,117 @@ func TestDrain(t *testing.T) {
 	case <-held:
 		t.Fatal("a new request ran during the drain")
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// countSeal is rootd's seal half that only counts its calls.
+type countSeal struct{ n *int }
+
+func (c countSeal) Create(uint64) error       { *c.n++; return nil }
+func (c countSeal) Seal(uint64, string) error { *c.n++; return nil }
+
+// #273: while rootd drains, it still answers. A new request line gets the typed stopping refusal at once and runs
+// nothing: a task op gets the BUSY denial agentboxd relays, a resolve the broker's unavailable. The seal socket is
+// served as before, since a RESULT in flight may need a seal. A request in flight writes its reply before the drain
+// ends, and a client that never reads holds the drain up only until the write deadline.
+func TestDrainAnswers(t *testing.T) {
+	db, err := OpenDB(filepath.Join(t.TempDir(), "rootd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	entered, release := make(chan struct{}), make(chan struct{})
+	seals := 0
+	s := &server{db: db, seal: countSeal{&seals}, inconsistent: func() (bool, error) { close(entered); <-release; return false, nil }}
+	// send writes line to name on a fresh connection and returns the client end; answer's error goes to done
+	send := func(name, line string, done chan<- error) net.Conn {
+		c, r := net.Pipe()
+		go func() { err := s.answer(r, name, peer{}, []byte(line)); r.Close(); done <- err }()
+		return c
+	}
+	read := func(c net.Conn) reply {
+		t.Helper()
+		c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		line, err := bufio.NewReader(c).ReadBytes('\n')
+		var rep reply
+		if err != nil || json.Unmarshal(line, &rep) != nil {
+			t.Fatalf("no reply: %v %q", err, line)
+		}
+		return rep
+	}
+	done1 := make(chan error, 1)
+	c1 := send(sockAdmin, `{"op":"quota.check"}`, done1) // in flight: its handler waits for release
+	<-entered
+	drained := make(chan bool, 1)
+	go func() { drained <- s.drain(10 * time.Second) }()
+	for s.reqs.TryRLock() { // until the drain waits
+		s.reqs.RUnlock()
+		time.Sleep(time.Millisecond)
+	}
+	done := make(chan error, 4)
+	if rep := read(send(sockAdmin, `{"op":"agent.list"}`, done)); rep["ok"] != false || rep["reason"] != "stopping" {
+		t.Fatalf("admin request during the drain: %v", rep)
+	}
+	rep := read(send(sockGate, `{"op":"task.op","name":"file.write","task":"T1","agent":"claude"}`, done))
+	if d, _ := rep["denial"].(map[string]any); rep["ok"] != false || d["code"] != "BUSY" || d["op"] != "file.write" {
+		t.Fatalf("task op during the drain: %v", rep)
+	}
+	if rep := read(send("resolve-proxy", `{"op":"resolve","host":"example.com","port":443}`, done)); rep["reason"] != resolve.Unavailable {
+		t.Fatalf("resolve during the drain: %v", rep)
+	}
+	if rep := read(send(sockSeal, `{"call":"audit.seal","seg":1,"last_hash":"h"}`, done)); rep["ok"] != true || seals != 1 {
+		t.Fatalf("seal during the drain: %v, %d seals", rep, seals)
+	}
+	close(release)
+	select {
+	case <-drained:
+		t.Fatal("the drain ended before the reply in flight was read")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if rep := read(c1); rep["ok"] != true || rep["fenced"] != false {
+		t.Fatalf("the reply in flight: %v", rep)
+	}
+	if !<-drained || <-done1 != nil {
+		t.Fatal("the drain did not end once the reply in flight was written")
+	}
+
+	// a client that never reads its reply
+	defer func(d time.Duration) { replyTimeout = d }(replyTimeout)
+	replyTimeout = 200 * time.Millisecond
+	s2 := &server{db: db}
+	c, r := net.Pipe()
+	defer c.Close()
+	go s2.answer(r, sockAdmin, peer{}, []byte(`{"op":"agent.list"}`))
+	for s2.reqs.TryLock() { // until the request is in flight
+		s2.reqs.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	t0 := time.Now()
+	if !s2.drain(5*time.Second) || time.Since(t0) > 2*time.Second {
+		t.Fatalf("a client that never reads held the drain up for %v", time.Since(t0))
+	}
+}
+
+// #273: a box set up wrong is a refusal, which systemd never restarts: rootd.db in another mode than WAL with
+// synchronous=FULL, and no agentbox-audit user or group.
+func TestStartRefusals(t *testing.T) {
+	mem, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	if err := walFull(mem); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "journal_mode=memory") {
+		t.Fatalf("an in-memory store: %v", err)
+	}
+	db, err := OpenDB(filepath.Join(t.TempDir(), "rootd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if _, ok := lookupUID("agentbox-audit"); ok {
+		t.Skip("skipped: this host has an agentbox-audit user")
+	}
+	if _, _, err := auditIDs(); !errors.Is(err, ErrRefused) {
+		t.Fatalf("no agentbox-audit user: %v", err)
 	}
 }
