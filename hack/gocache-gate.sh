@@ -161,7 +161,10 @@ stand() { systemctl stop agentbox-proxy.service agentbox-proxy.socket 2>/dev/nul
 pdrops() { nft list chain inet agentbox output | grep '"agentbox-proxy"' | sed -n 's/.* counter packets \([0-9]*\) .* drop$/\1/p' | awk '{n += $1} END {print n + 0}'; }
 
 # --- setup: the image with the test CA, five agents, the proxy stand-in ---
-check "image/task builds on the box, with the gate's CA in its trust store" 'podman build -q -t $IMG /tmp/gate-image/task </dev/null >/dev/null &&
+# right after boot the slirp DNS can miss a first lookup: wait for it, and try the build again once
+for i in $(seq 30); do getent hosts registry-1.docker.io >/dev/null && break; sleep 2; done
+build() { podman build -q -t $IMG /tmp/gate-image/task </dev/null >/dev/null || { sleep 10; podman build -q -t $IMG /tmp/gate-image/task </dev/null >/dev/null; }; }
+check "image/task builds on the box, with the gate's CA in its trust store" 'build &&
   cp $K/ca.pem $G/gate-ca.crt && printf "FROM %s\nCOPY gate-ca.crt /usr/local/share/ca-certificates/gate-ca.crt\nRUN update-ca-certificates >/dev/null\n" $IMG > $G/Containerfile &&
   podman build -q -t $IMG-ca -f $G/Containerfile $G </dev/null >/dev/null && podman save -o $G/image.tar $IMG-ca && chmod 0644 $G/image.tar'
 for a in $A1 $A2 $A3 $A4 $A5; do
@@ -198,16 +201,16 @@ check "A-G13 data/cache is root 0711; data/cache/$A1 is a subvolume in $A1's 1/N
   [ "$(stat -c "%U %a" $C)" = "root 711" ] && [ "$(stat -c "%U %a %i" $C/$A1)" = "agentbox-proxy 700 256" ] &&
   id=$(btrfs inspect-internal rootid $C/$A1) && n=$(( $(id -u ag-$A1) - 70000 )) && btrfs --format=json qgroup show -p -e /var/lib/agentbox > $G/qg &&
   python3 -c "import json,sys; q={r[\"qgroupid\"]: r for r in json.load(open(\"$G/qg\"))[\"qgroup-show\"]}[\"0/$id\"]; print(q); sys.exit(not (\"1/$n\" in q[\"parents\"] and str(q[\"max_exclusive\"]) == str(8 << 30)))"'
-for c in "agentbox-proxy $C/$A1" "agentbox-git /var/lib/agentbox/git" "agentbox /var/lib/agentbox/state"; do
-  set -- $c
-  check "A-G13 under the service filter, BTRFS_IOC_SUBVOL_CREATE as $1 on $2 gets EOPNOTSUPP, also with 0xdead00000000 in cmd" '
-    setpriv --reuid $1 --regid $1 --clear-groups $G/standin btrfs-probe $2 > $G/probe && cat $G/probe && [ "$(grep -c ": EOPNOTSUPP$" $G/probe)" = 2 ]'
+for c in "agentbox-proxy:$C/$A1" agentbox-git:/var/lib/agentbox/git agentbox:/var/lib/agentbox/state; do
+  pu=${c%%:*} pd=${c#*:}
+  check "A-G13 under the service filter, BTRFS_IOC_SUBVOL_CREATE as $pu on $pd gets EOPNOTSUPP, also with 0xdead00000000 in cmd" '
+    setpriv --reuid $pu --regid $pu --clear-groups $G/standin btrfs-probe $pd > $G/probe && cat $G/probe && [ "$(grep -c ": EOPNOTSUPP$" $G/probe)" = 2 ]'
 done
 check "  ... and the kernel, with no filter, answers that uid on state/ otherwise (the EOPNOTSUPP is the filter's)" '
   setpriv --reuid agentbox --regid agentbox --clear-groups $G/standin btrfs-probe -no-filter /var/lib/agentbox/state > $G/probe0; cat $G/probe0
   [ "$(grep -c ": E" $G/probe0)" = 2 ] && ! grep -q EOPNOTSUPP $G/probe0 && [ -z "$(btrfs subvolume list -o /var/lib/agentbox/state)" ]' 
-check "A-G13 a nested subvolume made as root in data/cache/$A1 raises the sweep's alert" 'btrfs subvolume create -q $C/$A1/nest &&
-  for i in $(seq 40); do arec ALERT source=cache_sweep agent=$A1 | grep -q nested_subvolume && break; sleep 1; done; btrfs subvolume delete -q $C/$A1/nest;
+check "A-G13 a nested subvolume made as root in data/cache/$A1 raises the sweep's alert" 'btrfs subvolume create $C/$A1/nest &&
+  for i in $(seq 40); do arec ALERT source=cache_sweep agent=$A1 | grep -q nested_subvolume && break; sleep 1; done; btrfs subvolume delete $C/$A1/nest;
   arec ALERT source=cache_sweep agent=$A1 | grep -q nested_subvolume'
 
 # --- A-G3: the go command's behavior the filter rests on, in the image's Go source ---
@@ -454,7 +457,7 @@ check "A-G10 a direct write past the kernel limit as agentbox-proxy gets EDQUOT"
 : | $B budget set >/dev/null; stand
 
 # --- cleanup: the stand-in and the drop-ins go; the box's own state stays ---
-systemctl stop agentbox-proxy.service agentbox-proxy.socket
+systemctl stop agentbox-proxy.service agentbox-proxy.socket; rm -f /run/agentbox-rootd/svc-proxy.sock
 rm -f $RS/agentboxd.service.d/50-gocache.conf $RS/agentbox-rootd.service.d/50-gocache.conf; systemctl daemon-reload
 systemctl restart agentbox-rootd.service agentboxd.service
 podman rmi -f $IMG-ca $IMG >/dev/null 2>&1

@@ -384,7 +384,11 @@ func probe(args []string) {
 	copy(va[8:], "probe-sub")
 	for _, cmd := range []uint64{subvolCreate, 0xdead00000000 | subvolCreate} {
 		_, _, e := unix.Syscall(unix.SYS_IOCTL, uintptr(d), uintptr(cmd), uintptr(unsafe.Pointer(&va[0])))
-		fmt.Printf("cmd %#x: %s\n", cmd, unix.ErrnoName(e))
+		name := unix.ErrnoName(e)
+		if e == unix.EOPNOTSUPP {
+			name = "EOPNOTSUPP" // Linux's ENOTSUP is the same errno
+		}
+		fmt.Printf("cmd %#x: %s\n", cmd, name)
 	}
 }
 
