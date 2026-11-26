@@ -128,6 +128,9 @@ func build(m Module) (*built, error) {
 		return nil, err
 	}
 	b := &built{mod: []byte(m.Files["go.mod"]), zip: z.Bytes()}
+	if _, ok := m.Files["go.mod"]; !ok { // a +incompatible version: go synthesizes its go.mod, and so does the proxy
+		b.mod = []byte("module " + m.Path + "\n")
+	}
 	tmp, err := os.CreateTemp("", "goproxytest-*.zip")
 	if err != nil {
 		return nil, err

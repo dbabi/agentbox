@@ -532,6 +532,24 @@ func (c *Cache) Purge(agent string) error {
 	return err
 }
 
+// Open opens every agent's store under Root, as the proxy does at start: each open is the start sweep (no temp file,
+// no blob without a row, no row without a blob).
+func (c *Cache) Open() error {
+	ents, err := os.ReadDir(c.cfg.Root)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, e := range ents {
+		if e.IsDir() && reAgent.MatchString(e.Name()) {
+			if _, err := c.store(e.Name()); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %v", e.Name(), err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // Nightly is the idle eviction of every store under Root: rows unused for more than MaxIdleDays, then the blobs no row
 // names. It makes no network request.
 func (c *Cache) Nightly() error {

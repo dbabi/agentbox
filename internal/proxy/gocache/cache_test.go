@@ -436,7 +436,7 @@ func TestPurgeRevokeSweep(t *testing.T) {
 	os.WriteFile(filepath.Join(x.root, "ga", blobsDir, strings.Repeat("0", 64)), []byte("orphan"), 0o444)
 	s.db.Exec(`INSERT INTO entries VALUES('go:example.com/z@v1.0.0.zip', ?, 1, 'h1:x', 'proxy.golang.org', 'T9', 0, 0)`, strings.Repeat("1", 64))
 	x.c.Close()
-	if _, err := x.c.store("ga"); err != nil {
+	if err := x.c.Open(); err != nil { // the proxy's start
 		t.Fatal(err)
 	}
 	if rows, blobs := x.stats(t, "ga"); rows != 1 || blobs != 1 {
