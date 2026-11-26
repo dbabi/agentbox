@@ -12,14 +12,19 @@ import (
 // Fuzz targets for auditd's inputs: producer request lines, segment files read back at start and by verify, and the
 // line reader both sockets use (issue #10).
 
+// FuzzScanSegment reads segment files as auditd's start and verify do. Its seeds come from a server on fakeSeal, so it
+// fuzzes without root, as the nightly jobs run it (#270).
 func FuzzScanSegment(f *testing.F) {
-	b := newBox(f)
+	dir := f.TempDir()
+	s := fakeServer(f, dir, 2048) // small segments: the seeds hold sealed ones and the open one
 	for i := 0; i < 30; i++ {
-		b.send("proxy", `{"type":"TAINT","subject":"task:T1","source":"connect:example.com"}`)
+		if rep := s.Handle("proxy", 1000, 42, []byte(`{"type":"TAINT","subject":"task:T1","source":"connect:example.com"}`)); !rep.OK {
+			f.Fatalf("seed record: %+v", rep)
+		}
 	}
-	ns, _ := Segments(b.dir)
+	ns, _ := Segments(dir)
 	for _, n := range ns {
-		data, err := os.ReadFile(filepath.Join(b.dir, SegName(n)))
+		data, err := os.ReadFile(filepath.Join(dir, SegName(n)))
 		if err != nil {
 			f.Fatal(err)
 		}
@@ -52,6 +57,19 @@ func (s fakeSeal) touch(seg uint64) error {
 	return f.Close()
 }
 
+// fakeServer is a started auditd on dir with fakeSeal and test clocks; it closes when tb ends.
+func fakeServer(tb testing.TB, dir string, segmentBytes int64) *Server {
+	var wall, boot int64 = 1_800_000_000_000, 5000
+	s := &Server{Dir: dir, Seal: fakeSeal{dir}, SegmentBytes: segmentBytes, ReserveBytes: 1 << 20, BootID: "boot-1",
+		Wall: func() int64 { wall += 10; return wall }, Boot: func() int64 { boot += 10; return boot },
+		Avail: func() (uint64, error) { return 100 << 30, nil }}
+	if err := s.Start(); err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { s.Close() })
+	return s
+}
+
 // FuzzHandle sends a short history of request lines (one per input line; sel[i] picks line i's producer) to a fresh
 // auditd, so a crasher holds every line that built the state it needs (writers, subjects, ops, rotation) and replays
 // the same way under go test. After every line the chain must still verify.
@@ -77,14 +95,7 @@ func FuzzHandle(f *testing.F) {
 	f.Add([]byte{2, 0, 0, 1, 0}, []byte(strings.Join(seeds[:5], "\n"))) // taint, writer, subject, then an op on them
 	f.Fuzz(func(t *testing.T, sel, lines []byte) {
 		dir := t.TempDir()
-		var wall, boot int64 = 1_800_000_000_000, 5000
-		s := &Server{Dir: dir, Seal: fakeSeal{dir}, SegmentBytes: 4096, ReserveBytes: 1 << 20, BootID: "boot-1",
-			Wall: func() int64 { wall += 10; return wall }, Boot: func() int64 { boot += 10; return boot },
-			Avail: func() (uint64, error) { return 100 << 30, nil }}
-		if err := s.Start(); err != nil {
-			t.Fatal(err)
-		}
-		defer s.Close()
+		s := fakeServer(t, dir, 4096)
 		for i, line := range bytes.SplitN(lines, []byte("\n"), 64) { // 64 lines keep one input's chain short
 			p := producers[0]
 			if len(sel) > 0 {

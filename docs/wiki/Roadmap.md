@@ -84,8 +84,7 @@ Every milestone 3 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 
 | Item | State |
 |---|---|
-| 24 hours of fuzzing with no crash | Pending. No commit has had 24 CPU-hours of fuzzing on every fuzz test yet ([the 24 h gate](Testing-and-Gates.md#the-24-h-gate)). The nightly job skips the fuzz test for audit log segments, because that test needs root on Linux. |
-| A fuzz test for the task image checker | Not written. rootd runs this checker on the release's task image before it loads it. |
+| 24 hours of fuzzing with no crash | Pending. No commit has had 24 CPU-hours of fuzzing on every fuzz test yet ([the 24 h gate](Testing-and-Gates.md#the-24-h-gate)). |
 | The milestone 3 gates in `tpm2` and `tpm2+tang` | Not run. The milestone 3 code doesn't touch unlock or boot. |
 | The `agentbox mcp` command for agent CLIs | Not built. The error mapping it will use is built and tested. |
 
@@ -105,7 +104,7 @@ Every milestone 4 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
   - System policy files keep Claude Code and Codex from running workspace hooks, MCP servers and plugins.
   - rootd pauses the agents while btrfs repairs its quota counts.
   - rootd scans the workspace for credentials before an agent's first task and at each egress grant. A hit blocks the task, or refuses a grant for a host it works against, until an admin acknowledges it.
-  - rootd checks the task image against the release's checksums before it loads it, and refuses an image with unsafe settings.
+  - rootd checks the task image against the release's checksums before it loads it, and refuses an image with unsafe settings. Fuzz tests cover this check.
 
 ## Milestone 4: what has not run
 

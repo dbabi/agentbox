@@ -40,8 +40,8 @@ func main() {
 }
 
 // unlisted copies each event's output to out and returns the "<package> <test>" of every skip the list lacks. A list
-// line is "<package> <test>", or "<package> *" for every test in the package; # starts a comment. Subtests are named
-// in full (TestA/sub).
+// line is "<package> <test>", where a trailing * matches any rest: "<package> *" is every test in the package, and
+// "<package> Test*" its tests but not its fuzz targets. # starts a comment. Subtests are named in full (TestA/sub).
 func unlisted(in io.Reader, out io.Writer, list string) ([]string, error) {
 	ok := map[string]bool{}
 	for _, l := range strings.Split(list, "\n") {
@@ -60,7 +60,7 @@ func unlisted(in io.Reader, out io.Writer, list string) ([]string, error) {
 			continue
 		}
 		io.WriteString(out, e.Output)
-		if k := e.Package + " " + e.Test; e.Action == "skip" && e.Test != "" && !ok[k] && !ok[e.Package+" *"] {
+		if k := e.Package + " " + e.Test; e.Action == "skip" && e.Test != "" && !listed(ok, k) {
 			bad[k] = true
 		}
 	}
@@ -70,4 +70,13 @@ func unlisted(in io.Reader, out io.Writer, list string) ([]string, error) {
 	}
 	sort.Strings(keys)
 	return keys, sc.Err()
+}
+
+func listed(ok map[string]bool, k string) bool {
+	for l := range ok {
+		if p, glob := strings.CutSuffix(l, "*"); l == k || glob && strings.HasPrefix(k, p) {
+			return true
+		}
+	}
+	return false
 }
