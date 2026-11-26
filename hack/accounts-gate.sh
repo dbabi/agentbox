@@ -17,7 +17,8 @@
 #          NESTED_SUBVOLUME and taints workspace:<name>#<N>; re-adding that name gets a clean workspace subject while the
 #          old one stays tainted. An agent add that a rootd restart catches in its agentbox-accounts.service start
 #          (held 20 s) finishes, with an executed RESULT, and a request during that drain is refused "stopping" at once
-#          (#273). A foreign /etc/subuid entry inside the agentbox span stops reconcile. After a reboot reconcile rebuilds the same accounts and nothing failed.
+#          (#273). An agent removed while its user manager runs ExecStartPre (held 30 s) leaves no failed user@ unit
+#          (#276). A foreign /etc/subuid entry inside the agentbox span stops reconcile. After a reboot reconcile rebuilds the same accounts and nothing failed.
 # PASS/FAIL lines go to .vm/accounts-gate.txt, command output to .vm/accounts-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x").
 set -eu
@@ -179,6 +180,16 @@ check "  ... a request during the drain is refused \"stopping\" at once, nothing
 check "  ... and the restart ends with rootd active" '[ "$(cat /run/qd-restart.rc)" = 0 ] && systemctl is-active -q agentbox-rootd.service'
 rm -f $DR/50-gate-slow.conf; systemctl daemon-reload
 check "  ... and agent remove $QD then goes through" 'ag remove --name $QD'
+# #276: an agent removed while its user manager is in ExecStartPre (held here 30 s): the stop fails user@ with result
+# signal, and teardown resets that, so the box doesn't stay degraded
+QE=qe$X UR=/run/systemd/system/user@.service.d
+mkdir -p $UR && printf '[Service]\nExecStartPre=+/bin/sleep 30\n' > $UR/50-gate-slow.conf && systemctl daemon-reload
+check "agent remove $QE while its user manager is in ExecStartPre: ok, and the user@ unit its stop failed is not left failed" '
+  ag add --name $QE && u=user@$((70000 + $(f n))).service &&
+  for i in $(seq 100); do [ "$(systemctl show -P SubState $u)" = start-pre ] && break; sleep 0.1; done &&
+  [ "$(systemctl show -P SubState $u)" = start-pre ] && ag remove --name $QE &&
+  journalctl -b -u $u -o cat | grep -q "Failed with result .signal." && ! systemctl is-failed -q $u'
+rm -f $UR/50-gate-slow.conf; systemctl daemon-reload
 check "agent list shows every row, retired ones included" 'ag list && for n in $QA $QB $QC; do grep -q "\"name\":\"$n\"" /run/ag.json || exit 1; done'
 cp /etc/subuid /run/subuid.ok
 echo "evil:$((0x70000000)):65536" >> /etc/subuid

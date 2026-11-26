@@ -119,6 +119,15 @@ func TestRenderSubids(t *testing.T) {
 	}
 }
 
+// #276: a stop that catches user@ in its ExecStartPre fails the unit, so the live teardown resets it after the stop.
+func TestStopCmds(t *testing.T) {
+	got := fmt.Sprint(Agent{N: 6, Name: "x"}.stopCmds())
+	if want := "[[loginctl disable-linger ag-x] [loginctl terminate-user ag-x] [systemctl stop user@70006.service] " +
+		"[systemctl reset-failed user@70006.service]]"; got != want {
+		t.Errorf("teardown stops\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestDropIns(t *testing.T) {
 	a := Agent{N: 1, Name: "claude", Active: true}
 	want := "Environment=XDG_CONFIG_HOME=/var/lib/agentbox/control/xdg/claude/config XDG_DATA_HOME=/var/lib/agentbox/control/xdg/claude/data\n"

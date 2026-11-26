@@ -147,6 +147,15 @@ func ensureUser(a Agent) error {
 	return run("useradd", "-u", uid, "-g", uid, "-d", a.Home(), "-M", "-s", "/usr/sbin/nologin", "-c", "agentbox agent "+a.Name, a.User())
 }
 
+// stopCmds are the live teardown's best-effort stops: linger, the sessions, user@. A stop that lands while user@ still
+// runs its ExecStartPre fails the unit (result signal), and the box reads degraded until a reboot, so reset-failed
+// follows it (#276).
+func (a Agent) stopCmds() [][]string {
+	u := "user@" + strconv.Itoa(a.UID()) + ".service"
+	return [][]string{{"loginctl", "disable-linger", a.User()}, {"loginctl", "terminate-user", a.User()},
+		{"systemctl", "stop", u}, {"systemctl", "reset-failed", u}}
+}
+
 // teardown is §4.1's removal of the OS half: (live) terminate the sessions, stop user@, kill the uid; then delete the
 // user, its group, its linger file and its drop-ins.
 func teardown(a Agent, live bool) (changed bool, err error) {
@@ -157,9 +166,9 @@ func teardown(a Agent, live bool) (changed bool, err error) {
 	}
 	if lerr == nil {
 		if live {
-			exec.Command("loginctl", "disable-linger", a.User()).Run()
-			exec.Command("loginctl", "terminate-user", a.User()).Run()
-			exec.Command("systemctl", "stop", "user@"+uid+".service").Run()
+			for _, c := range a.stopCmds() {
+				exec.Command(c[0], c[1:]...).Run()
+			}
 			for i := 0; ; i++ {
 				exec.Command("pkill", "-KILL", "-U", uid).Run()
 				if exec.Command("pgrep", "-U", uid).Run() != nil {
