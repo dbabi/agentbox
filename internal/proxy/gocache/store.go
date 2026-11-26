@@ -55,6 +55,7 @@ type store struct {
 	cancel  context.CancelFunc // purge cancels every fill in flight
 	wg      sync.WaitGroup     // the fills in flight
 	fills   map[string]*fill   // coalesced by key
+	pending map[string]int     // blobs a fill renamed in and has no row for yet: no cleanup deletes them
 	purging bool
 	stopped bool // sumdb_security: no fills until cache.purge
 
@@ -98,7 +99,8 @@ func openStore(root, agent string, slots int) (*store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &store{agent: agent, dir: dir, id: id, db: db, slots: make(chan struct{}, slots), fills: map[string]*fill{}}
+	s := &store{agent: agent, dir: dir, id: id, db: db, slots: make(chan struct{}, slots), fills: map[string]*fill{},
+		pending: map[string]int{}}
 	if s.blobs, err = os.Open(filepath.Join(dir, blobsDir)); err == nil {
 		s.tmp, err = os.Open(filepath.Join(dir, tmpDir))
 	}
@@ -177,7 +179,7 @@ func (s *store) sweep() error {
 	return s.dropUnnamed(have)
 }
 
-// dropUnnamed deletes each blob that isn't in named; call it with s.mu held.
+// dropUnnamed deletes each blob that isn't in named and that no fill holds; call it with s.mu held.
 func (s *store) dropUnnamed(named map[string]bool) error {
 	if named == nil {
 		named = map[string]bool{}
@@ -197,13 +199,22 @@ func (s *store) dropUnnamed(named map[string]bool) error {
 		return err
 	}
 	for _, e := range ents {
-		if !named[e.Name()] {
+		if !named[e.Name()] && s.pending[e.Name()] == 0 {
 			if err := os.Remove(filepath.Join(s.dir, blobsDir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// dropBlob deletes blobs/<digest> unless a row names it or a fill holds it; call it with s.mu held.
+func (s *store) dropBlob(digest string) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE sha256=?`, digest).Scan(&n); err == nil && n == 0 &&
+		s.pending[digest] == 0 && reDigest.MatchString(digest) {
+		os.Remove(filepath.Join(s.dir, blobsDir, digest))
+	}
 }
 
 func emptyDir(dir string) error {

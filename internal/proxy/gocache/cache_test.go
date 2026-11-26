@@ -455,6 +455,46 @@ func TestPurgeRevokeSweep(t *testing.T) {
 	}
 }
 
+// A fill's blob is safe from the rename to its row: another fill that fails, and the nightly eviction, delete only the
+// blobs no row names and no fill holds.
+func TestFillsKeepEachOthersBlobs(t *testing.T) {
+	x := newFixture(t)
+	held, hold := make(chan struct{}), make(chan struct{})
+	audit := x.c.cfg.Audit
+	x.c.cfg.Audit = func(rec map[string]any) error {
+		if rec["type"] == "CACHE" && rec["event"] == "fill" {
+			switch rec["key"] {
+			case "go:example.com/a@v1.0.0.zip":
+				close(held)
+				<-hold // the blob is in blobs/, its row not yet
+			case "go:example.com/a@v1.1.0.zip":
+				return errors.New("NACK UNAVAILABLE")
+			}
+		}
+		return audit(rec)
+	}
+	done := make(chan int)
+	go func() { st, _ := x.do(t, "T1", "ga", zipA); done <- st }()
+	<-held
+	if st, _ := x.do(t, "T1", "ga", zipA1); st != 404 {
+		t.Errorf("a fill whose record was refused: %d", st)
+	}
+	if err := x.c.Nightly("ga"); err != nil {
+		t.Fatal(err)
+	}
+	close(hold)
+	if st := <-done; st != 200 {
+		t.Fatalf("the held fill: %d", st)
+	}
+	if rows, blobs := x.stats(t, "ga"); rows != 1 || blobs != 1 {
+		t.Fatalf("%d rows, %d blobs, want the held fill's one", rows, blobs)
+	}
+	x.up.Log()
+	if st, b := x.do(t, "T2", "ga", zipA); st != 200 || !bytes.Equal(b, x.up.Zip("example.com/a", "v1.0.0")) || x.moduleGets() != 0 {
+		t.Fatalf("the held fill's hit: %d", st)
+	}
+}
+
 // A store rootd deleted and made again (agent.remove, a purge with the proxy stopped) is opened afresh: the cache never
 // serves or writes the old one.
 func TestStoreRemade(t *testing.T) {

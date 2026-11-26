@@ -336,6 +336,22 @@ func (c *Cache) doFill(ctx context.Context, ts *taskState, task string, s *store
 	if err := tmp.Chmod(0o444); err != nil {
 		return err
 	}
+	// from the rename to the row, the blob is this fill's: another fill's eviction or failure, or the nightly
+	// eviction, leaves it; if this fill inserts no row, the blob goes, unless a row or another fill names the same bytes
+	s.mu.Lock()
+	s.pending[digest]++
+	s.mu.Unlock()
+	inserted := false
+	defer func() {
+		s.mu.Lock()
+		if s.pending[digest]--; s.pending[digest] == 0 {
+			delete(s.pending, digest)
+		}
+		if !inserted {
+			s.dropBlob(digest)
+		}
+		s.mu.Unlock()
+	}()
 	if err := renameNoReplace(s.tmp, name, s.blobs, digest); err != nil && !errors.Is(err, syscall.EEXIST) {
 		return err
 	} else if err == nil {
@@ -347,20 +363,17 @@ func (c *Cache) doFill(ctx context.Context, ts *taskState, task string, s *store
 	r := row{key: f.Key(), sha256: digest, size: n, h1: h1}
 	if err := c.cfg.Audit(map[string]any{"type": "CACHE", "event": "fill", "agent": s.agent, "task": task, "key": r.key,
 		"sha256": digest, "h1": h1, "bytes": n, "result": "stored"}); err != nil {
-		s.mu.Lock()
-		s.dropUnnamed(nil) // the blob, unless a row already names the same bytes
-		s.mu.Unlock()
 		return fmt.Errorf("fill record not ACKed: %v", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.gen != gen || ctx.Err() != nil || !c.cfg.Live(task) {
-		s.dropUnnamed(nil)
 		return errGone
 	}
 	if err := s.insert(r, task, c.now()); err != nil {
 		return err
 	}
+	inserted = true
 	ts.mu.Lock()
 	ts.bytes += n
 	ts.files++
