@@ -137,8 +137,7 @@ func (f *Forwarder) unavailable(w http.ResponseWriter) {
 	switch f.Ch.Name {
 	case "llm":
 		body = ops.KeysBody(d)
-		h.Set("Content-Type", "application/json")
-		h.Set("x-should-retry", "true")
+		ops.KeysHeaders(h, d, time.Now())
 	case "git":
 		body = ops.GitBody(d)
 		h.Set("Content-Type", "text/plain; charset=utf-8")
@@ -166,9 +165,7 @@ func (f *Forwarder) tunnel(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		d := ops.Deny(ops.BrokerUnavailable, f.Ch.Name, ops.Slots{By: "forwarder"})
 		f.Rec.Record(d)
-		body := ops.ConnectBody(d)
-		fmt.Fprintf(cc, "HTTP/1.1 503 %s\r\n%s: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
-			ops.ConnectReason(d), ops.DenialHeaderName, ops.DenialHeader(d), len(body), body)
+		cc.Write(ops.ConnectReply(d))
 		return
 	}
 	defer uc.Close()
