@@ -59,6 +59,7 @@ st() { grep "^$1:" /etc/subuid; }
 sg() { grep "^$1:" /etc/subgid; }
 taint() { python3 -c "import sqlite3,sys; c=sqlite3.connect(\"file:$M/audit/taint.db?mode=ro\", uri=True); r=c.execute(\"select tainted from taint where subject=?\", (sys.argv[1],)).fetchone(); print(r[0] if r else \"\")" "$1"; }
 users() { getent passwd | awk -F: "\$3 >= 70000 && \$3 < 71000 {print \$1, \$3}" | sort; }
+failed() { systemctl --failed --no-legend --plain | while read -r u _; do echo "failed unit $u:"; journalctl -b -u "$u" -o short-precise --no-pager | tail -n 40; done; }
 S=$(( $(stat -f -c %b $M) * $(stat -f -c %S $M) )); R=$((S / 10)); [ $R -ge 4294967296 ] || R=4294967296
 # leaves: the 2/0 limit leaves the reserve R free: at most its bound (free space + what 2/0 references - R), and
 # within 256 MiB of it (quota.Refresh sets it 64 MiB below and lets it drift 128 MiB more)
@@ -177,7 +178,7 @@ check "  ... a request during the drain is refused \"stopping\" at once, nothing
   grep -qF "\"reason\":\"stopping\"" /run/qd-list.json && [ $(( (t2 - t1) / 1000000 )) -lt 2000 ]'
 check "  ... and the restart ends with rootd active" '[ "$(cat /run/qd-restart.rc)" = 0 ] && systemctl is-active -q agentbox-rootd.service'
 rm -f $DR/50-gate-slow.conf; systemctl daemon-reload
-ag remove --name $QD >/dev/null
+check "  ... and agent remove $QD then goes through" 'ag remove --name $QD'
 check "agent list shows every row, retired ones included" 'ag list && for n in $QA $QB $QC; do grep -q "\"name\":\"$n\"" /run/ag.json || exit 1; done'
 cp /etc/subuid /run/subuid.ok
 echo "evil:$((0x70000000)):65536" >> /etc/subuid
@@ -187,6 +188,7 @@ check "  ... removed: reconcile passes and changes no sub-id line" '$A reconcile
 # what the reboot must bring back (/var/tmp survives it)
 users > /var/tmp/accounts-gate.users && cat /etc/subuid /etc/subgid > /var/tmp/accounts-gate.subids
 echo $QA > /var/tmp/accounts-gate.qa
+failed # names each failed unit, with its journal, in the gate log
 check "no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 echo "fails=$fails"
 EOF
@@ -197,6 +199,7 @@ check "after a reboot, reconcile brings back the same agent users and uids" '[ -
 check "  ... and the same /etc/subuid and /etc/subgid" '[ "$(cat /etc/subuid /etc/subgid)" = "$(cat /var/tmp/accounts-gate.subids)" ]'
 check "  ... and the user manager of ag-$QA runs again (linger)" 'for i in $(seq 60); do systemctl is-active -q user@$UA.service && exit 0; sleep 1; done; exit 1'
 check "  ... a rerun of reconcile changes nothing" 'a=$(users; cat /etc/subuid /etc/subgid) && $A reconcile && [ "$(users; cat /etc/subuid /etc/subgid)" = "$a" ]'
+failed
 check "  ... no failed units" '[ -z "$(systemctl --failed --no-legend --plain)" ]'
 rm -f /var/tmp/accounts-gate.*
 echo "fails=$fails"
