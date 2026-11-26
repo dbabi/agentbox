@@ -93,9 +93,11 @@ func (f *Forwarder) Handler() http.Handler {
 		Transport: &http.Transport{
 			DialContext:        func(ctx context.Context, _, _ string) (net.Conn, error) { return f.dial(ctx) },
 			DisableCompression: true,
-			// a fresh dial per request: a kept-alive conn to a broker that restarted fails the next POST at once (the
-			// transport won't replay a body), and only dial retries ENOENT and ECONNREFUSED inside f.Retry
-			DisableKeepAlives: true,
+			// -1 keeps no idle conn, so each request dials afresh: a kept-alive conn to a broker that restarted fails the
+			// next POST at once (the transport won't replay a body), and only dial retries ENOENT and ECONNREFUSED inside
+			// f.Retry. Not DisableKeepAlives: its Connection: close makes a Go broker that answers before it reads the
+			// whole body hang up at once, and the body write's EPIPE can then beat the answer out of RoundTrip (#168)
+			MaxIdleConnsPerHost: -1,
 		},
 		FlushInterval: -1, // streamed LLM replies and git packs pass through as they arrive
 		ModifyResponse: func(resp *http.Response) error {
