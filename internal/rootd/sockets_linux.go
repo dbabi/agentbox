@@ -20,18 +20,19 @@ import (
 )
 
 // listeners takes the sockets systemd passed (sd_listen_fds): every one is a stream AF_UNIX socket named by its unit's
-// FileDescriptorName=. rootd binds nothing itself: owner, group and mode come from the .socket units (§2.1).
+// FileDescriptorName=. rootd binds nothing itself: owner, group and mode come from the .socket units (§2.1). A socket
+// set that is wrong comes from the units, so a restart would get it again: ErrRefused.
 func listeners() (map[string]*net.UnixListener, error) {
 	if os.Getenv("LISTEN_PID") != strconv.Itoa(os.Getpid()) {
-		return nil, errors.New("no sockets from systemd (run as agentbox-rootd.service)")
+		return nil, fmt.Errorf("no sockets from systemd (run as agentbox-rootd.service): %w", ErrRefused)
 	}
 	n, err := strconv.Atoi(os.Getenv("LISTEN_FDS"))
 	if err != nil || n < 1 {
-		return nil, errors.New("LISTEN_FDS: no sockets")
+		return nil, fmt.Errorf("LISTEN_FDS: no sockets: %w", ErrRefused)
 	}
 	names := strings.Split(os.Getenv("LISTEN_FDNAMES"), ":")
 	if len(names) != n {
-		return nil, fmt.Errorf("LISTEN_FDNAMES has %d names for %d sockets", len(names), n)
+		return nil, fmt.Errorf("LISTEN_FDNAMES has %d names for %d sockets: %w", len(names), n, ErrRefused)
 	}
 	for _, v := range []string{"LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"} {
 		os.Unsetenv(v) // nft and other children must not see them
@@ -42,7 +43,7 @@ func listeners() (map[string]*net.UnixListener, error) {
 		unix.CloseOnExec(fd)
 		name := names[i]
 		if name != sockAdmin && name != sockSeal && name != sockGate && !(strings.HasPrefix(name, "resolve-") && slices.Contains(resolve.Brokers, name[8:])) {
-			return nil, fmt.Errorf("unexpected socket %q", name)
+			return nil, fmt.Errorf("unexpected socket %q: %w", name, ErrRefused)
 		}
 		ln, err := net.FileListener(os.NewFile(uintptr(fd), name))
 		if err != nil {
@@ -50,7 +51,7 @@ func listeners() (map[string]*net.UnixListener, error) {
 		}
 		ul, ok := ln.(*net.UnixListener)
 		if !ok {
-			return nil, fmt.Errorf("socket %s is not AF_UNIX", name)
+			return nil, fmt.Errorf("socket %s is not AF_UNIX: %w", name, ErrRefused)
 		}
 		out[name] = ul
 	}
@@ -151,13 +152,14 @@ func (s *server) serve(name string, c *net.UnixConn) {
 				break
 			}
 			if r, ok := attachRequest(buf[:i]); ok && name == sockAdmin {
+				if s.stopping.Load() {
+					c.Write(encode(stopped(name, r)))
+					return
+				}
 				s.attach(c, r, buf[i+1:])
 				return
 			}
-			s.reqs.RLock()
-			out := s.lineFrom(name, p, buf[:i])
-			s.reqs.RUnlock()
-			if _, err := c.Write(out); err != nil {
+			if s.answer(c, name, p, buf[:i]) != nil {
 				return
 			}
 			buf = buf[i+1:]

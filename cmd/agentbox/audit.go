@@ -133,6 +133,11 @@ func cmdAuditd(args []string) error {
 		go func() { errc <- s.Serve(x.l, x.p) }()
 	}
 	sdNotify("READY=1")
+	// only now: agentbox-rootd.service starts after auditd, so it stops before auditd and its drained RESULTs get here.
+	// The seal work Start left needs rootd; until it is done nothing is ACKed, and each record tries again.
+	if err := s.Settle(); err != nil {
+		logf("audit: %v; nothing is ACKed until the seal succeeds", err)
+	}
 	return <-errc
 }
 

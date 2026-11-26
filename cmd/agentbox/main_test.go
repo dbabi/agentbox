@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -317,15 +318,20 @@ func TestFWCheckRepair(t *testing.T) {
 
 // #256: a start check's refusal exits with rootd.ExitRefused, which agentbox-rootd.service lists in
 // RestartPreventExitStatus=, so the start ends as failed instead of under a start job that never ends. Any other
-// start error still exits 1, and systemd restarts rootd.
+// start error still exits 1, and systemd restarts rootd; #273: JobRunningTimeoutSec= then ends its start job.
 func TestRootdRefusalExitStatus(t *testing.T) {
 	err := run([]string{"rootd", "--gen-dir", t.TempDir()}) // an empty gen/: an op registry mismatch
 	if !errors.Is(err, rootd.ErrRefused) || !strings.HasPrefix(err.Error(), "op registry mismatch, refusing to start (§5.1): ") || exitStatus(err) != rootd.ExitRefused {
 		t.Fatalf("empty gen/: exit %d: %v", exitStatus(err), err)
 	}
-	// the repo's gen/ matches, so rootd passes the check and fails later: no sockets from systemd
-	if err := run([]string{"rootd", "--gen-dir", filepath.Join("..", "..", "gen")}); err == nil || exitStatus(err) != 1 {
-		t.Fatalf("matching gen/: exit %d: %v", exitStatus(err), err)
+	// the repo's gen/ matches, so rootd passes the check and fails later: on Linux at its sockets, which come from the
+	// units, so that is a refusal too (#273)
+	err = run([]string{"rootd", "--gen-dir", filepath.Join("..", "..", "gen")})
+	if want := map[bool]int{true: rootd.ExitRefused, false: 1}[runtime.GOOS == "linux"]; err == nil || exitStatus(err) != want {
+		t.Fatalf("matching gen/: exit %d, want %d: %v", exitStatus(err), want, err)
+	}
+	if exitStatus(errors.New("sets do not match rootd.db: nft: exit status 1")) != 1 {
+		t.Error("a start error that is no refusal does not exit 1")
 	}
 	u, err := os.ReadFile(filepath.Join("..", "..", "systemd", "agentbox-rootd.service"))
 	if err != nil {
@@ -333,5 +339,30 @@ func TestRootdRefusalExitStatus(t *testing.T) {
 	}
 	if !slices.Contains(strings.Split(string(u), "\n"), "RestartPreventExitStatus="+strconv.Itoa(rootd.ExitRefused)) {
 		t.Errorf("agentbox-rootd.service has no RestartPreventExitStatus=%d line", rootd.ExitRefused)
+	}
+}
+
+// #273: a stop sends SIGTERM to rootd alone (KillMode=mixed), so the helpers its drained requests wait for keep
+// running; rootd starts after auditd, so it stops first and its drained RESULTs reach auditd; a start job that never
+// sees READY=1 ends.
+func TestRootdUnitStop(t *testing.T) {
+	u, err := os.ReadFile(filepath.Join("..", "..", "systemd", "agentbox-rootd.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(u), "\n")
+	for _, l := range []string{"KillMode=mixed", "TimeoutStopSec=90s", "JobRunningTimeoutSec=3min"} {
+		if !slices.Contains(lines, l) {
+			t.Errorf("agentbox-rootd.service has no %s line", l)
+		}
+	}
+	after := ""
+	for _, l := range lines {
+		if a, ok := strings.CutPrefix(l, "After="); ok {
+			after += " " + a
+		}
+	}
+	if !slices.Contains(strings.Fields(after), "agentbox-auditd.service") {
+		t.Errorf("agentbox-rootd.service is not ordered after agentbox-auditd.service: After=%s", after)
 	}
 }

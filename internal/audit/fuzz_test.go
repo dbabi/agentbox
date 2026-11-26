@@ -66,6 +66,9 @@ func fakeServer(tb testing.TB, dir string, segmentBytes int64) *Server {
 	if err := s.Start(); err != nil {
 		tb.Fatal(err)
 	}
+	if err := s.Settle(); err != nil { // as the daemon, after READY=1
+		tb.Fatal(err)
+	}
 	tb.Cleanup(func() { s.Close() })
 	return s
 }

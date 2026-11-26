@@ -213,7 +213,7 @@ func (t *tasks) rescan(acct Account, ack int, firstTask bool) ([]secrets.Hit, re
 	if err != nil {
 		return nil, reply{"ok": false, "reason": SecretScanFailed, "error": err.Error()}
 	}
-	if ack > 0 && !capped {
+	if ack != 0 && !capped {
 		if ack != len(hits) {
 			return hits, reply{"ok": false, "reason": SecretsAckMismatch, "secrets": hits,
 				"error": fmt.Sprintf("--ack-secrets %d, but the scan found %d: %s", ack, len(hits), list(hits))}
@@ -251,7 +251,7 @@ func list(hits []secrets.Hit) string {
 }
 
 // secretGate is the check before a task (#104): a workspace that passed its last scan, with every hit acknowledged,
-// starts at once; any other is scanned first. ack > 0 is the admin's --ack-secrets: it must equal the hit count.
+// starts at once; any other is scanned first. ack != 0 is the admin's --ack-secrets: it must equal the hit count.
 func (t *tasks) secretGate(acct Account, ack int) reply {
 	if t.cfg.SecretScan == nil {
 		return nil
@@ -265,14 +265,20 @@ func (t *tasks) secretGate(acct Account, ack int) reply {
 
 // grantScan is the scan at an egress grant for host: every active agent's workspace is scanned again, and the reply
 // names each credential that works against host (grantRefusal). Each one blocks that agent's next task until it is
-// acknowledged (again, if it was before the grant: dropAcks) or removed.
+// acknowledged (again, if it was before the grant: dropAcks) or removed. An agent that is gone has no workspace to
+// scan; one whose lookup fails is a failed scan.
 func (t *tasks) grantScan(agents []string, host string) (matching []map[string]any, failed []string) {
 	if t.cfg.SecretScan == nil {
 		return nil, nil
 	}
 	for _, name := range agents {
 		acct, err := t.cfg.Accounts.Lookup(name)
+		if errors.Is(err, accounts.ErrNotFound) {
+			continue
+		}
 		if err != nil {
+			log.Printf("secret scan %s: %v", name, err)
+			failed = append(failed, name)
 			continue
 		}
 		hits, rep := t.rescan(acct, 0, false)
@@ -289,13 +295,14 @@ func (t *tasks) grantScan(agents []string, host string) (matching []map[string]a
 }
 
 // grantRefusal refuses the egress grant for host while an agent's scan failed, or while the scans found a credential
-// that works against host and ack is not their count: the grant reaches running tasks at once (#222).
+// that works against host and ack is not their count: the grant reaches running tasks at once (#222). Any ack but 0
+// must be the count, so no negative one passes.
 func grantRefusal(found []map[string]any, failed []string, ack int, host string) reply {
 	switch {
 	case len(failed) > 0:
 		return reply{"ok": false, "reason": SecretScanFailed, "secretScanFailed": failed, "error": "nothing changed: the workspace credential scan of " +
 			strings.Join(failed, ", ") + " failed, so a task there might use a credential against " + host + "; fix the scan (agentbox task new names its error), then grant again"}
-	case ack > 0 && ack != len(found):
+	case ack != 0 && ack != len(found):
 		return reply{"ok": false, "reason": SecretsAckMismatch, "secrets": found,
 			"error": fmt.Sprintf("nothing changed: --ack-secrets %d, but the scan found %d credential(s) that work against %s", ack, len(found), host)}
 	case len(found) > 0 && ack == 0:
@@ -313,8 +320,11 @@ func (t *tasks) dropAcks(agents []string, host string) error {
 	}
 	for _, name := range agents {
 		acct, err := t.cfg.Accounts.Lookup(name)
+		if errors.Is(err, accounts.ErrNotFound) {
+			continue // gone, and its acks with it
+		}
 		if err != nil {
-			continue
+			return fmt.Errorf("%s: %v", name, err)
 		}
 		st, ok, err := t.loadScan(accounts.WorkspaceSubject(acct.Name, int(acct.UID)))
 		if err != nil {
@@ -333,10 +343,12 @@ func (t *tasks) dropAcks(agents []string, host string) error {
 	return nil
 }
 
-func (s *server) activeAgents() []string {
+// activeAgents is every active agent: the workspaces a grant scans. Without the list there is no scan, so the grant
+// is refused.
+func (s *server) activeAgents() ([]string, error) {
 	all, err := accounts.List(s.db)
 	if err != nil {
-		log.Printf("secret scan: agents: %v", err)
+		return nil, err
 	}
 	var out []string
 	for _, a := range all {
@@ -344,7 +356,7 @@ func (s *server) activeAgents() []string {
 			out = append(out, a.Name)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // grantWarning names, for the admin at the grant, each credential by type and file that the grant lets a task use.

@@ -34,8 +34,10 @@ func TestSecretGate(t *testing.T) {
 	if rep["ok"] != false || rep["reason"] != SecretsInWorkspace || !strings.Contains(rep["error"].(string), "notes/token.txt:3 (github-pat)") || len(r.launch) != 0 {
 		t.Fatalf("planted token: %v, launches %d", rep, len(r.launch))
 	}
-	if rep := r.t.secretGate(acct, 2); rep["reason"] != SecretsAckMismatch {
-		t.Fatalf("--ack-secrets 2 for 1 hit: %v", rep)
+	for _, ack := range []int{2, -1} { // #273: no count but the hit count passes, a negative one included
+		if rep := r.t.secretGate(acct, ack); rep["reason"] != SecretsAckMismatch {
+			t.Fatalf("--ack-secrets %d for 1 hit: %v", ack, rep)
+		}
 	}
 	if rep := r.t.secretGate(acct, 1); rep != nil {
 		t.Fatalf("--ack-secrets 1: %v", rep)
@@ -102,9 +104,24 @@ func TestSecretGate(t *testing.T) {
 	}
 }
 
+// lookups is an Accounts whose Lookup fails with a read error, from call fail on (0: never).
+type lookups struct {
+	Accounts
+	n, fail int
+}
+
+func (l *lookups) Lookup(a string) (Account, error) {
+	if l.n++; l.fail > 0 && l.n >= l.fail {
+		return Account{}, errors.New("disk I/O error")
+	}
+	return l.Accounts.Lookup(a)
+}
+
 // #222: an egress grant that would let a task use a workspace credential against the new host is refused, with nothing
 // sent to auditd and the lists and acks as they were, until --ack-secrets gives the count; the acked grant drops the
-// matching acks. A failed scan refuses any grant.
+// matching acks. A failed scan refuses any grant. #273: so do a negative count, a grant with no agent list and one
+// whose agent lookup fails; a grant auditd refuses keeps the acks, and one whose acks can't be dropped after the
+// INTENT changes no list and says so in a failed RESULT.
 func TestEgressGrantRefused(t *testing.T) {
 	r := newRig(t)
 	if _, err := accounts.Add(r.db, "claude", time.Now()); err != nil {
@@ -132,7 +149,7 @@ func TestEgressGrantRefused(t *testing.T) {
 		return s.admin(request{Op: "egress.allow", Svc: "proxy", Entry: host + ":443", AckSecrets: ack}, peer{})
 	}
 	r.reset()
-	for ack, want := range map[int]string{0: SecretsInWorkspace, 2: SecretsAckMismatch} {
+	for ack, want := range map[int]string{0: SecretsInWorkspace, 2: SecretsAckMismatch, -1: SecretsAckMismatch} {
 		rep := grant("api.github.com", ack)
 		if rep["ok"] != false || rep["reason"] != want || listed("api.github.com") || len(r.recs()) != 0 {
 			t.Fatalf("--ack-secrets %d: %v, listed %v, records %v", ack, rep, listed("api.github.com"), r.recs())
@@ -141,6 +158,11 @@ func TestEgressGrantRefused(t *testing.T) {
 			t.Fatalf("the refusal does not name the token: %v", rep)
 		}
 	}
+	r.auditUp = false
+	if rep := grant("api.github.com", 1); rep["ok"] != false || !strings.Contains(rep["error"].(string), "nothing changed") || listed("api.github.com") {
+		t.Fatalf("auditd down: %v, listed %v", rep, listed("api.github.com"))
+	}
+	r.auditUp = true
 	if rep := start(); rep["ok"] != true {
 		t.Fatalf("a refused grant dropped the ack: %v", rep)
 	}
@@ -158,6 +180,31 @@ func TestEgressGrantRefused(t *testing.T) {
 	if rep := grant("pypi.org", 1); rep["reason"] != SecretScanFailed || !slices.Equal(rep["secretScanFailed"].([]string), []string{"claude"}) ||
 		listed("pypi.org") || len(r.recs()) != 0 {
 		t.Fatalf("a grant whose scan failed: %v, records %v", rep, r.recs())
+	}
+	scanErr = nil
+	acc := &lookups{Accounts: r.t.cfg.Accounts, fail: 1}
+	r.t.cfg.Accounts = acc
+	if rep := grant("pypi.org", 0); rep["reason"] != SecretScanFailed || !slices.Equal(rep["secretScanFailed"].([]string), []string{"claude"}) ||
+		listed("pypi.org") || len(r.recs()) != 0 {
+		t.Fatalf("a grant whose agent lookup failed: %v, records %v", rep, r.recs())
+	}
+	if err := r.t.dropAcks([]string{"claude"}, "pypi.org"); err == nil {
+		t.Fatal("dropAcks went on past a failed lookup")
+	}
+	acc.n, acc.fail = 0, 2 // the grant's scan looks claude up; dropAcks, after the INTENT, can't
+	rep = grant("pypi.org", 0)
+	if msg, _ := rep["error"].(string); rep["ok"] != false || !strings.Contains(msg, "the list did not change") || !strings.Contains(msg, "may be dropped") ||
+		listed("pypi.org") || !slices.Equal(r.types(), []string{"INTENT", "RESULT"}) || r.recs()[1]["status"] != "failed" {
+		t.Fatalf("a grant whose acks can't be dropped: %v, records %v", rep, r.recs())
+	}
+	r.t.cfg.Accounts = acc.Accounts
+	r.reset()
+	if _, err := r.db.Exec(`ALTER TABLE ids RENAME TO ids_gone`); err != nil {
+		t.Fatal(err)
+	}
+	if rep := grant("pypi.org", 0); rep["reason"] != SecretScanFailed || !strings.Contains(rep["error"].(string), "no agent list") ||
+		listed("pypi.org") || len(r.recs()) != 0 {
+		t.Fatalf("a grant with no agent list: %v, records %v", rep, r.recs())
 	}
 }
 

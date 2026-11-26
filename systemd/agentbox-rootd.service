@@ -5,7 +5,9 @@
 [Unit]
 Description=agentbox rootd
 Requires=agentbox-reconcile.service agentbox-firewall.service
-After=agentbox-reconcile.service agentbox-firewall.service systemd-resolved.service
+# after auditd, so a stop of both (a firewall or reconcile restart, a shutdown) stops rootd first: the RESULT of an op
+# it drains still reaches auditd. auditd's start doesn't wait for rootd: it asks for its seals after READY=1.
+After=agentbox-reconcile.service agentbox-firewall.service systemd-resolved.service agentbox-auditd.service
 Wants=systemd-resolved.service
 # every firewall repair restarts it through Requires=; the start limit must never leave it down
 StartLimitIntervalSec=0
@@ -23,8 +25,14 @@ Restart=on-failure
 # job, so systemctl start and restart would hang for as long as rootd refuses (#256). A crash still restarts it.
 RestartPreventExitStatus=78
 RestartSec=2s
-# at SIGTERM rootd closes its sockets and waits up to 60 s for the requests in flight (their effect and audit RESULT)
+# a start error that is not a refusal repeats in direct mode, and its start job never ends: after 3 min the job is
+# canceled, so systemctl start and restart and fwcheck --repair return, while the restarts go on (#256)
+JobRunningTimeoutSec=3min
+# at SIGTERM rootd answers new requests "stopping" and waits up to 60 s for those in flight (their effect and audit
+# RESULT). mixed: the SIGTERM goes to rootd alone, so the helpers those requests wait for (systemctl, btrfs, nft, the
+# scan's systemd-run) keep running; whatever is left when rootd exits gets SIGKILL.
 TimeoutStopSec=90s
+KillMode=mixed
 UMask=0077
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
 # ProtectHome=yes without /run/user: rootd checks and removes each agent's stale podman pause.pid there (§4.2)

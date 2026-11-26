@@ -22,7 +22,7 @@ type fakeAccounts struct{}
 
 func (fakeAccounts) Lookup(a string) (Account, error) {
 	if a != "claude" {
-		return Account{}, errors.New("no such agent")
+		return Account{}, accounts.ErrNotFound // as idsAccounts
 	}
 	return Account{Name: a, UID: 70001, GID: uint32(os.Getgid()), Workspace: "/ws/claude"}, nil
 }
