@@ -166,7 +166,7 @@ mkdir -p $DR && printf '[Service]\nExecStartPre=/bin/sleep 20\n' > $DR/50-gate-s
 for i in $(seq 100); do [ "$(systemctl show -P ActiveState agentbox-accounts.service)" = activating ] && break; sleep 0.1; done
 t0=$(date +%s)
 ( systemctl restart agentbox-rootd.service; echo $? > /run/qd-restart.rc ) &
-for i in $(seq 150); do journalctl -u agentbox-rootd --since "@$t0" -o cat | grep -q "^stop: new requests get stopping" && break; sleep 0.1; done
+for i in $(seq 150); do journalctl -u agentbox-rootd --since "@$t0" -o cat | grep -qF "stop: new requests get stopping" && break; sleep 0.1; done
 t1=$(date +%s%N); $A agent list > /run/qd-list.json 2>&1; echo $? > /run/qd-list.rc; t2=$(date +%s%N)
 wait
 check "a rootd restart while agent add $QD waits for agentbox-accounts.service: the add ends ok, ag-$QD exists" '
