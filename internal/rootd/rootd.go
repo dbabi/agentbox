@@ -200,7 +200,7 @@ func Run(cfg Config) error {
 	go da.run(ctx)
 	svc := &resolve.Service{
 		DB: db, Dir: cfg.EgressDir, Resolver: resolve.Varlink{Path: resolve.ResolvedSocket},
-		Route: nl.CheckRoute, Nft: resolve.Nft{Path: "nft"}, Flows: nl.DeleteFlows,
+		Route: nl.CheckRoute, Own: resolve.OwnAddrs, Nft: resolve.Nft{Path: "nft"}, Flows: nl.DeleteFlows,
 		Now: time.Now, Clock: fw.Clock, Timeout: cfg.ElementTimeout, Pref64: resolve.Networkd{Path: resolve.NetworkdSocket}.Pref64,
 		Deny: func(svc, entry, reason, detail string) {
 			log.Printf("DENY by=rootd svc=%s entry=%s code=%s detail=%q", svc, entry, reason, detail)

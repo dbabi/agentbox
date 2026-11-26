@@ -1,11 +1,12 @@
 // Package resolve is rootd's resolver (ARCHITECTURE.md §6.1, §6.3, Appendix B): it resolves allowlisted host:port
 // names through systemd-resolved's Varlink socket, refuses any name with a non-public answer, and hands the answers to
-// the broker destination sets. Brokers use Client on their resolve-<svc>.sock.
+// the broker destination sets. Brokers ask on their resolve-<svc>.sock through internal/dial (pinned dialing).
 package resolve
 
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -60,6 +61,23 @@ func CheckPrefix(a netip.Addr, nsp ...netip.Prefix) string {
 		}
 	}
 	return ""
+}
+
+// OwnAddrs lists every address on the box's interfaces (RTM_GETADDR), tentative ones included, for Service.Own.
+func OwnAddrs() ([]netip.Addr, error) {
+	as, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	var out []netip.Addr
+	for _, a := range as {
+		if n, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(n.IP); ok {
+				out = append(out, ip.Unmap()) // Go gives IPv4 in its 16-byte form
+			}
+		}
+	}
+	return out, nil
 }
 
 // embedded4 is the IPv4 address a carries under NAT64 prefix p (RFC 6052 2.2: /32, /40, /48, /56, /64 or /96, with
