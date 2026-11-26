@@ -104,6 +104,9 @@ func cmdAuditd(args []string) error {
 	if err := parse(fs, args); err != nil {
 		return err
 	}
+	if err := serviceFilter(); err != nil {
+		return err
+	}
 	ls, err := listenFDs()
 	if err != nil {
 		return err

@@ -3,8 +3,8 @@
 // refusal, and forwarding to rootd, which runs nothing before auditd ACKs its INTENT.
 //
 // It also dispatches tasks (rootd's dispatch call, §4.2): it picks the task id, keeps the prompt, and serves it to the
-// task's taskrun (task.fetch); task.probed marks the end of its isolation probe, and task.result ends the task through
-// rootd's task.stop. At start, agentboxd re-registers
+// task's taskrun (task.fetch); task.probed marks the end of its isolation probe, task.taint_self records the Go module
+// filter's taint with auditd (§6.2), and task.result ends the task through rootd's task.stop. At start, agentboxd re-registers
 // rootd's live tasks (task.list_live), so a running task survives an agentboxd restart (§2.1).
 //
 // shortcut: no Cedar pass (weeks 9-10) and no agentboxd-executed ops (bus, memory, ask.status: weeks 7-8). Prompts
@@ -34,6 +34,9 @@ import (
 // MaxRequest is the longest request line a task may send; rootd.sock takes the same.
 const MaxRequest = 64 << 10
 
+// TaintSelfSource is task.taint_self's one source: the Go module cache (§6.2), the taint the proxy records for it too.
+const TaintSelfSource = "cache:go"
+
 var (
 	taskRe  = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	agentRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
@@ -60,6 +63,8 @@ type Server struct {
 	Conns int
 	// CLIs are the agent CLIs dispatch accepts.
 	CLIs []string
+	// Taint sends one record on agentboxd's auditd producer socket and returns nil only on its ACK (task.taint_self).
+	Taint func(rec map[string]any) error
 
 	mu    sync.Mutex
 	tasks map[string]*task
@@ -311,7 +316,7 @@ func (s *Server) call(t *task, line []byte) []byte {
 		return gd(ops.Deny(ops.TaskEnded, "", ops.Slots{Op: r.Method, By: "gate"}), "gate.task_ended")
 	}
 	switch r.Method {
-	case "task.fetch", "task.probed", "task.result":
+	case "task.fetch", "task.probed", "task.result", "task.taint_self":
 		return s.taskCall(t, r)
 	}
 	o, ok := ops.Lookup(r.Method)
@@ -397,6 +402,25 @@ func (s *Server) taskCall(t *task, r rpcReq) []byte {
 		t.mu.Lock()
 		t.probed = true
 		t.mu.Unlock()
+		return ok(map[string]any{})
+	}
+	if r.Method == "task.taint_self" {
+		// §6.2: the Go module filter's own taint record, the one a CONNECT to proxy.golang.org:443 would apply, before
+		// it asks the proxy for any module byte. It can only add taint to the calling task.
+		var p struct {
+			Source string `json:"source"`
+		}
+		if r.Params == nil || d.Decode(&p) != nil || p.Source != TaintSelfSource {
+			return rpcError(r.ID, -32602, "invalid params", nil)
+		}
+		if s.Taint == nil {
+			return rpcError(r.ID, -32001, "taint not recorded", nil)
+		}
+		if err := s.Taint(map[string]any{"type": "TAINT", "subject": "task:" + t.id, "source": TaintSelfSource}); err != nil {
+			log.Printf("task %s: task.taint_self: %v", t.id, err)
+			return rpcError(r.ID, -32001, "taint not recorded", nil)
+		}
+		log.Printf("task %s: tainted by its Go module filter (%s)", t.id, TaintSelfSource)
 		return ok(map[string]any{})
 	}
 	var res struct {

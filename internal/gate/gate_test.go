@@ -307,6 +307,36 @@ func TestRegisterAfterRebind(t *testing.T) {
 	}
 }
 
+// task.taint_self (§6.2): only {source: cache:go}, recorded as TAINT on the calling task only, and answered only after
+// auditd ACKs it; a NACK is an error the filter sees, and nothing reaches rootd.
+func TestTaintSelf(t *testing.T) {
+	s, tk := newServer(t, func(map[string]any) ([]byte, error) { t.Fatal("task.taint_self reached rootd"); return nil, nil })
+	if r := call(t, s, tk, `{"jsonrpc":"2.0","id":1,"method":"task.taint_self","params":{"source":"cache:go"}}`); r.Error == nil {
+		t.Fatal("no audit producer: answered as recorded")
+	}
+	var got []map[string]any
+	var nack error
+	s.Taint = func(rec map[string]any) error { got = append(got, rec); return nack }
+	for _, p := range []string{`{}`, `{"source":"proxy:evil.example:443"}`, `{"source":"cache:go","subject":"task:T2"}`, `{"source":"cache:go","x":1}`} {
+		if r := call(t, s, tk, `{"jsonrpc":"2.0","id":2,"method":"task.taint_self","params":`+p+`}`); r.Error == nil || r.Error.Code != -32602 {
+			t.Errorf("params %s: %+v", p, r)
+		}
+	}
+	if len(got) != 0 {
+		t.Fatalf("a refused call was recorded: %v", got)
+	}
+	if r := call(t, s, tk, `{"jsonrpc":"2.0","id":3,"method":"task.taint_self","params":{"source":"cache:go"}}`); r.Error != nil {
+		t.Fatalf("taint_self: %+v", r)
+	}
+	if len(got) != 1 || got[0]["type"] != "TAINT" || got[0]["subject"] != "task:T1" || got[0]["source"] != "cache:go" {
+		t.Fatalf("record: %v", got)
+	}
+	nack = errors.New("NACK UNAVAILABLE")
+	if r := call(t, s, tk, `{"jsonrpc":"2.0","id":4,"method":"task.taint_self","params":{"source":"cache:go"}}`); r.Error == nil {
+		t.Fatal("a NACKed record answered as recorded")
+	}
+}
+
 // After a restart, every live task rootd lists gets its socket back, provenance chain included.
 func TestRebind(t *testing.T) {
 	s, _ := newServer(t, nil)

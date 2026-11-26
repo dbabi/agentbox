@@ -26,6 +26,9 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 MemoryDenyWriteExecute=yes
 SystemCallFilter=@system-service
+# the binary installs its own btrfs ioctl filter at start (seccomp(2), which @system-service leaves out), and exits
+# without it (§2 Common hardening)
+SystemCallFilter=seccomp
 CapabilityBoundingSet=
 
 [Install]

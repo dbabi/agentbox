@@ -34,6 +34,10 @@ const ResolvConf = "nameserver 127.0.0.1\noptions timeout:1 attempts:1\n"
 // GoProxyEntry is the allowlist entry that turns on the Go module cache path.
 var GoProxyEntry = resolve.Entry{Host: "proxy.golang.org", Port: 443}
 
+// FilterGoProxy is the cache GOPROXY (§4.2): taskrun's Go module filter, then proxy.golang.org over CONNECT, then
+// direct. go moves past an entry only on 404 or 410, and the filter answers 404 to everything it doesn't serve.
+const FilterGoProxy = "http://127.0.0.1:8083,https://proxy.golang.org,direct"
+
 // Unset is what taskrun removes before the CLI starts, in case the image sets them: only the admin scopes private
 // paths (GOPRIVATE), and the egress path is HTTPS_PROXY alone.
 var Unset = []string{"GOFLAGS", "GONOSUMDB", "GONOPROXY", "GOINSECURE", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"}
@@ -43,10 +47,8 @@ var Unset = []string{"GOFLAGS", "GONOSUMDB", "GONOPROXY", "GOINSECURE", "HTTP_PR
 func Env(goProxy bool, goPrivate string) []string {
 	env := []string{"HTTPS_PROXY=" + ProxyURL, "https_proxy=" + ProxyURL, "NO_PROXY=" + NoProxy, "no_proxy=" + NoProxy}
 	if goProxy {
-		// shortcut: no Go module filter on 127.0.0.1:8083 yet (§6.2, weeks 7-8), and go moves past a GOPROXY entry only on
-		// 404 or 410, so an entry nothing serves fails every fetch. Until taskrun serves it, go asks proxy.golang.org over
-		// CONNECT, which the agent's allowlist already lets it do.
-		env = append(env, "GOPROXY=https://proxy.golang.org,direct", "GOSUMDB=sum.golang.org")
+		// the Go module filter first: taskrun serves it on 127.0.0.1:8083 when it sees this GOPROXY (§6.2)
+		env = append(env, "GOPROXY="+FilterGoProxy, "GOSUMDB=sum.golang.org")
 	} else {
 		env = append(env, "GOPROXY=off") // go fails at once with its own error and opens no CONNECT
 	}
