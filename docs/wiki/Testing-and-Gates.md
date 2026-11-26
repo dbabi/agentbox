@@ -70,7 +70,7 @@ What they check:
 | `hack/release` | Two builds of one release give the same bytes, and minisign verifies the signature. |
 | `hack` | The test harness itself. The QEMU command line is right even from a path with spaces, commas and glob characters. The ISO pin check and `remaster-iso.sh` work. The `dup-serial` disk check works on real qcow2 images. No `apply-gate.sh` check runs a value from the VM as code on the host. `powercut.sh boot` puts the VM disk back whether its checks pass or fail. |
 
-At the time of writing there are 319 top-level tests and 54 fuzz tests.
+At the time of writing there are 320 top-level tests and 54 fuzz tests.
 
 Some tests need outside tools: `dash`, `sha256sum`, `xorriso`, `openssl`, `minisign`, `qemu-img` and `qemu-io`, `uv` (or `python3` with PyYAML), and the `agentbox-powercut` image in the podman machine.
 
@@ -706,6 +706,7 @@ The regression after the review fixes. Every VM gate ran on a fresh `none`-mode 
 | Refused egress grants, the undo hold, unreadable cgroup and `/proc` files, the monotonic task deadline, chain and probe checks, admins with no passwd entry (issue #222) | On a fresh `none`-mode install, arm64 UEFI, Secure Boot on: `m4-tasks` 92, `m4-attach` 51, `w4-agentboxd` 30, `w3-rootd` 114 and `m4-taskenv` 44 PASS, 0 FAIL. The `m4-tasks` count includes the new checks for refused grants. | the branch of pull request #266, before it merged |
 | The pause PID takeover check (issue #169) | On a fresh `none`-mode install, arm64 UEFI, Secure Boot on: `m4-tasks` 92 PASS, 0 FAIL. Then the box ran 8 busy loops on its 4 vCPUs. The takeover check and the two checks after it passed 20 rounds in a row. Under that load, the old check read a root owner in 2 of 300 tries, and the new one in 0. A new root test, `TestTasksGatePIDTakeover`, runs the check with a slow `setpriv`. It fails on the old check and passes on the new one. | the branch of pull request #267, before it merged |
 | Regression after pull requests #234 and #263 to #266 | Two rounds of four VMs at once, each on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. `gates-none` 56, `w3-rootd` 114, `w3-quota-ntfy` 62, `w4-registry` 12, `w4-agentboxd` 30, `m4-attach` 51 and `m4-taskenv` 44 PASS, 0 FAIL. `m4-tasks` failed only the pause PID takeover check, on a race in the check itself (issue #169): 91 PASS, 1 FAIL. After the fix in pull request #267, `m4-tasks` passed: 92 PASS, 0 FAIL. Not run again: `m4-accounts`, `m4-cli`, `m4-image`, `w3-firewall`, `w3-auditd`, `w4-sockets`, `host-gates`, `gates-tpm2-tang-down-typed-recovery`, `os-apply-cycles-tpm2`, `os-apply-breaks-tpm2` and `zero-touch-iso`. | `de7dbd6`; `m4-tasks` again at `7f96516` |
+| Broker answers the forwarders lost (issue #168) | `TestReverseProxyRetryAndUnavailable` and the new `TestReverseProxyEarlyAnswer` each passed 500 runs on macOS with the race detector, and 600 runs under CPU load. On Linux arm64 under CPU load, each passed 504 runs. Before the fix, a loop of the first request got the stray 503 in 284 of 72,000 tries on macOS, and in 8 of 36,000 on Linux. After it, none did. On the old forwarder, `TestReverseProxyEarlyAnswer` failed 20 of 20 runs. CI passed both tests on amd64 and arm64, with the race detector. | the branch of pull request #271, before it merged |
 
 ## Troubleshooting
 
