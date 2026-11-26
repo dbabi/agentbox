@@ -196,8 +196,17 @@ func EditList(dir, svc string, e Entry, add bool) (bool, error) {
 		}
 		b.WriteString(e.String() + "\n")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := MkdirEgress(dir); err != nil {
 		return false, err
 	}
 	return true, gens.WriteAtomic(p, []byte(b.String()), 0o644)
+}
+
+// MkdirEgress makes the egress dir 0755, whatever the umask: rootd's is 0077, and the brokers, running as their own
+// users, read their lists there (#282). It also repairs a dir an earlier release made 0700.
+func MkdirEgress(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o755)
 }

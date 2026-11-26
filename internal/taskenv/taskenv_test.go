@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -34,6 +35,21 @@ func TestEnv(t *testing.T) {
 	}
 	if a := PodmanArgs(false, ""); a[0] != "-e" || len(a) != 2*len(off) {
 		t.Errorf("PodmanArgs: %q", a)
+	}
+}
+
+// #282: go.private.set under rootd's umask 0077 leaves the egress dir 0755 and the file 0644, for the proxy to read.
+func TestGoPrivateModeUnderRootdUmask(t *testing.T) {
+	defer syscall.Umask(syscall.Umask(0o077))
+	dir := filepath.Join(t.TempDir(), "egress")
+	if _, err := WriteGoPrivate(dir, "ga", "corp.example/*"); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o755 {
+		t.Fatalf("egress dir %v %v, want 0755", fi.Mode(), err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "ga.goprivate")); err != nil || fi.Mode().Perm() != 0o644 {
+		t.Fatalf("ga.goprivate %v %v, want 0644", fi.Mode(), err)
 	}
 }
 
