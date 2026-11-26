@@ -5,3 +5,5 @@
 agentbox/hack TestPowercutCheck
 # chattr needs CAP_LINUX_IMMUTABLE; the "go test internal/audit as root" step reruns this package and fails on any skip
 agentbox/internal/audit *
+# ns_last_pid, setpriv and a PID namespace need root; the "go test the tasks gate's PID takeover as root" step runs it
+agentbox/hack TestTasksGatePIDTakeover

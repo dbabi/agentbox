@@ -33,6 +33,12 @@ jobs:
           sudo env "PATH=$PATH" "GOTOOLCHAIN=$GOTOOLCHAIN" go test -count=1 -v ./internal/audit/... > audit-root.log 2>&1 || { cat audit-root.log; exit 1; }
           cat audit-root.log
           if grep -- '--- SKIP' audit-root.log; then echo 'privileged audit run skipped tests' >&2; exit 1; fi
+      # tasks-gate.sh's PID takeover check (#169) under a slow setpriv; the grep fails the step if the test skipped or is gone
+      - name: go test the tasks gate's PID takeover as root
+        run: |
+          sudo env "PATH=$PATH" "GOTOOLCHAIN=$GOTOOLCHAIN" go test -count=1 -v -run '^TestTasksGatePIDTakeover$' ./hack/ > takeover-root.log 2>&1 || { cat takeover-root.log; exit 1; }
+          cat takeover-root.log
+          grep -q -- '--- PASS: TestTasksGatePIDTakeover' takeover-root.log
       # rootd and agentboxd serve each connection on its own goroutine; -count=1, so a cached pass is not a run
       - name: go test -race
         run: go test -race -count=1 ./...
