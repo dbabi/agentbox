@@ -77,10 +77,13 @@ G=/var/tmp/gate
 mkdir -p $G && chmod 0755 $G
 
 # --- setup: the task image, two agents, the test CLI and image, stub brokers ---
-check "image/task builds on the box (ubuntu:26.04, apt tools, mise with the pinned Go)" 'podman build -q -t $IMG /tmp/gate-image/task </dev/null'
+# the build's RUN steps use the box's own resolver (--network=host): on some host networks slirp answers DNS over
+# IPv6 only, and a build container gets the IPv4 server
+check "image/task builds on the box (ubuntu:26.04, apt tools, mise with the pinned Go)" 'podman build -q --network=host -t $IMG /tmp/gate-image/task </dev/null'
 # the image sets what taskrun must unset, so the env checks see them removed, not merely absent
 printf 'FROM %s\nENV GOFLAGS=-mod=mod GONOSUMDB=corp.example GONOPROXY=corp.example GOINSECURE=corp.example HTTP_PROXY=http://10.9.9.9:3128 http_proxy=http://10.9.9.9:3128 ALL_PROXY=socks5://10.9.9.9:1080 all_proxy=socks5://10.9.9.9:1080\n' $IMG > $G/Containerfile
-podman build -q -t $IMG-env -f $G/Containerfile $G </dev/null >/dev/null && podman save -o $G/image.tar $IMG-env && chmod 0644 $G/image.tar
+# podman save won't write over the archive an earlier run on this box left
+podman build -q -t $IMG-env -f $G/Containerfile $G </dev/null >/dev/null && rm -f $G/image.tar && podman save -o $G/image.tar $IMG-env && chmod 0644 $G/image.tar
 # podman load runs through the agent's user manager, as rootd's ensureImage does, so podman's pause process gets its
 # own scope there, not a root session's
 for a in ga gb; do

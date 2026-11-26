@@ -167,9 +167,10 @@ pdrops() { nft list chain inet agentbox output | grep '"agentbox-proxy"' | sed -
 for i in $(seq 30); do getent hosts registry-1.docker.io >/dev/null && break; sleep 2; done
 build() { podman build -q --network=host -t $IMG /tmp/gate-image/task </dev/null >/dev/null ||
   { sleep 10; podman build -q --network=host -t $IMG /tmp/gate-image/task </dev/null >/dev/null; }; }
+# podman save won't write over the archive an earlier run on this box left
 check "image/task builds on the box, with the gate's CA in its trust store" 'build &&
   cp $K/ca.pem $G/gate-ca.crt && printf "FROM %s\nCOPY gate-ca.crt /usr/local/share/ca-certificates/gate-ca.crt\nRUN update-ca-certificates >/dev/null\n" $IMG > $G/Containerfile &&
-  podman build -q -t $IMG-ca -f $G/Containerfile $G </dev/null >/dev/null && podman save -o $G/image.tar $IMG-ca && chmod 0644 $G/image.tar'
+  podman build -q -t $IMG-ca -f $G/Containerfile $G </dev/null >/dev/null && rm -f $G/image.tar && podman save -o $G/image.tar $IMG-ca && chmod 0644 $G/image.tar'
 for a in $A1 $A2 $A3 $A4 $A5; do
   check "agent add $a, and the task image in its podman" '{ $B agent add --name $a || $B agent list | grep -q "\"name\":\"$a\""; } && u=$(id -u ag-$a) &&
     i=0; until systemctl is-active -q user@$u.service; do i=$((i+1)); [ $i -lt 50 ] || exit 1; sleep 0.2; done &&
