@@ -329,7 +329,8 @@ func strict(b []byte, v any) error {
 	return nil
 }
 
-// walk calls f for each regular entry of the tar at p, refusing links, devices and a repeated name.
+// walk calls f for each regular entry of the tar at p, refusing links, devices and a repeated name. A read error inside
+// an entry is a refusal too, so rootd's reply names its code.
 func walk(p string, f func(name string, r io.Reader) error) error {
 	fh, err := os.Open(p)
 	if err != nil {
@@ -355,6 +356,10 @@ func walk(p string, f func(name string, r io.Reader) error) error {
 		}
 		seen[n] = true
 		if err := f(n, tr); err != nil {
+			var r *Refused
+			if !errors.As(err, &r) { // a read error, as when the tar ends inside the entry
+				err = refuse(BadArchive, "entry %.80q: %v", h.Name, err)
+			}
 			return err
 		}
 	}

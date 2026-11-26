@@ -187,6 +187,7 @@ func TestCheckRefusesCrafted(t *testing.T) {
 			fs["index.json"] = append(fs["index.json"], "{}"...)
 			return Tar(fs)
 		}, BadArchive},
+		"an archive that ends inside an entry": {func(fs map[string][]byte) []byte { return Tar(fs)[:512] }, BadArchive},
 	}
 	for name, c := range cases {
 		if got := code(func() error { _, err := Check(write(t, c.edit(untar(t, good)))); return err }()); got != c.want {
