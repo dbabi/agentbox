@@ -70,5 +70,8 @@ func KeysError(d Denial, typ, detail string) []byte {
 	return b
 }
 
-// GitBody is git's text/plain body: msg, then the denial JSON, which git prints as two remote: lines.
-func GitBody(d Denial) []byte { return []byte(d.Msg + "\n" + DenialPrefix + string(d.JSON()) + "\n") }
+// GitBody is git's text/plain body, and what pre-receive prints: msg after `agentbox <CODE>: `, as keys' message
+// starts, then the denial JSON. git prints them as two remote: lines.
+func GitBody(d Denial) []byte {
+	return []byte("agentbox " + d.Code + ": " + d.Msg + "\n" + DenialPrefix + string(d.JSON()) + "\n")
+}

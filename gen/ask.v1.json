@@ -175,7 +175,8 @@
                 "KEYS_REQUEST_REJECTED",
                 "KEYS_BUDGET",
                 "KEYS_UPSTREAM",
-                "BROKER_UNAVAILABLE"
+                "BROKER_UNAVAILABLE",
+                "EXFIL_CANARY"
               ],
               "type": "string"
             },
@@ -271,7 +272,8 @@
               "KEYS_REQUEST_REJECTED",
               "KEYS_BUDGET",
               "KEYS_UPSTREAM",
-              "BROKER_UNAVAILABLE"
+              "BROKER_UNAVAILABLE",
+              "EXFIL_CANARY"
             ],
             "type": "string"
           },
@@ -325,7 +327,8 @@
                     "KEYS_REQUEST_REJECTED",
                     "KEYS_BUDGET",
                     "KEYS_UPSTREAM",
-                    "BROKER_UNAVAILABLE"
+                    "BROKER_UNAVAILABLE",
+                    "EXFIL_CANARY"
                   ],
                   "type": "string"
                 },

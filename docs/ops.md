@@ -39,10 +39,10 @@ Every op, from `internal/ops/registry.go` (ARCHITECTURE.md §5.1, §5.3). Args a
 | `cache.purge` | admin | n/a |  | agent |  | none | n/a | n/a |  |  |  | yes |  |
 | `disk.usage` | read | Read | Host |  |  | none | n/a | n/a |  |  |  | yes |  |
 | `file.write` | live | SideEffect | Path from `path` | path, content (hash) |  | if tainted | content hash | CAS-revert | yes |  |  | yes | quotable; CAS binder |
-| `gh.issue.comment` | live | SideEffect | Repo from `remote` | remote, number, body (hash) |  | always | body hash (op marker included); gh_node_id | none (external) |  |  |  | yes | quotable; always exact |
+| `gh.issue.comment` | live | SideEffect | Repo from `remote` | remote, number, body (hash) | remote, id?, url? | always | body hash (op marker included); gh_node_id | none (external) |  |  |  | yes | quotable; always exact |
 | `gh.issue.read` | read | Read | Host | remote, number | issue (hash) | none | n/a | n/a |  | yes |  | yes |  |
-| `gh.pr.comment` | live | SideEffect | Repo from `remote` | remote, number, body (hash) |  | always | body hash (op marker included); gh_node_id | none (external) |  |  |  | yes | batch push+reply; quotable; always exact |
-| `gh.pr.create` | live | SideEffect | Repo from `remote` | remote, head, base, title (hash), body (hash) |  | always | head OID; body hash (op marker included); gh_node_id | none (external) |  |  |  | yes | batch push+pr; quotable |
+| `gh.pr.comment` | live | SideEffect | Repo from `remote` | remote, number, body (hash) | remote, id?, url? | always | body hash (op marker included); gh_node_id | none (external) |  |  |  | yes | batch push+reply; quotable; always exact |
+| `gh.pr.create` | live | SideEffect | Repo from `remote` | remote, head, base, title (hash), body (hash) | remote, headOid, number?, url? | always | head OID; body hash (op marker included); gh_node_id | none (external) |  |  |  | yes | batch push+pr; quotable |
 | `gh.pr.read` | read | Read | Host | remote, number | pr (hash) | none | n/a | n/a |  | yes |  | yes |  |
 | `go.private.set` | admin | n/a |  | agent, patterns |  | none | n/a | n/a |  |  |  | yes |  |
 | `memory.forget` | agentboxd | SideEffect | MemoryScope from `factId` | factId |  | if tainted | fact ID | logical | yes |  | yes |  | quotable; always exact |
@@ -67,10 +67,10 @@ Every op, from `internal/ops/registry.go` (ARCHITECTURE.md §5.1, §5.3). Args a
 | `policy.set` | admin | n/a |  | policy |  | none | n/a | n/a |  |  |  | yes |  |
 | `procedural.set` | admin | n/a |  | body |  | none | n/a | n/a |  |  |  | yes |  |
 | `push.policy.set` | admin | n/a |  | remote, policy |  | none | n/a | n/a |  |  |  | yes |  |
-| `remote.set` | admin | n/a |  | id, url |  | none | n/a | n/a |  |  |  | yes |  |
+| `remote.set` | admin | n/a |  | id, agent, project, url | nodeId, visibility | none | n/a | n/a |  |  |  | yes |  |
 | `repo.create` | Safe | Safe | Host, Repo | name |  | none | n/a | none |  |  |  | yes | quotable; always exact |
-| `repo.merge` | live | SideEffect | Repo from `p` | p, srcOid, dstOid |  | always | source and target OIDs | revert commit |  |  |  | yes | quotable |
-| `repo.push` | live | SideEffect | Repo from `remote` | remote, ref, oid |  | unless a standing push policy covers a private remote and the task is clean | OID; remote_url; gh_node_id | none |  |  |  | yes | batch push+pr, push+reply; quotable |
+| `repo.merge` | live | SideEffect | Repo from `p` | p, srcOid, dstOid | oid, tainted | always | source and target OIDs | revert commit |  |  |  | yes | quotable |
+| `repo.push` | live | SideEffect | Repo from `remote` | remote, ref, oid | remote, oid | unless a standing push policy covers a private remote and the task is clean | OID; remote_url; gh_node_id | none |  |  |  | yes | batch push+pr, push+reply; quotable |
 | `secret.set` | admin | n/a |  | name, value (drop) |  | none | n/a | n/a |  |  |  | yes |  |
 | `system.info` | read | Read | Host |  |  | none | n/a | n/a |  |  |  | yes |  |
 | `taint.clear` | admin | n/a |  | subject, contentId |  | always | contentId; the subject's taint epoch; for workspace: the dependency report's SHA-256 and its high-risk count | none |  |  |  | yes |  |

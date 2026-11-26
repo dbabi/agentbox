@@ -108,7 +108,7 @@ var (
 	rop       = []RemedyKind{RemOp}
 )
 
-// CodeTable is the v1 table: 36 codes, in golden order.
+// CodeTable is the v1 table: 36 codes plus EXFIL_CANARY (#105), in golden order.
 var CodeTable = []CodeDef{
 	{Name: "INVALID_ARGS", Next: Fix, By: gateFloor, HTTP: 400, Msg: "{op} has an invalid argument: fix the field named in remedy.",
 		Slots: []string{slotExpect}, Remedy: rfix, Note: "`field` (JSON pointer) and `expect`; never the value; also a body that contains `agentbox-op:`"},
@@ -215,6 +215,10 @@ var CodeTable = []CodeDef{
 	{Name: "BROKER_UNAVAILABLE", Next: Retry, By: []string{"forwarder"}, HTTP: 503, Msg: "A box service is unavailable; retry after {afterMs} ms.",
 		Whats: ws(Retry, "gate", "egress", "llm", "git"), Slots: []string{slotWhat, slotAfterMs}, Remedy: rretry, AfterMs: 5000,
 		Note: "also a gate reply that fails the in-task check"},
+	// #105: a per-task canary in what a task delivers (a push, a gh.* body); the task is tainted and a human alerted
+	{Name: "EXFIL_CANARY", Next: Human, By: []string{"git", "floor", "gate"}, HTTP: 403,
+		Msg: "{op} was refused: it carries a credential planted in this task, and a human was alerted.", Remedy: rhuman,
+		Admin: "agentbox task show", Note: "the canary in raw, base64, hex or split form; the task is tainted"},
 }
 
 // codeDefs indexes CodeTable by name.

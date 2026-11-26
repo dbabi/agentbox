@@ -1083,7 +1083,15 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "properties": {
+        "agent": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
         "id": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "project": {
           "type": "string",
           "x-agentbox-audit": "keep"
         },
@@ -1094,6 +1102,8 @@
       },
       "required": [
         "id",
+        "agent",
+        "project",
         "url"
       ],
       "additionalProperties": false
@@ -1283,6 +1293,28 @@
       },
       "additionalProperties": false
     },
+    "gh.issue.comment": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "remote": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "url": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "remote"
+      ],
+      "additionalProperties": false
+    },
     "gh.issue.read": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -1297,6 +1329,55 @@
       ],
       "additionalProperties": false
     },
+    "gh.pr.comment": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "remote": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "url": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "remote"
+      ],
+      "additionalProperties": false
+    },
+    "gh.pr.create": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "headOid": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "number": {
+          "type": "integer",
+          "x-agentbox-audit": "keep"
+        },
+        "remote": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "url": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "remote",
+        "headOid"
+      ],
+      "additionalProperties": false
+    },
     "gh.pr.read": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -1308,6 +1389,63 @@
       },
       "required": [
         "pr"
+      ],
+      "additionalProperties": false
+    },
+    "remote.set": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "nodeId": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "visibility": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "nodeId",
+        "visibility"
+      ],
+      "additionalProperties": false
+    },
+    "repo.merge": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "tainted": {
+          "type": "boolean",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "oid",
+        "tainted"
+      ],
+      "additionalProperties": false
+    },
+    "repo.push": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "oid": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        },
+        "remote": {
+          "type": "string",
+          "x-agentbox-audit": "keep"
+        }
+      },
+      "required": [
+        "remote",
+        "oid"
       ],
       "additionalProperties": false
     }
