@@ -351,9 +351,18 @@ func TestRootdUnitStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(string(u), "\n")
-	for _, l := range []string{"KillMode=mixed", "TimeoutStopSec=90s", "JobRunningTimeoutSec=3min"} {
-		if !slices.Contains(lines, l) {
-			t.Errorf("agentbox-rootd.service has no %s line", l)
+	sec, cur := map[string]string{}, ""
+	for _, l := range lines {
+		if strings.HasPrefix(l, "[") {
+			cur = l
+		} else {
+			sec[l] = cur
+		}
+	}
+	// #277: systemd ignores a key outside its section
+	for l, want := range map[string]string{"KillMode=mixed": "[Service]", "TimeoutStopSec=90s": "[Service]", "JobRunningTimeoutSec=3min": "[Unit]"} {
+		if sec[l] != want {
+			t.Errorf("agentbox-rootd.service has no %s line in %s (section of that line: %q)", l, want, sec[l])
 		}
 	}
 	after := ""
