@@ -822,7 +822,7 @@ Read [Security Model](Security-Model.md) and the one-page threat model in the re
 | `internal/sockets` | The socket inventory, the generated tmpfiles.d and `.socket` units, and `agentbox sockets check` | Built (milestone 3) |
 | `internal/rootd/accounts`, `internal/task`, `internal/seccomp`, `internal/rootd/attach`, `internal/controlpaths` | Agent accounts, the task container and its seccomp profile, interactive sessions, and the workspace control-file list | Built (milestone 4) |
 | `internal/taskenv`, `internal/taskrun`, `internal/rootd/witness` | The task environment, the in-task forwarders and `agentbox why`, and the witness pipe rootd reads | Built (milestone 4) |
-| `internal/proxy` | The egress proxy: CONNECT checks, rootd resolution, taint and tunnels | Built (milestone 5) |
+| `internal/proxy`, `internal/dial` | The egress proxy (CONNECT checks, taint and tunnels), and the pinned dialer the brokers share | Built (milestone 5) |
 | `sysusers.d/`, `tmpfiles.d/` | The service users and the runtime directories | Built (milestones 2 and 3) |
 | `install/`, `systemd/` | The release's `install.sh` and its systemd units | Built |
 | `hack/` | The release builder, the ISO remaster script, the QEMU harness and the test gates | Built |

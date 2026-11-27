@@ -754,7 +754,7 @@ The regression after the review fixes. Every VM gate ran on a fresh `none`-mode 
 | Suite | Result | Tested at |
 |---|---|---|
 | `m5-dial` (issues #20, #145) | Passed on a fresh `none`-mode install, arm64 UEFI, Secure Boot on: 53 PASS, 0 FAIL. The hook check ran against the box's own systemd-resolved, which asked the gate's hook and never asked DNS. `w3-rootd` passed again with the new resolver checks: 115 PASS, 0 FAIL. | the branch of pull request #298, before it merged |
-| `m5-proxy` | Passed: 84 PASS, 0 FAIL, on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. The npm install through the proxy took about 1 s. A first run failed 20 checks, all in the gate script: the release's task image has no `npm` or `pip`, two helpers reused the rebinding loop's variable, and the drop counter missed numeric uids. With the release's proxy installed, the `m4-taskenv` checks also passed: 43 PASS, 0 FAIL. | the branch of issue #17, at `dd0337f` |
+| `m5-proxy` (issues #17, #282) | Passed on a fresh `none`-mode install, arm64 UEFI, Secure Boot on: 84 PASS, 0 FAIL, in 13 min, after the proxy moved to the shared dialer. Its install step passed 56. The npm install through the proxy took 840 ms. The run before that move also passed 84. The first run in development failed 20 checks, all in the gate script: the release's task image has no `npm` or `pip`, two helpers reused the rebinding loop's variable, and the drop counter missed numeric uids. The tasks, task env and agent CLI gates now stop the release's proxy while their stand-ins run. On fresh installs, `m4-tasks` passed 92 and `m4-cli` 26, 0 FAIL. On the box of the run before the move, the `m4-taskenv` checks passed 43, 0 FAIL. | the branch of pull request #300, before it merged |
 
 ## Troubleshooting
 
