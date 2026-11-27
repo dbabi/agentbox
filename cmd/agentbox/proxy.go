@@ -21,6 +21,8 @@ const (
 // cmdProxy is agentbox-proxy.service (§2, §6.2): the CONNECT egress of every task. svc-proxy.sock comes from its
 // .socket unit; on rootd's register it binds the task's proxy.sock in the dir rootd made, and at start it rebinds
 // rootd's live tasks, so a running task survives a proxy restart (§2.1).
+//
+// shortcut: no service btrfs seccomp filter yet; #21's seccomp.InstallService goes first once it lands (#299).
 func cmdProxy(args []string) error {
 	if err := parse(flag.NewFlagSet("proxy", flag.ContinueOnError), args); err != nil {
 		return err

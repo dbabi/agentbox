@@ -4,8 +4,8 @@
 // auditd ACK before any byte flows, and then tunneled as bytes: no TLS interception, no redirects. Anything else gets a
 // §5.6 refusal in the CONNECT format.
 //
-// shortcut: no Go module cache yet (#21): every origin-form /_cache/ request is a cache miss, a bare 404 (405 for
-// another method), so go falls back to CONNECT as it would.
+// shortcut: no Go module cache yet (#21, #299): every origin-form /_cache/ request is a cache miss, a bare 404 (405
+// for another method), so go falls back to CONNECT as it would.
 package proxy
 
 import (
@@ -174,7 +174,7 @@ func (s *Server) notConnect(c net.Conn, task string, req *http.Request) {
 // reason phrase, the Agentbox-Denial header and the {error, agentbox} body, then the connection closes. Only the
 // requested host:port is named, and only if it passes the A-label grammar.
 //
-// shortcut: #21's ops.ConnectReply writes the same bytes; use it once that lands.
+// shortcut: #21's ops.ConnectReply writes the same bytes; use it once that lands (#299).
 func refuse(c net.Conn, task string, code ops.Code, what string, sub ops.Subject, expect string) {
 	d := ops.Deny(code, what, ops.Slots{By: "proxy", Subject: sub, Expect: expect})
 	status := ops.HTTPStatus(code)
@@ -235,7 +235,7 @@ func dialWhat(err error) string {
 
 // Audit is Server.Taint for auditd's producer socket at path: one connection per record, nil only on its ACK.
 //
-// shortcut: #21's audit.Send is the same call; use it once that lands.
+// shortcut: #21's audit.Send is the same call; use it once that lands (#299).
 func Audit(path string) func(map[string]any) error {
 	return func(rec map[string]any) error {
 		c, err := net.DialTimeout("unix", path, 2*time.Second)
