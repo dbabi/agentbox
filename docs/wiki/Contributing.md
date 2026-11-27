@@ -316,7 +316,7 @@ Then run the gate that covers what you changed:
 | `internal/proxy/`, `cmd/agentbox/proxy.go` | `hack/proxy-gate.sh` |
 | `internal/dial/` | `hack/dial-gate.sh`, then `hack/proxy-gate.sh` and `hack/keys-gate.sh` |
 | `internal/keys/`, `internal/broker/`, `cmd/agentbox/keys.go`, `secret.set` in `internal/rootd/` | `hack/keys-gate.sh`, and `AGENTBOX_KEYS_MODE=tpm2 hack/keys-gate.sh` if it touches the credentials |
-| `internal/proxy/gocache/`, `internal/taskrun/gomodfilter/` | `hack/gocache-gate.sh` (it has not passed yet, issue #299) |
+| `internal/proxy/gocache/`, `internal/taskrun/gomodfilter/` | `hack/gocache-gate.sh` (it has not passed yet, issue #301) |
 | `hack/release/`, `install/install.sh` | `hack/gate.sh none`. Every install gate builds test releases, and firstboot installs one. |
 | `systemd/` | `hack/apply-gate.sh tpm2 install setup cycles`. The health timer commits each trial. |
 | `hack/vm.sh`, `hack/remaster-iso.sh`, `hack/SHA256SUMS` | `hack/gate.sh none`. Add `hack/gate.sh none bios` if the change touches the amd64 VM. |

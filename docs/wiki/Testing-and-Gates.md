@@ -564,7 +564,7 @@ Its `checks` step runs a fake `proxy.golang.org` on the Mac, built from `hack/go
 - The local model behind the keys broker is a stand-in: no release ships llama-server yet (issue #287).
 - The task gate socket's `CAP_REACHED` replies to an over-long or stalled request line have unit tests only. Its connection cap still makes extra connections wait rather than refusing them.
 - The proxy does not serve the Go module cache yet: every `/_cache/` request gets a plain 404 (issue #299).
-- The Go module cache gate has not passed. Its last run stopped when the Mac running it ran out of disk space. It still stops the proxy units by the names they had before the proxy was built, so it can't pass on this release until issue #299 is fixed.
+- The Go module cache gate has not passed. Its last run stopped when the Mac running it ran out of disk space. It still stops the proxy units by the names they had before the proxy was built, so it can't pass on this release until issue #299 is fixed (issue #301).
 - The fuzz tests of the keys broker's request checks, its reply scanner and its body reader, and of the Go module filter, the cache and the checksum database client, have not run for 24 hours.
 
 ## Several VMs at once
