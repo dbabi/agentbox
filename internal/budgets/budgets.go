@@ -31,6 +31,9 @@ var Defaults = map[string]int64{
 	"cache.max_idle_days":        30,
 	"disk.reserve_bytes":         2 << 30,
 	"keys.day_cap_cents":         0,
+	// a task tree's spend (§6.3, §7): rootd registers each task's trace with keys, which reserves against it, so a
+	// delegation fan-out has one cap; $20 until budget.set changes it
+	"keys.trace_cents": 2000,
 }
 
 // SharePrefix keys an explicit day share: keys.agent_day_share.<agent>, in cents.

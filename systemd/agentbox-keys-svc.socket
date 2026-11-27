@@ -1,0 +1,18 @@
+# uid 0 only: task registration and revocation (ARCHITECTURE.md §2.1).
+# PID 1 binds it with this owner and mode; the service checks SO_PEERCRED on every connection.
+# Generated from internal/sockets: go test ./internal/sockets -update
+[Unit]
+Description=agentbox socket /run/agentbox-rootd/svc-keys.sock
+
+[Socket]
+ListenStream=/run/agentbox-rootd/svc-keys.sock
+SocketUser=agentbox-keys
+SocketGroup=root
+SocketMode=0600
+DirectoryMode=0711
+FileDescriptorName=svc-keys
+Service=agentbox-keys.service
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

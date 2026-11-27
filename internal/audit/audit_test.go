@@ -1059,6 +1059,9 @@ func TestSinkCheck(t *testing.T) {
 	b.ok(rootdProducer, `{"type":"INTENT","opId":"g3","name":"egress.allow","origin":"admin","args":{"svc":"keys","entry":"example.com"}}`)
 	b.nack(rootdProducer, `{"type":"INTENT","opId":"g4","name":"egress.allow","origin":"admin","args":{"svc":"keys","entry":"e","value":"sk-live-edit"}}`, CodeBadRecord)
 	b.ok(rootdProducer, `{"type":"RESULT","opId":"g2","status":"executed","outputs":{"log":`+h+`}}`)
+	// keys' record of a model request (§6.3): ACKed like the other best-effort records, before keys forwards
+	b.ok("keys", `{"type":"LLM","task":"task_01JAAAAAAAAAAAAAAAAAAAAAAA","agent":"ga","trace":"trace_01JAAAAAAAAAAAAAAAAAAAAAAA","vendor":"anthropic",`+
+		`"endpoint":"/v1/messages","model":"claude-opus-5-5","reservedNanos":12,"server":[],"body":`+h+`}`)
 	for _, r := range b.verify() {
 		data, _ := os.ReadFile(filepath.Join(b.dir, SegName(r.Seg)))
 		if strings.Contains(string(data), "sk-live") || strings.Contains(string(data), `"hello"`) {

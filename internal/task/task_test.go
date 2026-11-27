@@ -138,7 +138,7 @@ func TestPolicyFiles(t *testing.T) {
 	}
 	s := strings.Join(Argv(Spec{Task: "task_x", Agent: "a"}), " ")
 	for _, want := range []string{"-e ANTHROPIC_BASE_URL=http://127.0.0.1:8081/anthropic", "-e DISABLE_UPDATES=1", "-e CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1",
-		"-e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"} {
+		"-e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "-e CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1", "-e CLAUDE_CODE_AUTO_MODE_SERVER=0"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("argv lacks %q", want)
 		}

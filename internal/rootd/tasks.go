@@ -370,7 +370,11 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 		if err := t.cfg.MakeDir(task.SockDir(v.Name, id), task.SvcUser[v.Name], acct.GID); err != nil {
 			return false, fmt.Errorf("%s: %v", task.SockDir(v.Name, id), err)
 		}
-		rep, err := t.cfg.Svc(v.Name, map[string]any{"call": "register", "task": id, "agent": acct.Name, "chain": si.chain})
+		req := map[string]any{"call": "register", "task": id, "agent": acct.Name, "chain": si.chain}
+		if v.Name == "keys" {
+			req["trace"] = si.trace // keys bills the task's trace (§6.3); the other services take no trace
+		}
+		rep, err := t.cfg.Svc(v.Name, req)
 		if errors.Is(err, ErrNoSvc) && v.Name != "gate" {
 			continue // the dir is still made and mounted, so the service can bind there once it is installed
 		}
@@ -570,12 +574,13 @@ type liveRow struct {
 	Task  string   `json:"task"`
 	Agent string   `json:"agent"`
 	Chain []string `json:"chain"`
+	Trace string   `json:"trace"` // keys bills the trace (§6.3); the other services ignore it
 	uid   uint32
 	dl    int64
 }
 
 func (t *tasks) live() ([]liveRow, error) {
-	rows, err := t.db.Query(`SELECT task, agent, chain, uid, deadline FROM task_registry WHERE ended_at IS NULL ORDER BY task`)
+	rows, err := t.db.Query(`SELECT task, agent, chain, trace, uid, deadline FROM task_registry WHERE ended_at IS NULL ORDER BY task`)
 	if err != nil {
 		return nil, err
 	}
@@ -584,7 +589,7 @@ func (t *tasks) live() ([]liveRow, error) {
 	for rows.Next() {
 		var r liveRow
 		var c string
-		if err := rows.Scan(&r.Task, &r.Agent, &c, &r.uid, &r.dl); err != nil {
+		if err := rows.Scan(&r.Task, &r.Agent, &c, &r.Trace, &r.uid, &r.dl); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(c), &r.Chain)

@@ -34,3 +34,20 @@ func rawTerm(f *os.File) func() {
 	}
 	return func() { unix.IoctlSetTermios(fd, unix.TCSETS, old) }
 }
+
+// noEcho turns off a terminal stdin's echo for a secret typed at a prompt, keeping line editing; it returns the
+// restore, and false when f is no terminal.
+func noEcho(f *os.File) (func(), bool) {
+	fd := int(f.Fd())
+	old, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return func() {}, false
+	}
+	t := *old
+	t.Lflag &^= unix.ECHO
+	t.Lflag |= unix.ICANON | unix.ECHONL
+	if unix.IoctlSetTermios(fd, unix.TCSETS, &t) != nil {
+		return func() {}, false
+	}
+	return func() { unix.IoctlSetTermios(fd, unix.TCSETS, old) }, true
+}

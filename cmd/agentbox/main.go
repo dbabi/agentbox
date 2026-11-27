@@ -2,7 +2,7 @@
 // Week 1 ships the operator-side commands (seed, recovery) and, on the box, the os.apply pipeline (os); week 3 adds
 // the firewall (fw, fwcheck), agentbox-auditd and `audit verify`, and agentbox-rootd with its egress CLI; week 4 adds
 // agentboxd's task gate; weeks 5-6 add tasks: one container each (task, taskrun), the task env, the in-task forwarders
-// and `agentbox why`, and the witness; milestone 5 adds agentbox-proxy.
+// and `agentbox why`, and the witness; milestone 5 adds agentbox-proxy, agentbox-keys and `secret set`.
 package main
 
 import (
@@ -58,6 +58,8 @@ const usage = `usage:
   agentbox taskrun   (the task container's PID 1)
   agentbox secretscan --dir D   (rootd's workspace credential scan, in its no-network unit: a JSON report on stdout)
   agentbox proxy   (agentbox-proxy.service: the tasks' CONNECT egress, on the box)
+  agentbox keys   (agentbox-keys.service: the LLM broker, on the box)
+  agentbox secret set --name anthropic-api-key|openai-api-key|github-token < value   (admin: secret.set; the value from stdin)
   agentbox broker-stub --svc proxy|keys|git   (test boxes: a broker stand-in for the restart gate)
   agentbox goprivate set --agent A --patterns 'corp.example/*,...'   (admin: go.private.set; "" clears)
   agentbox cache purge --agent A   (admin: cache.purge, empties the agent's Go module cache)
@@ -179,6 +181,10 @@ func run(args []string) error {
 		return cmdTaskrun(args[1:])
 	case "proxy":
 		return cmdProxy(args[1:])
+	case "keys":
+		return cmdKeys(args[1:])
+	case "secret":
+		return cmdSecret(args[1:])
 	case "broker-stub":
 		return cmdBrokerStub(args[1:])
 	case "goprivate":

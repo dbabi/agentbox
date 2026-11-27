@@ -1,0 +1,48 @@
+# agentbox-keys (ARCHITECTURE.md §2, §4.3, §6.3): the LLM broker, and the only holder of the vendor keys. rootd
+# registers each task on svc-keys.sock; keys binds that task's /run/agentbox-keys/t/<task>/keys.sock in the dir rootd
+# made, checks every request against its closed schema, reserves its price against the agent's day share and the
+# task's trace, audits it, injects the key and sends it to a vendor address rootd resolved (nft lets this uid reach
+# nothing else). It answers nothing a vendor returns with the key in it.
+[Unit]
+Description=agentbox LLM key broker
+Requires=agentbox-reconcile.service agentbox-firewall.service agentbox-keys-svc.socket
+After=agentbox-reconcile.service agentbox-firewall.service agentbox-keys-svc.socket agentbox-rootd.service agentbox-auditd.service
+# every firewall repair restarts it through Requires=, and every secret.set of a key it holds: the start limit must
+# never leave it down
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=agentbox-keys
+Group=agentbox-keys
+ExecStart=/var/lib/agentbox/current/bin/agentbox keys
+Sockets=agentbox-keys-svc.socket
+Restart=always
+RestartSec=1
+# the vendor keys (#108): rootd encrypts each secret.set value into the credential store, and PID 1 decrypts only
+# these names, at start, into this unit's own non-swappable credentials dir, readable by agentbox-keys alone. A new
+# value needs a restart, which secret.set does. rootd keeps a placeholder for a name with no value yet, so the unit
+# always starts.
+LoadCredentialEncrypted=anthropic-api-key:/var/lib/agentbox/control/credstore.encrypted/keys/anthropic-api-key
+LoadCredentialEncrypted=openai-api-key:/var/lib/agentbox/control/credstore.encrypted/keys/openai-api-key
+# keys.sock is bound 0660 inside the setgid dir, so it is agentbox-keys:ag-<agent> (§2.1)
+UMask=0117
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# no DNS of its own (§6.1): resolved's Varlink and D-Bus sockets are AF_UNIX, which nft never sees
+InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/agentbox-keys /var/lib/agentbox/keys
+PrivateTmp=yes
+NoNewPrivileges=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+# the binary installs its own btrfs ioctl filter at start (seccomp(2), which @system-service leaves out), and exits
+# without it (§2 Common hardening)
+SystemCallFilter=seccomp
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

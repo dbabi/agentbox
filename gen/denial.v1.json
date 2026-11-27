@@ -427,13 +427,16 @@
         "beta_header",
         "block_type",
         "blocked",
+        "body_bytes",
         "bus_messages",
         "cas_changed",
         "children",
         "closure_too_large",
+        "connections",
         "context_too_large",
         "cycle",
         "deadline",
+        "decoded_bytes",
         "deputy_host",
         "dropped_field",
         "egress",
@@ -442,6 +445,8 @@
         "field",
         "gate",
         "git",
+        "header_bytes",
+        "header_timeout",
         "hop",
         "llm",
         "llm_vendor",
@@ -468,7 +473,9 @@
         "quote_items_task",
         "quote_items_trace",
         "rate_limited",
+        "read_timeout",
         "ref_moved",
+        "reflect",
         "refused",
         "remote_changed",
         "ruleset",
@@ -697,7 +704,9 @@
       "by": [
         "gate",
         "floor",
-        "git"
+        "git",
+        "keys",
+        "proxy"
       ],
       "http": 429,
       "msg": "{op} is over a cap of {limit}.",
@@ -712,13 +721,19 @@
       ],
       "whats": {
         "artifacts": "human",
+        "body_bytes": "fix",
         "bus_messages": "human",
+        "connections": "retry",
+        "decoded_bytes": "fix",
+        "header_bytes": "fix",
+        "header_timeout": "retry",
         "memory_bytes": "human",
         "memory_rows": "human",
         "memory_writes_task": "human",
         "push_bytes_day": "human",
         "quote_items_task": "stop",
-        "quote_items_trace": "stop"
+        "quote_items_trace": "stop",
+        "read_timeout": "retry"
       }
     },
     "DENIED_POLICY": {
@@ -969,6 +984,7 @@
       ],
       "whats": {
         "auth": "human",
+        "reflect": "human",
         "timeout": "retry",
         "unreachable": "retry"
       }

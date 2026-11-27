@@ -58,6 +58,11 @@ type Config struct {
 	SweepInterval  time.Duration // the cache stores' nested-subvolume sweep (§4.1: hourly); 0: an hour
 	Budgets        string        // budgets.toml; "" is budgets.Path
 	Shares         string        // the day shares rootd writes for keys; "" is budgets.SharesPath
+	// the brokers' credentials (#108): the store ("" is CredStore), how a value is encrypted (nil: systemd-creds) and
+	// how a broker unit restarts (nil: systemctl); tests replace them
+	CredStore string
+	Encrypt   func(name, value, out string) error
+	Restart   func(unit string, ifRunning bool) error
 }
 
 // Socket names: each .socket unit sets FileDescriptorName= to one of these.
@@ -268,6 +273,7 @@ func Run(cfg Config) error {
 	for name, ln := range lns {
 		go s.accept(name, ln)
 	}
+	s.ensureCreds() // before READY=1: the broker units order after rootd and load these at start
 	if err := notify("READY=1\nSTATUS=sets match rootd.db"); err != nil {
 		return err
 	}
@@ -349,6 +355,8 @@ type server struct {
 	proxyActive   func() bool
 	recreateCache func(accounts.Agent) error
 	limitCache    func(path string, max uint64) error
+
+	llm llm // llm.recycle (creds.go)
 }
 
 // drainTimeout bounds the wait at stop for requests in flight, below the unit's TimeoutStopSec=90s.
@@ -483,6 +491,8 @@ type request struct {
 	Patterns *string `json:"patterns,omitempty"`
 	// budget.set (§5.3): the whole budgets.toml
 	Budgets *string `json:"budgets,omitempty"`
+	// secret.set (#108): the value, which rootd encrypts and never logs or audits
+	Value *string `json:"value,omitempty"`
 	// task new --ack-secrets (#104): the credential count the admin acknowledges
 	AckSecrets int `json:"ackSecrets,omitempty"`
 }
@@ -518,6 +528,8 @@ func (s *server) handle(sock string, p peer, r request) reply {
 		return s.taskOp(r)
 	case sock == "resolve-proxy" && r.Op == "cache.alert":
 		return s.cacheAlert(r)
+	case sock == "resolve-keys" && r.Op == "llm.recycle":
+		return s.llmRecycle()
 	case len(sock) > 8 && sock[:8] == "resolve-" && r.Op == "resolve":
 		svc := sock[8:]
 		e, err := resolve.ParseEntry(r.Host + ":" + strconv.Itoa(r.Port))
@@ -550,6 +562,8 @@ func (s *server) handle(sock string, p peer, r request) reply {
 		return s.tasks.stop(r.Task, r.Reason)
 	case (sock == sockGate || strings.HasPrefix(sock, "resolve-")) && r.Op == "task.list_live":
 		return s.tasks.listLive()
+	case sock == "resolve-keys" && r.Op == "task.tainted":
+		return s.taskTainted(r.Task)
 	}
 	return fail("bad_request")
 }
@@ -637,6 +651,8 @@ func (s *server) admin(r request, p peer) reply {
 		return s.goPrivateSet(r)
 	case "cache.purge":
 		return s.cachePurge(r)
+	case "secret.set":
+		return s.secretSet(r)
 	case "budget.set":
 		return s.budgetSet(r)
 	case "sets.refill":

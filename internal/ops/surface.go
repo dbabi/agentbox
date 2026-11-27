@@ -48,16 +48,25 @@ func ConnectBody(d Denial) []byte {
 
 // KeysBody is keys' error envelope: the vendor shape (error.type, error.message, which both Anthropic and OpenAI
 // clients read) with the message starting `agentbox <CODE>:`, plus the agentbox member.
-func KeysBody(d Denial) []byte {
+func KeysBody(d Denial) []byte { return KeysError(d, "api_error", "") }
+
+// KeysError is KeysBody with the vendor's error type for its status and detail after msg: the vendor's own wording or
+// a `capability_rejected:` token, which a CLI's retry matches (#18). The caller puts only grammar-checked request bytes
+// in detail (a beta name, a field path).
+func KeysError(d Denial, typ, detail string) []byte {
 	type inner struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
+	}
+	msg := "agentbox " + d.Code + ": " + d.Msg
+	if detail != "" {
+		msg += " " + detail
 	}
 	b, _ := json.Marshal(struct {
 		Type     string `json:"type"`
 		Error    inner  `json:"error"`
 		Agentbox Denial `json:"agentbox"`
-	}{"error", inner{"api_error", "agentbox " + d.Code + ": " + d.Msg}, d})
+	}{"error", inner{typ, msg}, d})
 	return b
 }
 
