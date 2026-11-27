@@ -166,8 +166,9 @@ print(len(rows), len(blobs), os.listdir(d + "/tmp"))
 sys.exit(not (rows == blobs and not os.listdir(d + "/tmp")))
 PY
 }
-# pj: the release's proxy's journal this boot, once journald has taken in what it was sent
-pj() { journalctl --sync 2>/dev/null || :; journalctl -b -u agentbox-proxy.service -o cat; }
+# pj: the release's proxy's journal this boot, once journald has taken in what it was sent, without the log package's
+# date and time, so each line starts with what the proxy logged
+pj() { journalctl --sync 2>/dev/null || :; journalctl -b -u agentbox-proxy.service -o cat | sed 's|^[0-9]*/[0-9]*/[0-9]* [0-9:]* ||'; }
 # reqs TASK: the requests TASK sent on its proxy.sock, from the proxy's journal: cache requests, tunnels, refusals
 reqs() { pj | grep -cE "^task $1 (CONNECT [^ ]*: tunnel to |[A-Z]+ \")|^DENY by=proxy task=$1 " || :; }
 ended() { $B task list | python3 -c 'import json,sys; sys.exit(not [t for t in json.load(sys.stdin)["tasks"] if t["task"]==sys.argv[1] and t.get("end_reason")])' "$1"; }
@@ -178,7 +179,10 @@ task() { o=$WS/$1/.gate-out; rm -f $o $WS/$1/.gate-rc
     $B task new --agent $1 --cli sh --deadline 15m > $G/new; r=$?
   sed -n 's/.*"task":"\(task_[0-9A-Z]*\)".*/\1/p' $G/new > $G/last
   [ $r = 0 ] && [ -s $G/last ] || { cat $G/new; return 99; }
-  i=0; while [ ! -e $WS/$1/.gate-rc ]; do i=$((i+1)); [ $i -lt 6000 ] || { echo "task $(cat $G/last): no result"; return 98; }; sleep 0.1; done
+  i=0; while [ ! -e $WS/$1/.gate-rc ]; do i=$((i+1)); [ $i -lt 6000 ] || { echo "task $(cat $G/last): no result"; return 98; }
+    # a task stopped from outside (A-G12) writes no result: stop waiting once it has ended
+    [ $((i % 20)) != 0 ] || ! ended "$(cat $G/last)" || [ -e $WS/$1/.gate-rc ] || { echo "task $(cat $G/last): ended with no result"; return 97; }
+    sleep 0.1; done
   i=0; until ended "$(cat $G/last)"; do i=$((i+1)); [ $i -lt 300 ] || break; sleep 0.1; done
   cat $o; return "$(cat $WS/$1/.gate-rc)"; }
 # proxyup: the release's proxy runs (a task's register starts it; so does this)
@@ -187,6 +191,7 @@ proxyup() { systemctl start agentbox-proxy.service && for i in $(seq 50); do sys
 # with svc-proxy.sock from systemd; real: the release's proxy back, which the next task's register starts
 testbuild() { systemctl stop agentbox-proxy.service agentbox-proxy-svc.socket gocache-standin.service gocache-standin.socket 2>/dev/null
   systemctl reset-failed gocache-standin.service gocache-standin.socket 2>/dev/null; rm -f /run/agentbox-rootd/svc-proxy.sock
+  touch $P && chown agentbox-proxy:agentbox-proxy $P # the test builds run as agentbox-proxy, and $G is root's
   systemd-run -q --unit=gocache-standin --socket-property=ListenStream=/run/agentbox-rootd/svc-proxy.sock --socket-property=SocketMode=0600 \
     -p User=agentbox-proxy -p Group=agentbox-proxy -p NoNewPrivileges=yes \
     $G/standin serve -upstream 10.0.2.2:$UP_PORT -vkey $G/vkey -ca $G/ca.pem -log $P "$@" &&
@@ -199,10 +204,10 @@ pdrops() { nft list chain inet agentbox output | grep -E "meta skuid (${PU} |\{[
   sed -n 's/.* counter packets \([0-9]*\) .* drop$/\1/p' | awk '{n += $1} END {print n + 0}'; }
 # dns NAME=ADDR,...: gate-dns answers exactly these records (and proxy.golang.org), relays the rest, and resolved forgets
 # what it cached
-dns() { systemctl stop gc-dns.service 2>/dev/null; systemctl reset-failed gc-dns.service 2>/dev/null; a=
-  for r; do a="$a -a $r"; done
+dns() { systemctl stop gc-dns.service 2>/dev/null; systemctl reset-failed gc-dns.service 2>/dev/null; dnsargs=
+  for dnsrec; do dnsargs="$dnsargs -a $dnsrec"; done # names of its own: the rj loop below runs over $a
   # shellcheck disable=SC2086 # one -a flag per record
-  systemd-run -q --unit=gc-dns $G/gate-dns -listen 127.0.0.153:53 -upstream 10.0.2.3:53 -a proxy.golang.org=$PUB -a ping.gate.test=192.88.96.99 $a || return 1
+  systemd-run -q --unit=gc-dns $G/gate-dns -listen 127.0.0.153:53 -upstream 10.0.2.3:53 -a proxy.golang.org=$PUB -a ping.gate.test=192.88.96.99 $dnsargs || return 1
   for n in $(seq 50); do resolvectl flush-caches; resolvectl query -4 ping.gate.test >/dev/null 2>&1 && return 0; sleep 0.2; done; return 1; }
 
 # --- setup: the image with the test CA, five agents, proxy.golang.org's name and route, the proxy's test CA and key ---
@@ -237,7 +242,7 @@ check "the fake upstream's port is approved for agentbox-proxy (allow_private4 i
   nft -f - <<NFT
 table ip gocachegate {
   chain nat { type nat hook output priority dstnat; policy accept; ip daddr $PUB tcp dport 443 dnat to 10.0.2.2:$UP_PORT; }
-  chain drop { type filter hook output priority 10; policy accept; ip daddr $DROP tcp dport 443 counter drop; }
+  chain synd { type filter hook output priority 10; policy accept; ip daddr $DROP tcp dport 443 counter drop; }
 }
 NFT
 '
@@ -647,7 +652,7 @@ ip link del gcg0 2>/dev/null || :
 task $A3 'cd /workspace/.c3 && rm -f dr && python3 pgc.py dr "CONNECT drop.gate.test:443" && cat dr' > $G/dr 2>&1; cat $G/dr
 check "C-G3 an allowlisted host whose address drops SYNs gives 504 EGRESS_DIAL_FAILED{timeout}, next retry, within 11 s" '
   set -- $(grep "^drop.gate.test:443 " $G/dr) && [ "$2 $3 $4" = "504 EGRESS_DIAL_FAILED retry" ] && [ "$5" -ge 9500 ] && [ "$5" -le 11000 ] &&
-  grep -q "\"what\":\"timeout\"" $G/dr && nft list chain ip gocachegate drop | grep -q "counter packets [1-9]"'
+  grep -q "\"what\":\"timeout\"" $G/dr && nft list chain ip gocachegate synd | grep -q "counter packets [1-9]"'
 check "C-G3 every refusal above left the proxy no tunnel, the task no proxy taint" '[ -z "$(arec TAINT subject=task:$T3 producer=proxy)" ] && ! pj | grep -q "^task $T3 CONNECT .*: tunnel to "'
 
 # --- cleanup: the test builds, the gate's names, route and drop-ins go; the box's own state stays ---
