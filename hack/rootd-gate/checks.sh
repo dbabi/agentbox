@@ -60,7 +60,8 @@ case $1 in
 setup)
   check "the release's firewall is up and fwcheck passes" 'systemctl is-active -q agentbox-firewall.service && $A fwcheck'
   # Addresses that look public but are the box's own, on-link or routed off the default interface (Appendix B check 3).
-  ip addr add 192.88.99.15/32 dev "$IF"; ip -6 addr add 2600:ffff::15/128 dev "$IF" nodad
+  # The own IPv6 is a /128 outside pub.gate.test's /64: rootd counts a /128 as its /64 (own_prefix, #314).
+  ip addr add 192.88.99.15/32 dev "$IF"; ip -6 addr add 2600:ffff:15::15/128 dev "$IF" nodad
   ip route add 192.88.98.0/24 dev "$IF"
   ip link add rg0 type dummy && ip link set rg0 up && ip route add 192.88.97.0/24 dev rg0
   grep -q hosts.gate.test /etc/hosts || echo '192.88.96.9 hosts.gate.test' >> /etc/hosts
@@ -69,7 +70,7 @@ setup)
     -a pub.gate.test=192.88.96.1,2600:ffff::1 -a priv.gate.test=10.1.2.3 -a mixed.gate.test=192.88.96.2,192.168.1.10 \
     -a cgnat.gate.test=100.64.0.1 -a doc.gate.test=198.51.100.7 -a mapped.gate.test=::ffff:8.8.8.8 \
     -a nat64p.gate.test=64:ff9b::a00:1 -a nat64ok.gate.test=64:ff9b::808:808 -a own.gate.test=192.88.99.15 \
-    -a own6.gate.test=2600:ffff::15 -a onlink.gate.test=192.88.98.7 -a tail.gate.test=192.88.97.7 \
+    -a own6.gate.test=2600:ffff:15::15 -a onlink.gate.test=192.88.98.7 -a tail.gate.test=192.88.97.7 \
     -a lo.gate.test=127.0.0.1 -a ll.gate.test=fe80::1 -a mc.gate.test=224.0.0.251 -a ula.gate.test=fd00::1 \
     -a ipv4only.arpa=192.0.0.170,192.0.0.171,2600:ffff:64::c000:aa,2600:ffff:64::c000:ab \
     -a nsp.gate.test=2600:ffff:64::c0a8:101 -a p64.gate.test=2600:ffff:6464::c0a8:101
@@ -135,7 +136,7 @@ main)
   for n in priv mixed cgnat doc mapped nat64p nsp own own6 onlink tail lo ll mc ula; do
     check "$n.gate.test is refused non_public" "[ \"\$(reason keys $n.gate.test 443)\" = non_public ]"
   done
-  check "none of their addresses reached any set" '[ "$(nft list table inet agentbox | grep -c " \. 443")" = "$before" ] && for a in 10.1.2.3 192.88.96.2 192.168.1.10 100.64.0.1 198.51.100.7 8.8.8.8 64:ff9b::a00:1 2600:ffff:64::c0a8:101 192.88.99.15 2600:ffff::15 192.88.98.7 192.88.97.7 127.0.0.1 fe80::1 224.0.0.251 fd00::1; do ! sets_have "$a . 443" || exit 1; done'
+  check "none of their addresses reached any set" '[ "$(nft list table inet agentbox | grep -c " \. 443")" = "$before" ] && for a in 10.1.2.3 192.88.96.2 192.168.1.10 100.64.0.1 198.51.100.7 8.8.8.8 64:ff9b::a00:1 2600:ffff:64::c0a8:101 192.88.99.15 2600:ffff:15::15 192.88.98.7 192.88.97.7 127.0.0.1 fe80::1 224.0.0.251 fd00::1; do ! sets_have "$a . 443" || exit 1; done'
   check "the refusal's detail names the address and check, in rootd's DENY log only" 'journalctl -u agentbox-rootd.service --since @$t_deny -o cat | grep -q "DENY by=rootd svc=keys entry=own.gate.test:443 code=non_public detail=\"192.88.99.15: route_not_unicast"'
   # rootd sends DENY records from one throttled sender: give it a moment; only records after seq0 count
   check "the refusal is also a DENY record in auditd's chain, after this run's start (seq > $seq0)" 'i=0; until chain $seq0 own.gate.test:443; do i=$((i+1)); [ $i -lt 10 ] || exit 1; sleep 1; done'
@@ -311,7 +312,7 @@ EOF'
 cleanup)
   systemctl stop rg-dns.service 2>/dev/null
   rm -f /run/systemd/resolved.conf.d/90-rootd-gate.conf; systemctl restart systemd-resolved.service
-  ip addr del 192.88.99.15/32 dev "$IF" 2>/dev/null; ip -6 addr del 2600:ffff::15/128 dev "$IF" 2>/dev/null
+  ip addr del 192.88.99.15/32 dev "$IF" 2>/dev/null; ip -6 addr del 2600:ffff:15::15/128 dev "$IF" 2>/dev/null
   ip route del 192.88.98.0/24 dev "$IF" 2>/dev/null; ip link del rg0 2>/dev/null
   ip netns del rg-ra 2>/dev/null; rm -rf /run/systemd/network/10-rg-pref64.network /etc/systemd/network/10-rg-pref64.network.d
   networkctl reload

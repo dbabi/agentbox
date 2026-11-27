@@ -10,8 +10,9 @@
 # checks   builds hack/dial-gate/probe (a broker stand-in on internal/dial) and hack/gate-dns for the guest, copies
 #          them and hack/dial-gate/checks.sh to /run/dg, then runs checks.sh setup, main and cleanup. Covers, through
 #          the release's rootd and resolved: an allowlisted name is refused when it answers with the box's own address
-#          (on the default interface, on another one, its SLAAC IPv6, one still in DAD), a LAN host's global IPv6,
-#          192.168.x, NAT64-wrapped 192.168.x or 240.0.0.1, when only /etc/hosts names it, and when a systemd 259
+#          (on the default interface, on another one, its SLAAC IPv6, one still in DAD), a LAN host's global IPv6 (on
+#          link, or under a prefix the router announces off-link), 192.168.x, NAT64-wrapped 192.168.x, the box's own or
+#          an on-link IPv4 inside a NAT64 address, 240.0.0.1, when only /etc/hosts names it, and when a systemd 259
 #          resolve hook answers it; rootd reads the box's addresses at each resolution. A broker uid under the broker
 #          units' sandbox dials only rootd's addresses, in order, within one 10 s budget, with SNI, the certificate check
 #          and Host on the name; never the /etc/hosts answer, no lookup (the keys drop counters stay still), no redirect.

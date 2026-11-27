@@ -65,7 +65,7 @@ func FuzzRequest(f *testing.F) {
 		defer db.Close()
 		s := &server{cfg: Config{EgressDir: dir}, db: db, seal: stubSeal{}, audit: func(map[string]any) error { return nil },
 			svc: &resolve.Service{DB: db, Dir: dir, Resolver: stubResolver{}, Route: func(netip.Addr) string { return "" },
-				Own: func() ([]netip.Addr, error) { return nil, nil }, Nft: stubNft{},
+				Own: func() ([]netip.Prefix, error) { return nil, nil }, Nft: stubNft{},
 				Flows: func(netip.Addr, uint16) (int, error) { return 0, nil }, Now: time.Now, Clock: func() (string, int64) { return "boot", 0 },
 				Timeout: 10 * time.Minute}}
 		for i, line := range bytes.SplitN(lines, []byte("\n"), 32) {

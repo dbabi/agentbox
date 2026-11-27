@@ -13,9 +13,9 @@
 //	                                 comma-separated NAMES, written to DIR/ca.pem. It answers "pinned LOCAL", and /moved
 //	                                 with a redirect. Logs "accept LOCAL" for every TCP connection and "get LOCAL
 //	                                 sni=SNI host=HOST" for every request on stdout
-//	probe ra IFACE PREFIX            one router advertisement out of IFACE to ff02::1: router lifetime 0 (no default
+//	probe ra IFACE PREFIX [offlink]  one router advertisement out of IFACE to ff02::1: router lifetime 0 (no default
 //	                                 route) and a prefix option for PREFIX (a /64, on-link and autonomous), which SLAAC
-//	                                 configures
+//	                                 configures; offlink clears the on-link flag, so the box gets no route for PREFIX
 //
 // A refusal, a failed dial, a redirect and an error exit 3.
 package main
@@ -104,12 +104,12 @@ func main() {
 		}
 	case len(a) >= 4 && a[0] == "serve":
 		serve(a[1], strings.Split(a[2], ","), a[3:])
-	case len(a) == 3 && a[0] == "ra":
-		if err := ra(a[1], a[2]); err != nil {
+	case (len(a) == 3 || len(a) == 4 && a[3] == "offlink") && a[0] == "ra":
+		if err := ra(a[1], a[2], len(a) == 4); err != nil {
 			log.Fatal(err)
 		}
 	default:
-		log.Fatal("usage: probe resolve SOCK HOST:PORT | dial SOCK HOST:PORT | get SOCK URL CA | serve DIR NAMES ADDR... | ra IFACE PREFIX")
+		log.Fatal("usage: probe resolve SOCK HOST:PORT | dial SOCK HOST:PORT | get SOCK URL CA | serve DIR NAMES ADDR... | ra IFACE PREFIX [offlink]")
 	}
 }
 
@@ -169,7 +169,7 @@ func serve(dir string, names, addrs []string) {
 	select {}
 }
 
-func ra(iface, prefix string) error {
+func ra(iface, prefix string, offlink bool) error {
 	p, err := netip.ParsePrefix(prefix)
 	if err != nil || !p.Addr().Is6() || p.Bits() != 64 {
 		return fmt.Errorf("prefix %s: want an IPv6 /64", prefix)
@@ -193,8 +193,13 @@ func ra(iface, prefix string) error {
 	// type 134, code 0, checksum, hop limit 64, flags 0, router lifetime 0, reachable time 0, retransmit timer 0
 	msg := make([]byte, 16)
 	msg[0], msg[4] = 134, 64
-	// prefix information: type 3, length 4 (32 bytes), /64, on-link and autonomous, valid 3600 s, preferred 1800 s
-	msg = append(msg, 3, 4, 64, 0xc0)
+	// prefix information: type 3, length 4 (32 bytes), /64, on-link (L, 0x80) and autonomous (A, 0x40), valid 3600 s,
+	// preferred 1800 s
+	flags := byte(0xc0)
+	if offlink {
+		flags = 0x40
+	}
+	msg = append(msg, 3, 4, 64, flags)
 	msg = binary.BigEndian.AppendUint32(msg, 3600)
 	msg = binary.BigEndian.AppendUint32(msg, 1800)
 	msg = append(append(msg, 0, 0, 0, 0), p.Addr().AsSlice()...)

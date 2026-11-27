@@ -582,6 +582,9 @@ Rootful Docker is unsupported: it publishes ports through the forward hook, whic
   They ask rootd to resolve a name.
 - rootd resolves allowlisted names through systemd-resolved, over a Unix socket.
 - It rejects a name if any answer is in a private or special-purpose range, is one of the box's own addresses, or is not routed through the default gateway.
+- It also rejects an answer in the box's own network, which some routers announce as off-link, so the default gateway routes it.
+  An IPv6 network counts as at least its /64.
+- For an IPv6 answer that wraps an IPv4 address (NAT64 or 6to4), the same checks also run on that IPv4 address.
 - It also rejects a name that a resolve hook answered instead of DNS.
   Since systemd 259, any privileged local service can answer lookups that way.
 - rootd adds the answers to the broker's address set, with a timeout, and returns them.

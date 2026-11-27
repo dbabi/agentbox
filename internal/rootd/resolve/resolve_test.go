@@ -40,8 +40,8 @@ func TestCheckPrefix(t *testing.T) {
 }
 
 func TestOwnAddrs(t *testing.T) {
-	if as, err := OwnAddrs(); err != nil || !slices.Contains(as, netip.MustParseAddr("127.0.0.1")) {
-		t.Fatalf("%v %v: want the loopback address, in its 4-byte form", as, err)
+	if as, err := OwnAddrs(); err != nil || !slices.Contains(as, netip.MustParsePrefix("127.0.0.1/8")) {
+		t.Fatalf("%v %v: want the loopback address, in its 4-byte form, with its /8", as, err)
 	}
 }
 
@@ -359,7 +359,7 @@ func TestParseVarlinkFlags(t *testing.T) {
 // fakes for the resolver's dependencies
 func fixedClock() (string, int64) { return "boot-1", 0 }
 
-func noOwn() ([]netip.Addr, error) { return nil, nil }
+func noOwn() ([]netip.Prefix, error) { return nil, nil }
 
 type fakeDNS map[string][]netip.Addr
 
@@ -416,8 +416,8 @@ func TestResolveAndRefill(t *testing.T) {
 	}
 	pub4, pub6 := netip.MustParseAddr("93.184.215.14"), netip.MustParseAddr("2606:2800:21f:cb07::1")
 	own := netip.MustParseAddr("93.184.215.99")
-	dad := netip.MustParseAddr("2606:2800:21f:cb07::99") // the box's, still in DAD: no local route yet
-	ifAddrs := []netip.Addr{own, netip.MustParseAddr("10.0.2.15"), dad}
+	dad := netip.MustParseAddr("2606:2800:21f:cb99::99") // the box's, still in DAD: no local route yet
+	ifAddrs := []netip.Prefix{netip.PrefixFrom(own, 32), netip.MustParsePrefix("10.0.2.15/24"), netip.PrefixFrom(dad, 128)}
 	now := time.UnixMilli(1_800_000_000_000)
 	nft := &fakeNft{map[string]map[string]bool{}}
 	noV6 := false // the box has no IPv6 default route (an IPv4-only LAN)
@@ -431,7 +431,7 @@ func TestResolveAndRefill(t *testing.T) {
 			"ipv4only.arpa":   {netip.MustParseAddr("192.0.0.170"), netip.MustParseAddr("2a01:5c0:64::c000:aa")},
 			"nsp.example.com": {netip.MustParseAddr("2a01:5c0:64::c0a8:101")}, "ra.example.com": {netip.MustParseAddr("2a01:5c0:1:64:a:0:100:0")},
 			"dad.example.com": {pub4, dad}},
-		Own: func() ([]netip.Addr, error) { return ifAddrs, nil },
+		Own: func() ([]netip.Prefix, error) { return ifAddrs, nil },
 		Pref64: func(context.Context) ([]netip.Prefix, error) {
 			return []netip.Prefix{netip.MustParsePrefix("2a01:5c0:1:64::/64")}, nil
 		},
@@ -484,7 +484,7 @@ func TestResolveAndRefill(t *testing.T) {
 	}
 	EditList(dir, "keys", Entry{"dad.example.com", 443}, false)
 	ownFn := s.Own
-	s.Own = func() ([]netip.Addr, error) { return nil, errors.New("netlink: injected failure") }
+	s.Own = func() ([]netip.Prefix, error) { return nil, errors.New("netlink: injected failure") }
 	if r, _ := resolve("keys", "api.example.com"); r != Unavailable {
 		t.Fatalf("no interface addresses: %s, want unavailable", r)
 	}
@@ -549,8 +549,91 @@ func TestResolveAndRefill(t *testing.T) {
 		t.Fatal("loaded a common.list naming a deputy host")
 	}
 	if d := strings.Join(denied, "\n"); !strings.Contains(d, "keys own.example.com:443 non_public 93.184.215.99: route_not_unicast") ||
-		!strings.Contains(d, "keys dad.example.com:443 non_public 2606:2800:21f:cb07::99: own_address") {
+		!strings.Contains(d, "keys dad.example.com:443 non_public 2606:2800:21f:cb99::99: own_address") {
 		t.Fatalf("denials: %v", denied)
+	}
+}
+
+// The box's own networks (Appendix B check 3): under a prefix the router marks off-link (an RA with A=1, L=0) the
+// box's SLAAC address has no on-link route, so the route check passes the rest of its /64; a DHCPv6 /128 covers its
+// /64 too. A NAT64 or 6to4 answer is checked on the IPv4 address it carries as well: the box's own and an on-link
+// neighbor are refused, a public one passes, also on a box with no IPv4 default route.
+func TestResolveOwnNetworks(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "rootd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(Schema); err != nil {
+		t.Fatal(err)
+	}
+	own4, lan4 := netip.MustParseAddr("93.184.215.99"), netip.MustParseAddr("93.184.216.7") // lan4: an on-link neighbor
+	noV4 := false
+	a := netip.MustParseAddr
+	dns := fakeDNS{"ipv4only.arpa": wka,
+		"slaac.example.com": {a("2600:ffff:200::abcd")}, "lan6.example.com": {a("2600:ffff:200::99")},
+		"dhcp6.example.com": {a("2600:ffff:300::77")}, "pub6.example.com": {a("2600:ffff:201::99")},
+		"nat64own.example.com": {a("64:ff9b::5db8:d763")}, "nat64lan.example.com": {a("64:ff9b::5db8:d807")},
+		"sixto4own.example.com": {a("2002:5db8:d763::1")}, "nat64pub.example.com": {a("64:ff9b::808:808")}}
+	var denied []string
+	s := &Service{DB: db, Dir: dir, Now: time.Now, Clock: fixedClock, Timeout: 10 * time.Minute, Nft: &fakeNft{map[string]map[string]bool{}},
+		Resolver: dns, Flows: func(netip.Addr, uint16) (int, error) { return 0, nil },
+		Own: func() ([]netip.Prefix, error) {
+			return []netip.Prefix{netip.MustParsePrefix("2600:ffff:200::abcd/64"), netip.MustParsePrefix("2600:ffff:300::5/128"),
+				netip.PrefixFrom(own4, 32), netip.MustParsePrefix("127.0.0.1/8"), netip.MustParsePrefix("::1/128"),
+				netip.MustParsePrefix("fe80::1/64")}, nil
+		},
+		// the off-link case: every IPv6 address of the box's networks goes out the default route, as public ones do
+		Route: func(x netip.Addr) string {
+			switch {
+			case x == own4:
+				return "route_not_unicast"
+			case x == lan4:
+				return "route_on_link"
+			case x.Is4() && noV4:
+				return nl.NoDefaultRoute
+			}
+			return ""
+		},
+		Deny: func(svc, entry, reason, detail string) { denied = append(denied, entry+" "+reason+" "+detail) }}
+	resolve := func(host string) string {
+		EditList(dir, "keys", Entry{host, 443}, true)
+		_, _, err := s.Resolve(context.Background(), "keys", "", Entry{host, 443})
+		if r, ok := err.(*Refused); ok {
+			return r.Reason + " " + r.Detail
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return "ok"
+	}
+	for h, want := range map[string]string{
+		"slaac.example.com":     "2600:ffff:200::abcd: own_address",
+		"lan6.example.com":      "2600:ffff:200::99: own_prefix",
+		"dhcp6.example.com":     "2600:ffff:300::77: own_prefix",
+		"nat64own.example.com":  "64:ff9b::5db8:d763: wraps 93.184.215.99 route_not_unicast",
+		"nat64lan.example.com":  "64:ff9b::5db8:d807: wraps 93.184.216.7 route_on_link",
+		"sixto4own.example.com": "2002:5db8:d763::1: wraps 93.184.215.99 route_not_unicast",
+	} {
+		if got := resolve(h); !strings.HasPrefix(got, NonPublic+" "+want+" (answers ") {
+			t.Errorf("%s: %q, want non_public %s", h, got, want)
+		}
+	}
+	for _, h := range []string{"pub6.example.com", "nat64pub.example.com"} {
+		if got := resolve(h); got != "ok" {
+			t.Errorf("%s: %s, want ok", h, got)
+		}
+	}
+	noV4 = true // an IPv6-only NAT64 box: the wrapped public address still passes, the box's own still doesn't
+	if got := resolve("nat64pub.example.com"); got != "ok" {
+		t.Errorf("nat64pub.example.com with no IPv4 default route: %s", got)
+	}
+	if got := resolve("nat64own.example.com"); !strings.HasPrefix(got, NonPublic+" 64:ff9b::5db8:d763: wraps 93.184.215.99 route_not_unicast") {
+		t.Errorf("nat64own.example.com with no IPv4 default route: %s", got)
+	}
+	if len(denied) != 7 {
+		t.Errorf("denials %q", denied)
 	}
 }
 

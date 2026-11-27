@@ -67,21 +67,69 @@ func CheckPrefix(a netip.Addr, nsp ...netip.Prefix) string {
 	return ""
 }
 
-// OwnAddrs lists every address on the box's interfaces (RTM_GETADDR), tentative ones included, for Service.Own.
-func OwnAddrs() ([]netip.Addr, error) {
+// OwnAddrs lists every address on the box's interfaces (RTM_GETADDR), tentative ones included, each with its prefix
+// length, for Service.Own.
+func OwnAddrs() ([]netip.Prefix, error) {
 	as, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil, err
 	}
-	var out []netip.Addr
+	var out []netip.Prefix
 	for _, a := range as {
 		if n, ok := a.(*net.IPNet); ok {
 			if ip, ok := netip.AddrFromSlice(n.IP); ok {
-				out = append(out, ip.Unmap()) // Go gives IPv4 in its 16-byte form
+				ip = ip.Unmap() // Go gives IPv4 in its 16-byte form
+				ones, bits := n.Mask.Size()
+				switch {
+				case bits == 0: // a mask that is no prefix: the address alone
+					ones = ip.BitLen()
+				case ip.Is4() && bits == 128:
+					ones -= 96
+				}
+				out = append(out, netip.PrefixFrom(ip, ones))
 			}
 		}
 	}
 	return out, nil
+}
+
+// ownCheck is the own-address check: a is one of the box's addresses (own_address), or lies in the network of one of
+// its global addresses (own_prefix). Under a prefix the router marks off-link (an RA with A=1, L=0) the box has no
+// on-link route, so the default route carries the rest of its own LAN and the route check passes it. An IPv6 network
+// counts as at least its /64, so a DHCPv6 /128 still covers its LAN.
+func ownCheck(a netip.Addr, own []netip.Prefix) string {
+	for _, p := range own {
+		if p.Addr() == a {
+			return "own_address"
+		}
+	}
+	for _, p := range own {
+		if !p.Addr().IsGlobalUnicast() {
+			continue // loopback and link-local networks: check 1 refuses their ranges
+		}
+		if p.Addr().Is6() && p.Bits() > 64 {
+			p = netip.PrefixFrom(p.Addr(), 64)
+		}
+		if p.Masked().Contains(a) {
+			return "own_prefix"
+		}
+	}
+	return ""
+}
+
+// wrapped4 are the IPv4 addresses a carries: under 64:ff9b::/96 or one of nsp (NAT64, RFC 6052), or under 2002::/16
+// (6to4). The translator or relay delivers to them, so the route and own-address checks look at them too.
+func wrapped4(a netip.Addr, nsp []netip.Prefix) []netip.Addr {
+	var out []netip.Addr
+	for _, p := range append([]netip.Prefix{nat64}, nsp...) {
+		if v4, ok := embedded4(a, p); ok {
+			out = append(out, v4)
+		}
+	}
+	if b := a.As16(); a.Is6() && !a.Is4In6() && sixToFour.Contains(a) {
+		out = append(out, netip.AddrFrom4([4]byte(b[2:6])))
+	}
+	return out
 }
 
 // embedded4 is the IPv4 address a carries under NAT64 prefix p (RFC 6052 2.2: /32, /40, /48, /56, /64 or /96, with
