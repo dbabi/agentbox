@@ -67,6 +67,8 @@ Then it shows the agent's own text, the pull request title and the comment body,
 Every control or non-ASCII character in that text is escaped, so it can't move the cursor or hide a line.
 A remote that is not private is flagged.
 
+If an operation shows `executing` and nothing is running it, for example after the git service was down, `agentbox approve` on it looks for the write on GitHub and records what it finds. It never sends the write again.
+
 An ask expires 15 minutes after the task made it.
 A task can have 3 asks open at once, and its ask budget (3 by default) counts every ask.
 

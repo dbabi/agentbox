@@ -325,6 +325,18 @@ func TestGitReconcile(t *testing.T) {
 	if st != "indeterminate" || n != 1 || g.execs() != 2 {
 		t.Fatalf("not found: state %s, %d re-offers, %d execs", st, n, g.execs())
 	}
+	// an executing row whose outcome nothing recorded, with agentbox-git back: a human's approve settles it by
+	// inspection, never a second run
+	d5 := denialOf(t, "gh.pr.comment", map[string]any{"remote": "origin", "number": 10, "body": "w"},
+		g.op("gh.pr.comment", map[string]any{"remote": "origin", "number": 10, "body": "w"}))
+	g.s.db.Exec(`UPDATE pending SET state='executing' WHERE id=?`, d5.ID)
+	g.s.audit(map[string]any{"type": "INTENT", "opId": d5.ID, "name": "gh.pr.comment", "origin": "gate",
+		"args": map[string]any{"remote": "origin", "number": 10, "body": ops.Hashed("w")}, "ts": time.Now().UnixMilli()})
+	g.gitFn = g.fakeGit
+	runs := g.execs()
+	if ap := g.s.pendingAdmin(request{Op: "pending.approve", ID: d5.ID}, "boxadmin:admin"); ap["state"] != "executed" || g.execs() != runs {
+		t.Fatalf("approve of an executing row: %v, %d execs (was %d)", ap, g.execs(), runs)
+	}
 	// an executing row with no INTENT ran nothing: refused
 	d4 := denialOf(t, "gh.pr.comment", map[string]any{"remote": "origin", "number": 9, "body": "y"},
 		g.op("gh.pr.comment", map[string]any{"remote": "origin", "number": 9, "body": "y"}))

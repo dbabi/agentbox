@@ -428,6 +428,14 @@ func (s *server) approve(id, signer string) reply {
 		if n, _ := res.RowsAffected(); err != nil || n != 1 {
 			return reply{"ok": false, "reason": "approval_stale", "error": "approval_stale: the ask expired or is no longer pending"}
 		}
+	} else if state == "executing" {
+		// an effect whose outcome nothing recorded (agentbox-git was down, or rootd lost its reply): settle it by
+		// inspection, never by running it again, unless this process is running it right now
+		tx.Rollback()
+		if _, busy := s.inflight.Load(id); busy {
+			return reply{"ok": false, "id": id, "state": state, "error": "running now"}
+		}
+		return s.reconcileRow(id)
 	} else if state != "approved" {
 		return reply{"ok": false, "id": id, "state": state, "error": "not pending: " + state}
 	}
@@ -493,6 +501,8 @@ func (s *server) execute(id string) reply {
 		s.db.Exec(`UPDATE pending SET state='expired' WHERE id=? AND state='approved'`, id)
 		return reply{"ok": false, "id": id, "state": "expired", "error": "the approval is older than 15 min, or the op is not approved"}
 	}
+	s.inflight.Store(id, true)
+	defer s.inflight.Delete(id)
 	row, err := scanPending(s.db.QueryRow(`SELECT `+pendingCols+` FROM pending WHERE id=?`, id))
 	var p pendingP
 	var b git.Bound
@@ -556,7 +566,7 @@ func (s *server) execute(id string) reply {
 	if err != nil {
 		// whether the effect ran is unknown: reconcile decides, now and after any restart, and never runs it again
 		log.Printf("pending %s: exec: %v: reconciling", id, err)
-		return s.reconcileRow(id, true)
+		return s.reconcileRow(id)
 	}
 	if rep["ok"] != true {
 		var d ops.Denial
@@ -691,7 +701,7 @@ func (s *server) pendingIDs(state string) []string {
 func (s *server) reconcileBrokers() {
 	for _, id := range s.pendingIDs("executing") {
 		for try := 0; ; try++ {
-			rep := s.reconcileRow(id, false)
+			rep := s.reconcileRow(id)
 			if rep["retry"] != true || try == 60 {
 				break
 			}
@@ -706,7 +716,7 @@ var reconcileGap = 30 * time.Second
 // reconcileRow inspects one executing row: a RESULT already in the chain gives its state; else agentbox-git looks
 // for the effect, twice, reconcileGap apart. Found: RESULT executed. Not found: indeterminate, and for gh.* a new
 // pending P with a fresh nonce and the same marker. It never runs the effect.
-func (s *server) reconcileRow(id string, fresh bool) reply {
+func (s *server) reconcileRow(id string) reply {
 	intent, status, err := s.opState(id)
 	if err != nil {
 		return reply{"ok": false, "id": id, "state": "executing", "retry": true, "error": "op.get: " + err.Error()}

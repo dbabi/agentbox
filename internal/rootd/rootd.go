@@ -328,9 +328,12 @@ type server struct {
 	tasks  *tasks                                       // nil: no task ops (tests)
 	git    GitCall                                      // svc-git.sock
 	auditQ func(map[string]any) (map[string]any, error) // a query on auditd's rootd socket (op.get); nil: cfg.AuditSocket
-	db     *sql.DB
-	svc    *resolve.Service
-	seal   audit.Sealer
+	// inflight is every pending id whose execution runs in this process: an approve of an executing row reconciles it
+	// only when it is not one of these
+	inflight sync.Map
+	db       *sql.DB
+	svc      *resolve.Service
+	seal     audit.Sealer
 	// audit sends one record to auditd's rootd producer socket and returns nil only on its ACK (auditSend)
 	audit func(map[string]any) error
 
