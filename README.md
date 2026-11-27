@@ -11,7 +11,7 @@
 # agentbox
 
 > [!WARNING]
-> **Early alpha. Not for production use.** Tested only in QEMU VMs. No AI agent can do useful work on it yet. Tasks reach a model only through the keys broker, which has never run with a real API key. They can't reach the internet.
+> **Early alpha. Not for production use.** Tested only in QEMU VMs. No AI agent can do useful work on it yet. Tasks reach a model only through the keys broker, which has never run with a real API key.
 
 A headless OS for AI coding agents, built on stock Ubuntu Server 26.04. Early alpha: agent accounts, sealed task containers, the egress proxy and the LLM keys broker are built. The git service, policy and approvals are designed, not built.
 

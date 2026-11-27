@@ -138,10 +138,7 @@ func (s *state) control() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("POST /keys", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
-		var ks []string
-		for _, k := range strings.Fields(string(b)) {
-			ks = append(ks, k)
-		}
+		ks := strings.Fields(string(b))
 		s.mu.Lock()
 		s.keys[r.FormValue("vendor")] = ks
 		s.mu.Unlock()
@@ -201,7 +198,7 @@ func (s *state) vendor(plain bool) http.Handler {
 			s.record.Write(append(rec, '\n'))
 		}
 		s.mu.Unlock()
-		log.Printf("%s", line)
+		log.Printf("%s %s %s: %d bytes", vendor, r.Method, p, len(body)) // the verdict and its fingerprint stay in the gate's log
 		if auth == "bad" || auth == "none" {
 			apiError(w, vendor, http.StatusUnauthorized, "authentication_error", "invalid x-api-key")
 			return
