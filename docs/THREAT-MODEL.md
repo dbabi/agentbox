@@ -70,6 +70,10 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 | The host firewall accepts everything on `tailscale0`: once Tailscale runs, every listener on the box is open to every device on the tailnet | |
 | With no `--ssh-from`, SSH is open on every interface to the private ranges, `100.64.0.0/10` and IPv6 link-local. ISPs also use `100.64.0.0/10` for carrier-grade NAT, so on such an uplink other customers can reach SSH | `--ssh-from` with your LAN only; issue #219 |
 | One duplicate `gh.*` comment or PR, if a human re-approves an indeterminate op whose first POST landed late | |
+| Until laptop signatures land, approving a remote write, a merge or a PR is an `agentbox-admin` call on `rootd-admin.sock`: anyone with the admin login approves, and nothing binds the approval to what the human read | Issue #24: SSHSIG approvals over H |
+| The per-task canary is a detection aid: a task can send it out encoded in a way the scan doesn't cover, or through a proxy tunnel, and bus and memory writes don't scan for it yet. A credential pattern in a push only alerts | Bus and memory scan it when they land (milestone 8) |
+| The GitHub token is a plaintext file only root can read, until `secret set` stores it encrypted | Issue #108 |
+| `agentbox-git` doesn't install the service btrfs filter yet | Issue #21 |
 | Jev egress when enabled | |
 | Approximate metering for subscription sessions | |
 | Until `osbuild-fetch@` lands, `agentbox os plan` runs apt as root on the host; apt's update hooks are cleared, but `apt-get update` and download output, and a closure-mismatch error, reach the admin's terminal raw (the approval listing quotes every origin) | Weeks 11–12: `osbuild-fetch@` |

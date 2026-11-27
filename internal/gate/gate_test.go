@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"agentbox/internal/canary"
 	"agentbox/internal/ops"
 )
 
@@ -349,5 +350,30 @@ func TestRebind(t *testing.T) {
 	}
 	if s.Rebind([]byte(`{"ok":false}`)) == nil {
 		t.Fatal("a refused list must be an error")
+	}
+}
+
+// #105: rootd's register carries the task's canary; task.fetch hands it to taskrun, and a rebind keeps it. A value
+// that is not a minted canary refuses the registration.
+func TestCanaryRegisterFetch(t *testing.T) {
+	s, _ := newServer(t, func(map[string]any) ([]byte, error) { return []byte(`{"ok":true}`), nil })
+	s.revoke("T1")
+	if rep := s.Control([]byte(`{"call":"register","task":"T1","agent":"claude","canary":"not-a-canary"}`)); rep["ok"] != false {
+		t.Fatalf("a bad canary registered: %v", rep)
+	}
+	c := canary.Mint()
+	if rep := s.Control([]byte(`{"call":"register","task":"T1","agent":"claude","canary":"` + c + `"}`)); rep["ok"] != true {
+		t.Fatalf("register: %v", rep)
+	}
+	s.jobs = map[string]job{"T1": {cli: "claude", prompt: "p"}}
+	if r := call(t, s, s.tasks["T1"], `{"jsonrpc":"2.0","id":1,"method":"task.fetch","params":{}}`); r.Result["canary"] != c {
+		t.Fatalf("fetch: %+v", r)
+	}
+	s.revoke("T1")
+	if err := s.Rebind([]byte(`{"ok":true,"tasks":[{"task":"T1","agent":"claude","chain":[],"canary":"` + c + `"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if tk := s.tasks["T1"]; tk == nil || tk.canary != c {
+		t.Fatalf("rebind lost the canary: %+v", tk)
 	}
 }

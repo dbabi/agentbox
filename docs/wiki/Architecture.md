@@ -242,7 +242,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 
 ## The services
 
-**Status:** Mostly designed. `agentbox-auditd` and the packaged ntfy are built, and so are parts of `agentbox-rootd` and `agentboxd` (milestones 2-4). The table says which parts. So are `agentbox-proxy` and `agentbox-keys` (milestone 5). The git service, approvald, the local-model units and tailscaled don't exist yet. [Units on the box today](#units-on-the-box-today) lists what runs today.
+**Status:** Mostly designed. `agentbox-auditd` and the packaged ntfy are built, and so are parts of `agentbox-rootd` and `agentboxd` (milestones 2-4). The table says which parts. So are `agentbox-proxy`, `agentbox-keys` and `agentbox-git` (milestone 5). Approvald, the local-model units and tailscaled don't exist yet. [Units on the box today](#units-on-the-box-today) lists what runs today.
 
 In the design, rootd, agentboxd, auditd, approvald and the three brokers are all subcommands of the one `agentbox` binary.
 The local-model units run llama-server, and ntfy and tailscaled come from their own packages.
@@ -250,12 +250,12 @@ Each service runs as its own Linux user, with only the access it needs.
 
 | Service | Runs as | Job | Status |
 |---|---|---|---|
-| `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Built in part: the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing (milestone 2); agent accounts, task start and stop, and attach sessions (milestone 4); the brokers' encrypted credentials and the agents' daily LLM shares (milestone 5). Its generation code is built. Pending operations and OS operations for agents are designed (milestones 6-7). |
+| `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Built in part: the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing (milestone 2); agent accounts, task start and stop, and attach sessions (milestone 4); the brokers' encrypted credentials, the agents' daily LLM shares and the pending operations for the git service's writes (milestone 5). Its generation code is built. The floor, policy and OS operations for agents are designed (milestones 6-7). |
 | `agentboxd` | `agentbox` | The front door for agents: the task gate, Cedar policy, the agent bus, memory and decide. Has no network. | Task gate built (milestone 3): one socket per task, argument and caller checks, typed denials. Policy, the agent bus, memory and decide are designed (milestones 6-8). |
 | `agentbox-auditd` | `agentbox-audit` | Writes the hash-chained audit log and the taint ledger. Has no network. | Built (milestones 2 and 3), including the per-field audit classes. |
 | `agentbox-proxy` | `agentbox-proxy` | Tunnels task traffic to allowlisted hosts. Holds no secrets. | Built (milestone 5), except its Go module cache |
 | `agentbox-keys` | `agentbox-keys` | Holds the LLM API keys and budgets. Checks every model request, then adds the key. | Built (milestone 5). The local model behind it is not packaged yet. |
-| `agentbox-git` | `agentbox-git` | Hosts local git repos. Holds the GitHub token and runs the `gh.*` operations. | Designed (milestone 5) |
+| `agentbox-git` | `agentbox-git` | Hosts local git repos. Holds the GitHub token and runs the remote writes a human approved. | Built (milestone 5): local repos, the push hook, the remotes registry, `repo.push`, `gh.*` writes and `repo.merge`, taint and the canary. Approvals are made on the box until milestone 6. [Git and GitHub](Git-and-GitHub.md) |
 | `agentbox-approvald` | `agentbox-approve` | Serves the phone approval page. Holds no keys. | Designed (milestone 6) |
 | `agentbox-llm@task`, `agentbox-llm@decide` | `agentbox-llm`, `agentbox-llm-decide` | Local models (llama-server) for tasks and for decide. Have no network. | Designed (milestones 5 and 7) |
 | ntfy, tailscaled | `_ntfy`, root | Phone notifications. Tailnet access to the approval page. | ntfy: built (milestone 2). tailscaled: designed. |
@@ -664,13 +664,19 @@ A subscription login stays in `session-home`, for interactive sessions only.
 
 ### The git broker
 
-- It hosts local bare repos.
+**Status:** Built (milestone 5). [Git and GitHub](Git-and-GitHub.md) covers setup and approvals.
+
+- It hosts local bare repos, one set per agent, over git's smart HTTP on each task's own socket.
   A root-owned hook accepts pushes only to `agent/<name>/*` refs.
-- It holds the GitHub token, scoped to the repos you register.
+- It holds the GitHub token, scoped to the repos you register, as a systemd credential no task or other service can read.
 - Agents write to GitHub only through registry operations: `repo.push`, `gh.pr.create`, `gh.pr.comment` and `gh.issue.comment`.
+  Each one waits for a human. rootd stores it with the remote's URL and GitHub id and the commits it names, re-checks them at approval, and has the git service run it once.
+- Each comment and pull request body ends with a hidden marker. After a restart, rootd finds an interrupted write on GitHub by that marker and never sends it twice.
 - By default, a push is capped at 512 MiB, and each agent at 4 GiB of pushes per day.
 - Taint follows commits.
-  A tainted push taints the refs it updates, and a merge carries taint into the target branch.
+  A tainted push taints the refs it updates and records its commits, a fetch that may deliver a tainted ref taints the fetcher, and a merge carries taint into the target branch.
+- Each task carries a canary, a fake credential. A push or a GitHub write that holds it is refused, the task is tainted, and you get an alert.
+- It never resolves a name. rootd resolves GitHub for it, and the firewall lets it reach only those addresses.
 
 ### Where secrets live
 
@@ -679,7 +685,7 @@ A subscription login stays in `session-home`, for interactive sessions only.
 | LUKS disk key | Unlocked through clevis: the TPM, plus Tang in `tpm2+tang`. The 48-digit install key opens its own key slot. It is kept only in `recovery.bin`, encrypted to your offline recovery key. | Built |
 | LLM API keys | `agentbox-keys` only, encrypted on disk with `systemd-creds` (see [Setting the keys](#setting-the-keys)) | Built |
 | Subscription logins | `session-home`, for interactive sessions only | Built. A login can't reach its servers from an attach yet (issue #90). |
-| GitHub token | `agentbox-git` only, scoped to registered repos | Designed |
+| GitHub token | `agentbox-git` only, scoped to registered repos: a root-only file that systemd hands to the service | Built. Encrypted at rest with `agentbox secret set` later. |
 | Approval keys | Your laptop (SSH key) and your phone (passkey). Never on the box. | Designed |
 
 In the design, no credential of any kind exists inside a task.

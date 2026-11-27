@@ -78,11 +78,16 @@ func TestHookNamespaceAndCanary(t *testing.T) {
 			t.Fatalf("%s: the denial echoes the canary", name)
 		}
 	}
-	if n := len(b.rootd.seen("op", "canary.hit")); n != 3 {
-		t.Fatalf("rootd heard %d canary hits, want 3", n)
+	// the canary counts first: a push of it to main is an exfiltration attempt, not only a namespace mistake
+	wm := work(t, "m.txt", "key: "+c+"\n")
+	if out, err := b.push(wm, "refs/heads/main"); err == nil || !strings.Contains(out, "remote: agentbox EXFIL_CANARY: ") {
+		t.Fatalf("canary to main: %v\n%s", err, out)
 	}
-	if n := len(b.audit.seen("code", "EXFIL_CANARY")); n != 3 {
-		t.Fatalf("auditd got %d EXFIL_CANARY DENY records, want 3", n)
+	if n := len(b.rootd.seen("op", "canary.hit")); n != 4 {
+		t.Fatalf("rootd heard %d canary hits, want 4", n)
+	}
+	if n := len(b.audit.seen("code", "EXFIL_CANARY")); n != 4 {
+		t.Fatalf("auditd got %d EXFIL_CANARY DENY records, want 4", n)
 	}
 	// outside the namespace: the two §5.6 lines, nothing stored
 	w := work(t, "ok.txt", "clean\n")

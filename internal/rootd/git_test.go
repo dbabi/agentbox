@@ -226,10 +226,18 @@ func TestGitCommentMarkerAndCanary(t *testing.T) {
 	if d := denialOf(t, "gh.pr.comment", bad, g.op("gh.pr.comment", bad)); d.Code != "EXFIL_CANARY" || d.By != "floor" {
 		t.Fatalf("canary comment: %s", d.JSON())
 	}
+	for i := 0; i < 50 && !strings.Contains(g.chain(), `"reason":"exfil_canary"`); i++ {
+		time.Sleep(20 * time.Millisecond) // the ALERT record goes out on its own goroutine
+	}
 	if !strings.Contains(g.chain(), `"subject":"task:`+g.task+`"`) || !strings.Contains(g.chain(), `"reason":"exfil_canary"`) {
 		t.Fatalf("no taint or alert: %s", g.chain())
 	}
-	if len(g.alerts) != 1 || !strings.Contains(g.alerts[0], "canary") {
+	// the canary counts first: an attempt through a remote the agent doesn't have is still an attempt
+	miss := map[string]any{"remote": "nosuch", "number": 7, "body": g.c}
+	if d := denialOf(t, "gh.issue.comment", miss, g.op("gh.issue.comment", miss)); d.Code != "EXFIL_CANARY" {
+		t.Fatalf("canary to a missing remote: %s", d.JSON())
+	}
+	if len(g.alerts) != 2 || !strings.Contains(g.alerts[0], "canary") {
 		t.Fatalf("alerts %v", g.alerts)
 	}
 	pr := map[string]any{"remote": "origin", "head": "refs/heads/agent/claude/x", "base": "main", "title": "t", "body": "b64 " + g.c}

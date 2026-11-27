@@ -86,6 +86,7 @@ func (s *Server) Open() error {
 	if err != nil {
 		return err
 	}
+	os.RemoveAll(filepath.Join(s.Root, ".spool")) // request bodies a crash left
 	s.store = db
 	s.tasks = map[string]*task{}
 	s.denied = map[string]int64{}
@@ -290,6 +291,13 @@ func (s *Server) revoke(id string) bool {
 	}
 	os.Remove(t.path)
 	t.srv.Close()
+	s.denyMu.Lock()
+	for k := range s.denied {
+		if strings.HasPrefix(k, id+" ") {
+			delete(s.denied, k)
+		}
+	}
+	s.denyMu.Unlock()
 	log.Printf("task %s revoked", id)
 	return true
 }
@@ -442,6 +450,18 @@ func (s *Server) handler(t *task) http.Handler {
 		for i, x := range kv {
 			env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, x[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, x[1]))
 		}
+		if r.Method == http.MethodPost && (r.ContentLength < 0 || len(r.TransferEncoding) > 0) {
+			done, err := s.spool(r, s.MaxPush+spoolSlack)
+			if errors.Is(err, errSpoolFull) {
+				http.Error(w, "agentbox-git: the push is over receive.maxInputSize", http.StatusRequestEntityTooLarge)
+				return
+			}
+			if err != nil {
+				http.Error(w, "agentbox-git: the request body could not be read", http.StatusInternalServerError)
+				return
+			}
+			defer done()
+		}
 		switch {
 		case m[2] == "git-receive-pack":
 			dir, err := os.MkdirTemp("", "agentbox-push-")
@@ -472,6 +492,41 @@ func (s *Server) handler(t *task) http.Handler {
 		r2.URL.Path = "/" + project + ".git/" + m[2] // the name http-backend finds under GIT_PROJECT_ROOT
 		(&cgi.Handler{Path: s.Backend, Root: "/", Dir: s.Root, Env: env, Logger: log.New(io.Discard, "", 0)}).ServeHTTP(w, r2)
 	})
+}
+
+// spoolSlack is what a push request holds beyond its pack: the ref update lines and pkt-line framing.
+const spoolSlack = 1 << 20
+
+var errSpoolFull = errors.New("request body over the limit")
+
+// spool makes a chunked request body plain: net/http/cgi refuses a chunked body, and git sends one for every POST over
+// http.postBuffer. The body goes to a file in git/.spool, so it counts against git/'s quota, of at most limit bytes,
+// and r gets it with its length. done removes the file.
+// shortcut: a push over the limit gets 413, not receive.maxInputSize's own message.
+func (s *Server) spool(r *http.Request, limit int64) (func(), error) {
+	dir := filepath.Join(s.Root, ".spool")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.CreateTemp(dir, "body-")
+	if err != nil {
+		return nil, err
+	}
+	done := func() { f.Close(); os.Remove(f.Name()) }
+	n, err := io.Copy(f, io.LimitReader(r.Body, limit+1))
+	if err == nil && n > limit {
+		err = errSpoolFull
+	}
+	if err == nil {
+		_, err = f.Seek(0, io.SeekStart)
+	}
+	if err != nil {
+		done()
+		return nil, err
+	}
+	r.Body, r.ContentLength, r.TransferEncoding = f, n, nil
+	r.Header.Del("Transfer-Encoding")
+	return done, nil
 }
 
 // readTaint applies read taint before the first pack byte (§6.3, §9): when the fetch may deliver objects of a tainted

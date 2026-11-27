@@ -107,6 +107,13 @@ func (s *server) bind(name, task, agent, id string, args map[string]any) (bindin
 			b.key[k] = v // structural: not the agent's free text
 		}
 	}
+	// the canary first (#105): an attempt to send it out counts whatever else is wrong with the request
+	if strings.HasPrefix(name, "gh.") {
+		if c := s.canaryOf(task); canary.Scan([]byte(str(args, "title")+"\n"+str(args, "body")), c) {
+			s.canaryHit(task, name)
+			return b, deny(ops.Deny(ops.ExfilCanary, "", ops.Slots{Op: name, By: "floor"}), "floor.canary")
+		}
+	}
 	miss := func() reply { return floorDeny(ops.NotFoundOrNotOwned, "", name, ops.Subject{}, "") }
 	var rem remoteRow
 	if name != "repo.merge" {
@@ -193,11 +200,7 @@ func (s *server) bind(name, task, agent, id string, args map[string]any) (bindin
 		b.bound = git.Bound{Project: p, SrcOID: src, DstOID: dst}
 	}
 	if strings.HasPrefix(name, "gh.") {
-		title, body := str(args, "title"), str(args, "body")
-		if c := s.canaryOf(task); canary.Scan([]byte(title+"\n"+body), c) {
-			s.canaryHit(task, name)
-			return b, deny(ops.Deny(ops.ExfilCanary, "", ops.Slots{Op: name, By: "floor"}), "floor.canary")
-		}
+		body := str(args, "body")
 		// §5.3 step 1: ValidateArgs refused a body holding agentbox-op:; the marker is rootd's, appended before H
 		b.bound.Marker, b.bound.BodyHash = id, sha(body)
 		b.args["body"] = body + git.Marker(id)

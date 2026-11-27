@@ -210,10 +210,10 @@ func capDenial(limit int64, now time.Time) ops.Denial {
 	return ops.Deny(ops.CapReached, "push_bytes_day", ops.Slots{Op: "repo.push", By: "git", Limit: &limit, ResetsAt: &reset})
 }
 
-// Hook is `agentbox git-hook pre-receive`, the root-owned hook of every local push (§6.3). It refuses a ref outside
-// refs/heads/agent/<name>/ (REF_OUTSIDE_NAMESPACE), a push over the agent's daily cap, measured from the
-// quarantine before git stores a byte (CAP_REACHED{push_bytes_day}), and a push whose objects or ref names hold the
-// task's canary (EXFIL_CANARY: rootd taints the task and alerts). Then rootd says whether the task is tainted: if
+// Hook is `agentbox git-hook pre-receive`, the root-owned hook of every local push (§6.3). It refuses a push whose
+// objects or ref names hold the task's canary (EXFIL_CANARY: rootd taints the task and alerts), a ref outside
+// refs/heads/agent/<name>/ (REF_OUTSIDE_NAMESPACE), and a push over the agent's daily cap, measured from the
+// quarantine before git stores a byte (CAP_REACHED{push_bytes_day}). Then rootd says whether the task is tainted: if
 // so, it has tainted the refs, and the hook records them and the new commits as tainted. A refusal prints the two
 // §5.6 lines, which git shows as remote: lines, and exits 1, so git keeps none of the push. Anything the hook can't
 // check refuses too.
@@ -240,13 +240,31 @@ func Hook(stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string,
 	var news, refs []string
 	var names strings.Builder
 	for _, u := range ups {
-		if !InNamespace(req.Agent, u.Ref) {
-			return refuse(ops.Deny(ops.RefOutsideNamespace, "", ops.Slots{Op: "repo.push", By: "git", Subject: ops.Subject{Ref: u.Ref},
-				Expect: "refs/heads/agent/<name>/*"}), "")
-		}
 		names.WriteString(u.Ref + "\n")
 		if !zero(u.New) {
 			news, refs = append(news, u.New), append(refs, u.Ref)
+		}
+	}
+	repo, err := os.Getwd()
+	if err != nil {
+		return fail("no repo")
+	}
+	// the canary first: an attempt to send it out counts whatever else is wrong with the push
+	scan, err := scanPush(repo, os.Environ(), news, req.Canary, []byte(names.String()))
+	if err != nil {
+		return fail("the pushed objects can't be read: " + err.Error())
+	}
+	rd := Rootd{req.Resolve}
+	if scan.Canary {
+		if _, err := rd.Call(map[string]any{"op": "canary.hit", "task": req.Task, "name": "repo.push"}, 30*time.Second); err != nil {
+			fmt.Fprintln(stderr, "agentbox: pre-receive: rootd did not record the canary hit:", err)
+		}
+		return refuse(ops.Deny(ops.ExfilCanary, "", ops.Slots{Op: "repo.push", By: "git"}), "the task's canary in a local push")
+	}
+	for _, u := range ups {
+		if !InNamespace(req.Agent, u.Ref) {
+			return refuse(ops.Deny(ops.RefOutsideNamespace, "", ops.Slots{Op: "repo.push", By: "git", Subject: ops.Subject{Ref: u.Ref},
+				Expect: "refs/heads/agent/<name>/*"}), "")
 		}
 	}
 	size, err := DirSize(getenv("GIT_QUARANTINE_PATH"))
@@ -264,21 +282,6 @@ func Hook(stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string,
 	}
 	if used+size > req.DayCap {
 		return refuse(capDenial(req.DayCap, now), fmt.Sprintf("push of %d bytes, %d used today", size, used))
-	}
-	repo, err := os.Getwd()
-	if err != nil {
-		return fail("no repo")
-	}
-	scan, err := scanPush(repo, os.Environ(), news, req.Canary, []byte(names.String()))
-	if err != nil {
-		return fail("the pushed objects can't be read: " + err.Error())
-	}
-	rd := Rootd{req.Resolve}
-	if scan.Canary {
-		if _, err := rd.Call(map[string]any{"op": "canary.hit", "task": req.Task, "name": "repo.push"}, 30*time.Second); err != nil {
-			fmt.Fprintln(stderr, "agentbox: pre-receive: rootd did not record the canary hit:", err)
-		}
-		return refuse(ops.Deny(ops.ExfilCanary, "", ops.Slots{Op: "repo.push", By: "git"}), "the task's canary in a local push")
 	}
 	rep, err := rd.Call(map[string]any{"op": "push.report", "task": req.Task, "repo": RepoName(req.Agent, req.Project), "refs": refs,
 		"secrets": scan.Secrets}, 30*time.Second)

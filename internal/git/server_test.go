@@ -3,6 +3,7 @@ package git
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -230,5 +231,27 @@ func TestRegisterChecks(t *testing.T) {
 	}
 	if r := line(map[string]any{"call": "nope", "extra": 1}); r["ok"] == true {
 		t.Fatal("an unknown field was accepted")
+	}
+}
+
+// A push over git's http.postBuffer goes out chunked, with no Content-Length: http-backend still gets all of it, and
+// the hook sizes it from the quarantine.
+func TestServeChunkedPush(t *testing.T) {
+	b := newHTTPBox(t)
+	big := make([]byte, 3<<20)
+	if _, err := rand.Read(big); err != nil {
+		t.Fatal(err)
+	}
+	w := work(t, "big.bin", string(big))
+	if out, err := gitTry(w, []string{"GIT_TERMINAL_PROMPT=0"}, "-c", "http.postBuffer=65536", "push", b.url+"/app", "HEAD:refs/heads/agent/claude/big"); err != nil {
+		t.Fatalf("chunked push: %v\n%s", err, out)
+	}
+	if got := gitIn(t, Repo(b.s.Root, "claude", "app"), "rev-parse", "refs/heads/agent/claude/big"); got != gitIn(t, w, "rev-parse", "HEAD") {
+		t.Fatalf("pushed %s", got)
+	}
+	var n int64
+	b.s.store.QueryRow(`SELECT bytes FROM push_days WHERE agent='claude'`).Scan(&n)
+	if n < 3<<20 {
+		t.Fatalf("day total %d, want the 3 MiB pack counted", n)
 	}
 }
