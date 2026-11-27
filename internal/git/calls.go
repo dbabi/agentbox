@@ -9,13 +9,13 @@ import (
 	"net"
 	"time"
 
+	"agentbox/internal/audit"
 	"agentbox/internal/ids"
 	"agentbox/internal/ops"
 )
 
-// lineCall writes req as one JSON line on the Unix socket sock and returns the one reply line, decoded.
-// shortcut: auditd's own client (audit.Send) and pinned dialing's rootd client (internal/dial) land with #21 and #20;
-// the service and its hook use these until then.
+// lineCall writes req as one JSON line on the Unix socket sock and returns the one reply line, decoded: the service's
+// and the hook's calls to rootd that are not a name resolution (internal/dial does those).
 func lineCall(sock string, req map[string]any, timeout time.Duration) (map[string]any, error) {
 	c, err := net.DialTimeout("unix", sock, 2*time.Second)
 	if err != nil {
@@ -46,16 +46,7 @@ func lineCall(sock string, req map[string]any, timeout time.Duration) (map[strin
 type Auditor struct{ Sock string }
 
 // Send writes rec and returns nil only on auditd's ACK.
-func (a Auditor) Send(rec map[string]any) error {
-	rep, err := lineCall(a.Sock, rec, 10*time.Second)
-	if err != nil {
-		return err
-	}
-	if rep["ok"] != true {
-		return fmt.Errorf("auditd NACK %v", rep["code"])
-	}
-	return nil
-}
+func (a Auditor) Send(rec map[string]any) error { return audit.Send(a.Sock, rec) }
 
 // Deny sends a DENY record for d (§9) and ignores the reply: a refusal is not an effect, so no effect waits on it;
 // the service calls it on its own goroutine. detail is for humans only: auditd never returns it to an agent.
@@ -94,7 +85,8 @@ func trunc(s string, n int) string {
 	return s[:n]
 }
 
-// Rootd is the service's half of resolve-git.sock: name resolution, and the hook's push.report and canary.hit.
+// Rootd is the service's half of resolve-git.sock besides name resolution: task.list_live, and the hook's push.report
+// and canary.hit.
 type Rootd struct{ Sock string }
 
 // errRootd is a call rootd refused or could not answer.

@@ -24,7 +24,7 @@ import (
 const CredStore = "/var/lib/agentbox/control/credstore.encrypted"
 
 // Credentials are the names secret.set takes, and the service that owns each. Every broker unit's
-// LoadCredentialEncrypted= lines name exactly its own (systemd/agentbox-keys.service; agentbox-git's lands with #19).
+// LoadCredentialEncrypted= lines name exactly its own (systemd/agentbox-keys.service, systemd/agentbox-git.service).
 var Credentials = map[string]string{"anthropic-api-key": "keys", "openai-api-key": "keys", "github-token": "git"}
 
 // MaxSecret is the longest value secret.set takes: vendor keys and GitHub tokens are a few hundred bytes.

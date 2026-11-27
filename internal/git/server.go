@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"agentbox/internal/budgets"
 	"agentbox/internal/canary"
 	"agentbox/internal/ids"
 	"agentbox/internal/ops"
@@ -31,12 +32,14 @@ import (
 
 // Server is agentbox-git.
 type Server struct {
-	Root     string // git/
-	TaskDir  string // /run/agentbox-git
-	Hooks    string // core.hooksPath for local pushes
-	Backend  string // git-http-backend
-	DayCap   int64  // each agent's pushed bytes per UTC day
-	MaxPush  int64  // receive.maxInputSize
+	Root    string // git/
+	TaskDir string // /run/agentbox-git
+	Hooks   string // core.hooksPath for local pushes
+	Backend string // git-http-backend
+	// Budgets is budgets.toml ("" is budgets.Path): its DayCapKey caps each agent's pushed bytes per UTC day. It is read
+	// at each push, so a budget.set applies from the next one.
+	Budgets  string
+	MaxPush  int64 // receive.maxInputSize
 	AgentIDs func(agent string) (uid, gid uint32, err error)
 	Audit    Auditor
 	Rootd    Rootd
@@ -76,8 +79,8 @@ func (s *Server) Open() error {
 	if s.Peer == nil {
 		s.Peer = peerUID
 	}
-	if s.DayCap <= 0 {
-		s.DayCap = DayPushBytes
+	if s.Budgets == "" {
+		s.Budgets = budgets.Path
 	}
 	if s.MaxPush <= 0 {
 		s.MaxPush = MaxPushBytes
@@ -475,7 +478,13 @@ func (s *Server) handler(t *task) http.Handler {
 				return
 			}
 			defer os.RemoveAll(dir)
-			req, _ := json.Marshal(HookRequest{Task: t.id, Agent: t.agent, Project: project, Canary: t.canary, DayCap: s.DayCap,
+			b, err := budgets.Read(s.Budgets)
+			if err != nil {
+				log.Printf("task %s: push: %v", t.id, err)
+				http.Error(w, "agentbox-git: the push budget can't be read", http.StatusInternalServerError)
+				return
+			}
+			req, _ := json.Marshal(HookRequest{Task: t.id, Agent: t.agent, Project: project, Canary: t.canary, DayCap: b.Get(DayCapKey),
 				Store: s.Root, Resolve: s.Rootd.Sock, Audit: s.Audit.Sock})
 			p := filepath.Join(dir, "push.json")
 			if err := os.WriteFile(p, req, 0o600); err != nil {

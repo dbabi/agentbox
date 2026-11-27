@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,88 +17,12 @@ import (
 	"time"
 )
 
-// Resolver returns rootd's checked addresses for host:port (§6.3 pinned dialing step 1).
-type Resolver func(ctx context.Context, host string, port int) ([]netip.Addr, error)
+// TokenName is the GitHub token's credential, which agentbox-git.service loads with LoadCredentialEncrypted= from
+// what secret.set stored (#108): $CREDENTIALS_DIRECTORY/github-token.
+const TokenName = "github-token"
 
-// Resolve asks rootd on resolve-git.sock. rootd re-checks service.list, resolves through resolved, adds the answers
-// to git_dst and returns them; a refusal names one reason.
-func (r Rootd) Resolve(ctx context.Context, host string, port int) ([]netip.Addr, error) {
-	rep, err := r.Call(map[string]any{"op": "resolve", "host": host, "port": port}, 20*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	l, _ := rep["addrs"].([]any)
-	var out []netip.Addr
-	for _, x := range l {
-		s, _ := x.(string)
-		a, err := netip.ParseAddr(s)
-		if err != nil || a.Zone() != "" {
-			return nil, fmt.Errorf("rootd answered %q", s)
-		}
-		out = append(out, a)
-	}
-	if len(out) == 0 {
-		return nil, errors.New("rootd answered no address")
-	}
-	return out, nil
-}
-
-// DialBudget is the one budget a connection's addresses share (§6.3).
-const DialBudget = 10 * time.Second
-
-// Dialer is pinned dialing for an http.Transport: it ignores the address's host lookup and dials only what rootd
-// resolved, in order, each with an even share of what is left of DialBudget. TLS SNI, the certificate check and the
-// Host header keep the URL's host name.
-// shortcut: internal/dial (#20) replaces this when it lands.
-type Dialer struct{ Resolve Resolver }
-
-// DialContext dials host:port through rootd's answers; network must be tcp.
-func (d Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, p, err := net.SplitHostPort(addr)
-	if err != nil || network != "tcp" {
-		return nil, fmt.Errorf("dial %s %s: tcp host:port only", network, addr)
-	}
-	port, err := strconv.Atoi(p)
-	if err != nil {
-		return nil, err
-	}
-	addrs, err := d.Resolve(ctx, host, port)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(ctx, DialBudget)
-	defer cancel()
-	end, _ := ctx.Deadline()
-	var first error
-	for i, a := range addrs {
-		actx, acancel := context.WithDeadline(ctx, time.Now().Add(time.Until(end)/time.Duration(len(addrs)-i)))
-		c, err := new(net.Dialer).DialContext(actx, "tcp", netip.AddrPortFrom(a, uint16(port)).String())
-		acancel()
-		if err == nil {
-			return c, nil
-		}
-		if first == nil {
-			first = err
-		}
-	}
-	return nil, first
-}
-
-// Client is an HTTP client on pinned dialing: no environment proxy, no redirect followed (its target would need its
-// own allowlist entry), no cookies.
-func (d Dialer) Client() *http.Client {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.Proxy, t.DialContext = nil, d.DialContext
-	return &http.Client{Transport: t, Timeout: 60 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect not followed") }}
-}
-
-// TokenName is the GitHub token's credential: agentbox-git.service loads the root-only control/secrets/git dir as
-// credential "git", so the file github-token there is $CREDENTIALS_DIRECTORY/git_github-token.
-const TokenName = "git_github-token"
-
-// errNoToken is a box with no GitHub token installed.
-var errNoToken = errors.New("no GitHub token: put one in /var/lib/agentbox/control/secrets/git/github-token and restart agentbox-git")
+// errNoToken is a box with no GitHub token set: the credential is rootd's empty placeholder.
+var errNoToken = errors.New("no GitHub token: agentbox secret set --name github-token")
 
 // Token reads the service's GitHub token from its systemd credentials. It is never logged, audited or put in argv.
 func Token() (string, error) {
@@ -128,7 +50,8 @@ type APIError struct {
 
 func (e *APIError) Error() string { return e.What + ": " + e.Detail }
 
-// GitHub is the REST client of the service's token (§6.3), on pinned dialing.
+// GitHub is the REST client of the service's token (§6.3). HTTP is a dial.Dialer client on resolve-git.sock: pinned
+// dialing, no redirect followed, no cookies.
 type GitHub struct {
 	API   string // https://api.github.com
 	HTTP  *http.Client

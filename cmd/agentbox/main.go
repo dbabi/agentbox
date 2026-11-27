@@ -65,7 +65,7 @@ const usage = `usage:
   agentbox goprivate set --agent A --patterns 'corp.example/*,...'   (admin: go.private.set; "" clears)
   agentbox cache purge --agent A   (admin: cache.purge, empties the agent's Go module cache)
   agentbox budget set [--file budgets.toml]   (admin: budget.set, replaces budgets.toml; default: standard input)
-  agentbox git [--push-day-bytes N] [--max-push-bytes N]   (agentbox-git.service: local repos and the remote writes)
+  agentbox git [--max-push-bytes N]   (agentbox-git.service: local repos and the remote writes; budgets.toml caps the day's pushes)
   agentbox git-hook pre-receive   (the local repos' pre-receive hook)
   agentbox git-credential get   (agentbox-git's credential helper)
   agentbox remote set --id ID --agent A --project P --url https://github.com/O/R | list [--agent A]   (admin: remote.set)

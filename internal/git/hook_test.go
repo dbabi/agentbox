@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"agentbox/internal/budgets"
 	"agentbox/internal/canary"
 	"agentbox/internal/ids"
 )
@@ -58,7 +59,7 @@ func (b *pushBox) has(t *testing.T, oid string) bool {
 
 func TestHookNamespaceAndCanary(t *testing.T) {
 	c := canary.Mint()
-	b := newPushBox(t, DayPushBytes, c)
+	b := newPushBox(t, budgets.Defaults[DayCapKey], c)
 	netrc := "machine github.com\n  login x\n  password " + c + "\n"
 	for name, body := range map[string]string{
 		"in a file":   "token = " + c + "\n",
@@ -132,7 +133,7 @@ func TestHookDayCap(t *testing.T) {
 	}
 	defer db.Close()
 	// a push that fits is counted
-	b2 := newPushBox(t, DayPushBytes, "")
+	b2 := newPushBox(t, budgets.Defaults[DayCapKey], "")
 	w2 := work(t, "a.txt", "a\n")
 	if out, err := b2.push(w2, "refs/heads/agent/claude/a"); err != nil {
 		t.Fatalf("%v\n%s", err, out)
@@ -146,7 +147,7 @@ func TestHookDayCap(t *testing.T) {
 }
 
 func TestHookTaintAndSecrets(t *testing.T) {
-	b := newPushBox(t, DayPushBytes, canary.Mint())
+	b := newPushBox(t, budgets.Defaults[DayCapKey], canary.Mint())
 	b.tainted = true
 	pat := "ghp_" + strings.Repeat("aB3dE6gH9k", 3) + "mN0pQr" // a real-looking token, built at run time
 	w := work(t, "cfg.txt", "token: "+pat+"\n")
@@ -173,7 +174,7 @@ func TestHookTaintAndSecrets(t *testing.T) {
 }
 
 func TestHookRootdDown(t *testing.T) {
-	b := newPushBox(t, DayPushBytes, "")
+	b := newPushBox(t, budgets.Defaults[DayCapKey], "")
 	b.rootd.reply = func(map[string]any) map[string]any { return map[string]any{"ok": false, "reason": "unavailable"} }
 	w := work(t, "a.txt", "a\n")
 	out, err := b.push(w, "refs/heads/agent/claude/a")

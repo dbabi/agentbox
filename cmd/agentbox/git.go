@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"agentbox/internal/dial"
 	"agentbox/internal/git"
 )
 
@@ -23,10 +24,12 @@ import (
 // token from its systemd credentials.
 func cmdGit(args []string) error {
 	fs := flag.NewFlagSet("git", flag.ContinueOnError)
-	day := fs.Int64("push-day-bytes", git.DayPushBytes, "each agent's pushed bytes per UTC day (budgets.toml push_bytes_day)")
 	max := fs.Int64("max-push-bytes", git.MaxPushBytes, "receive.maxInputSize: git's cap on one push")
 	api := fs.String("api", "https://"+git.APIHost, "GitHub REST")
 	if err := parse(fs, args); err != nil {
+		return err
+	}
+	if err := serviceFilter(); err != nil { // git, its hook and http-backend inherit it
 		return err
 	}
 	ls, err := listenFDs()
@@ -45,12 +48,13 @@ func cmdGit(args []string) error {
 	if err != nil {
 		return err
 	}
-	rd := git.Rootd{Sock: git.ResolveSock}
+	hc := dial.Dialer{Sock: git.ResolveSock}.Client() // pinned dialing (§6.3): rootd's addresses only, no redirect, no cookies
+	hc.Timeout = time.Minute                          // one REST call; a push runs under its op's own deadline
 	s := &git.Server{Root: git.Root, TaskDir: git.TaskDir, Hooks: git.HooksDir, Backend: filepath.Join(strings.TrimSpace(string(out)), "git-http-backend"),
-		DayCap: *day, MaxPush: *max, AgentIDs: func(a string) (uint32, uint32, error) { return uidOf("ag-" + a) },
-		Audit: git.Auditor{Sock: git.AuditSock}, Rootd: rd,
-		GitHub: &git.GitHub{API: *api, HTTP: git.Dialer{Resolve: rd.Resolve}.Client(), Token: git.Token},
-		Pusher: git.Pusher{Resolve: rd.Resolve, Helper: "!" + exe + " git-credential", Env: []string{"CREDENTIALS_DIRECTORY=" + os.Getenv("CREDENTIALS_DIRECTORY")}}}
+		MaxPush: *max, AgentIDs: func(a string) (uint32, uint32, error) { return uidOf("ag-" + a) },
+		Audit: git.Auditor{Sock: git.AuditSock}, Rootd: git.Rootd{Sock: git.ResolveSock},
+		GitHub: &git.GitHub{API: *api, HTTP: hc, Token: git.Token},
+		Pusher: git.Pusher{Sock: git.ResolveSock, Helper: "!" + exe + " git-credential", Env: []string{"CREDENTIALS_DIRECTORY=" + os.Getenv("CREDENTIALS_DIRECTORY")}}}
 	if _, err := os.Stat(s.Backend); err != nil {
 		return fmt.Errorf("git-http-backend: %v", err)
 	}

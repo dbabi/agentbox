@@ -1,7 +1,7 @@
 # agentbox-git (ARCHITECTURE.md §2, §6.3): the git service. rootd registers each task on svc-git.sock; the service
 # binds that task's /run/agentbox-git/t/<task>/git.sock in the dir rootd made and serves the agent's own bare repos
-# under /var/lib/agentbox/git over smart HTTP, with the release's pre-receive hook. It holds the GitHub token (a
-# systemd credential from the root-only control/secrets/git) and runs the remote writes rootd sends it once a human
+# under /var/lib/agentbox/git over smart HTTP, with the release's pre-receive hook. It holds the GitHub token (an
+# encrypted systemd credential that secret.set stores) and runs the remote writes rootd sends it once a human
 # approved them. It never resolves a name: rootd does on resolve-git.sock, and nft lets this uid reach only git_dst.
 # Its socket starts it: rootd's first call (a task's registration, remote.set) does, so it has no [Install] of its own.
 [Unit]
@@ -33,7 +33,12 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 MemoryDenyWriteExecute=yes
 SystemCallFilter=@system-service
+# the binary installs its own btrfs ioctl filter at start (seccomp(2), which @system-service leaves out), and exits
+# without it (§2 Common hardening); git, http-backend and the hook it runs inherit it
+SystemCallFilter=seccomp
 SystemCallArchitectures=native
 CapabilityBoundingSet=
-# every file in the dir is one credential: github-token there is $CREDENTIALS_DIRECTORY/git_github-token
-LoadCredential=git:/var/lib/agentbox/control/secrets/git
+# the GitHub token (#108): rootd encrypts the secret.set value into the credential store, and PID 1 decrypts only this
+# name, at start, into this unit's own non-swappable credentials dir, readable by agentbox-git alone. A new value
+# needs a restart, which secret.set does. rootd keeps a placeholder until a value is set, so the unit always starts.
+LoadCredentialEncrypted=github-token:/var/lib/agentbox/control/credstore.encrypted/git/github-token

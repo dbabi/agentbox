@@ -8,21 +8,23 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"agentbox/internal/dial"
 )
 
-// Pusher runs git against a remote over https only, with pinned dialing (§6.3 step 4): rootd resolves github.com,
-// and http.curloptResolve hands libcurl those addresses, so libcurl does no lookup of its own. The token reaches git
-// only through the credential helper, never argv or the environment.
+// Pusher runs git against a remote over https only, with pinned dialing (§6.3 step 4): rootd resolves github.com on
+// Sock (dial.Resolve), and http.curloptResolve hands libcurl those addresses, so libcurl does no lookup of its own.
+// The token reaches git only through the credential helper, never argv or the environment.
 type Pusher struct {
-	Resolve Resolver
-	Helper  string   // the credential helper: "!<agentbox> git-credential"
-	Env     []string // passed on to git and the helper (CREDENTIALS_DIRECTORY)
+	Sock   string   // resolve-git.sock
+	Helper string   // the credential helper: "!<agentbox> git-credential"
+	Env    []string // passed on to git and the helper (CREDENTIALS_DIRECTORY)
 }
 
-// env is the git config for one remote call, as GIT_CONFIG_* (command-line precedence): the resolved addresses, no
-// redirect, only https, only the service's credential helper.
+// env is the git config for one remote call, as GIT_CONFIG_* (command-line precedence): the resolved addresses, IPv6
+// in brackets, no redirect, only https, only the service's credential helper.
 func (p Pusher) env(ctx context.Context) ([]string, error) {
-	addrs, err := p.Resolve(ctx, WebHost, 443)
+	addrs, err := dial.Resolve(ctx, p.Sock, "", WebHost, 443)
 	if err != nil {
 		return nil, &APIError{"unreachable", "resolve " + WebHost + ": " + err.Error()}
 	}

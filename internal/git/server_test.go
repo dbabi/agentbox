@@ -47,7 +47,7 @@ func newHTTPBox(t *testing.T) *httpBox {
 		return map[string]any{"ok": true, "tainted": b.taintedPush}
 	})
 	b.s = &Server{Root: t.TempDir(), TaskDir: shortDir(t), Hooks: hooksDir(t), Backend: backend(t), Audit: Auditor{b.audit.path},
-		Rootd: Rootd{b.rd.path}, Peer: func(net.Conn) (uint32, error) { return 0, nil }}
+		Rootd: Rootd{b.rd.path}, Budgets: filepath.Join(t.TempDir(), "budgets.toml"), Peer: func(net.Conn) (uint32, error) { return 0, nil }}
 	if err := b.s.Open(); err != nil {
 		t.Fatal(err)
 	}
@@ -258,5 +258,33 @@ func TestServeChunkedPush(t *testing.T) {
 	b.s.store.QueryRow(`SELECT bytes FROM push_days WHERE agent='claude'`).Scan(&n)
 	if n < 3<<20 {
 		t.Fatalf("day total %d, want the 3 MiB pack counted", n)
+	}
+}
+
+// The day cap is budgets.toml's git.push_bytes_day, read at each push: a budget.set applies to the next push, and a
+// budgets.toml that doesn't parse refuses the push before git stores any of it.
+func TestServeDayCapFromBudgets(t *testing.T) {
+	b := newHTTPBox(t)
+	env := []string{"GIT_TERMINAL_PROMPT=0"}
+	w := work(t, "a.txt", "a\n")
+	if out, err := gitTry(w, env, "push", b.url+"/app", "HEAD:refs/heads/agent/claude/a"); err != nil {
+		t.Fatalf("push under the default cap: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(b.s.Budgets, []byte("git.push_bytes_day = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, w, "b.txt", "b\n")
+	out, err := gitTry(w, env, "push", b.url+"/app", "HEAD:refs/heads/agent/claude/b")
+	if err == nil || !strings.Contains(out, "remote: agentbox CAP_REACHED") || !strings.Contains(out, `"what":"push_bytes_day"`) || !strings.Contains(out, `"limit":1,`) {
+		t.Fatalf("push over a 1-byte cap: %v\n%s", err, out)
+	}
+	os.WriteFile(b.s.Budgets, []byte("git.push_bytes_day = -1\n"), 0o644)
+	if out, err := gitTry(w, env, "push", b.url+"/app", "HEAD:refs/heads/agent/claude/c"); err == nil || !strings.Contains(out, "500") {
+		t.Fatalf("push with a bad budgets.toml: %v\n%s", err, out)
+	}
+	for _, r := range []string{"refs/heads/agent/claude/b", "refs/heads/agent/claude/c"} {
+		if _, err := gitTry(Repo(b.s.Root, "claude", "app"), nil, "rev-parse", "-q", "--verify", r); err == nil {
+			t.Fatalf("%s was stored", r)
+		}
 	}
 }

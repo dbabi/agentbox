@@ -4,7 +4,7 @@
 // task that fetches a tainted ref. It holds the GitHub token and runs the remote writes of the registry ops
 // (repo.push, gh.pr.create, gh.*.comment) and repo.merge, each only when rootd sends it an approved op on
 // svc-git.sock, and finds an effect again after a rootd restart (reconcile). It never resolves a name: rootd does,
-// on resolve-git.sock, and the service dials only rootd's answers (§6.3 pinned dialing).
+// on resolve-git.sock, and the service dials only rootd's answers (§6.3 pinned dialing, internal/dial).
 package git
 
 import (
@@ -24,11 +24,10 @@ const (
 	AuditSock   = "/run/agentbox-audit/git.sock"
 	// HooksDir is the release's root-owned hooks dir, core.hooksPath for every local push: only pre-receive is in it.
 	HooksDir = "/var/lib/agentbox/current/git-hooks"
-	// MaxPushBytes is receive.maxInputSize, git's own cap on one push (§6.3), and DayPushBytes the default cap on
-	// each agent's pushed bytes per UTC day (budgets.toml push_bytes_day). shortcut: budgets.toml isn't read yet;
-	// `agentbox git --push-day-bytes` sets it until the budget ops land.
+	// MaxPushBytes is receive.maxInputSize, git's own cap on one push (§6.3). DayCapKey is the budgets.toml key that
+	// caps each agent's pushed bytes per UTC day (4 GiB by default), read at each push.
 	MaxPushBytes = 512 << 20
-	DayPushBytes = 4 << 30
+	DayCapKey    = "git.push_bytes_day"
 	// WebHost serves git over https and APIHost GitHub REST; service.list must name both, port 443.
 	WebHost = "github.com"
 	APIHost = "api.github.com"

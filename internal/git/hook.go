@@ -224,7 +224,7 @@ func Hook(stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string,
 	}
 	var req HookRequest
 	b, err := os.ReadFile(getenv(HookEnv))
-	if err != nil || json.Unmarshal(b, &req) != nil || !reAgent.MatchString(req.Agent) || !ValidProject(req.Project) || req.DayCap <= 0 {
+	if err != nil || json.Unmarshal(b, &req) != nil || !reAgent.MatchString(req.Agent) || !ValidProject(req.Project) || req.DayCap < 0 {
 		return fail("no push request from agentbox-git")
 	}
 	aud := Auditor{req.Audit}

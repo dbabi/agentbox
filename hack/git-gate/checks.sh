@@ -82,11 +82,19 @@ check "the stub answers the box; agentbox-git's https goes to it (NAT), admitted
 [ $fails = 0 ] || { echo "fails=$fails"; exit 0; }
 check "service.list names github.com:443 and api.github.com:443 for git" '$B egress allow --svc git --entry github.com:443 >/dev/null &&
   $B egress allow --svc git --entry api.github.com:443 >/dev/null && grep -qx "git github.com:443" /var/lib/agentbox/control/egress/service.list'
-(umask 077 && printf %s "$TOKEN" > /var/lib/agentbox/control/secrets/git/github-token)
-check "the token reaches agentbox-git as a systemd credential, from a root-only dir; another broker can't read it" '
+CS=/var/lib/agentbox/control/credstore.encrypted CRED=/run/credentials/agentbox-git.service
+check "#108: secret set --name github-token (the value on stdin) stores ciphertext only, root 0600, for agentbox-git" '
+  printf "%s\n" "$TOKEN" | $B secret set --name github-token | grep -q "\"service\":\"agentbox-git\"" &&
+  [ "$(stat -c "%U %a" $CS/git $CS/git/github-token)" = "root 700
+root 600" ] && ! grep -qF "$TOKEN" $CS/git/github-token'
+check "#108: agentbox-git alone reads the token, from its own credentials dir; agentbox-proxy and agentbox-keys can't" '
   systemctl restart agentbox-git.service && systemctl is-active -q agentbox-git.service &&
-  [ -e /run/credentials/agentbox-git.service/git_github-token ] && ! runuser -u agentbox-proxy -- cat /run/credentials/agentbox-git.service/git_github-token &&
-  [ "$(stat -c "%U %a" /var/lib/agentbox/control/secrets/git)" = "root 700" ]'
+  [ "$(runuser -u agentbox-git -- cat $CRED/github-token)" = "$TOKEN" ] &&
+  ! runuser -u agentbox-proxy -- cat $CRED/github-token 2>/dev/null && ! runuser -u agentbox-keys -- cat $CRED/github-token 2>/dev/null'
+check "A-G13: agentbox-git runs one more seccomp filter than its unit gives (logged at start, in /proc)" '
+  pid=$(systemctl show -P MainPID agentbox-git.service) && l=$(journalctl -b -u agentbox-git.service -o cat | grep "service filter installed: Seccomp_filters" | tail -1) &&
+  echo "$l" && b=$(echo "$l" | sed -n "s/.*Seccomp_filters \([0-9]*\) -> \([0-9]*\).*/\1/p") && a=$(echo "$l" | sed -n "s/.*-> \([0-9]*\).*/\1/p") &&
+  [ "$a" = $((b + 1)) ] && grep -qx "Seccomp_filters:	$a" /proc/$pid/status'
 mkdir -p $RS/agentboxd.service.d && printf '[Service]\nEnvironment=AGENTBOX_TEST_CLI=sh\n' > $RS/agentboxd.service.d/50-gg.conf
 systemctl daemon-reload && systemctl restart agentboxd.service
 check "three agents: gg for clean work, gt for tainted work, go another agent" 'for a in gg gt go; do $B agent list | grep -q "\"name\":\"$a\"" || $B agent add --name $a || exit 1; done'
@@ -228,17 +236,18 @@ check "#19 control: merging a clean branch leaves main clean" 'wait_end $T5 60 &
   $B pending approve --id $p | grep -q "\"tainted\":false" && [ "$(taint ref:gg/app:refs/heads/main)" != 1 ]'
 
 # --- C-G4: the daily cap, from the quarantine, before anything is stored ---
-mkdir -p $RS/agentbox-git.service.d && printf '[Service]\nExecStart=\nExecStart=/var/lib/agentbox/current/bin/agentbox git --push-day-bytes 4096\n' > $RS/agentbox-git.service.d/50-gg.conf
-systemctl daemon-reload && systemctl restart agentbox-git.service
+# budget.set replaces budgets.toml, and agentbox-git reads git.push_bytes_day at each push: no restart
+printf 'git.push_bytes_day = 4096\n' | $B budget set >/dev/null
 script t6 <<'S'
 repo; head -c 65536 /dev/urandom > big.bin && git add big.bin && git commit -qm big && push refs/heads/agent/gg/big big
 S
 n0=$(find $GIT/gg/app.git/objects -type f | wc -l)
 T6=$(new gg < $G/t6)
-check "C-G4: a push over the daily cap prints CAP_REACHED{push_bytes_day} with its limit and stores no objects" 'wait_end $T6 60 && [ "$(cat $WG/big.rc)" != 0 ] &&
+check "C-G4: a push over the daily cap (budget set git.push_bytes_day = 4096) prints CAP_REACHED{push_bytes_day} with its limit and stores no objects" '
+  wait_end $T6 60 && [ "$(cat $WG/big.rc)" != 0 ] &&
   grep -q "^remote: agentbox CAP_REACHED: " $WG/big.out && grep -q "\"what\":\"push_bytes_day\"" $WG/big.out && grep -q "\"limit\":4096" $WG/big.out &&
   [ "$(find $GIT/gg/app.git/objects -type f | wc -l)" = "$n0" ]'
-rm -f $RS/agentbox-git.service.d/50-gg.conf && systemctl daemon-reload && systemctl restart agentbox-git.service
+: | $B budget set >/dev/null
 
 # --- a git service restart mid-task: the task's socket is bound again, with its canary ---
 script t7 <<'S'

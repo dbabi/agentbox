@@ -80,9 +80,6 @@ func Inventory() []Entry {
 		{Path: "/var/lib/agentbox/control/credstore.encrypted/git", Type: d, User: "root", Group: "root", Mode: 0o700, By: Tmpfiles},
 		// keys' spend ledger (§6.3)
 		{Path: "/var/lib/agentbox/keys", Type: d, User: "agentbox-keys", Group: "agentbox-keys", Mode: 0o700, By: Tmpfiles},
-		// agentbox-git's GitHub token: root only; systemd hands it to the service as a credential (LoadCredential=)
-		{Path: "/var/lib/agentbox/control/secrets", Type: d, User: "root", Group: "root", Mode: 0o700, By: Tmpfiles},
-		{Path: "/var/lib/agentbox/control/secrets/git", Type: d, User: "root", Group: "root", Mode: 0o700, By: Tmpfiles},
 		{Path: "/run/agentbox-witness", Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
 		{Path: "/run/agentbox-witness/t", Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
 		{Path: "/run/agentbox-witness/t/<task>", Type: d, User: "root", Group: "ag-<agent>", Mode: 0o750, By: "rootd (task.start)"},

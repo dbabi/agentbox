@@ -11,8 +11,8 @@
 #          git smart HTTP over bare repos and the REST calls agentbox-git makes) on 127.0.0.1:7900+ID, which vm.sh
 #          forwards to the guest as 10.0.2.2 for this boot only (AGENTBOX_VM_FWD). On the box (hack/git-gate/checks.sh):
 #          the CA in the system store, a NAT rule that sends agentbox-git's https connections to the stub, and an
-#          allow_private4 tuple for it in rootd.db; github.com:443 and api.github.com:443 on service.list; a fake
-#          token as agentbox-git's credential; agents gg, gt and go and their remotes (remote.set). Tasks run as sh
+#          allow_private4 tuple for it in rootd.db; github.com:443 and api.github.com:443 on service.list; the stub's
+#          fake token through secret set; agents gg, gt and go and their remotes (remote.set). Tasks run as sh
 #          scripts (AGENTBOX_TEST_CLI=sh) and talk to the real git.sock through the in-task forwarder on :8082 and to
 #          the gate with `agentbox gate call`. Covers:
 #          #19: remote writes only through registry ops and only to the agent's own remotes (a direct push fails, a
@@ -26,10 +26,11 @@
 #          writes audit and alerts; a gh.pr.create body with it is refused; a clean push still succeeds; a gitleaks
 #          credential pattern in a push alerts; a git service restart mid-task keeps the task's socket and canary.
 #          C-G4: a push to refs/heads/main prints REF_OUTSIDE_NAMESPACE and the JSON line; a push over the daily cap
-#          prints CAP_REACHED{push_bytes_day} and stores no objects; a missing repo and another agent's give
+#          (budget set git.push_bytes_day) prints CAP_REACHED{push_bytes_day} and stores no objects; a missing repo and another agent's give
 #          byte-identical 404s 200 ms or more after receipt; a fake 422 gives REMOTE_REJECTED and its text reaches no
-#          task byte. Then: the stub's token in no audit record or journal line, the audit chain, sockets, fwcheck,
-#          no failed units.
+#          task byte. #108: the token is ciphertext at rest, and only agentbox-git reads it. A-G13: agentbox-git
+#          installs the service seccomp filter. Then: the stub's token in no audit record or journal line, the audit
+#          chain, sockets, fwcheck, no failed units.
 # Not covered: a real GitHub repo and token, and the task's read taint on fetch (go test covers it: every task of an
 # agent shares one workspace, so the box has no clean task once one is tainted).
 # PASS/FAIL lines go to .vm/git-gate.txt, command output to .vm/git-gate.log; exit 1 on any FAIL.
