@@ -126,7 +126,7 @@ Without KVM the gate still runs, but in software emulation, which is much slower
 | `internal/ntfy/` | ntfy's config, ACLs, unit drop-in and fwcheck's ntfy check. |
 | `internal/rootd/accounts/`, `internal/task/`, `internal/seccomp/`, `internal/rootd/attach/` | Agent accounts, the task container and its seccomp profile, and interactive sessions. |
 | `internal/taskenv/`, `internal/taskrun/`, `internal/rootd/witness/`, `image/task/` | The task environment, the in-task forwarders and `agentbox why`, the witness pipe, and the test task image. |
-| `internal/proxy/` | The egress proxy: CONNECT checks, the root daemon's resolution, taint and tunnels. |
+| `internal/proxy/`, `internal/dial/` | The egress proxy (CONNECT checks, taint and tunnels), and the pinned dialer the brokers share, which asks the root daemon and dials only its addresses. |
 | `sysusers.d/`, `tmpfiles.d/` | The service users and runtime directories the release installs under `/usr/lib`. |
 | `install/install.sh` | The release installer. Firstboot runs it with `--from-firstboot`. |
 | `systemd/` | The units in the release: health and reconcile, the firewall, auditd and its sockets, rootd and its sockets, the proxy and its socket, and the agent stand-in the gates use. |
@@ -311,6 +311,8 @@ Then run the gate that covers what you changed:
 | `internal/task/`, `internal/seccomp/`, task start and stop in `internal/rootd/` | `hack/tasks-gate.sh` |
 | `internal/rootd/attach/`, `internal/controlpaths/` | `hack/attach-gate.sh` |
 | `internal/taskenv/`, `internal/taskrun/`, `internal/rootd/witness/`, `image/task/` | `hack/taskenv-gate.sh` |
+| `internal/proxy/`, `cmd/agentbox/proxy.go` | `hack/proxy-gate.sh` |
+| `internal/dial/` | `hack/dial-gate.sh`, then `hack/proxy-gate.sh` |
 | `hack/release/`, `install/install.sh` | `hack/gate.sh none`. Every install gate builds test releases, and firstboot installs one. |
 | `systemd/` | `hack/apply-gate.sh tpm2 install setup cycles`. The health timer commits each trial. |
 | `hack/vm.sh`, `hack/remaster-iso.sh`, `hack/SHA256SUMS` | `hack/gate.sh none`. Add `hack/gate.sh none bios` if the change touches the amd64 VM. |
