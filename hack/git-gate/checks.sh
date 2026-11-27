@@ -9,6 +9,8 @@ G=/run/gg B=/var/lib/agentbox/current/bin/agentbox RS=/run/systemd/system
 DB=/var/lib/agentbox/rootd.db TDB=/var/lib/agentbox/audit/taint.db GIT=/var/lib/agentbox/git A=/var/lib/agentbox/audit
 WS=/var/lib/agentbox/data/workspaces
 check() { if (eval "$2") >>$G/check.log 2>&1; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails+1)); fi; }
+# git as root on the service's repos: they are agentbox-git's, so root needs safe.directory
+git() { command git -c safe.directory='*' "$@"; }
 # stub PATH: the stub's own control, from root on the box (vmnet forwards 10.0.2.2:UP to the host's 127.0.0.1:UP)
 stub() { curl -sf --cacert $G/ca.pem --resolve "api.github.com:$UP:10.0.2.2" "https://api.github.com:$UP/_gate/$1"; }
 posts() { stub state | python3 -c 'import json,sys; print(json.load(sys.stdin)["posts"])'; }
@@ -55,16 +57,27 @@ check "svc-git.sock listens from boot and starts agentbox-git, as agentbox-git (
   [ "$(systemctl show -P User agentbox-git.service)" = agentbox-git ] &&
   [ "$(stat -c "%U:%G %a" /run/agentbox-rootd/svc-git.sock)" = "agentbox-git:root 600" ] && [ "$(stat -c "%U %a" $GIT)" = "agentbox-git 700" ] &&
   [ "$(stat -c "%U %a" /var/lib/agentbox/current/git-hooks/pre-receive)" = "root 755" ] && git --version'
+# a rerun starts from empty workspaces: a canary an earlier run left there would block the agent's tasks at the next
+# credential scan (issue #289)
+for a in gg gt go; do [ ! -d $WS/$a ] || find $WS/$a -mindepth 1 -delete; done
 cp $G/ca.pem /usr/local/share/ca-certificates/agentbox-git-gate.crt && update-ca-certificates >/dev/null 2>&1
 U=$(id -u agentbox-git)
 # every https connection agentbox-git opens goes to the stub; the agentbox table then sees 10.0.2.2:UP, which only
 # this allow_private4 tuple admits (the gate's stand-in for GitHub's own addresses)
+nft delete table ip gg 2>/dev/null
 nft -f - <<N
-table ip gg { chain out { type nat hook output priority -100; meta skuid $U tcp dport 443 dnat to 10.0.2.2:$UP; } }
+table ip gg {
+  chain out {
+    type nat hook output priority -100;
+    meta skuid $U tcp dport 443 dnat to 10.0.2.2:$UP
+  }
+}
 N
 python3 -c "import sqlite3; c=sqlite3.connect('$DB'); c.execute(\"insert or ignore into set_elements values ('allow_private4', '$U . 10.0.2.2 . $UP', NULL)\"); c.commit()"
-check "the stub answers the box; agentbox-git's allow_private4 tuple is in nft" '$B egress refill >/dev/null && stub state >/dev/null &&
-  nft list set inet agentbox allow_private4 | grep -q "10.0.2.2 . $UP"'
+check "the stub answers the box; agentbox-git's https goes to it (NAT), admitted by its allow_private4 tuple" '$B egress refill >/dev/null && stub state >/dev/null &&
+  nft list table ip gg | grep -q "dnat to 10.0.2.2:$UP" && nft list set inet agentbox allow_private4 | grep -q "10.0.2.2 . $UP"'
+# without the NAT rule, agentbox-git would reach the real GitHub: stop before any GitHub name is allowed
+[ $fails = 0 ] || { echo "fails=$fails"; exit 0; }
 check "service.list names github.com:443 and api.github.com:443 for git" '$B egress allow --svc git --entry github.com:443 >/dev/null &&
   $B egress allow --svc git --entry api.github.com:443 >/dev/null && grep -qx "git github.com:443" /var/lib/agentbox/control/egress/service.list'
 (umask 077 && printf %s "$TOKEN" > /var/lib/agentbox/control/secrets/git/github-token)
@@ -74,7 +87,7 @@ check "the token reaches agentbox-git as a systemd credential, from a root-only 
   [ "$(stat -c "%U %a" /var/lib/agentbox/control/secrets/git)" = "root 700" ]'
 mkdir -p $RS/agentboxd.service.d && printf '[Service]\nEnvironment=AGENTBOX_TEST_CLI=sh\n' > $RS/agentboxd.service.d/50-gg.conf
 systemctl daemon-reload && systemctl restart agentboxd.service
-check "three agents: gg for clean work, gt for tainted work, go another agent" '$B agent add --name gg && $B agent add --name gt && $B agent add --name go'
+check "three agents: gg for clean work, gt for tainted work, go another agent" 'for a in gg gt go; do $B agent list | grep -q "\"name\":\"$a\"" || $B agent add --name $a || exit 1; done'
 check "remote.set reads the node id and visibility from GitHub and makes the local repo; an off-GitHub URL is refused" '
   $B remote set --id gg-origin --agent gg --project app --url https://github.com/acme/app &&
   $B remote set --id gt-origin --agent gt --project app --url https://github.com/acme/app.git &&
@@ -91,7 +104,11 @@ repo; echo hello > a.txt && git add a.txt && git commit -qm clean && git rev-par
 push refs/heads/agent/gg/clean clean
 push refs/heads/main main
 for p in nosuch other; do curl -s -o /workspace/404-$p.body -w '%{http_code} %{time_starttransfer}\n' "http://127.0.0.1:8082/$p/info/refs?service=git-upload-pack" > /workspace/404-$p.meta; done
-env > /workspace/env.txt; cp ~/.netrc /workspace/netrc.txt; cp ~/.config/gh/hosts.yml /workspace/hosts.txt
+# the decoys are checked here: a copy of the canary in the workspace would block the agent at its next credential scan
+c=$GITHUB_TOKEN
+{ [ "$ANTHROPIC_API_KEY" = "$c" ] && printf %s "$c" | grep -Eq '^sk-ant-''api03-[A-Za-z0-9_-]{93}AA$' && grep -qxF "  password $c" ~/.netrc &&
+  grep -qxF "    oauth_token: $c" ~/.config/gh/hosts.yml; } && echo ok > /workspace/decoys.ok
+env | grep -v -e '^ANTHROPIC_API_KEY=' -e '^GITHUB_TOKEN=' > /workspace/env.txt
 git push https://github.com/acme/app.git HEAD:refs/heads/agent/gg/direct > /workspace/direct.out 2>&1; echo $? > /workspace/direct.rc
 o=$(cat /workspace/clean.oid)
 op repo.push "{\"remote\":\"gg-origin\",\"ref\":\"refs/heads/agent/gg/clean\",\"oid\":\"$o\"}" op-push
@@ -112,9 +129,7 @@ check "C-G4: a missing repo and another agent's give byte-identical text/plain 4
   grep -q "^agentbox NOT_FOUND_OR_NOT_OWNED: " $WG/404-nosuch.body && [ -d $GIT/go/other.git ] &&
   python3 -c "import sys; t=[float(x) for x in sys.argv[1:]]; print(t); sys.exit(0 if all(0.200 <= x <= 0.215 for x in t) else 1)" $t1 $t2'
 check "#105: the canary is in the key slot, GITHUB_TOKEN, ~/.netrc and gh hosts.yml, vendor-shaped; the box's token is nowhere in the task" '
-  c=$(sed -n "s/^GITHUB_TOKEN=//p" $WG/env.txt) && [ "$(sed -n "s/^ANTHROPIC_API_KEY=//p" $WG/env.txt)" = "$c" ] &&
-  printf %s "$c" | grep -Eq "^sk-ant-api03-[A-Za-z0-9_-]{93}AA$" && grep -q "password $c" $WG/netrc.txt && grep -q "oauth_token: $c" $WG/hosts.txt &&
-  ! grep -rqs "$TOKEN" $WG'
+  [ "$(cat $WG/decoys.ok)" = ok ] && [ -s $WG/env.txt ] && ! grep -rqs "$TOKEN" $WG'
 check "#19: a task has no route to GitHub of its own: a direct push fails" '[ "$(cat $WG/direct.rc)" != 0 ]'
 P1=$(pnd $WG/op-push) P2=$(pnd $WG/op-pr)
 check "#19: repo.push to the agent's own remote waits for a human (NEEDS_SIGNATURE, cli); nothing reached the remote" '[ -n "$P1" ] &&

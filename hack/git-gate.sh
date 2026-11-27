@@ -60,6 +60,9 @@ up() { [ -f "$VM/git-gate.fwd" ] && running && return 0; ! running || vm_off; rm
   { AGENTBOX_VM_FWD=$UP_PORT hack/vm.sh boot >>"$LOG" 2>&1 & }; wait_boot none 900 || die "no SSH (see $VM/boot-*.log)"
   echo '[ "$(timeout 600 systemctl is-system-running --wait)" = running ] || systemctl --failed --no-pager' | root >>"$LOG" 2>&1 || :
   touch "$VM/git-gate.fwd"; }
+# journal: the services' journals, the check output and the stub's log, for the evidence
+journal() { echo 'journalctl -b -u agentbox-git -u agentbox-rootd -o short-precise --no-pager | tail -600; cat /run/gg/check.log' | root > "$VM/git-gate-journal.txt" 2>&1 || :
+  cp "$VM/git-gate/stub.log" "$VM/git-gate-stub.txt" 2>/dev/null || :; }
 # guest PHASE: run checks.sh PHASE on the box with the stub's port and token
 guest() {
   { printf 'mkdir -p /run/gg && cat > /run/gg/checks.sh <<"GGEOF"\nUP=%s TOKEN=%s\n' "$UP_PORT" "$TOKEN"; cat hack/git-gate/checks.sh; printf 'GGEOF\nsh /run/gg/checks.sh %s\n' "$1"; } |
@@ -98,9 +101,9 @@ checks)
   { echo x; cat "$K/stub/ca.pem"; } | hack/vm.sh ssh 'sudo -S -p "" sh -c "mkdir -p /run/gg && cat > /run/gg/ca.pem"' || die "copy the CA"
   CHECKED=1
   guest setup
+  ! grep -q '^FAIL' "$OUT" || { journal; die "the box setup failed; see $OUT and $VM/git-gate-journal.txt"; }
   guest main
-  echo 'journalctl -b -u agentbox-git -u agentbox-rootd -o short-precise --no-pager | tail -400; cat /run/gg/check.log' | root > "$VM/git-gate-journal.txt" 2>&1 || :
-  cp "$K/stub.log" "$VM/git-gate-stub.txt" 2>/dev/null || : ;;
+  journal ;;
 *) die "unknown stage $s (install, release, checks)" ;;
 esac; done
 [ -n "${CHECKED:-}" ] || exit 0

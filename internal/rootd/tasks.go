@@ -578,8 +578,9 @@ func (t *tasks) end(id, agent, reason string, leftover bool) (int64, error) {
 	if _, err := tx.Exec(`DELETE FROM task_canaries WHERE task=?`, id); err != nil {
 		return 0, err
 	}
-	// §4.2 step 6: open asks stay until they expire only if the task completed
-	if reason != "completed" {
+	// §4.2 step 6: open asks stay until they expire only if the task completed. Only the stop that ends the row
+	// decides: a later one (the unit's cgroup emptying) carries no end reason of the task's own
+	if n == 1 && reason != "completed" {
 		if _, err := tx.Exec(`UPDATE pending SET state='denied', reason='TASK_ENDED' WHERE task=? AND state IN ('pending','approved')`, id); err != nil {
 			return 0, err
 		}

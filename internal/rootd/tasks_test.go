@@ -462,3 +462,27 @@ func TestProbeFailedAlert(t *testing.T) {
 		}
 	}
 }
+
+// §4.2 step 6: a task that completes keeps its open asks until they expire; any other end denies them. Only the stop
+// that ends the row decides: the second stop, when the unit's cgroup empties, carries no end reason of the task's.
+func TestStopKeepsAsksOfACompletedTask(t *testing.T) {
+	r := newRig(t)
+	for _, reason := range []string{"completed", "canceled"} {
+		id := ids.New(ids.Task)
+		if rep := r.t.start(id, "claude", "daemon"); rep["ok"] != true {
+			t.Fatalf("start: %v", rep)
+		}
+		p := ids.New(ids.Pending)
+		if _, err := r.db.Exec(`INSERT INTO pending(id, task, agent, op, bound, h, nonce, state, match_key, expires_at, created_at)
+			VALUES(?,?,?,'{}','{}',?,?,'pending','k',2,1)`, p, id, "claude", p, p); err != nil {
+			t.Fatal(err)
+		}
+		r.t.stop(id, reason)
+		r.t.stop(id, "failed") // the watcher's stop once the cgroup is empty
+		var st string
+		r.db.QueryRow(`SELECT state FROM pending WHERE id=?`, p).Scan(&st)
+		if want := map[string]string{"completed": "pending", "canceled": "denied"}[reason]; st != want {
+			t.Fatalf("%s: the open ask is %s, want %s", reason, st, want)
+		}
+	}
+}
