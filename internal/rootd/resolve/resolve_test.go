@@ -29,6 +29,9 @@ func TestCheckPrefix(t *testing.T) {
 		"2001:db8::1": "private6", "64:ff9b:1::1": "private6", "100::1": "private6", "3fff::10": "private6",
 		"2001:2::5": "private6", "2001:1ff::1": "private6", "5f00::1": "private6", "2001:200::1": "",
 		"64:ff9b::a00:1": "nat64_private", "64:ff9b::7f00:1": "nat64_private", "fe80::1%eth0": "zoned",
+		// 6to4 (RFC 3056) wraps an IPv4 address in bits 16-47, as NAT64 does in its low bits (#219 R147)
+		"2002:c0a8:10a::1": "6to4_private", "2002:a00:1:2::3": "6to4_private", "2002:f000:1::": "6to4_private",
+		"2002:5db8:d70e::1": "",
 	} {
 		if got := CheckPrefix(netip.MustParseAddr(a)); got != want {
 			t.Errorf("CheckPrefix(%s) = %q, want %q", a, got, want)
@@ -300,8 +303,8 @@ func TestParseVarlink(t *testing.T) {
 }
 
 // The reply's flags say where resolved got the answer: DNS from the network or its cache passes, with or without
-// DNSSEC and DoT. A resolve hook's answer (systemd 259, #145) and a synthesized one (/etc/hosts) are refused non_public,
-// and the detail names why.
+// DNSSEC and DoT. A resolve hook's answer (systemd 259, #145), a synthesized one (/etc/hosts) and one from the local
+// zone are refused non_public, and the detail names why.
 func TestParseVarlinkFlags(t *testing.T) {
 	reply := func(flags uint64) []byte {
 		return fmt.Appendf(nil, `{"parameters":{"addresses":[{"family":2,"address":[93,184,215,14]}],"name":"a.example","flags":%d}}`, flags)
@@ -313,7 +316,7 @@ func TestParseVarlinkFlags(t *testing.T) {
 		}
 	}
 	for f, want := range map[uint64]string{dns | sdResolvedFromHook: "from_hook", sdResolvedFromHook | fromNetwork: "from_hook",
-		dns | authenticated | confidential | sdResolvedSynthetic: "synthetic"} {
+		dns | authenticated | confidential | sdResolvedSynthetic: "synthetic", 1<<1 | sdResolvedFromZone: "from_zone"} {
 		_, err := parseVarlink(reply(f))
 		if r, ok := err.(*Refused); !ok || r.Reason != NonPublic || !strings.HasPrefix(r.Detail, want+" (answers [93.184.215.14])") {
 			t.Errorf("flags %#x: %v, want non_public %s", f, err, want)

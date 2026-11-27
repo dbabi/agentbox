@@ -26,9 +26,10 @@ const (
 
 // Reply flags that mark an answer resolved did not get over DNS (systemd src/shared/resolved-def.h). No request flag
 // turns the hooks off: since systemd 259 any privileged service with a socket in /run/systemd/resolve.hook/ may answer
-// (#145).
+// (#145). ResolveFlags keep the other two out; they are checked again here.
 const (
-	sdResolvedSynthetic = 1 << 19 // /etc/hosts, localhost, _gateway: NO_SYNTHESIZE keeps them out; checked again here
+	sdResolvedSynthetic = 1 << 19 // /etc/hosts, localhost, _gateway
+	sdResolvedFromZone  = 1 << 21 // the box's own LLMNR and mDNS records
 	sdResolvedFromHook  = 1 << 27
 )
 
@@ -131,6 +132,8 @@ func parseVarlink(msg []byte) ([]netip.Addr, error) {
 		return nil, &Refused{NonPublic, fmt.Sprintf("from_hook (answers %v)", out)}
 	case f&sdResolvedSynthetic != 0:
 		return nil, &Refused{NonPublic, fmt.Sprintf("synthetic (answers %v)", out)}
+	case f&sdResolvedFromZone != 0:
+		return nil, &Refused{NonPublic, fmt.Sprintf("from_zone (answers %v)", out)}
 	}
 	return out, nil
 }
