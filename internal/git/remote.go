@@ -26,7 +26,7 @@ type Pusher struct {
 func (p Pusher) env(ctx context.Context) ([]string, error) {
 	addrs, err := dial.Resolve(ctx, p.Sock, "", WebHost, 443)
 	if err != nil {
-		return nil, &APIError{"unreachable", "resolve " + WebHost + ": " + err.Error()}
+		return nil, &APIError{What: "unreachable", Detail: "resolve " + WebHost + ": " + err.Error()}
 	}
 	var l []string
 	for _, a := range addrs {
@@ -59,14 +59,14 @@ func pushError(err error, stderr []byte) *APIError {
 	low := strings.ToLower(s)
 	switch {
 	case strings.Contains(s, "GH013") || strings.Contains(low, "rule violation") || strings.Contains(low, "protected branch"):
-		return &APIError{"ruleset", d}
+		return &APIError{What: "ruleset", Detail: d}
 	case strings.Contains(low, "could not resolve") || strings.Contains(low, "failed to connect") || strings.Contains(low, "timed out") ||
 		strings.Contains(low, "connection refused") || strings.Contains(low, "unreachable"):
-		return &APIError{"unreachable", d}
+		return &APIError{What: "unreachable", Detail: d}
 	case strings.Contains(low, "not found") || strings.Contains(low, "404"):
-		return &APIError{"not_found", d}
+		return &APIError{What: "not_found", Detail: d}
 	}
-	return &APIError{"other", d}
+	return &APIError{What: "other", Detail: d}
 }
 
 // Push pushes oid from repo to ref of the remote at url (`git push --porcelain <url> <oid>:<ref>`), never forced: a

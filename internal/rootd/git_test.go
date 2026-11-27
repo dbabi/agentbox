@@ -472,3 +472,70 @@ func TestRemoteSet(t *testing.T) {
 }
 
 var _ = git.Bound{}
+
+// An exec whose outcome is unknown (#316: GitHub answered 502, or the request timed out after it left) is reconciled,
+// never recorded failed: found by its marker it is executed, with one POST. Not found, it ends indeterminate and is
+// re-offered; a resubmission once the re-offer expired keeps the first ask's marker, so a second post is findable.
+func TestGitUnknownReconciled(t *testing.T) {
+	g := newGitRig(t)
+	g.s.db.Exec(`UPDATE task_registry SET asks_budget=10 WHERE task=?`, g.task)
+	found := true
+	g.gitFn = func(m map[string]any) (map[string]any, error) {
+		switch m["call"] {
+		case "exec":
+			return map[string]any{"ok": false, "unknown": true, "what": "unreachable", "detail": "POST /repos/acme/app/issues/7/comments: 502 Bad Gateway"}, nil
+		case "reconcile":
+			if !found {
+				return map[string]any{"ok": true, "found": false}, nil
+			}
+		}
+		return g.fakeGit(m)
+	}
+	calls := func(c string) (n int) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		for _, x := range g.calls {
+			if x["call"] == c {
+				n++
+			}
+		}
+		return n
+	}
+	args := map[string]any{"remote": "origin", "number": 7, "body": "hello"}
+	d := denialOf(t, "gh.pr.comment", args, g.op("gh.pr.comment", args))
+	if ap := g.s.pendingAdmin(request{Op: "pending.approve", ID: d.ID}, "boxadmin:admin"); ap["state"] != "executed" || g.execs() != 1 || calls("reconcile") != 1 {
+		t.Fatalf("an unknown outcome GitHub stored: %v, %d execs, %d reconciles", ap, g.execs(), calls("reconcile"))
+	}
+	if !strings.Contains(g.chain(), `"status":"executed"`) || strings.Contains(g.chain(), `"status":"failed"`) {
+		t.Errorf("the chain: %s", g.chain())
+	}
+
+	found = false
+	args = map[string]any{"remote": "origin", "number": 7, "body": "again"}
+	d = denialOf(t, "gh.pr.comment", args, g.op("gh.pr.comment", args))
+	if ap := g.s.pendingAdmin(request{Op: "pending.approve", ID: d.ID}, "boxadmin:admin"); ap["state"] != "indeterminate" || g.execs() != 2 {
+		t.Fatalf("an unknown outcome reconcile can't find: %v, %d execs", ap, g.execs())
+	}
+	var re string
+	if err := g.s.db.QueryRow(`SELECT id FROM pending WHERE task=? AND state='pending'`, g.task).Scan(&re); err != nil {
+		t.Fatalf("no re-offer: %v", err)
+	}
+	g.s.db.Exec(`UPDATE pending SET state='expired' WHERE id=?`, re)
+	d2 := denialOf(t, "gh.pr.comment", args, g.op("gh.pr.comment", args))
+	var bound string
+	g.s.db.QueryRow(`SELECT bound FROM pending WHERE id=?`, d2.ID).Scan(&bound)
+	var b git.Bound
+	if d2.Code != "NEEDS_SIGNATURE" || d2.ID == d.ID || d2.ID == re || json.Unmarshal([]byte(bound), &b) != nil || b.Marker != d.ID {
+		t.Fatalf("the resubmission: %s %s, bound %s; want the marker of %s", d2.Code, d2.ID, bound, d.ID)
+	}
+	g.gitFn = g.fakeGit
+	if ap := g.s.pendingAdmin(request{Op: "pending.approve", ID: d2.ID}, "boxadmin:admin"); ap["state"] != "executed" {
+		t.Fatalf("approving the resubmission: %v", ap)
+	}
+	g.mu.Lock()
+	last := g.calls[len(g.calls)-1]
+	g.mu.Unlock()
+	if a, _ := last["args"].(map[string]any); last["call"] != "exec" || a["body"] != "again"+git.Marker(d.ID) {
+		t.Errorf("the exec of the resubmission: %v", last)
+	}
+}

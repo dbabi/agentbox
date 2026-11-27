@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -42,10 +44,14 @@ func Token() (string, error) {
 }
 
 // APIError is a remote write GitHub refused, or one that never reached it. What is the REMOTE_REJECTED what a task
-// sees; Detail (GitHub's status and text) goes only to the DENY record and the journal.
+// sees; Detail (GitHub's status and text) goes only to the DENY record and the journal. Unknown is a write whose
+// request left but whose outcome GitHub never made plain: a timeout or a reset after it was sent, a 5xx, or a 2xx
+// reply that doesn't read. GitHub may have stored it, so rootd reconciles it by its op marker and never resends it
+// (§5.3, #316).
 type APIError struct {
-	What   string
-	Detail string
+	What    string
+	Detail  string
+	Unknown bool
 }
 
 func (e *APIError) Error() string { return e.What + ": " + e.Detail }
@@ -67,7 +73,7 @@ const maxAPIBody = 8 << 20
 func (g *GitHub) do(ctx context.Context, method, path string, in, out any) error {
 	tok, err := g.Token()
 	if err != nil {
-		return &APIError{"other", err.Error()}
+		return &APIError{What: "other", Detail: err.Error()}
 	}
 	var body io.Reader
 	if in != nil {
@@ -76,6 +82,17 @@ func (g *GitHub) do(ctx context.Context, method, path string, in, out any) error
 			return err
 		}
 		body = bytes.NewReader(b)
+	}
+	// sent: the whole request was written once, so GitHub may act on it whatever comes back
+	var sent atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{WroteRequest: func(i httptrace.WroteRequestInfo) {
+		if i.Err == nil {
+			sent.Store(true)
+		}
+	}})
+	maybe := func(e *APIError) *APIError {
+		e.Unknown = method != http.MethodGet && sent.Load()
+		return e
 	}
 	req, err := http.NewRequestWithContext(ctx, method, g.API+path, body)
 	if err != nil {
@@ -90,23 +107,27 @@ func (g *GitHub) do(ctx context.Context, method, path string, in, out any) error
 	}
 	resp, err := g.HTTP.Do(req)
 	if err != nil {
-		return &APIError{"unreachable", method + " " + path + ": " + err.Error()}
+		return maybe(&APIError{What: "unreachable", Detail: method + " " + path + ": " + err.Error()})
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIBody))
 	if err != nil {
-		return &APIError{"unreachable", method + " " + path + ": " + err.Error()}
+		return maybe(&APIError{What: "unreachable", Detail: method + " " + path + ": " + err.Error()})
 	}
 	if resp.StatusCode/100 == 2 {
 		if out == nil {
 			return nil
 		}
 		if err := json.Unmarshal(b, out); err != nil {
-			return &APIError{"other", method + " " + path + ": a 2xx reply that is not JSON"}
+			return maybe(&APIError{What: "other", Detail: method + " " + path + ": a 2xx reply that is not JSON"})
 		}
 		return nil
 	}
-	return apiError(method+" "+path, resp, b)
+	e := apiError(method+" "+path, resp, b)
+	if resp.StatusCode >= 500 {
+		return maybe(e) // a 502 or 504 can come after GitHub stored the write
+	}
+	return e
 }
 
 // apiError maps a GitHub refusal to its REMOTE_REJECTED what (§5.6): GitHub's text stays in Detail.
@@ -116,19 +137,19 @@ func apiError(what string, resp *http.Response, b []byte) *APIError {
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode == http.StatusForbidden && (resp.Header.Get("X-Ratelimit-Remaining") == "0" ||
 		strings.Contains(strings.ToLower(msg), "rate limit")):
-		return &APIError{"rate_limited", d}
+		return &APIError{What: "rate_limited", Detail: d}
 	case resp.StatusCode == http.StatusNotFound:
-		return &APIError{"not_found", d}
+		return &APIError{What: "not_found", Detail: d}
 	case resp.StatusCode == http.StatusUnprocessableEntity && strings.Contains(msg, "pull request already exists"):
-		return &APIError{"pr_exists", d}
+		return &APIError{What: "pr_exists", Detail: d}
 	case resp.StatusCode == http.StatusUnprocessableEntity && strings.Contains(msg, "No commits between"):
-		return &APIError{"no_commits", d}
+		return &APIError{What: "no_commits", Detail: d}
 	case resp.StatusCode == http.StatusConflict && strings.Contains(strings.ToLower(msg), "rule"):
-		return &APIError{"ruleset", d}
+		return &APIError{What: "ruleset", Detail: d}
 	case resp.StatusCode >= 500:
-		return &APIError{"unreachable", d}
+		return &APIError{What: "unreachable", Detail: d}
 	}
-	return &APIError{"other", d}
+	return &APIError{What: "other", Detail: d}
 }
 
 // RepoInfo is what remote.set stores and execution re-checks (§5.3 Remote re-check).
@@ -146,10 +167,10 @@ func (g *GitHub) Repo(ctx context.Context, owner, repo string) (RepoInfo, error)
 	switch r.Visibility {
 	case "private", "internal", "public":
 	default:
-		return r, &APIError{"other", "GET /repos: no visibility in the reply"}
+		return r, &APIError{What: "other", Detail: "GET /repos: no visibility in the reply"}
 	}
 	if r.NodeID == "" || len(r.NodeID) > 128 {
-		return r, &APIError{"other", "GET /repos: no node_id in the reply"}
+		return r, &APIError{What: "other", Detail: "GET /repos: no node_id in the reply"}
 	}
 	return r, nil
 }
@@ -168,7 +189,7 @@ func (g *GitHub) Login(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if u.Login == "" {
-		return "", &APIError{"other", "GET /user: no login"}
+		return "", &APIError{What: "other", Detail: "GET /user: no login"}
 	}
 	g.login = u.Login
 	return u.Login, nil

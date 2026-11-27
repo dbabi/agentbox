@@ -10,15 +10,18 @@
 # checks   a stub GitHub on the host (hack/git-gate/stub: TLS for github.com and api.github.com from a throwaway CA,
 #          git smart HTTP over bare repos and the REST calls agentbox-git makes) on 127.0.0.1:7900+ID, which vm.sh
 #          forwards to the guest as 10.0.2.2 for this boot only (AGENTBOX_VM_FWD). On the box (hack/git-gate/checks.sh):
-#          the CA in the system store, a NAT rule that sends agentbox-git's https connections to the stub, and an
-#          allow_private4 tuple for it in rootd.db; github.com:443 and api.github.com:443 on service.list; the stub's
+#          the CA in the system store; hack/gate-dns answering github.com and api.github.com with public-looking
+#          addresses, a NAT rule with a counter that sends only agentbox-git's https connections to those addresses to
+#          the stub, and an allow_private4 tuple for it in rootd.db; github.com:443 and api.github.com:443 on
+#          service.list; the stub's
 #          fake token through secret set; agents gg, gt and go and their remotes (remote.set). Tasks run as sh
 #          scripts (AGENTBOX_TEST_CLI=sh) and talk to the real git.sock through the in-task forwarder on :8082 and to
 #          the gate with `agentbox gate call`. Covers:
 #          #19: remote writes only through registry ops and only to the agent's own remotes (a direct push fails, a
 #          local push reaches no remote, another agent's remote and a missing one are one NOT_FOUND_OR_NOT_OWNED,
 #          nothing reaches the stub before an approval); repo.push and gh.pr.create succeed once approved, the PR body
-#          ends with the op marker, and the git nft drop counters stay at 0; rootd killed between a comment POST and
+#          ends with the op marker, agentbox-git dialed only rootd's answers, and the git nft drop counters stay at 0
+#          and rise for a dial of another address; rootd killed between a comment POST and
 #          its RESULT: reconcile finds the marker and writes RESULT, with no second comment; a tainted task's push
 #          taints its ref and its commit; merging the tainted branch taints main, merging a clean one doesn't.
 #          #105: the canary in the key slot, GITHUB_TOKEN, ~/.netrc and gh hosts.yml; a push with it in a file,
@@ -94,12 +97,14 @@ checks)
   rm -rf "$K" && mkdir -p "$K/stub"
   TOKEN=gatetoken-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
   go build -o "$K/stub-bin" ./hack/git-gate/stub || die "build the stub"
+  GOOS=linux GOARCH="$(cat "$VM/arch" 2>/dev/null || echo arm64)" CGO_ENABLED=0 go build -o "$K/gate-dns" ./hack/gate-dns || die "build gate-dns"
   "$K/stub-bin" -listen "127.0.0.1:$UP_PORT" -dir "$K/stub" -token "$TOKEN" >"$K/stub.log" 2>&1 &
   SPID=$!
   trap 'kill $SPID 2>/dev/null || :' EXIT
   i=0; until [ -f "$K/stub/ca.pem" ]; do i=$((i+1)); [ $i -lt 50 ] || die "the stub did not start (see $K/stub.log)"; sleep 0.2; done
   up
   { echo x; cat "$K/stub/ca.pem"; } | hack/vm.sh ssh 'sudo -S -p "" sh -c "mkdir -p /run/gg && cat > /run/gg/ca.pem"' || die "copy the CA"
+  { echo x; cat "$K/gate-dns"; } | hack/vm.sh ssh 'sudo -S -p "" sh -c "cat > /run/gg/gate-dns && chmod 0755 /run/gg/gate-dns"' || die "copy gate-dns"
   CHECKED=1
   guest setup
   ! grep -q '^[0-9:]* FAIL' "$OUT" || { journal; die "the box setup failed; see $OUT and $VM/git-gate-journal.txt"; }

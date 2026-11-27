@@ -23,6 +23,10 @@ RestartSec=1
 # repos and their files are the service's alone; git.sock is set 0660 after its bind, in the setgid dir, so it is
 # agentbox-git:ag-<agent> (§2.1)
 UMask=0077
+# the bounds of every agent's git work together (#316): each POST runs git http-backend, with its own threads, and an
+# upload-pack body is read to its first 16 MiB; each task socket takes 16 connections at most
+MemoryMax=4G
+TasksMax=1024
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # no DNS of its own (§6.1): resolved's Varlink and D-Bus sockets are AF_UNIX, which nft never sees
 InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket

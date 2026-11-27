@@ -698,7 +698,10 @@ A subscription login stays in `session-home`, for interactive sessions only.
 - Agents write to GitHub only through registry operations: `repo.push`, `gh.pr.create`, `gh.pr.comment` and `gh.issue.comment`.
   Each one waits for a human. rootd stores it with the remote's URL and GitHub id and the commits it names, re-checks them at approval, and has the git service run it once.
 - Each comment and pull request body ends with a hidden marker. After a restart, rootd finds an interrupted write on GitHub by that marker and never sends it twice.
+  So does a write whose answer leaves it unclear whether GitHub stored it, such as a timeout or a `502`.
 - By default, a push is capped at 512 MiB, and each agent at 4 GiB of pushes per day (`git.push_bytes_day` in the box's budgets).
+- Each task socket takes the keys broker's caps: 16 open connections, a request header within its size and time, and a body that keeps arriving at 256 KiB/s after its first 2 s.
+  Each agent spools at most 2 large pushes at once, and the service runs under a memory and process limit.
 - Taint follows commits.
   A tainted push taints the refs it updates and records its commits, a fetch that may deliver a tainted ref taints the fetcher, and a merge carries taint into the target branch.
 - Each task carries a canary, a fake credential. A push or a GitHub write that holds it is refused, the task is tainted, and you get an alert.

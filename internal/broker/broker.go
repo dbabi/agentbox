@@ -229,6 +229,14 @@ func (s *Server) Live(t *Task) bool {
 	return ok && lt.Agent == t.Agent && lt.Trace == t.Trace
 }
 
+// Listen gives l, a task socket that is not one of s's registrations, the admission of #115: only uid may connect, at
+// most Limits.Conns connections at once, and each connection's first request head within the head caps, every
+// refusal in s's surface (By, Format). id names the task in the log. Its http.Server must set ReadHeaderTimeout to the
+// head time cap, as httpServer does. git, which keeps its own registry, serves its task sockets through it.
+func (s *Server) Listen(l net.Listener, id string, uid uint32) net.Listener {
+	return s.newListener(l, &task{Task: Task{ID: id, UID: uid}})
+}
+
 func (s *Server) httpServer(t *task) *http.Server {
 	l := s.Limits.withDefaults()
 	h := s.Handler(&t.Task)
