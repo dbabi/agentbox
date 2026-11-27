@@ -2,6 +2,7 @@ package keys
 
 import (
 	"encoding/json"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -223,9 +224,9 @@ var urlKeys = []string{"url", "image_url", "file_url", "file_id"}
 // fetch it: the client runs those tools itself, and their egress goes through the proxy.
 func opaque(p path) bool {
 	n := len(p)
+	inTools := slices.Contains(p, "tools")
 	switch {
-	case n == 3 && p[0] == "tools" && (p[2] == "input_schema" || p[2] == "parameters"),
-		n == 4 && p[0] == "tools" && p[2] == "function" && p[3] == "parameters",
+	case n >= 3 && inTools && (p[n-1] == "input_schema" || p[n-1] == "parameters"), // a client tool's own JSON schema
 		n == 5 && p[0] == "messages" && p[2] == "content" && p[4] == "input", // a tool_use's arguments
 		n == 3 && (p[0] == "output_config" || p[0] == "text") && p[1] == "format" && p[2] == "schema",
 		n == 2 && p[0] == "response_format" && p[1] == "json_schema":
@@ -334,18 +335,12 @@ var (
 	parts      = strOr(list(tagged("block_type", inputPart)))
 	inputItems = map[string]obj{
 		"message":                 {"type": nil, "id": str, "role": oneOf("user", "assistant", "system", "developer"), "content": parts, "status": str},
-		"function_call":           {"type": nil, "id": str, "call_id": str, "name": str, "arguments": str, "status": str},
+		"function_call":           {"type": nil, "id": str, "call_id": str, "name": str, "arguments": str, "status": str, "namespace": str},
 		"function_call_output":    {"type": nil, "id": str, "call_id": str, "output": parts, "status": str},
-		"custom_tool_call":        {"type": nil, "id": str, "call_id": str, "name": str, "input": str, "status": str},
+		"custom_tool_call":        {"type": nil, "id": str, "call_id": str, "name": str, "input": str, "status": str, "namespace": str},
 		"custom_tool_call_output": {"type": nil, "id": str, "call_id": str, "output": parts},
 		"reasoning": {"type": nil, "id": str, "summary": list(obj{"type": oneOf("summary_text"), "text": str}.spec()),
 			"content": list(obj{"type": oneOf("reasoning_text"), "text": str}.spec()), "encrypted_content": str, "status": str},
-	}
-	inputItem = func(v any, p path) *rej {
-		if m, ok := v.(map[string]any); ok && m["type"] == nil && m["role"] != nil {
-			return inputItems["message"].check(m, p) // an easy message: role and content, no type
-		}
-		return tagged("block_type", inputItems)(v, p)
 	}
 	openaiTool = obj{"type": nil, "name": str, "description": str, "parameters": nil, "strict": boolean}
 	customTool = obj{"type": nil, "name": str, "description": str, "format": nil}
@@ -358,7 +353,7 @@ var (
 		return obj{"type": oneOf("function", "custom", "allowed_tools"), "name": str, "mode": oneOf("auto", "required"), "tools": list(anyv)}.check(v, p)
 	}
 	reasoning = obj{"effort": oneOf("none", "minimal", "low", "medium", "high", "xhigh"), "summary": oneOf("auto", "concise", "detailed", "none"),
-		"generate_summary": oneOf("auto", "concise", "detailed")}.spec()
+		"generate_summary": oneOf("auto", "concise", "detailed"), "context": str}.spec()
 	strMap = func(v any, p path) *rej {
 		m, ok := v.(map[string]any)
 		if !ok {
@@ -393,9 +388,27 @@ var (
 	}
 )
 
+// responsesTools are a Responses tools list: client tools, server tools the policy allows, and namespaces of either,
+// as Codex groups its tools.
+func responsesTools(allowed func(string) bool, used *[]string) spec {
+	ns := obj{"type": nil, "name": str, "description": str}
+	t := tools(map[string]obj{"function": openaiTool, "custom": customTool, "namespace": ns}, allowed, used)
+	ns["tools"] = t
+	return t
+}
+
 func responsesBody(allowed func(string) bool, used *[]string) obj {
+	items := maps.Clone(inputItems)
+	// Codex's own item for its tools (codex 0.171, which sends x-openai-internal-codex-responses-lite)
+	items["additional_tools"] = obj{"type": nil, "id": str, "role": oneOf("developer", "system", "user"), "tools": responsesTools(allowed, used)}
+	inputItem := func(v any, p path) *rej {
+		if m, ok := v.(map[string]any); ok && m["type"] == nil && m["role"] != nil {
+			return items["message"].check(m, p) // an easy message: role and content, no type
+		}
+		return tagged("block_type", items)(v, p)
+	}
 	return obj{"model": str, "instructions": strOr(list(inputItem)), "input": strOr(list(inputItem)),
-		"tools":       tools(map[string]obj{"function": openaiTool, "custom": customTool}, allowed, used),
+		"tools": responsesTools(allowed, used), "client_metadata": strMap,
 		"tool_choice": toolChoiceAny, "parallel_tool_calls": boolean, "reasoning": reasoning, "store": boolean, "stream": boolean,
 		"stream_options": obj{"include_obfuscation": boolean}.spec(), "include": list(oneOf("reasoning.encrypted_content", "message.output_text.logprobs")),
 		"prompt_cache_key": str, "prompt_cache_retention": oneOf("in-memory", "24h"), "text": textConfig, "max_output_tokens": num,

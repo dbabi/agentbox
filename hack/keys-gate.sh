@@ -188,7 +188,11 @@ check "#108 install.sh made the host key (systemd-creds setup), and rootd gave e
 root:root 700" ] && [ "$(stat -c "%U %a" $CS/keys/anthropic-api-key $CS/keys/openai-api-key $CS/git/github-token)" = "root 600
 root 600
 root 600" ]'
-check "  ... with no key set, keys says so at start" 'journalctl -b -u agentbox-keys -o cat | grep -q "anthropic key not set (agentbox secret set --name anthropic-api-key)"'
+# on a box this gate has not set a key on, keys starts with the placeholders
+if [ ! -e /var/tmp/kg-keys-set ]; then
+  check "  ... with no key set, keys says so at start" 'journalctl -b -u agentbox-keys -o cat | grep -q "anthropic key not set (agentbox secret set --name anthropic-api-key)"'
+fi
+touch /var/tmp/kg-keys-set
 # the vendors' names answer a public-looking address that a nat rule sends to the host's stand-in (see the header)
 systemd-run -q --unit=kg-dns $G/gate-dns -listen 127.0.0.153:53 -upstream 10.0.2.3:53 -a api.anthropic.com=192.88.96.10 -a api.openai.com=192.88.96.11
 mkdir -p /run/systemd/resolved.conf.d && printf '[Resolve]\nDNS=127.0.0.153\nDomains=~.\n' > /run/systemd/resolved.conf.d/90-keys-gate.conf
@@ -312,10 +316,11 @@ def post(c, body, hdr=""):
     c.sendall(("POST /anthropic/v1/messages HTTP/1.1\r\nHost: k\r\nContent-Type: application/json\r\nContent-Length: %d\r\n%s\r\n" % (len(body), hdr)).encode())
     try: c.sendall(body)
     except OSError: pass
-c = conn(); post(c, b"x" * (33 << 20)); print("body", *status(c))
+c = conn(); post(c, b"x" * (33 << 20)); print("body", *status(c)); c.close()
 bomb = gzip.compress(b"\0" * (64 << 20))
-c = conn(); post(c, bomb, "Content-Encoding: gzip\r\n"); print("bomb", *status(c))
-c = conn(); c.sendall(b"POST /anthropic/v1/messages HTTP/1.1\r\nHost: k\r\n"); t = time.time(); r = status(c); print("slowhead", *r, int(time.time() - t))
+c = conn(); post(c, bomb, "Content-Encoding: gzip\r\n"); print("bomb", *status(c)); c.close()
+c = conn(); c.sendall(b"POST /anthropic/v1/messages HTTP/1.1\r\nHost: k\r\n"); t = time.time(); r = status(c); print("slowhead", *r, int(time.time() - t)); c.close()
+time.sleep(0.5) # the refused ones are closed on both sides now, so only the 16 below count
 held = []
 for i in range(16):
     h = conn(); h.sendall(b"POST /anthropic/v1/messages HTTP/1.1\r\nHost: k\r\nContent-Length: 10\r\n\r\n"); held.append(h)
@@ -337,7 +342,8 @@ check "#18 a Claude Code task (--cli claude) runs to completed with 0 rejections
   grep -q "\"path\":\"/v1/messages\"" $G/lcc && ! grep -v "\"auth\":\"ok:$F1\"" $G/lcc | grep -q .'
 grep -o '"beta":\[[^]]*\]' $G/lcc | head -1 > $G/ccbeta
 check "#18 a Codex task (--cli codex) runs to completed with 0 rejections; its requests reach the vendor with the key" '
-  cli ka codex < $G/hi && T=$(cat $G/last) && [ "$(field $T end_reason)" = completed ] && [ "$(deny $T)" = 0 ] && uplog > $G/lcx && cat $G/lcx &&
+  cli ka codex < $G/hi; T=$(cat $G/last); journalctl -b -u agentbox-keys -o cat | grep "task=$T"
+  [ -n "$T" ] && [ "$(field $T end_reason)" = completed ] && [ "$(deny $T)" = 0 ] && uplog > $G/lcx && cat $G/lcx &&
   grep -q "\"path\":\"/v1/responses\"" $G/lcx && ! grep -v "\"auth\":\"ok:$FO\"" $G/lcx | grep -q .'
 # the first beta Claude Code sent, other than claude-code-20250219: keys refuses it, and Claude Code must retry without it
 DB1=$(tr -d '"[]' < $G/ccbeta | sed 's/^beta://' | tr ',' '\n' | grep -v '^claude-code-' | head -1)
@@ -364,8 +370,10 @@ check "C-G4 kb's reply is the same, apart from ids, with ka idle or at its share
   cat $G/kb0 $G/kb1; cmp $G/kb0 $G/kb1 && head -1 $G/kb1 | grep -qx 200'
 printf "keys.day_cap_cents = 10000\nkeys.agent_day_share.ka = 1\n" | $B budget set >/dev/null
 check "C-G4 Claude Code at its share stops within its own retries, and the task result carries KEYS_BUDGET" '
-  cli ka claude < $G/hi && T=$(cat $G/last) && [ "$(deny $T)" -ge 1 ] && [ "$(deny $T)" -le 12 ] &&
-  journalctl -b -u agentboxd -o cat | grep "task $T result: " | grep -vq " 0 denials" && ! uplog | grep -q "\"path\":\"/v1/messages\""'
+  cli ka claude < $G/hi; T=$(cat $G/last); echo "task $T: $(deny $T) denials by keys, end $(field $T end_reason)"
+  journalctl -b -u agentbox-keys -o cat | grep "task=$T"; journalctl -b -u agentboxd -o cat | grep "task $T result: "; uplog | tee $G/lbud
+  [ "$(deny $T)" -ge 1 ] && [ "$(deny $T)" -le 12 ] &&
+  journalctl -b -u agentboxd -o cat | grep "task $T result: " | grep -vq " 0 denials" && ! grep -q "\"path\":\"/v1/messages\"" $G/lbud'
 printf "keys.day_cap_cents = 0\n" | $B budget set >/dev/null
 
 # --- #18: the local LLM (a stand-in for agentbox-llm@task) ---

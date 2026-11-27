@@ -617,16 +617,49 @@ Other task sockets serve 8, but npm keeps up to 15 open to one registry.
 ### The keys broker
 
 - It holds the LLM API keys.
-  A task sees only a local URL and a placeholder key.
-- It allows only a few model endpoints, such as Anthropic's `POST /v1/messages` and OpenAI's `POST /v1/responses`.
+  A task sees only a local URL (`http://127.0.0.1:8081/anthropic`, and `.../openai/v1` for Codex) and a placeholder key.
+- It allows only a few model endpoints: Anthropic's `POST /v1/messages` and `POST /v1/messages/count_tokens`, and OpenAI's `POST /v1/responses`, `POST /v1/chat/completions` and `GET /v1/models`.
+  It answers Claude Code's `HEAD /api/hello` startup probe itself.
 - It checks every request against a closed schema.
-  It rejects fields that make the vendor fetch a URL, such as `mcp_servers` or image URLs.
-- Vendor-side web tools are blocked unless policy allows them, and they taint the task.
+  It rejects fields that make the vendor fetch something or keep state, such as `mcp_servers`, `container`, image or PDF URLs, file IDs and `previous_response_id`.
+  It forces OpenAI's `store` to `false`.
+- It allows a fixed list of beta features.
+  For any other beta value, or a field outside the schema, it answers `400` in the vendor's own wording, so Claude Code retries without it.
+- Tasks set `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` and `CLAUDE_CODE_AUTO_MODE_SERVER=0`.
+  So Claude Code sends only the features the schema allows.
+- Vendor-side web tools are blocked unless policy allows them.
+  An allowed one taints the task before the request leaves.
+  For now that policy is a file, `/var/lib/agentbox/control/keys/server-tools`, with one tool name per line (`web_search`, `web_fetch`).
 - It strips the client's auth and adds the real key.
-- Before it forwards a request, it reserves the worst-case cost against the agent's, the trace's and the day's budgets.
-  Over the hard cap, it answers with a typed 429.
+  It records the request with auditd, and waits for the record to be stored, before it forwards anything.
+- Before it forwards a request, it reserves the worst-case cost against the agent's daily share and the task's trace budget.
+  The daily cap is split among the agents, so one agent's spending never blocks another.
+  Over either limit, it answers `429` with `x-should-retry: false`.
+- It checks every reply for the key: as sent, base64-encoded or URL-encoded, even when the key is split across chunks.
+  A reply with the key never reaches the task. Keys answers `502` instead, or cuts the stream, and raises an alert.
+- A vendor's `401` or `403` becomes keys' own `502`, with no vendor bytes.
+- It caps each request: the header size and time, the body size, before and after `gzip`, and 16 open connections per task.
 - It also fronts the local model.
+  It rebuilds the request from a short field list and names the fields it dropped.
   An instance that served a tainted request serves only tainted requests, until rootd restarts it.
+
+#### Setting the keys
+
+Run these as root on the box. The binary is not on `PATH`, so give its full path. Each command asks for the key without showing it, or reads it from standard input, so the key never lands in your shell history:
+
+```sh
+sudo /var/lib/agentbox/current/bin/agentbox secret set --name anthropic-api-key
+sudo /var/lib/agentbox/current/bin/agentbox secret set --name openai-api-key
+```
+
+rootd encrypts the value with `systemd-creds` and restarts `agentbox-keys`.
+Only that service can read the plaintext, from its own memory-only credentials directory.
+With `tpm2` or `tpm2+tang`, the encryption key is in the TPM.
+With `--encryption none`, it is a file on the same disk, so the encryption only hides the key from a casual look.
+
+Tasks use API keys only.
+`claude setup-token` and other subscription logins don't work in tasks, and Codex tasks use an OpenAI API key.
+A subscription login stays in `session-home`, for interactive sessions only.
 
 ### The git broker
 
@@ -643,7 +676,7 @@ Other task sockets serve 8, but npm keeps up to 15 open to one registry.
 | Secret | Where it lives | Status |
 |---|---|---|
 | LUKS disk key | Unlocked through clevis: the TPM, plus Tang in `tpm2+tang`. The 48-digit install key opens its own key slot. It is kept only in `recovery.bin`, encrypted to your offline recovery key. | Built |
-| LLM API keys | `agentbox-keys` only | Designed |
+| LLM API keys | `agentbox-keys` only, encrypted on disk with `systemd-creds` (see [Setting the keys](#setting-the-keys)) | Built |
 | Subscription logins | `session-home`, for interactive sessions only | Built. A login can't reach its servers from an attach yet (issue #90). |
 | GitHub token | `agentbox-git` only, scoped to registered repos | Designed |
 | Approval keys | Your laptop (SSH key) and your phone (passkey). Never on the box. | Designed |

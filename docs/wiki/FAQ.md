@@ -29,6 +29,10 @@ Tasks run two agent CLIs: Claude Code and Codex. opencode is not supported: its 
 
 The rest comes in milestones 5 to 8 (see [Roadmap](Roadmap.md)). Milestones 2 to 4 built what it relies on: the firewall, the audit daemon, the root daemon's resolver, the request checks and the task containers.
 
+### Can tasks use my Claude or ChatGPT subscription?
+
+No. Tasks use API keys only, which the keys broker holds and adds to each request. A subscription login, including the one-year token from `claude setup-token`, is not supported in tasks. Codex tasks also use an OpenAI API key. opencode is not supported (see above). An interactive session can keep its own login in `session-home`.
+
 ### How is it different from a dev container?
 
 A dev container gives one project a repeatable set of tools. It runs on your workstation or on a hosted dev service. It usually has full network access. It sees whatever credentials you mount or forward into it.

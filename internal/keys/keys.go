@@ -279,8 +279,9 @@ func (s *Server) reserve(w http.ResponseWriter, t *broker.Task, id, model string
 // forwardHeaders are the client headers keys passes on, besides its own auth: the API version, the checked betas, and
 // the content negotiation. Client auth never goes: the placeholder key, an Authorization header, a cookie.
 var (
-	forwardHeaders = []string{"Content-Type", "Accept", "Anthropic-Version", "Anthropic-Beta", "Openai-Beta", "User-Agent"}
-	reVersion      = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+	forwardHeaders = []string{"Content-Type", "Accept", "Anthropic-Version", "Anthropic-Beta", "Openai-Beta", "User-Agent",
+		"X-Openai-Internal-Codex-Responses-Lite"} // Codex's request format; keys passes only "true"
+	reVersion = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
 )
 
 // send is the upstream request: the checked body, the forwarded headers and the injected key.
@@ -299,7 +300,7 @@ func (s *Server) send(r *http.Request, ep endpoint, c checked, key string) (*htt
 	}
 	for _, k := range forwardHeaders {
 		for _, v := range r.Header.Values(k) {
-			if k == "Anthropic-Version" && !reVersion.MatchString(v) {
+			if k == "Anthropic-Version" && !reVersion.MatchString(v) || k == "X-Openai-Internal-Codex-Responses-Lite" && v != "true" {
 				continue
 			}
 			req.Header.Add(k, v)
