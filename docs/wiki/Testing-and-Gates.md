@@ -34,6 +34,7 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | Agent CLI gate (milestone 4) | `hack/cli-gate.sh [install\|checks ...]` | Apple Silicon Mac, with `npm` and internet for the Claude Code and Codex CLIs | not timed separately |
 | Task image gate (milestone 4) | `hack/image-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
 | Pinned dialing gate (milestone 5) | `hack/dial-gate.sh [install] [release] [checks]` | Apple Silicon Mac | about 11 min, with the `none` install |
+| Proxy gate (milestone 5) | `hack/proxy-gate.sh [install\|release\|checks ...]` | Apple Silicon Mac, with internet for the task image build | about 13 min, with the `none` install |
 | Fuzz tests | `hack/fuzz-all.sh [DURATION]` | macOS or Linux | 24 h by default |
 
 The times come from one Apple Silicon Mac. The milestone 2 and 3 times come from runs with four VMs at once.
@@ -502,7 +503,7 @@ The tasks, attach and agent CLI gates need `npm` and internet on the Mac. Their 
 ### What they do not prove
 
 - They ran in `none` mode on arm64 UEFI only. The milestone 4 code does not touch unlock or boot.
-- The brokers are not built yet. The tasks gate uses `agentbox broker-stub`, and the task env gate uses a small stand-in that binds each task's broker sockets. No task can reach a model or the internet yet.
+- They replace the brokers with stand-ins: the tasks gate uses `agentbox broker-stub`, and the task env gate uses a small stand-in that binds each task's broker sockets. Both stop the release's proxy while their stand-ins run. No task can reach a model yet.
 - By default a task runs a small image: a root file system with the host's `/usr`, read-only. Only the task env gate builds and runs `image/task`, which adds Go. No agent CLI is in any task image yet. The tasks, attach and agent CLI gates run the CLIs from the host's `/usr/bin`. The stand-in keys broker answers every model request with an error, so no CLI has finished a model turn.
 - A skill's frontmatter hook needs a model reply to fire, and tasks have no model yet. The tasks gate checks only the setting that turns it off.
 - podman refuses `--dns=none` together with `--network=none`. The task env gate checks the image's `resolv.conf` instead.
@@ -519,17 +520,27 @@ caffeinate -i hack/dial-gate.sh
 
 The test network is inside the VM, so the Mac needs no internet for the checks. A virtual LAN, a veth pair into a network namespace, holds a router and the test servers on public-looking addresses. The gate makes that router the box's default route. The test DNS server answers the gate's names for systemd-resolved. It is also a resolve hook: since systemd 259, a local service can answer lookups for systemd-resolved through a socket, instead of DNS.
 
+The proxy gate starts with `install`: `hack/gate.sh none`, so `agentbox-proxy`, its socket unit and rootd reach the box by the real path. Its `checks` step needs no real registry. It runs a fake package registry on the Mac, on `127.0.0.1:7900+ID` only, with a throwaway CA and made-up npm and PyPI packages. `hack/vm.sh` forwards that one port to the VM as `10.0.2.2` for that boot. On the box, a test DNS server answers the registry's name with a public-looking address, which rootd checks like any other. A NAT rule of the gate's own sends that address on to `10.0.2.2`. The gate also builds `image/task` on the box, for `npm` and `pip`. The script writes `PASS` and `FAIL` lines to `.vm/proxy-gate.txt`, command output to `.vm/proxy-gate.log` and the registry's log to `.vm/proxy-gate-registry.log`, and exits 1 on any `FAIL`.
+
+```sh
+caffeinate -i hack/proxy-gate.sh
+```
+
 ### What the milestone 5 gates prove
 
 | Suite | Script | What it proves |
 |---|---|---|
 | `m5-dial` | `hack/dial-gate.sh` | rootd refuses an allowlisted name that answers with one of the box's own addresses: on the default interface, on another interface, the IPv6 address it made from the router's announcement (SLAAC), or an IPv6 address still in duplicate address detection. It also refuses a LAN host's global IPv6 address, `192.168.1.10`, `192.168.1.10` inside a NAT64 or a 6to4 address, and `240.0.0.1`. A name only `/etc/hosts` knows gets `no_such_name`. A name that a systemd 259 resolve hook answers is refused, and resolved never asks DNS for it. With the hook gone, the same name resolves. rootd reads the box's addresses at each resolution. A process under the keys broker's user, in the broker units' sandbox, dials through the shared dialer. It reaches only rootd's addresses, takes the first that answers, and keeps the name in SNI, the certificate check and `Host`. It never dials the `/etc/hosts` answer, makes no lookup and follows no redirect. An address that resets fails `refused` at once, and one that drops the SYN fails `timeout` after the 10 s budget. |
+| `m5-proxy` | `hack/proxy-gate.sh` | A task gets a typed denial for each CONNECT that must fail, and no byte of it reaches the registry. That covers an allowlisted name that answers a LAN address, loopback, `0.0.0.0`, a shared-address-space address or the metadata address `169.254.169.254`; one that answers an IPv6 ULA, link-local, loopback, IPv4-mapped or NAT64-wrapped private address, or `fd00:ec2::254`; and one that answers a public and a private address at once. Raw IPv4 and IPv6 targets, the metadata addresses among them, an unlisted name, an LLM vendor host and a deputy host are refused before rootd is asked. Plain HTTP is refused too. No denial names an IP address or any name but the one requested. Rebinding fails: the registry's own name, moved to its LAN address, loopback, the metadata address, or a public and a private address at once, is refused though it worked a moment before, and none of those answers reaches a firewall set. Without the proxy, a task reaches nothing over TCP or UDP, IPv4 or IPv6, and has no DNS. As the proxy's user, the firewall drops TCP and UDP to the LAN, the metadata address, DNS and any address rootd did not return, and the proxy's own mount namespace has no DNS. Through the proxy, a task fetches from the fake registry with `curl`, installs an npm package with 24 dependencies over more than 8 tunnels, and downloads a wheel with `pip`. TLS runs end to end: the client checks the registry's own certificate. Each tunnel goes to the address rootd returned, and auditd records its taint on the task before any byte flows; a refused CONNECT taints nothing. With auditd down, a CONNECT gets `503 AUDIT_UNAVAILABLE` and the registry gets no request. A second agent reaches the shared list's entry but not the first agent's own entries. A proxy restart and a crash mid-task each give the task its socket back. Revoking a task cuts its live tunnel within 5 s. The task's socket is `agentbox-proxy:ag-<agent>` 0660, another agent can't open it, and only root may use the control socket. No task's traffic made the firewall drop a packet for the proxy. The proxy runs as its own user with no capabilities, and its socket starts it at the first task. |
 
 ### What they do not prove
 
-- The brokers are not built yet. A stand-in dials through the package the brokers will use, as the keys broker's user. The broker units themselves are not tested.
-- The upstreams are test servers inside the VM, behind a test router. No real public host is dialed.
-- It ran in `none` mode on arm64 UEFI only. The dialer does not touch unlock or boot.
+- Both ran in `none` mode on arm64 UEFI only. Neither the dialer nor the proxy touches unlock or boot.
+- In `m5-dial`, a stand-in dials through the shared dialer as the keys broker's user. The keys broker and the git service are not built, so no task reaches a model, and their units are not tested.
+- The upstreams are test servers: inside the VM behind a test router for `m5-dial`, and a fake registry on the Mac for `m5-proxy`. No real public host is dialed. Fetches from npm, PyPI and the Go proxy through the box's proxy are not tested yet.
+- The proxy gate's NAT rule rewrites the registry's address before the firewall sees it. So an approved private-address entry lets the proxy reach that one port, not the proxy's own address set. rootd still checked the name, and the proxy dialed only rootd's answer.
+- The Go module cache is not built: every `/_cache/` request gets a plain 404.
+- The proxy's answer to a failed dial (`EGRESS_DIAL_FAILED`) is covered by unit tests only. `m5-dial` covers the dialer's own `refused` and `timeout` on the box.
 
 ## Several VMs at once
 
@@ -541,6 +552,7 @@ The test network is inside the VM, so the Mac needs no internet for the checks. 
 | Tang container | `agentbox-tang-<ID>` on `127.0.0.1:7500+ID`. The VM reaches it as `http://10.0.2.2:7500+ID`. |
 | Test release server | `127.0.0.1:7600+ID`. The VM reaches it as `http://10.0.2.2:7600+ID`. |
 | Loopback probe | `127.0.0.1:7700+ID` and `[::1]:7700+ID`. The VM must not reach it. |
+| Proxy gate's fake registry | `127.0.0.1:7900+ID`. The VM reaches it as `10.0.2.2:7900+ID`, during the proxy gate's checks only. |
 | Power-cut work directory | `$TMPDIR/agentbox-powercut-<ID>` |
 
 Everything else lives in the checkout's `.vm/`. So each VM also needs its own checkout. Use one git worktree per VM. `AGENTBOX_ISO_DIR` points every worktree at one copy of the ISOs.
@@ -576,6 +588,7 @@ These environment variables change the harness. Set them before the command, as 
 | `DUP_DISK` | `0` | `1` attaches a second disk with the same serial. `dup-serial` sets it. |
 | `INSTALL_TIMEOUT` | 5400 s arm64, 14400 s amd64 | The install time limit. |
 | `VM_USER` | `boxadmin` | The user for `hack/vm.sh ssh`. |
+| `AGENTBOX_VM_FWD` | unset | Host ports, space-separated, that `hack/vm.sh boot` also forwards to the VM as `10.0.2.2:<port>`, for that boot only. The proxy gate sets it for its fake registry. |
 | `AGENTBOX_BLKLOG` | unset | Logs every disk write to this file. `hack/powercut.sh log` sets it. |
 | `DEADLINE` | `300` | `hack/apply-gate.sh` only. The commit deadline for the gate, in seconds. |
 
@@ -741,6 +754,7 @@ The regression after the review fixes. Every VM gate ran on a fresh `none`-mode 
 | Suite | Result | Tested at |
 |---|---|---|
 | `m5-dial` (issues #20, #145) | Passed on a fresh `none`-mode install, arm64 UEFI, Secure Boot on: 53 PASS, 0 FAIL. The hook check ran against the box's own systemd-resolved, which asked the gate's hook and never asked DNS. `w3-rootd` passed again with the new resolver checks: 115 PASS, 0 FAIL. | the branch of pull request #298, before it merged |
+| `m5-proxy` | Passed: 84 PASS, 0 FAIL, on a fresh `none`-mode install, arm64 UEFI, Secure Boot on. The npm install through the proxy took about 1 s. A first run failed 20 checks, all in the gate script: the release's task image has no `npm` or `pip`, two helpers reused the rebinding loop's variable, and the drop counter missed numeric uids. With the release's proxy installed, the `m4-taskenv` checks also passed: 43 PASS, 0 FAIL. | the branch of issue #17, at `dd0337f` |
 
 ## Troubleshooting
 

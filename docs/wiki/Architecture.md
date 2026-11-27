@@ -24,7 +24,7 @@ Milestone numbers refer to the ordered list on the [Roadmap](Roadmap.md). The pl
 | Firewall, disk quotas, audit daemon, rootd skeleton and resolver, ntfy | Built | 2 |
 | Operation registry, the agentboxd request gate, denial codes, the socket layout as code | Built (24-hour fuzz run pending) | 3 |
 | Agent accounts, task containers, interactive sessions | Built | 4 |
-| Brokers: proxy, keys, git | Designed | 5 |
+| Brokers: proxy, keys, git | Proxy built (no Go module cache yet); keys and git designed | 5 |
 | Cedar policy, rootd floor, signed approvals | Designed | 6 |
 | Apps, file writes, workspace ops, OS ops for agents, nightly updates, decide | Designed | 7 |
 | Agent bus and shared memory | Designed | 8 |
@@ -69,7 +69,8 @@ The design has two layers:
 In the diagram, everything above the OS layer is designed, with these exceptions:
 `agentbox-auditd`, the host firewall, and a skeleton of `agentbox-rootd` (its name resolver, the brokers' firewall sets and audit-segment sealing), built in milestone 2;
 the task gate in `agentboxd`, built in milestone 3;
-and the task container, with rootd's agent accounts, task start and stop, and attach sessions, built in milestone 4.
+the task container, with rootd's agent accounts, task start and stop, and attach sessions, built in milestone 4;
+and the proxy, built in milestone 5.
 None of the other services exists yet.
 
 ## Principles
@@ -88,7 +89,7 @@ These eight rules shape the whole design.
    Task containers have no network at all.
    Traffic leaves only through the task's own Unix sockets, to the brokers.
    Brokers may connect only to addresses that rootd resolved for allowlisted names.
-   *Built in part: the firewall and rootd's resolver (milestone 2), and task containers with no network (milestone 4). The brokers are designed (milestone 5).*
+   *Built in part: the firewall and rootd's resolver (milestone 2), task containers with no network (milestone 4), and the proxy (milestone 5). The keys broker and the git service are designed (milestone 5).*
 4. **The executor owns the floor.**
    `agentbox-rootd` stores every pending operation, bound to its exact inputs, such as commit IDs and package hashes.
    When an operation needs approval, rootd runs only the stored copy that a human signed.
@@ -227,6 +228,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 | `agentbox-auditd.service` and its sockets | the release | The audit daemon. Socket-activated: one socket per producer (agentboxd, rootd, proxy, keys, git). |
 | `agentbox-rootd.service` and its sockets | the release | The root daemon: agent accounts, task start and stop, attach sessions, the resolver sockets for the three brokers, the admin socket, and the seal socket auditd calls. It starts after auditd and stops before it. At a stop it finishes the requests in flight, for up to 60 s, so their audit records still reach auditd. |
 | `agentboxd.service` and its socket | the release | The task gate: one socket per task, with no network. |
+| `agentbox-proxy.service` and its socket | the release | The egress proxy, as `agentbox-proxy`: one socket per task. Its socket starts it at the first task. |
 | `ntfy.service` | the Ubuntu `ntfy` package | Notifications, as `_ntfy`, on a Unix socket only. `install.sh` installs the package; reconcile configures and enables it. It starts after rootd, once rootd has filled the firewall sets that ntfy's `fwcheck` compares. A `systemctl restart` of rootd, or a firewall repair, restarts it too. It has no systemd start limit, so many rootd restarts in a row can't leave it failed. |
 | `agentbox-agent-stub.service` | the release | A stand-in for an agent unit, for the gates. Not enabled. |
 
@@ -239,7 +241,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 
 ## The services
 
-**Status:** Mostly designed. `agentbox-auditd` and the packaged ntfy are built, and so are parts of `agentbox-rootd` and `agentboxd` (milestones 2-4). The table says which parts. The brokers, approvald, the local-model units and tailscaled don't exist yet. [Units on the box today](#units-on-the-box-today) lists what runs today.
+**Status:** Mostly designed. `agentbox-auditd` and the packaged ntfy are built, and so are parts of `agentbox-rootd` and `agentboxd` (milestones 2-4). The table says which parts. So is `agentbox-proxy` (milestone 5). The keys broker, the git service, approvald, the local-model units and tailscaled don't exist yet. [Units on the box today](#units-on-the-box-today) lists what runs today.
 
 In the design, rootd, agentboxd, auditd, approvald and the three brokers are all subcommands of the one `agentbox` binary.
 The local-model units run llama-server, and ntfy and tailscaled come from their own packages.
@@ -250,7 +252,7 @@ Each service runs as its own Linux user, with only the access it needs.
 | `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Built in part: the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing (milestone 2); agent accounts, task start and stop, and attach sessions (milestone 4). Its generation code is built. Pending operations and OS operations for agents are designed (milestones 6-7). |
 | `agentboxd` | `agentbox` | The front door for agents: the task gate, Cedar policy, the agent bus, memory and decide. Has no network. | Task gate built (milestone 3): one socket per task, argument and caller checks, typed denials. Policy, the agent bus, memory and decide are designed (milestones 6-8). |
 | `agentbox-auditd` | `agentbox-audit` | Writes the hash-chained audit log and the taint ledger. Has no network. | Built (milestones 2 and 3), including the per-field audit classes. |
-| `agentbox-proxy` | `agentbox-proxy` | Tunnels task traffic to allowlisted hosts. Holds no secrets. | Designed (milestone 5) |
+| `agentbox-proxy` | `agentbox-proxy` | Tunnels task traffic to allowlisted hosts. Holds no secrets. | Built (milestone 5), except its Go module cache |
 | `agentbox-keys` | `agentbox-keys` | Holds the LLM API keys and budgets. Checks every model request, then adds the key. | Designed (milestone 5) |
 | `agentbox-git` | `agentbox-git` | Hosts local git repos. Holds the GitHub token and runs the `gh.*` operations. | Designed (milestone 5) |
 | `agentbox-approvald` | `agentbox-approve` | Serves the phone approval page. Holds no keys. | Designed (milestone 6) |
@@ -276,7 +278,7 @@ Each service runs as its own Linux user, with only the access it needs.
 
 ## Task containers
 
-**Status:** Built (milestone 4), except where a bullet says otherwise. The brokers behind the task sockets are designed (milestone 5), so no task can reach a model or the internet yet.
+**Status:** Built (milestone 4), except where a bullet says otherwise. The proxy behind the egress socket is built (milestone 5). The keys broker and the git service are designed, so no task can reach a model yet.
 
 ### Accounts
 
@@ -543,7 +545,7 @@ Root access is the approval.
 
 ## Network and secrets
 
-**Status:** The firewall and rootd's resolver are built (milestone 2). The brokers are designed (milestone 5). The seed still masks the stock `nftables.service`: `agentbox-firewall.service` loads agentbox's own table instead.
+**Status:** The firewall and rootd's resolver are built (milestone 2), and so is the proxy (milestone 5). The keys broker and the git service are designed (milestone 5). The seed still masks the stock `nftables.service`: `agentbox-firewall.service` loads agentbox's own table instead.
 
 ### Firewall
 
@@ -586,9 +588,9 @@ Rootful Docker is unsupported: it publishes ports through the forward hook, whic
 
 Built today (milestone 2): the resolver, through systemd-resolved's Varlink socket, with every refusal rule above, NAT64 prefixes included.
 rootd keeps its answers in `rootd.db`, refills the sets at start (before `READY=1`) and on a timer, and `agentbox egress list|refill|allow|remove` edits the allowlists.
-Built in milestone 5: the refusals of the box's own addresses and of hook answers, and the dialer the brokers will share (`internal/dial`).
+Built in milestone 5: the refusals of the box's own addresses and of hook answers, and the dialer the brokers share (`internal/dial`).
 It asks rootd, dials only rootd's addresses, in order, within one 10 s budget, and follows no redirect.
-The brokers that will use it are not built.
+The proxy uses it. The keys broker and the git service are not built.
 
 ### The proxy
 
@@ -601,6 +603,16 @@ The brokers that will use it are not built.
 - LLM API traffic never goes through the proxy.
   It goes through the keys broker, and it does not taint.
 - The proxy holds no secrets.
+
+Built today (milestone 5): the proxy, without its Go module cache.
+Each task's socket takes one request per connection.
+A CONNECT to an IP address, an unlisted name or an LLM vendor host is refused before rootd is asked.
+rootd re-checks the agent's list and resolves the name.
+A private, special-purpose or LAN answer refuses the whole name.
+The proxy dials only rootd's addresses, within one 10 s budget, and auditd acknowledges the task's taint before the tunnel opens.
+A plain HTTP request is refused.
+Each task's proxy socket serves 64 connections at once.
+Other task sockets serve 8, but npm keeps up to 15 open to one registry.
 
 ### The keys broker
 
@@ -783,7 +795,7 @@ The queue lives in `rootd.db`, so an alert survives a restart of ntfy or rootd. 
   Others are a compromised agent CLI or dependency, a thief, someone on your LAN or tailnet, and bugs in agentbox's own services.
 - The threat model lists seven non-negotiables that tests must prove.
   Five have built parts today:
-  - "Tasks have no network": task containers are built. The brokers are not.
+  - "Tasks have no network": task containers and the proxy are built. The keys broker and the git service are not.
   - "Agents never mutate the running OS": the generation mechanism is built. Agents are not.
   - "Taint is sticky": auditd's taint ledger, and the spread from a task to its workspace, are built. What sets taint is not.
   - "Nothing persists between tasks": built for task containers.
@@ -810,10 +822,11 @@ Read [Security Model](Security-Model.md) and the one-page threat model in the re
 | `internal/sockets` | The socket inventory, the generated tmpfiles.d and `.socket` units, and `agentbox sockets check` | Built (milestone 3) |
 | `internal/rootd/accounts`, `internal/task`, `internal/seccomp`, `internal/rootd/attach`, `internal/controlpaths` | Agent accounts, the task container and its seccomp profile, interactive sessions, and the workspace control-file list | Built (milestone 4) |
 | `internal/taskenv`, `internal/taskrun`, `internal/rootd/witness` | The task environment, the in-task forwarders and `agentbox why`, and the witness pipe rootd reads | Built (milestone 4) |
+| `internal/proxy` | The egress proxy: CONNECT checks, rootd resolution, taint and tunnels | Built (milestone 5) |
 | `sysusers.d/`, `tmpfiles.d/` | The service users and the runtime directories | Built (milestones 2 and 3) |
 | `install/`, `systemd/` | The release's `install.sh` and its systemd units | Built |
 | `hack/` | The release builder, the ISO remaster script, the QEMU harness and the test gates | Built |
-| `internal/{policy,bus,memory,decide,dispatch,approvald,webauthn,proxy,keys,gitsvc,reconcile}`, the rest of `internal/rootd` | The rest of the agent runtime | Designed |
+| `internal/{policy,bus,memory,decide,dispatch,approvald,webauthn,keys,gitsvc,reconcile}`, the rest of `internal/rootd` | The rest of the agent runtime | Designed |
 
 Today the code uses the Go standard library plus two modules: `golang.org/x/sys` and the pure-Go SQLite driver `modernc.org/sqlite` (for auditd's taint database and `rootd.db`).
 The design adds more later, such as cedar-go, the MCP Go SDK and a WebAuthn library.

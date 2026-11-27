@@ -1,6 +1,6 @@
 Short answers to common questions. For an overview, start at [Home](README.md).
 
-agentbox is early alpha. Answers about the brokers, policy and approvals describe the design. Those parts are not built yet.
+agentbox is early alpha. Answers about the LLM key broker, the git service, policy and approvals describe the design. Those parts are not built yet. The egress proxy is built.
 
 ## The basics
 

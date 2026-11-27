@@ -13,7 +13,7 @@
 > [!WARNING]
 > **Early alpha. Not for production use.** Tested only in QEMU VMs. No AI agent can do useful work on it yet: tasks can't reach a model.
 
-A headless OS for AI coding agents, built on stock Ubuntu Server 26.04. Early alpha: agent accounts and sealed task containers are built. The brokers, policy and approvals are designed, not built.
+A headless OS for AI coding agents, built on stock Ubuntu Server 26.04. Early alpha: agent accounts, sealed task containers and the egress proxy are built. The other brokers, policy and approvals are designed, not built.
 
 [Getting started][gs] · [Architecture][arch] · [Security model][sec] · [Roadmap][road] · [Wiki][wiki]
 
@@ -24,13 +24,13 @@ Website: https://dbabi.github.io/agentbox-web/. It is also a terminal app, and i
 agentbox aims to be an OS where AI agents can work safely. The design rests on four rules. Two are built today:
 
 - **No credentials in tasks (designed).** API keys and tokens will stay in broker services. The task will never hold them.
-- **No network for agents (built).** Each task runs in a disposable container with no network. Traffic will leave only through the brokers, which are not built yet.
+- **No network for agents (built).** Each task runs in a disposable container with no network. Traffic leaves only through the brokers. The egress proxy is built; the LLM key broker and the git service are not.
 - **A human signs risky actions (designed).** The box will run a risky operation only after you sign it. The signature will cover its exact inputs, such as commit IDs and package hashes.
 - **OS changes fall back on failure (built).** An OS change builds offline into a new generation. The box keeps it only if it boots healthy. Otherwise it boots the last good generation.
 
 ## Status
 
-The installer, safe OS updates, the first host services (firewall, audit log, root daemon), the checks for agent requests, agent accounts and sealed task containers are built. The request checks still need one 24-hour fuzz run. No task can reach a model yet, because the brokers are not built. agentbox has run only in QEMU virtual machines, never on real hardware. Everything after the OS layer has been tested only in unencrypted VMs. Agent accounts and tasks ran on arm64 UEFI only; the host services and request checks also ran on amd64 BIOS.
+The installer, safe OS updates, the first host services (firewall, audit log, root daemon), the checks for agent requests, agent accounts and sealed task containers are built. The request checks still need one 24-hour fuzz run. No task can reach a model yet, because the LLM key broker is not built. agentbox has run only in QEMU virtual machines, never on real hardware. Everything after the OS layer has been tested only in unencrypted VMs. Agent accounts and tasks ran on arm64 UEFI only; the host services and request checks also ran on amd64 BIOS.
 
 **Works today**, in VMs on an Apple Silicon Mac:
 
@@ -38,11 +38,11 @@ The installer, safe OS updates, the first host services (firewall, audit log, ro
 - A/B OS generations: a package change builds offline, boots once, and stays only if healthy.
 - Releases you build and sign yourself with `make release`. First boot checks them against a pinned SHA-256 and your minisign key. There is no official release yet.
 - A host firewall that limits each agentbox service to its allowed destinations. Inbound, it drops new connections except SSH from the seed's address ranges and Tailscale traffic.
-- Agent accounts and sealed tasks. `agentbox task new` runs each task in a disposable container with no network and a fresh home. `agentbox attach` opens a filtered interactive session.
+- Agent accounts and sealed tasks. `agentbox task new` runs each task in a disposable container with no network and a fresh home. Its HTTPS goes only through the egress proxy, to the hosts on its agent's allowlist. `agentbox attach` opens a filtered interactive session.
 
 **Not yet:**
 
-- Brokers, policy, approvals, the agent bus and memory. All of them are designed. None of them is built. Until the brokers land, no task can reach a model or the internet.
+- The LLM key broker and the git service, policy, approvals, the agent bus and memory. All of them are designed. None of them is built. Until the key broker lands, no task can reach a model.
 - Real hardware. amd64 UEFI has not run anywhere.
 - Automatic security updates.
 - Updating agentbox itself on an installed box. This is out of scope for the first release. A new release means a reinstall.
@@ -204,7 +204,8 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 | Zero-touch ISO | `hack/remaster-iso.sh` adds `autoinstall ds=nocloud` to the stock ISO's boot menu. It changes only GRUB's config and its checksum line. |
 | Host firewall | Limits outbound traffic for each agentbox service. If the rules change, it alerts and restores them. |
 | Audit log | Stores each record on disk before it acknowledges it. `agentbox audit verify` checks the log's hash chain. |
-| Broker network setup | Resolves the allowed destinations for the planned brokers. Refuses private and special-purpose addresses. The brokers are not built. |
+| Broker network setup | Resolves the allowed destinations for the brokers. Refuses private and special-purpose addresses. |
+| Egress proxy | Carries each task's HTTPS to the hosts on its agent's allowlist. It holds no secrets, dials only the addresses the root daemon checked, and records taint on the task before any byte flows. |
 | Disk limits | Caps the disk space agent data can use, and keeps a reserve for system services. |
 | Notifications | The Ubuntu `ntfy` package. It takes only local requests, and can reach only `ntfy.sh`. |
 | Operation registry | One list of every operation an agent may request. The policy schema, the JSON schemas and the MCP tool list are generated from it. The root daemon refuses to start if any of them differ. |
@@ -220,7 +221,7 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 
 | Feature | Plan |
 |---|---|
-| Brokers | `proxy` holds no secrets. `keys` holds LLM API keys and budgets. `git` holds the GitHub token. |
+| Brokers | `keys` holds LLM API keys and budgets. `git` holds the GitHub token. The proxy gets a read-only Go module cache. |
 | Policy and approvals | Cedar policy. You will sign approvals on your laptop with an SSH key. A phone passkey will cover only low-risk requests. The box will run only the operation you signed. |
 | Agent bus and memory | Messages between agents. Shared memory with quarantine and taint. |
 | OS updates | Nightly package updates will build into a new generation. Protected packages can't be removed. |
@@ -240,10 +241,11 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 |  agentbox-rootd   signed operations, bound to their exact inputs |
 |                                                                  |
 |  +----------------------+  unix sockets  +---------------------+ |
-|  | task container       |--------------->| brokers (designed)  |----> internet
-|  | (built) no network,  |                | proxy (no secrets)  | |
-|  | fresh HOME each task |                | keys (LLM API keys) | |
-|  +----------------------+                | git (GitHub token)  | |
+|  | task container       |--------------->| brokers             |----> internet
+|  | (built) no network,  |                | (built) proxy, no   | |
+|  | fresh HOME each task |                |   secrets           | |
+|  +----------------------+                | keys (LLM API keys) | |
+|                                          | git (GitHub token)  | |
 |                                          +---------------------+ |
 |                                                                  |
 |  BUILT TODAY                                                     |
@@ -269,11 +271,11 @@ The design treats prompt injection as the most likely attack. It also plans for 
 
 | Rule | Status |
 |---|---|
-| 1. Tasks have no network. | Built and tested. The brokers that will carry task traffic are designed. |
+| 1. Tasks have no network. | Built and tested. The egress proxy carries a task's HTTPS; the other brokers are designed. |
 | 2. No credential exists inside a task. | Designed |
 | 3. Agents never change the running OS. Changes build offline into a new generation, which commits only after a health check. | Generations built and tested. The agent side is designed. |
 | 4. Privileged operations run only with the exact inputs a human signed. | Designed |
-| 5. Taint is sticky. Work that touched untrusted content stays marked until a human clears it. | Partly built. A tainted task taints its workspace, and the next task there starts tainted. What marks a task tainted, the brokers, is designed. |
+| 5. Taint is sticky. Work that touched untrusted content stays marked until a human clears it. | Partly built. A tainted task taints its workspace, and the next task there starts tainted. Every connection through the egress proxy taints its task. The other brokers' taint is designed. |
 | 6. Nothing persists between tasks except the tainted workspace. | Built and tested |
 | 7. The seed and logs hold no plaintext secrets. | Built and tested |
 
@@ -298,7 +300,7 @@ agentbox is built in milestones, in this order. Each one ends with tests that mu
 2. **Firewall and audit log: done.** Outbound limits for agentbox services, an audit log you can verify, disk limits and local notifications. Tested in VMs only.
 3. **Checks for agent requests: in progress.** Built and tested in VMs. Each agent request is checked against one list of allowed operations before anything privileged runs. A 24-hour fuzz run is the last step.
 4. **Isolated tasks: done.** Agent accounts, one disposable container per task with no network, and interactive sessions. Tested in VMs only.
-5. **Brokers: in progress.** Credentials will stay outside tasks. Brokers will make network requests for each task. Their shared code that connects only to addresses the root daemon checked is built and tested in VMs.
+5. **Brokers: in progress.** The egress proxy is built and tested in VMs. It connects only to addresses the root daemon checked, through code the other brokers will share. Credentials will stay outside tasks, in the LLM key broker and the git service.
 6. **Signed approvals: planned.** Risky actions will need your SSH signature. A phone passkey will cover low-risk requests.
 7. **Apps and OS updates by agents: planned.** Agents will request app installs, file changes and package updates. OS changes will build offline into new generations.
 8. **Agent bus and shared memory: planned.** Tasks will hand work to each other. Facts from untrusted sources will stay marked.
