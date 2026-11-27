@@ -31,6 +31,8 @@ UMask=0117
 # keys reads at most 8 request bodies of 32 MiB at once (#115); this backs that bound up, so no flood of large requests
 # can take the box's memory
 MemoryMax=2G
+# the Go runtime collects harder near it, so garbage never pushes keys past MemoryMax= (internal/keys MaxBodies)
+Environment=GOMEMLIMIT=1536MiB
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # no DNS of its own (§6.1): resolved's Varlink and D-Bus sockets are AF_UNIX, which nft never sees
 InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket

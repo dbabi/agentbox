@@ -40,6 +40,19 @@ func (e *ArgError) Denial(op, by string) Denial {
 }
 
 func decode(raw []byte) (any, error) {
+	v, err := decodeTree(raw)
+	if err != nil {
+		return nil, err
+	}
+	// Go keeps the last copy of a repeated key, so a check of v would pass bytes whose first copy is still forwarded
+	// or stored; noDupKeys runs after Decode, which bounds the depth.
+	if err := noDupKeys(raw); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+func decodeTree(raw []byte) (any, error) {
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
 	var v any
@@ -51,12 +64,17 @@ func decode(raw []byte) (any, error) {
 	if len(bytes.TrimLeft(raw[d.InputOffset():], " \t\r\n")) != 0 {
 		return nil, fmt.Errorf("trailing data")
 	}
-	// Go keeps the last copy of a repeated key, so a check of v would pass bytes whose first copy is still forwarded
-	// or stored; noDupKeys runs after Decode, which bounds the depth.
-	if err := noDupKeys(raw); err != nil {
+	return v, nil
+}
+
+// DecodeLimited is Decode for a body nothing has checked yet: a token walk first refuses a repeated key, nesting
+// deeper than depth and more than values values (ErrTooDeep, ErrTooMany), so no tree is built for a body past its
+// caps. A tree costs tens of bytes per value, whatever the bytes it came from.
+func DecodeLimited(raw []byte, depth, values int) (any, error) {
+	if err := walkJSON(raw, depth, values); err != nil {
 		return nil, err
 	}
-	return v, nil
+	return decodeTree(raw)
 }
 
 // ValidateArgs is the gate's and the floor's schema check (§5.2, §5.6): raw is an object with every required field

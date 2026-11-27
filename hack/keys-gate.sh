@@ -152,7 +152,18 @@ up() { curl -sS --cacert $G/ca.pem --resolve api.anthropic.com:$UP_PORT:10.0.2.2
 UP=https://api.anthropic.com:$UP_PORT
 uplog() { up "$UP/_ctl/$TOKEN/log"; }
 upkeys() { printf '%s\n' "$@" | up -X POST --data-binary @- "$UP/_ctl/$TOKEN/keys?vendor=anthropic" >/dev/null; }
-kdrops() { nft list chain inet agentbox output | grep '"agentbox-keys"' | sed -n 's/.* counter packets \([0-9]*\) .* drop$/\1/p' | awk '{n += $1} END {print n + 0}'; }
+# kdrops: packets the output chain dropped in every rule that names agentbox-keys. nft prints the uid as a number, and
+# the shared private-range and local-address rules count the other brokers and ntfy too (#315)
+kdrops() { u=$(id -u agentbox-keys); nft list chain inet agentbox output | grep -E "meta skuid (${u} |\{[^}]*[{ ]${u}[ ,}])" |
+  sed -n 's/.* counter packets \([0-9]*\) .* drop$/\1/p' | awk '{n += $1} END {print n + 0}'; }
+# wrec TASK: the task's WITNESS record (the denial lines its result posts) from the audit segments
+wrec() { for i in $(seq 50); do cat $A/seg-*.jsonl | grep "\"type\":\"WITNESS\"" | grep "\"task\":\"$1\"" | tail -1 | grep . && return 0; sleep 0.2; done; return 1; }
+# budgeted TASK PATH: keys refused TASK, only with KEYS_BUDGET{agent}, and at most 12 times; no PATH request reached the
+# vendor; agentboxd's result line counts denials, and the task's witness lines hold KEYS_BUDGET from keys (C-G4)
+budgeted() { d=$(journalctl -b -u agentbox-keys -o cat | grep "DENY by=keys task=$1 ")
+  [ -n "$d" ] && [ "$(echo "$d" | wc -l)" -le 12 ] && ! echo "$d" | grep -vq " code=KEYS_BUDGET what=agent id=" &&
+  journalctl -b -u agentboxd -o cat | grep "task $1 result: " | grep -vq " 0 denials" && ! grep -q "\"path\":\"$2\"" $G/lbud &&
+  wrec "$1" | python3 -c 'import json,sys; w=json.loads(sys.stdin.read())["body"]; sys.exit(not any(l.endswith(" KEYS_BUDGET keys") for l in w["lines"]))'; }
 dnat() { nft list table ip keysgate 2>/dev/null | sed -n 's/.*counter packets \([0-9]*\) .*dnat.*/\1/p' | awk '{n += $1} END {print n + 0}'; }
 deny() { journalctl -b -u agentbox-keys -o cat | grep -c "DENY by=keys task=$1" || :; }
 ended() { $B task list | python3 -c 'import json,sys; sys.exit(not [t for t in json.load(sys.stdin)["tasks"] if t["task"]==sys.argv[1] and t.get("end_reason")])' "$1"; }
@@ -461,14 +472,12 @@ printf "keys.day_cap_cents = 10000\nkeys.agent_day_share.ka = 1\n" | $B budget s
 uplog > /dev/null
 check "C-G4 Claude Code at its share stops within its own retries, and the task result carries KEYS_BUDGET" '
   cli ka claude < $G/hi; T=$(cat $G/last); echo "task $T: $(deny $T) denials by keys, end $(field $T end_reason)"
-  journalctl -b -u agentbox-keys -o cat | grep "task=$T"; journalctl -b -u agentboxd -o cat | grep "task $T result: "; uplog | tee $G/lbud
-  [ "$(deny $T)" -ge 1 ] && [ "$(deny $T)" -le 12 ] &&
-  journalctl -b -u agentboxd -o cat | grep "task $T result: " | grep -vq " 0 denials" && ! grep -q "\"path\":\"/v1/messages\"" $G/lbud'
+  journalctl -b -u agentbox-keys -o cat | grep "task=$T"; journalctl -b -u agentboxd -o cat | grep "task $T result: "; uplog | tee $G/lbud; wrec $T
+  budgeted $T /v1/messages'
 check "C-G4 Codex at its share stops within its own retries, and the task result carries KEYS_BUDGET" '
   cli ka codex < $G/hi; T=$(cat $G/last); echo "task $T: $(deny $T) denials by keys, end $(field $T end_reason)"
-  journalctl -b -u agentbox-keys -o cat | grep "task=$T"; journalctl -b -u agentboxd -o cat | grep "task $T result: "; uplog | tee $G/lbudx
-  [ "$(deny $T)" -ge 1 ] && [ "$(deny $T)" -le 12 ] &&
-  journalctl -b -u agentboxd -o cat | grep "task $T result: " | grep -vq " 0 denials" && ! grep -q "\"path\":\"/v1/responses\"" $G/lbudx'
+  journalctl -b -u agentbox-keys -o cat | grep "task=$T"; journalctl -b -u agentboxd -o cat | grep "task $T result: "; uplog | tee $G/lbud; wrec $T
+  budgeted $T /v1/responses'
 printf "keys.day_cap_cents = 0\n" | $B budget set >/dev/null
 
 # --- #18: the local LLM (a stand-in for agentbox-llm@task) ---
@@ -529,7 +538,11 @@ check "  ... the next request succeeds with the new key, in the same task (no ta
   [ "$(cat $G/last)" = "$TR" ] && uplog > $G/lrot && cat $G/lrot && grep "\"auth\":\"ok:$F2\"" $G/lrot | grep -q .'
 
 # --- the box ---
-check "#18 the keys nft drop counters stayed at 0 through the run" '[ "$(kdrops)" = "$D0" ] && echo "drops $D0 -> $(kdrops)"'
+check "#18 the keys nft drop counters stayed at 0 through the run" 'echo "drops $D0 -> $(kdrops)"; [ "$D0" = 0 ] && [ "$(kdrops)" = 0 ]'
+# the counter can rise (#315): a lookup attempt as agentbox-keys, in the unit's sandbox, is one of its drops (§6.3)
+check "  ... and a lookup attempt by agentbox-keys, under its unit's InaccessiblePaths=, raises them" '
+  ! systemd-run -q --wait --pipe --collect -p User=agentbox-keys -p "InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket" getent ahosts nope.keys-gate.test &&
+  echo "drops after the lookup attempt: $(kdrops)" && [ "$(kdrops)" -gt 0 ]'
 check "#108 #18 neither key appears in audit or journald" '! cat $A/seg-*.jsonl | grep -qF "$(printf %s "$KEY1" | cut -c14-50)" &&
   ! cat $A/seg-*.jsonl | grep -qF "$(printf %s "$KEY2" | cut -c14-50)" && ! journalctl -b -o cat | grep -qF "$(printf %s "$KEY1" | cut -c14-50)" &&
   ! journalctl -b -o cat | grep -qF "$(printf %s "$KEY2" | cut -c14-50)" && ! journalctl -b -o cat | grep -qF "$(printf %s "$OKEY" | cut -c10-40)"'

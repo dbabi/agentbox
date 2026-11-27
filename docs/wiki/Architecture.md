@@ -655,12 +655,16 @@ Other task sockets serve 8, but npm keeps up to 15 open to one registry.
 - Before it forwards a request, it reserves the worst-case cost against the agent's daily share and the task's trace budget.
   The daily cap is split among the agents, so one agent's spending never blocks another.
   Over either limit, it answers `429` with `x-should-retry: false`.
+  A stream that ends before its final usage count, because the task or the vendor hung up, is billed the full reservation.
 - It checks every reply for the key: as sent, base64-encoded or URL-encoded, even when the key is split across chunks.
   A reply with the key never reaches the task. Keys answers `502` instead, or cuts the stream, and raises an alert.
 - It checks every request for the task's canary, in the body and the headers it forwards.
   A request with the canary still goes to the vendor, but the task is tainted and you get one alert for it.
 - A vendor's `401` or `403` becomes keys' own `502`, with no vendor bytes.
 - It caps each request: the header size and time, the body size, before and after `gzip`, and 16 open connections per task.
+  A body must keep arriving at 256 KiB/s after its first 2 s.
+  Its JSON may nest at most 64 levels and hold at most 262144 values.
+  Keys reads and checks at most 6 bodies at once, 2 per agent, so one agent's slow requests never hold up another's.
 - It also fronts the local model.
   It rebuilds the request from a short field list and names the fields it dropped.
   An instance that served a tainted request serves only tainted requests, until rootd restarts it.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -54,6 +55,9 @@ var reField = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 // are not type function (as "tools").
 func (l *Local) rebuild(body []byte) ([]byte, []string, *rej) {
 	v, err := decodeJSON(body)
+	if errors.Is(err, ops.ErrTooDeep) || errors.Is(err, ops.ErrTooMany) {
+		return nil, nil, decodeRej(err)
+	}
 	top, ok := v.(map[string]any)
 	if err != nil || !ok || !utf8Valid(body) {
 		return nil, nil, &rej{what: "field", ptr: "/", wording: "the request body must be one JSON object with unique keys"}
@@ -75,11 +79,11 @@ func (l *Local) rebuild(body []byte) ([]byte, []string, *rej) {
 		}
 		out["tools"] = keep
 	}
-	if r := urlScan(map[string]any{"messages": out["messages"]}, nil); r != nil { // the server must fetch nothing either
+	if r := urlScan(map[string]any{"messages": out["messages"]}, root()); r != nil { // the server must fetch nothing either
 		return nil, nil, r
 	}
 	if r := (obj{"messages": list(chatMessage), "max_tokens": num, "temperature": num, "top_p": num, "stop": strOr(list(str)),
-		"tools": tools(map[string]obj{"function": chatTool}, nil, new([]string)), "tool_choice": toolChoiceAny}).check(out, nil); r != nil {
+		"tools": tools(map[string]obj{"function": chatTool}, nil, new([]string)), "tool_choice": toolChoiceAny}).check(out, root()); r != nil {
 		return nil, nil, r
 	}
 	if n, ok := out["max_tokens"].(json.Number); ok {
@@ -92,12 +96,8 @@ func (l *Local) rebuild(body []byte) ([]byte, []string, *rej) {
 	return encodeJSON(out), slices.Compact(dropped), nil
 }
 
-func (l *Local) serve(w http.ResponseWriter, r *http.Request, t *broker.Task, body []byte, s *Server) {
-	out, dropped, rj := l.rebuild(body)
-	if rj != nil {
-		s.reject(w, t, rj)
-		return
-	}
+// serve sends out, the body rebuild made with the names it dropped, to the instance.
+func (l *Local) serve(w http.ResponseWriter, r *http.Request, t *broker.Task, out []byte, dropped []string, s *Server) {
 	tainted, err := l.Tainted(t.ID)
 	if err != nil {
 		log.Printf("task %s: local LLM: taint unknown (%v): served as tainted", t.ID, err)
