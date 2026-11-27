@@ -23,7 +23,8 @@
 #                at 0 for the whole run; no credential in a task (env, HOME, /tmp, the workspace, its socket dirs, no
 #                /run/credentials); URL images, URL PDFs, mcp_servers and an http image_url each get 403 in the
 #                vendor envelope and reach no vendor; Claude Code and Codex tasks run with 0 rejections and their
-#                requests reach the vendor with the key (their bodies go to the replay corpus, TestReplay); a beta
+#                requests reach the vendor with the key (their bodies go to the replay corpus, TestReplay), and with
+#                HTTPS_PROXY and NO_PROXY set they send the proxy no request (C-G3: none for 127.0.0.1); a beta
 #                that keys refuses (AGENTBOX_TEST_KEYS_DENY_BETA) gets capability_rejected, Claude Code retries
 #                without it and the task completes; the key echoed in a 400, an SSE event, split across chunks,
 #                base64, percent-encoded or in a header reaches no task (KEYS_UPSTREAM{reflect} or a cut stream, and
@@ -395,10 +396,18 @@ check "#18 a Claude Code task (--cli claude) runs to completed with 0 rejections
   cli ka claude < $G/hi && T=$(cat $G/last) && [ "$(field $T end_reason)" = completed ] && [ "$(deny $T)" = 0 ] && uplog > $G/lcc && cat $G/lcc &&
   grep -q "\"path\":\"/v1/messages\"" $G/lcc && ! grep -v "\"auth\":\"ok:$F1\"" $G/lcc | grep -q . && [ "$(calerts $T)" = 0 ]'
 grep -o '"beta":\[[^]]*\]' $G/lcc | head -1 > $G/ccbeta
+TCC=$(cat $G/last)
 check "#18 a Codex task (--cli codex) runs to completed with 0 rejections; its requests reach the vendor with the key, and raise no canary alert (#291)" '
   cli ka codex < $G/hi; T=$(cat $G/last); journalctl -b -u agentbox-keys -o cat | grep "task=$T"
   [ -n "$T" ] && [ "$(field $T end_reason)" = completed ] && [ "$(deny $T)" = 0 ] && uplog > $G/lcx && cat $G/lcx &&
   grep -q "\"path\":\"/v1/responses\"" $G/lcx && ! grep -v "\"auth\":\"ok:$FO\"" $G/lcx | grep -q . && [ "$(calerts $T)" = 0 ]'
+TCX=$(cat $G/last)
+# the proxy logs each tunnel, cache request line and refusal with its task; the register and revoke lines are rootd's
+check "C-G3 with HTTPS_PROXY and NO_PROXY set, the Claude Code and Codex tasks sent the proxy no request, so none for 127.0.0.1" '
+  [ -n "$TCC" ] && [ -n "$TCX" ] && [ "$TCC" != "$TCX" ] && { journalctl --sync 2>/dev/null || :; } &&
+  j=$(journalctl -b -u agentbox-proxy.service -o cat | sed "s|^[0-9]*/[0-9]*/[0-9]* [0-9:]* ||") &&
+  echo "$j" | grep -q "^task $TCC (agent ka) registered" && echo "$j" | grep -q "^task $TCX (agent ka) registered" &&
+  ! echo "$j" | grep -E "^task ($TCC|$TCX) (CONNECT |[A-Z]+ \")|^DENY by=proxy task=($TCC|$TCX) "'
 # the first beta Claude Code sent, other than claude-code-20250219: keys refuses it, and Claude Code must retry without it
 DB1=$(tr -d '"[]' < $G/ccbeta | sed 's/^beta://' | tr ',' '\n' | grep -v '^claude-code-' | head -1)
 echo "Claude Code's betas: $(cat $G/ccbeta); refusing $DB1"
