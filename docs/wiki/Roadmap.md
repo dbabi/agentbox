@@ -1,8 +1,8 @@
 agentbox is early alpha. It is not for production use.
 
-Milestones 1 and 2 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon, the root daemon's skeleton and resolver, disk quotas and packaged ntfy). Milestone 3, the operation registry and the request gate, is built and its VM gates passed. Its 24-hour fuzz run is pending, so it stays in progress. Milestone 4 is done: agent accounts, one sealed container per task, and interactive sessions. The brokers, policy and approvals are designed but not built. So a task can start an agent CLI, but it can't reach a model yet.
+Milestones 1 and 2 are built: the installer, the OS layer, and the first host services (the firewall, the audit daemon, the root daemon's skeleton and resolver, disk quotas and packaged ntfy). Milestone 3, the operation registry and the request gate, is built and its VM gates passed. Its 24-hour fuzz run is pending, so it stays in progress. Milestone 4 is done: agent accounts, one sealed container per task, and interactive sessions. Milestone 5, the brokers, is in progress: the egress proxy and the LLM keys broker are built. The git service, policy and approvals are designed but not built.
 
-The full design is in [`docs/design/`](../design/). Status is as of the time of writing (2026-11-25).
+The full design is in [`docs/design/`](../design/). Status is as of the time of writing (2026-11-27).
 
 Two terms used below:
 
@@ -65,7 +65,7 @@ Every milestone 2 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 | Item | State |
 |---|---|
 | The milestone 2 gates in `tpm2` and `tpm2+tang` | Not run. The milestone 2 code doesn't touch unlock or boot, and the milestone 1 smoke suites still pass in `tpm2` and `tpm2+tang`. |
-| Hiding systemd-resolved's Unix interfaces from the broker users | Not built: the broker units don't exist yet. A residual in the threat model until they land (milestone 5). |
+| Hiding systemd-resolved's Unix interfaces from the broker users | Built for the proxy and the keys broker: their units hide those sockets. The proxy gate checks it for the proxy. The git service is not built (milestone 5). |
 | The resolver's `unavailable` reason when systemd-resolved is down | No gate check. |
 
 ## Milestone 3: what passed
@@ -110,7 +110,7 @@ Every milestone 4 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 
 | Item | State |
 |---|---|
-| Brokers | Not built (milestone 5). The gates use stand-ins that bind the same per-task sockets. |
+| Brokers | The milestone 4 gates use stand-ins that bind the same per-task sockets. They stop the release's proxy and keys broker while the stand-ins run. The git service is not built (milestone 5). |
 | The full task image, with Go and the agent CLIs | Not built into the box yet (milestone 7). By default a task runs a small root file system with the host's `/usr`, read-only. The task env gate builds a test image with Go. The gates run Claude Code and Codex from the host. opencode is not supported: its current release can't stop a workspace plugin (issue #164). |
 | A skill's frontmatter hook in a task | Not provable yet: it needs a model reply. The gate checks only the setting that turns hooks off. |
 | A network path for attach sessions | Not built (issue #90). A real Claude login can't reach its servers from an attach yet. |
@@ -121,7 +121,7 @@ Every milestone 4 gate ran on a fresh `none`-mode install, arm64 UEFI, Secure Bo
 | Gap today | Where the plan closes it |
 |---|---|
 | Rootful Docker publishes ports past the host firewall. | Not in the plan. Use rootless podman. |
-| No task can reach a model or the internet yet, and no agent CLI is in the task image. The design targets Claude Code and Codex. | Milestone 5: the brokers |
+| No agent CLI is in the task image, and no task has reached a real model with a real API key yet. The design targets Claude Code and Codex. | Milestone 5 for a real-key run of the keys broker; milestone 7 for the task image |
 | No signed approvals. Today an admin approves an OS change by passing the plan's SHA-256 to `os apply` as root. | Milestone 6 |
 | No automatic OS updates. apt's daily timers are masked. Updates happen only when an admin runs `os plan` and `os apply`. | Milestone 7: nightly updates |
 | No command to boot or pin an older generation. Fallback after a failed update is automatic. | Milestone 7: a signed rollback operation |

@@ -43,7 +43,7 @@
 #          and load the key, and the third commit's prune of the oldest generation, after which a restarted
 #          agentbox-keys still loads the key (run after checks, on the same box).
 # Stand-ins until their areas land: the vendors (the real POST /v1/messages needs a real key: needs_human), the local
-# LLM (llama-server is not packaged yet), no proxy or git broker (#17, #19).
+# LLM (llama-server is not packaged yet), no git broker (#19).
 # PASS/FAIL lines go to .vm/keys-gate.txt, command output to .vm/keys-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x"; fake keys).
 # AGENTBOX_KEYS_MODE=tpm2 installs in tpm2 mode, where rootd encrypts the keys with the TPM: checks then also loads
