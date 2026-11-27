@@ -30,7 +30,7 @@ agentbox aims to be an OS where AI agents can work safely. The design rests on f
 
 ## Status
 
-The installer, safe OS updates, the first host services (firewall, audit log, root daemon), the checks for agent requests, agent accounts, sealed task containers, the egress proxy, the LLM keys broker and the git service are built. The request checks still need one 24-hour fuzz run. The keys broker has run only against a stand-in for the vendors, and the git service only against a stand-in for GitHub. agentbox has run only in QEMU virtual machines, never on real hardware. Everything after the OS layer has been tested only in unencrypted VMs. Agent accounts and tasks ran on arm64 UEFI only; the host services and request checks also ran on amd64 BIOS.
+The installer, safe OS updates, the first host services (firewall, audit log, root daemon), the checks for agent requests, agent accounts, sealed task containers, the egress proxy and its Go module cache, the LLM keys broker and the git service are built. The request checks still need one 24-hour fuzz run. The keys broker has run only against a stand-in for the vendors, the git service only against a stand-in for GitHub, and the Go module cache only against a stand-in for the Go module proxy. agentbox has run only in QEMU virtual machines, never on real hardware. Everything after the OS layer has been tested only in unencrypted VMs. Agent accounts and tasks ran on arm64 UEFI only; the host services and request checks also ran on amd64 BIOS.
 
 **Works today**, in VMs on an Apple Silicon Mac:
 
@@ -207,6 +207,7 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 | Audit log | Stores each record on disk before it acknowledges it. `agentbox audit verify` checks the log's hash chain. |
 | Broker network setup | Resolves the allowed destinations for the brokers. Refuses private and special-purpose addresses. |
 | Egress proxy | Carries each task's HTTPS to the hosts on its agent's allowlist. It holds no secrets, dials only the addresses the root daemon checked, and records taint on the task before any byte flows. |
+| Go module cache | Keeps each agent's downloaded Go modules, so its next Go task skips the downloads. Only the proxy writes it, and only with files that match Go's signed checksum database. Each use taints the task first, as a download would. |
 | Keys broker | Holds the LLM API keys, encrypted on disk, and adds them to each task's model requests. It checks every request against a closed list of fields and against the agent's budget. A reply that carries the key back never reaches the task. |
 | Git service | Hosts each agent's git repos on the box. A root-owned hook keeps pushes in the agent's own branches and under a daily cap. Each write to GitHub waits for an admin's approval, and runs once. It holds the GitHub token, encrypted on disk. See [Git and GitHub][git]. |
 | Disk limits | Caps the disk space agent data can use, and keeps a reserve for system services. |
@@ -224,7 +225,6 @@ On the operator machine, build `bin/agentbox` as in Mac steps 1 and 3. On a Mac,
 
 | Feature | Plan |
 |---|---|
-| Brokers | The proxy will serve a read-only Go module cache. |
 | Policy and approvals | Cedar policy. You will sign approvals on your laptop with an SSH key. A phone passkey will cover only low-risk requests. The box will run only the operation you signed. |
 | Agent bus and memory | Messages between agents. Shared memory with quarantine and taint. |
 | OS updates | Nightly package updates will build into a new generation. Protected packages can't be removed. |
@@ -280,8 +280,8 @@ The design treats prompt injection as the most likely attack. It also plans for 
 | 2. No credential exists inside a task. | Built and tested for the LLM API keys and the GitHub token. |
 | 3. Agents never change the running OS. Changes build offline into a new generation, which commits only after a health check. | Generations built and tested. The agent side is designed. |
 | 4. Privileged operations run only with the exact inputs a human signed. | Designed |
-| 5. Taint is sticky. Work that touched untrusted content stays marked until a human clears it. | Partly built. A tainted task taints its workspace, and the next task there starts tainted. Every connection through the egress proxy taints its task, and so does a model request that uses a vendor web tool. A tainted task's push taints the branches it updates, and a merge carries that taint into `main`. |
-| 6. Nothing persists between tasks except the tainted workspace. | Built and tested |
+| 5. Taint is sticky. Work that touched untrusted content stays marked until a human clears it. | Partly built. A tainted task taints its workspace, and the next task there starts tainted. Every connection through the egress proxy taints its task, and so do a use of the Go module cache and a model request that uses a vendor web tool. A tainted task's push taints the branches it updates, and a merge carries that taint into `main`. |
+| 6. Nothing persists between tasks except the tainted workspace. | Built and tested. The one other store that outlives a task is each agent's Go module cache. Tasks can't write it, it holds only public module files that match Go's signed checksum database, and a task can read it only once it is tainted. |
 | 7. The seed and logs hold no plaintext secrets. | Built and tested |
 
 Known limits of what is built today:
@@ -305,7 +305,7 @@ agentbox is built in milestones, in this order. Each one ends with tests that mu
 2. **Firewall and audit log: done.** Outbound limits for agentbox services, an audit log you can verify, disk limits and local notifications. Tested in VMs only.
 3. **Checks for agent requests: in progress.** Built and tested in VMs. Each agent request is checked against one list of allowed operations before anything privileged runs. A 24-hour fuzz run is the last step.
 4. **Isolated tasks: done.** Agent accounts, one disposable container per task with no network, and interactive sessions. Tested in VMs only.
-5. **Brokers: in progress.** The egress proxy, the keys broker and the git service are built and tested in VMs. They connect only to addresses the root daemon checked. LLM API keys stay outside tasks, in the keys broker, and the GitHub token in the git service. The proxy does not serve its Go module cache yet.
+5. **Brokers: in progress.** The egress proxy, the keys broker and the git service are built and tested in VMs. They connect only to addresses the root daemon checked. LLM API keys stay outside tasks, in the keys broker, and the GitHub token in the git service. The proxy also keeps a read-only Go module cache for each agent.
 6. **Signed approvals: planned.** Risky actions will need your SSH signature. A phone passkey will cover low-risk requests.
 7. **Apps and OS updates by agents: planned.** Agents will request app installs, file changes and package updates. OS changes will build offline into new generations.
 8. **Agent bus and shared memory: planned.** Tasks will hand work to each other. Facts from untrusted sources will stay marked.
