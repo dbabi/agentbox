@@ -1,7 +1,7 @@
 How agentbox is tested, what each test proves, and what it does not. For an overview, start at [Home](README.md).
 
 agentbox is early alpha. Every gate on this page runs in a QEMU virtual machine. No real hardware has run agentbox yet.
-The tests cover the installer, the OS layer, the milestone 2 host services (the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy) the milestone 3 request checks, and the milestone 4 agent accounts, task containers and interactive sessions. The brokers, policy, approvals, agent bus and memory are not built, so no test covers them yet.
+The tests cover the installer, the OS layer, the milestone 2 host services (the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy) the milestone 3 request checks, the milestone 4 agent accounts, task containers and interactive sessions, and the milestone 5 connection code the brokers will share, which reaches only addresses the root daemon checked. The brokers, policy, approvals, agent bus and memory are not built, so no test covers them yet.
 
 ## Two kinds of tests
 
@@ -33,7 +33,7 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | Task env gate (milestone 4) | `hack/taskenv-gate.sh [install\|checks ...]` | Apple Silicon Mac, with internet for the task image build | not timed separately |
 | Agent CLI gate (milestone 4) | `hack/cli-gate.sh [install\|checks ...]` | Apple Silicon Mac, with `npm` and internet for the Claude Code and Codex CLIs | not timed separately |
 | Task image gate (milestone 4) | `hack/image-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
-| Pinned dialing gate (milestone 5) | `hack/dial-gate.sh [install] [release] [checks]` | Apple Silicon Mac | TIME |
+| Pinned dialing gate (milestone 5) | `hack/dial-gate.sh [install] [release] [checks]` | Apple Silicon Mac | about 11 min, with the `none` install |
 | Fuzz tests | `hack/fuzz-all.sh [DURATION]` | macOS or Linux | 24 h by default |
 
 The times come from one Apple Silicon Mac. The milestone 2 and 3 times come from runs with four VMs at once.
@@ -517,13 +517,13 @@ The pinned dialing gate starts with `install`: `hack/gate.sh none`, so rootd and
 caffeinate -i hack/dial-gate.sh
 ```
 
-The test network is inside the VM, so the Mac needs no internet for the checks. A virtual LAN, a veth pair into a network namespace, holds a router and the test servers on public-looking addresses. The gate makes that router the box's default route. The test DNS server answers the gate's names for systemd-resolved, and is also a resolve hook.
+The test network is inside the VM, so the Mac needs no internet for the checks. A virtual LAN, a veth pair into a network namespace, holds a router and the test servers on public-looking addresses. The gate makes that router the box's default route. The test DNS server answers the gate's names for systemd-resolved. It is also a resolve hook: since systemd 259, a local service can answer lookups for systemd-resolved through a socket, instead of DNS.
 
 ### What the milestone 5 gates prove
 
 | Suite | Script | What it proves |
 |---|---|---|
-| `m5-dial` | `hack/dial-gate.sh` | rootd refuses an allowlisted name that answers with one of the box's own addresses: on the default interface, on another interface, its SLAAC IPv6 address, or an IPv6 address still in duplicate address detection. It also refuses a LAN host's global IPv6 address, `192.168.1.10`, `192.168.1.10` inside a NAT64 or a 6to4 address, and `240.0.0.1`. A name only `/etc/hosts` knows gets `no_such_name`. A name that a systemd 259 resolve hook answers is refused, and resolved never asks DNS for it. With the hook gone, the same name resolves. rootd reads the box's addresses at each resolution. A process under the keys broker's user, in the broker units' sandbox, dials through the shared dialer. It reaches only rootd's addresses, takes the first that answers, and keeps the name in SNI, the certificate check and `Host`. It never dials the `/etc/hosts` answer, makes no lookup and follows no redirect. An address that resets fails `refused` at once, and one that drops the SYN fails `timeout` after the 10 s budget. |
+| `m5-dial` | `hack/dial-gate.sh` | rootd refuses an allowlisted name that answers with one of the box's own addresses: on the default interface, on another interface, the IPv6 address it made from the router's announcement (SLAAC), or an IPv6 address still in duplicate address detection. It also refuses a LAN host's global IPv6 address, `192.168.1.10`, `192.168.1.10` inside a NAT64 or a 6to4 address, and `240.0.0.1`. A name only `/etc/hosts` knows gets `no_such_name`. A name that a systemd 259 resolve hook answers is refused, and resolved never asks DNS for it. With the hook gone, the same name resolves. rootd reads the box's addresses at each resolution. A process under the keys broker's user, in the broker units' sandbox, dials through the shared dialer. It reaches only rootd's addresses, takes the first that answers, and keeps the name in SNI, the certificate check and `Host`. It never dials the `/etc/hosts` answer, makes no lookup and follows no redirect. An address that resets fails `refused` at once, and one that drops the SYN fails `timeout` after the 10 s budget. |
 
 ### What they do not prove
 
@@ -735,6 +735,12 @@ The regression after the review fixes. Every VM gate ran on a fresh `none`-mode 
 | A user manager left failed by a remove during its start (issue #276) | On a fresh `none`-mode install, arm64 UEFI, Secure Boot on: `m4-accounts` 52 PASS, 0 FAIL. Its new check removes an agent while its user manager is held in `ExecStartPre`. The stop fails the unit, and the removal resets it, so no failed unit is left. At `0c6bc1b`, before the fix, `m4-accounts` failed only its "no failed units" check before the reboot. The failed unit was the user manager of the agent that the #273 checks remove. | the branch of pull request #278, before it merged |
 | rootd's start job timeout (issue #277) | On a fresh `none`-mode install, arm64 UEFI, Secure Boot on: `w3-rootd` 115 PASS, 0 FAIL. Its new check finds the 3 min start job timeout in systemd's view of rootd's unit. At `0c6bc1b` the setting sat in the wrong section of the unit file. systemd ignored it, so the unit had no timeout. The gate's rootd journal now has no unknown key warning. | the branch of pull request #279, before it merged |
 | Regression after pull requests #271, #272, #274 and #275 | Up to four VMs ran at once. Each VM gate ran on a fresh arm64 UEFI install with Secure Boot on. The mode was `tpm2+tang` for `gates-tpm2-tang-down-typed-recovery`, `tpm2` for the two `os-apply` suites, and `none` for the rest. `gates-none` 56, `gates-tpm2-tang-down-typed-recovery` 71, `os-apply-cycles-tpm2` 104 and `os-apply-breaks-tpm2` 113 PASS, 0 FAIL. `w3-firewall` 79, `w3-auditd` 118, `w3-rootd` 114, `w3-quota-ntfy` 62, `w4-registry` 12, `w4-agentboxd` 30 and `w4-sockets` 38 PASS, 0 FAIL. `m4-tasks` 92, `m4-attach` 51, `m4-taskenv` 44, `m4-cli` 26 and `m4-image` 17 PASS, 0 FAIL. `zero-touch-iso` passed. The amd64 host gates in CI run 45840979450: sockets 38, registry 11, agentboxd 29, firewall 78, audit 62, rootd 114 and quota-ntfy 61 PASS, 0 FAIL. `m4-accounts` failed only its "no failed units" check before the reboot: 50 PASS, 1 FAIL (issue #276). Its logs also showed that systemd ignored rootd's start job timeout (issue #277). After the fixes in pull requests #278 and #279, `m4-accounts` passed: 52 PASS, 0 FAIL. The other suites did not run again. Besides tests and gate checks, the two fixes change only agent removal and one setting in rootd's unit. | `0c6bc1b`; `m4-accounts` again at `0431ff1` |
+
+### Milestone 5
+
+| Suite | Result | Tested at |
+|---|---|---|
+| `m5-dial` (issues #20, #145) | Passed on a fresh `none`-mode install, arm64 UEFI, Secure Boot on: 53 PASS, 0 FAIL. The hook check ran against the box's own systemd-resolved, which asked the gate's hook and never asked DNS. | `71fb7e5` |
 
 ## Troubleshooting
 

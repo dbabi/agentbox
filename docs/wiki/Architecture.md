@@ -586,7 +586,7 @@ Rootful Docker is unsupported: it publishes ports through the forward hook, whic
 
 Built today (milestone 2): the resolver, through systemd-resolved's Varlink socket, with every refusal rule above, NAT64 prefixes included.
 rootd keeps its answers in `rootd.db`, refills the sets at start (before `READY=1`) and on a timer, and `agentbox egress list|refill|allow|remove` edits the allowlists.
-Built in milestone 5: the refusals of the box's own addresses and of hook answers, and the dialer the brokers share (`internal/dial`).
+Built in milestone 5: the refusals of the box's own addresses and of hook answers, and the dialer the brokers will share (`internal/dial`).
 It asks rootd, dials only rootd's addresses, in order, within one 10 s budget, and follows no redirect.
 The brokers that will use it are not built.
 
