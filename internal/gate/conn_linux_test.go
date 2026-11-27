@@ -176,13 +176,14 @@ func TestReadErrorEndsConnection(t *testing.T) {
 // A Conn handler (the proxy) gets each task connection past the peer check, with its task and agent: bytes flow both
 // ways, Conns caps how many it serves at once, ancillary data closes the connection, and so does revoke.
 func TestConnHandler(t *testing.T) {
-	s, _ := newServer(t, nil)
 	who := make(chan string, 8)
-	s.Conn = func(task, agent string, c net.Conn) {
-		who <- task + " " + agent
-		io.Copy(c, c) // echo until the connection ends
-	}
-	s.Conns = 2
+	s, _ := newServer(t, nil, func(s *Server) {
+		s.Conn = func(task, agent string, c net.Conn) {
+			who <- task + " " + agent
+			io.Copy(c, c) // echo until the connection ends
+		}
+		s.Conns = 2
+	})
 	tk := addTask(t, s, "T2")
 	echo := func(c net.Conn, d time.Duration) bool {
 		c.Write([]byte("ping"))

@@ -24,7 +24,8 @@ type rpcRep struct {
 	} `json:"error"`
 }
 
-func newServer(t testing.TB, fwd func(map[string]any) ([]byte, error)) (*Server, *task) {
+// newServer registers T1 on a new Server; each set runs first, since T1's accept loop reads the Server's fields.
+func newServer(t testing.TB, fwd func(map[string]any) ([]byte, error), set ...func(*Server)) (*Server, *task) {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "gate") // sun_path is 104 bytes on macOS: t.TempDir is too long
 	if err != nil {
@@ -44,6 +45,9 @@ func newServer(t testing.TB, fwd func(map[string]any) ([]byte, error)) (*Server,
 	s := &Server{Dir: dir, Forward: fwd, AgentIDs: func(string) (uint32, uint32, error) {
 		return uint32(os.Getuid()), uint32(os.Getgid()), nil
 	}}
+	for _, f := range set {
+		f(s)
+	}
 	if rep := s.Control([]byte(`{"call":"register","task":"T1","agent":"claude","chain":["T0"]}`)); rep["ok"] != true {
 		t.Fatalf("register: %v", rep)
 	}
