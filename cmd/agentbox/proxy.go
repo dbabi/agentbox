@@ -17,7 +17,6 @@ import (
 	"agentbox/internal/proxy"
 	"agentbox/internal/proxy/gocache"
 	"agentbox/internal/rootd/resolve"
-	"agentbox/internal/seccomp"
 	"agentbox/internal/taskenv"
 )
 
@@ -38,11 +37,9 @@ func cmdProxy(args []string) error {
 	if err := parse(flag.NewFlagSet("proxy", flag.ContinueOnError), args); err != nil {
 		return err
 	}
-	before, after, err := seccomp.InstallService()
-	if err != nil {
+	if err := serviceFilter(); err != nil {
 		return err
 	}
-	log.Printf("service filter installed: Seccomp_filters %d -> %d", before, after)
 	ls, err := listenFDs()
 	if err != nil {
 		return err
