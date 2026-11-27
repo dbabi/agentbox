@@ -11,9 +11,9 @@
 #          (AGENTBOX_VM_FWD). On the box, resolved asks hack/gate-dns for this boot only, and reg.gate.test answers the
 #          public-looking 192.88.96.50, which rootd checks and adds to proxy_dst4. A nat chain in the gate's own table
 #          sends 192.88.96.50:443 on to 10.0.2.2: nft NAT runs at the dstnat hook before the agentbox output chain, so
-#          an approved allow_private4 tuple in rootd.db lets agentbox-proxy reach that one port, as hack/gocache-gate.sh
-#          does. Two agents run tasks as sh scripts (AGENTBOX_TEST_CLI=sh) in the release's task image, through the
-#          release's agentbox-proxy, which socket activation starts at the first task.
+#          an approved allow_private4 tuple in rootd.db lets agentbox-proxy reach that one port. Two agents run tasks
+#          as sh scripts (AGENTBOX_TEST_CLI=sh) in the release's task image, through the release's agentbox-proxy,
+#          which socket activation starts at the first task.
 #          The #17 gate items: rebinding (the allowlisted name moves to the registry's own LAN address, loopback, the
 #          metadata address, or a public and a private answer at once), raw IPv4 and IPv6 targets, UDP, IPv6 (raw,
 #          ULA, link-local, loopback, IPv4-mapped and NAT64-wrapped private answers), LAN and metadata names
