@@ -18,22 +18,21 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"agentbox/internal/audit"
+	"agentbox/internal/dial"
 	"agentbox/internal/ops"
 	"agentbox/internal/rootd/resolve"
 )
 
 // Dialer is the pinned dialer (§6.3): it asks rootd for e on behalf of task and connects only to rootd's answers, as
 // IP literals. A refusal is a *resolve.Refused with one of rootd's four reasons; a dial that reached none of the answers
-// returns the connect error, which dialWhat sorts into EGRESS_DIAL_FAILED's what.
+// is a *dial.Error, whose What is EGRESS_DIAL_FAILED's what.
 type Dialer interface {
 	Dial(ctx context.Context, task string, e resolve.Entry) (net.Conn, error)
 }
@@ -51,14 +50,11 @@ type Server struct {
 // the cap wait on tunnels that never close (#285).
 const MaxConns = 64
 
-// DialBudget is §6.2 step 3's one budget for all of rootd's answers.
-const DialBudget = 10 * time.Second
-
 const (
 	maxHead = 16 << 10
 	maxBody = 1 << 20 // read off a refused request first, so the refusal is what the client reads (#168)
 	// a request head must arrive within headTimeout; rootd's resolution (at most 10 s, plus the socket's slack) and
-	// DialBudget fit in connectTimeout
+	// dial.Budget fit in connectTimeout
 	headTimeout    = 30 * time.Second
 	connectTimeout = 30 * time.Second
 )
@@ -218,90 +214,23 @@ func tunnel(c net.Conn, br io.Reader, up net.Conn) {
 	wg.Wait()
 }
 
-// Rootd is the pinned dialer on resolve-proxy.sock: one resolve request that names the task, then rootd's answers in
-// order, each with an even share of what is left of Budget. It never resolves a name itself, and nft lets this uid reach
-// only what rootd added to proxy_dst.
-//
-// shortcut: it stands in for #20's dial.Dialer{Sock, Task}, with the same request, reply checks and dial order; once
-// that lands, cmd/agentbox's proxy wires dial.Dialer.DialContext(ctx, "tcp", e.String()) as the Dialer and this goes.
-type Rootd struct {
-	Socket string // /run/agentbox-rootd/resolve-proxy.sock
-	Budget time.Duration
-}
+// Pinned is the Dialer on rootd's resolve socket at this path: internal/dial's pinned dialing, naming the task, so rootd
+// checks the entry against that task's agent and refuses a task that ended.
+type Pinned string
 
 // Dial is Dialer.Dial.
-func (r Rootd) Dial(ctx context.Context, task string, e resolve.Entry) (net.Conn, error) {
-	addrs, err := r.resolve(ctx, task, e)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(ctx, r.Budget)
-	defer cancel()
-	end, _ := ctx.Deadline()
-	var first error
-	for i, a := range addrs {
-		d := net.Dialer{Deadline: time.Now().Add(time.Until(end) / time.Duration(len(addrs)-i))}
-		c, err := d.DialContext(ctx, "tcp", netip.AddrPortFrom(a, e.Port).String()) // an IP literal: no lookup
-		if err == nil {
-			return c, nil
-		}
-		if first == nil {
-			first = err
-		}
-	}
-	return nil, first
+func (p Pinned) Dial(ctx context.Context, task string, e resolve.Entry) (net.Conn, error) {
+	return dial.Dialer{Sock: string(p), Task: task}.DialContext(ctx, "tcp", e.String())
 }
 
-func (r Rootd) resolve(ctx context.Context, task string, e resolve.Entry) ([]netip.Addr, error) {
-	unavailable := func(why string) error { return &resolve.Refused{Reason: resolve.Unavailable, Detail: why} }
-	c, err := (&net.Dialer{}).DialContext(ctx, "unix", r.Socket)
-	if err != nil {
-		return nil, unavailable(err.Error())
-	}
-	defer c.Close()
-	c.SetDeadline(time.Now().Add(15 * time.Second)) // rootd's own lookup is bounded at 10 s
-	b, _ := json.Marshal(map[string]any{"op": "resolve", "host": e.Host, "port": e.Port, "task": task})
-	if _, err := c.Write(append(b, '\n')); err != nil {
-		return nil, unavailable(err.Error())
-	}
-	line, err := bufio.NewReader(io.LimitReader(c, 64<<10)).ReadBytes('\n')
-	var rep struct {
-		OK     bool     `json:"ok"`
-		Reason string   `json:"reason"`
-		Addrs  []string `json:"addrs"`
-	}
-	if err != nil || json.Unmarshal(line, &rep) != nil {
-		return nil, unavailable(fmt.Sprintf("no reply: %v", err))
-	}
-	if !rep.OK {
-		return nil, &resolve.Refused{Reason: rep.Reason}
-	}
-	var addrs []netip.Addr
-	for _, s := range rep.Addrs {
-		a, err := netip.ParseAddr(s)
-		if err != nil || a.Zone() != "" || a.Is4In6() {
-			return nil, unavailable(fmt.Sprintf("rootd answered %q", s))
-		}
-		addrs = append(addrs, a)
-	}
-	if len(addrs) == 0 {
-		return nil, unavailable("rootd answered no address")
-	}
-	return addrs, nil
-}
-
-// dialWhat is a failed dial's EGRESS_DIAL_FAILED what, as #20's dial kinds: blocked when nft dropped the SYN (EPERM:
-// the address is not in proxy_dst), timeout when no answer came within the budget, refused for a reset or a path that
-// failed.
+// dialWhat is a failed dial's EGRESS_DIAL_FAILED what: the *dial.Error's (refused for a reset, timeout when the budget
+// ran out), and blocked for any other failure (§6.3).
 func dialWhat(err error) string {
-	var ne net.Error
-	switch {
-	case errors.Is(err, syscall.EPERM):
-		return "blocked"
-	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne) && ne.Timeout():
-		return "timeout"
+	var de *dial.Error
+	if errors.As(err, &de) {
+		return de.What
 	}
-	return "refused"
+	return dial.Blocked
 }
 
 // Audit is Server.Taint for auditd's producer socket at path: one connection per record, nil only on its ACK.

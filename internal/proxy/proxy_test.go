@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"agentbox/internal/dial"
 	"agentbox/internal/ops"
 	"agentbox/internal/rootd/resolve"
 )
@@ -217,11 +218,10 @@ func TestRootdAndDialRefusals(t *testing.T) {
 		{&resolve.Refused{Reason: resolve.Unavailable}, 502, "EGRESS_RESOLVE_FAILED", "unavailable"},
 		{&resolve.Refused{Reason: "something new"}, 502, "EGRESS_RESOLVE_FAILED", "unavailable"},
 		{&resolve.Refused{Reason: resolve.NotAllowlisted}, 403, "EGRESS_NOT_ALLOWLISTED", ""}, // removed while we checked
-		{opErr(os.ErrDeadlineExceeded), 504, "EGRESS_DIAL_FAILED", "timeout"},
-		{context.DeadlineExceeded, 504, "EGRESS_DIAL_FAILED", "timeout"},
-		{opErr(syscall.ECONNREFUSED), 502, "EGRESS_DIAL_FAILED", "refused"},
-		{opErr(syscall.EHOSTUNREACH), 502, "EGRESS_DIAL_FAILED", "refused"},
-		{opErr(syscall.EPERM), 502, "EGRESS_DIAL_FAILED", "blocked"},
+		{&dial.Error{What: dial.Timeout, Err: opErr(os.ErrDeadlineExceeded)}, 504, "EGRESS_DIAL_FAILED", "timeout"},
+		{&dial.Error{What: dial.Refused, Err: opErr(syscall.ECONNREFUSED)}, 502, "EGRESS_DIAL_FAILED", "refused"},
+		{&dial.Error{What: dial.Blocked, Err: opErr(syscall.EHOSTUNREACH)}, 502, "EGRESS_DIAL_FAILED", "blocked"},
+		{errors.New("not a dial error"), 502, "EGRESS_DIAL_FAILED", "blocked"},
 	} {
 		r.dial.set(func(resolve.Entry) (net.Conn, error) { return nil, c.err })
 		resp, _, _ := r.do(t, "ga", connect("registry.example.com:443"))
@@ -447,9 +447,9 @@ func fakeRootd(t *testing.T, reply string) (sock string, reqs func() []map[strin
 	return p, func() []map[string]any { mu.Lock(); defer mu.Unlock(); return slices.Clone(got) }
 }
 
-// The stand-in pinned dialer: one resolve request that names the task, then rootd's answers in order and nothing
-// else; a refusal keeps rootd's reason, and a reply it can't use is unavailable.
-func TestRootdDialer(t *testing.T) {
+// Pinned is internal/dial's pinned dialing for the task: one resolve request that names the task and the entry, then a
+// connection to rootd's answer; a refusal keeps rootd's reason, and a dial that reaches no answer keeps its what.
+func TestPinned(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -470,43 +470,28 @@ func TestRootdDialer(t *testing.T) {
 	closed.Close()
 	e := resolve.Entry{Host: "registry.example.com", Port: port}
 
-	sock, reqs := fakeRootd(t, `{"ok":true,"addrs":["127.0.0.2","127.0.0.1"],"expires_at":1}`)
-	c, err := Rootd{Socket: sock, Budget: 5 * time.Second}.Dial(context.Background(), tid, e)
+	sock, reqs := fakeRootd(t, `{"ok":true,"addrs":["127.0.0.1"],"expires_at":1}`)
+	c, err := Pinned(sock).Dial(context.Background(), tid, e)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
+	}
+	if c.RemoteAddr().String() != ln.Addr().String() {
+		t.Fatalf("dialed %s, not rootd's answer %s", c.RemoteAddr(), ln.Addr())
 	}
 	c.Close()
 	want := map[string]any{"op": "resolve", "host": "registry.example.com", "port": float64(port), "task": tid}
 	if r := reqs(); len(r) != 1 || fmt.Sprint(r[0]) != fmt.Sprint(want) {
 		t.Fatalf("resolve requests %v", r)
 	}
-	// nothing listens on 127.0.0.2, rootd's first answer: the dial moved on to 127.0.0.1 within the budget
-	for _, c := range []struct {
-		reply, reason string
-	}{
-		{`{"ok":false,"reason":"non_public"}`, resolve.NonPublic},
-		{`{"ok":false,"reason":"not_allowlisted"}`, resolve.NotAllowlisted},
-		{`{"ok":true,"addrs":[]}`, resolve.Unavailable},
-		{`{"ok":true,"addrs":["registry.example.com"]}`, resolve.Unavailable},
-		{`{"ok":true,"addrs":["fe80::1%eth0"]}`, resolve.Unavailable},
-		{`{"ok":true,"addrs":["::ffff:93.184.215.14"]}`, resolve.Unavailable},
-		{`not json`, resolve.Unavailable},
-	} {
-		sock, _ := fakeRootd(t, c.reply)
-		_, err := Rootd{Socket: sock, Budget: time.Second}.Dial(context.Background(), tid, e)
-		var rf *resolve.Refused
-		if !errors.As(err, &rf) || rf.Reason != c.reason {
-			t.Errorf("%s: %v, want %s", c.reply, err, c.reason)
-		}
-	}
-	if _, err := (Rootd{Socket: "/nonexistent/r.sock", Budget: time.Second}).Dial(context.Background(), tid, e); err == nil {
-		t.Error("rootd down: dialed anyway")
+	sock, _ = fakeRootd(t, `{"ok":false,"reason":"non_public"}`)
+	var rf *resolve.Refused
+	if _, err := Pinned(sock).Dial(context.Background(), tid, e); !errors.As(err, &rf) || rf.Reason != resolve.NonPublic {
+		t.Errorf("rootd refused: %v", err)
 	}
 	sock, _ = fakeRootd(t, `{"ok":true,"addrs":["127.0.0.1"]}`)
-	_, err = Rootd{Socket: sock, Budget: time.Second}.Dial(context.Background(), tid, resolve.Entry{Host: "registry.example.com", Port: cport})
-	var rf *resolve.Refused
-	if err == nil || errors.As(err, &rf) || dialWhat(err) != "refused" {
-		t.Errorf("a closed port: %v", err)
+	_, err = Pinned(sock).Dial(context.Background(), tid, resolve.Entry{Host: "registry.example.com", Port: cport})
+	if err == nil || errors.As(err, &rf) || dialWhat(err) != dial.Refused {
+		t.Errorf("a closed port: %v (what %s)", err, dialWhat(err))
 	}
 }
 
@@ -516,16 +501,4 @@ func opErr(e error) error {
 		return &net.OpError{Op: "dial", Net: "tcp", Err: e}
 	}
 	return &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", e)}
-}
-
-// The kinds of #20's dial package: nft's drop (EPERM) is blocked, no answer in the budget a timeout, anything else
-// refused.
-func TestDialWhat(t *testing.T) {
-	for err, want := range map[error]string{opErr(syscall.ECONNREFUSED): "refused", context.DeadlineExceeded: "timeout",
-		opErr(syscall.ETIMEDOUT): "timeout", opErr(syscall.EPERM): "blocked", opErr(syscall.EHOSTUNREACH): "refused",
-		opErr(syscall.ENETUNREACH): "refused", opErr(os.ErrDeadlineExceeded): "timeout", errors.New("other"): "refused"} {
-		if got := dialWhat(err); got != want {
-			t.Errorf("%v: %s, want %s", err, got, want)
-		}
-	}
 }

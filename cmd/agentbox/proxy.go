@@ -33,8 +33,7 @@ func cmdProxy(args []string) error {
 	if !ok || len(ls) != 1 {
 		return errors.New("proxy: want exactly the svc-proxy socket from systemd")
 	}
-	p := &proxy.Server{Egress: resolve.EgressDir, Dial: proxy.Rootd{Socket: proxyResolveSock, Budget: proxy.DialBudget},
-		Taint: proxy.Audit(proxyAuditSock)}
+	p := &proxy.Server{Egress: resolve.EgressDir, Dial: proxy.Pinned(proxyResolveSock), Taint: proxy.Audit(proxyAuditSock)}
 	s := &gate.Server{Dir: proxyDir, Name: "proxy", Conn: p.Serve, Conns: proxy.MaxConns,
 		AgentIDs: func(a string) (uint32, uint32, error) { return uidOf("ag-" + a) }}
 	if l, err := lineCall(proxyResolveSock, map[string]any{"op": "task.list_live"}, proxyListLiveWait); err != nil {
