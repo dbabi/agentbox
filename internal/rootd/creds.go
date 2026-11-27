@@ -36,7 +36,7 @@ const LLMUnit = "agentbox-llm@task.service"
 // credKeyArgs is the systemd-creds key for this box: the TPM2 with an empty PCR list in the tpm2 modes, which the
 // LUKS root's /etc/crypttab marks, so the credential survives kernel, firmware and generation changes on the same
 // machine; the host key in none mode. The host key sits next to the root file system it encrypts for, so in none mode
-// the encryption only obfuscates the stored value (docs/wiki/Secrets.md).
+// the encryption only obfuscates the stored value (docs/wiki/Security-Model.md).
 func credKeyArgs(crypttab string) []string {
 	b, _ := os.ReadFile(crypttab)
 	for _, l := range strings.Split(string(b), "\n") {

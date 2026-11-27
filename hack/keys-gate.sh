@@ -1,8 +1,8 @@
 #!/bin/sh
 # Milestone 5 gate for the keys broker (issues #18, #108, #115; PLAN.md row 7-8; PROPOSALS-v5.3 C-G4's keys half, A-G13
-# for agentbox-keys; ARCHITECTURE.md §4.3, §6.3) on the local arm64 QEMU VM, none mode.
+# for agentbox-keys; ARCHITECTURE.md §4.3, §6.3) on the local arm64 QEMU VM, none mode (AGENTBOX_KEYS_MODE=tpm2: tpm2).
 #   hack/keys-gate.sh [install|checks|apply ...]   default: install checks
-# install  hack/gate.sh none: the unattended install and the release pipeline.
+# install  hack/gate.sh none (or tpm2): the unattended install and the release pipeline.
 # checks   installs this checkout's release on the box (make release, install.sh, a reboot), so agentbox-keys, its
 #          socket unit, the credential store and rootd arrive the real way. A stand-in for the vendors on the host
 #          (hack/keys-gate/upstream: api.anthropic.com and api.openai.com over TLS from a test CA, on 127.0.0.1:7900+ID,
@@ -46,6 +46,8 @@
 # LLM (llama-server is not packaged yet), no proxy or git broker (#17, #19).
 # PASS/FAIL lines go to .vm/keys-gate.txt, command output to .vm/keys-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x"; fake keys).
+# AGENTBOX_KEYS_MODE=tpm2 installs in tpm2 mode, where rootd encrypts the keys with the TPM: checks then also loads
+# them with the host key moved away.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -53,6 +55,8 @@ VM="$ROOT/.vm"
 [ $# -gt 0 ] || set -- install checks
 OUT="$VM/keys-gate.txt" LOG="$VM/keys-gate.log"
 UP_PORT=$((7900 + ${AGENTBOX_VM_ID:-0}))
+MODE=${AGENTBOX_KEYS_MODE:-none}
+case $MODE in none|tpm2) ;; *) echo "AGENTBOX_KEYS_MODE is none or tpm2" >&2; exit 2 ;; esac
 CC=anthropic-ai-claude-code-linux-arm64-2.1.330.tgz CX=openai-codex-0.171.0-linux-arm64.tgz
 mkdir -p "$VM"
 : > "$OUT"
@@ -89,8 +93,8 @@ key() { printf '%s%s' "$1" "$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"; }
 # start_upstream: the vendors' stand-in on the host, recording every body for the replay corpus
 start_upstream() {
   mkdir -p "$K"
-  [ -s "$K/env" ] || printf 'TOKEN=%s\nUP_PORT=%s\nKEY1=%s\nKEY2=%s\nOKEY=%s\n' "$(key '')" "$UP_PORT" "$(key sk-ant-api03-GATE)" \
-    "$(key sk-ant-api03-GATE)" "$(key sk-proj-GATE)" > "$K/env"
+  [ -s "$K/env" ] || printf 'TOKEN=%s\nUP_PORT=%s\nKEY1=%s\nKEY2=%s\nOKEY=%s\nMODE=%s\n' "$(key '')" "$UP_PORT" "$(key sk-ant-api03-GATE)" \
+    "$(key sk-ant-api03-GATE)" "$(key sk-proj-GATE)" "$MODE" > "$K/env"
   . "$K/env"
   go build -o "$K/upstream" ./hack/keys-gate/upstream || die "build the upstream"
   GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "$K/llama" ./hack/keys-gate/upstream || die "build the local-LLM stand-in"
@@ -112,8 +116,8 @@ release() { # this checkout's release, by its own install.sh, then a reboot so t
 
 for s; do case $s in
 install)
-  hack/gate.sh none >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-none.txt"
-  log "PASS install: hack/gate.sh none (install, release pipeline, firstboot, no failed units)" ;;
+  hack/gate.sh "$MODE" >>"$LOG" 2>&1 || die "hack/gate.sh $MODE failed; see $VM/gate-$MODE.txt"
+  log "PASS install: hack/gate.sh $MODE (install, release pipeline, firstboot, no failed units)" ;;
 checks)
   pkg "$CC" @anthropic-ai/claude-code-linux-arm64@2.1.330
   pkg "$CX" @openai/codex@0.171.0-linux-arm64
@@ -228,6 +232,12 @@ check "#108 the store holds ciphertext only, root 0600; no key byte in it" '
 check "#108 PID 1 decrypted it into agentbox-keys' own credentials dir: a read-only, non-swappable tmpfs that agentbox-keys reads" '
   findmnt -no FSTYPE,OPTIONS $CRED | grep -q "^tmpfs ro,.*noswap" && [ "$(stat -c "%U %a" $CRED/anthropic-api-key)" = "root 440" ] &&
   [ "$(runuser -u agentbox-keys -- cat $CRED/anthropic-api-key)" = "$KEY1" ]'
+if [ "$MODE" = tpm2 ]; then # the LUKS root's crypttab line makes rootd encrypt with the TPM, which alone decrypts
+  check "#108 tpm2 mode: agentbox-keys restarts and loads both keys with the host key moved away" '
+    grep -q "^[^#[:space:]]" /etc/crypttab && mv /var/lib/systemd/credential.secret /var/tmp/kg-host-key &&
+    { systemctl restart agentbox-keys; r=$?; mv /var/tmp/kg-host-key /var/lib/systemd/credential.secret; [ $r = 0 ]; } &&
+    [ "$(runuser -u agentbox-keys -- cat $CRED/anthropic-api-key)" = "$KEY1" ] && [ "$(runuser -u agentbox-keys -- cat $CRED/openai-api-key)" = "$OKEY" ]'
+fi
 check "#108 no other uid reads the plaintext: agentbox-proxy, agentbox-git, agentbox, agentbox-audit, agentbox-llm, nobody" '
   for u in agentbox-proxy agentbox-git agentbox agentbox-audit agentbox-llm nobody; do runuser -u $u -- cat $CRED/anthropic-api-key 2>/dev/null && exit 1; runuser -u $u -- cat $CS/keys/anthropic-api-key 2>/dev/null && exit 1; done; true'
 for a in ka kb; do
