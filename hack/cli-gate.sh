@@ -190,8 +190,9 @@ for r in [json.loads(l) for l in open(sys.argv[1])][int(sys.argv[2]):]:
                 names += [t.get("name") or t.get("type")] + [s.get("name") or s.get("type") for s in t.get("tools") or []]
     print("%s\t%s\t%s\t%s" % (r["line"], " ".join(sorted(set(map(str, names)))), "web_search" in r["body"], "CANARY-cli-gate-4b1d" in r["body"]))
 PY
-# the release's proxy owns svc-proxy.sock: it stops while the stand-in runs, and starts again at cleanup
-systemctl stop agentbox-proxy.service agentbox-proxy-svc.socket
+# the release's proxy and keys broker own svc-proxy.sock and svc-keys.sock: they stop while the stand-ins run, and start
+# again at cleanup
+systemctl stop agentbox-proxy.service agentbox-proxy-svc.socket agentbox-keys.service agentbox-keys-svc.socket
 for v in proxy keys; do touch $G/$v.jsonl; chmod 0644 $G/$v.jsonl; python3 $G/svc.py $v $G </dev/null >>$G/broker.err 2>&1 & echo $! > $G/svc-$v.pid; done
 mkdir -p $RS/agentboxd.service.d && printf '[Service]\nEnvironment=AGENTBOX_TEST_CLI=sh\n' > $RS/agentboxd.service.d/50-cli.conf
 systemctl daemon-reload
@@ -378,7 +379,7 @@ check "  ... and passes with --ack-control-changes and the digest it printed" '{
 
 # --- the box afterwards ---
 for v in proxy keys; do kill "$(cat $G/svc-$v.pid)" 2>/dev/null; rm -f /run/agentbox-rootd/svc-$v.sock; done
-systemctl start agentbox-proxy-svc.socket agentbox-proxy.service
+systemctl start agentbox-proxy-svc.socket agentbox-proxy.service agentbox-keys-svc.socket agentbox-keys.service
 rm -f $RS/agentboxd.service.d/50-cli.conf /usr/bin/claude /usr/bin/codex /usr/bin/codex-code-mode-host /workspace $X/INSTRUCTIONS.md
 systemctl daemon-reload; systemctl restart agentboxd
 check "no task is left live" '[ "$($B task list | python3 -c "import json,sys; print(sum(1 for t in json.load(sys.stdin)[\"tasks\"] if \"end_reason\" not in t))")" = 0 ]'

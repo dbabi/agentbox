@@ -12,6 +12,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
@@ -95,7 +96,7 @@ func Argv(s Spec) []string {
 	}
 	a = append(a, "-e", "HOME=/home/agent", "-e", "CODEX_HOME=/home/agent/.codex", "-e", "ANTHROPIC_BASE_URL="+LLM+"/anthropic",
 		"-e", "ANTHROPIC_API_KEY="+LLMKey)
-	for _, e := range ClaudeQuiet {
+	for _, e := range append(slices.Clone(ClaudeQuiet), ClaudeKeys...) {
 		a = append(a, "-e", e)
 	}
 	a = append(a, "-e", "AGENTBOX_DEADLINE="+strconv.FormatInt(s.Deadline.UnixMilli(), 10),
@@ -115,6 +116,13 @@ const (
 // ClaudeQuiet turns off Claude Code's update, telemetry and marketplace traffic (#121; code.claude.com/docs/en/env-vars):
 // the first var doesn't cover the official marketplace auto-install, and DISABLE_UPDATES also blocks `claude update`.
 var ClaudeQuiet = []string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "DISABLE_UPDATES=1", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1"}
+
+// ClaudeKeys keeps a task's Claude Code requests inside the keys broker's closed schema (#18;
+// code.claude.com/docs/en/llm-gateway-protocol): no pre-release betas and the body fields they pair with
+// (context_management, the beta tool fields, output_config.format and task_budget), and no safeguards field, which
+// auto mode's server-side review adds. Tasks run with --dangerously-skip-permissions, never auto mode, so that review
+// has nothing to do in them. Attach sessions don't reach keys (#90), so they keep the defaults.
+var ClaudeKeys = []string{"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1", "CLAUDE_CODE_AUTO_MODE_SERVER=0"}
 
 // ClaudeManaged is Claude Code's managed settings, /etc/claude-code/managed-settings.json in the task image (attach
 // binds a superset there). Nothing in user, project or --settings files overrides a managed key

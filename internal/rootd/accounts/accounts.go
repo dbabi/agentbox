@@ -12,11 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"time"
 
+	"agentbox/internal/budgets"
 	"agentbox/internal/rootd/quota"
 )
 
@@ -79,6 +81,26 @@ func (a Agent) Storage() string { return a.Dir() + "/storage" }
 func (a Agent) SessionHome() string { return a.Dir() + "/session-home" }
 func (a Agent) Workspace() string {
 	return quota.Data + "/workspaces/" + a.Name
+}
+
+// Cache is the agent's Go module cache (§4.1, §6.2): a subvolume rootd makes and only agentbox-proxy writes, mode
+// 0700, in qgroup 1/N with its own exclusive limit, cache.agent_max_bytes. Removal deletes it; it holds only public
+// module files, so it is never archived.
+func (a Agent) Cache() string { return CacheDir + "/" + a.Name }
+
+// CacheDir is data/cache: root-owned, mode 0711, so the proxy can reach each agent's store but never rename one.
+const CacheDir = quota.Data + "/cache"
+
+// ProxyUser owns every cache store.
+const ProxyUser = "agentbox-proxy"
+
+// CacheMax is cache.agent_max_bytes, read from budgets.toml at each EnsureStore, so budget.set re-applies it.
+var CacheMax = func() uint64 {
+	b, err := budgets.Read(budgets.Path)
+	if err != nil {
+		b = budgets.Budgets{}
+	}
+	return uint64(b.Get("cache.agent_max_bytes"))
 }
 
 // Archive is where removal moves a retired agent's subvolumes: they still own files in its sub-id range.
@@ -185,7 +207,7 @@ func (a Agent) StorageConf() string {
 
 // EnsureStore makes a's persistent state, idempotently: the root-owned home and XDG dirs with storage.conf, and the
 // workspace, storage and session-home subvolumes, each in qgroup 1/N (limit as in quota.EnsureAgent) before the agent
-// owns them.
+// owns them, and the Go module cache in 1/N with its own limit, owned by the proxy.
 // A store still owned by another uid (a retired agent of the same name that is not archived yet) is an error.
 func EnsureStore(a Agent, limit uint64) error {
 	stores := []string{a.Workspace(), a.Storage(), a.SessionHome()}
@@ -216,7 +238,10 @@ func EnsureStore(a Agent, limit uint64) error {
 			return err
 		}
 	}
-	if err := quota.EnsureAgent(a.N, limit, stores...); err != nil {
+	if err := ensureCache(a); err != nil {
+		return err
+	}
+	if err := quota.EnsureAgent(a.N, limit, append(stores, a.Cache())...); err != nil {
 		return err
 	}
 	for _, p := range stores {
@@ -227,7 +252,59 @@ func EnsureStore(a Agent, limit uint64) error {
 			return err
 		}
 	}
-	return nil
+	return limitCache(a)
+}
+
+// ensureCache makes data/cache/<name>. A store there that another agent's 1/N holds is a retired agent's that its
+// removal didn't get to delete, so it goes first: a new agent's cache starts empty, as its workspace starts clean.
+func ensureCache(a Agent) error {
+	if err := mkdirRoot(CacheDir, 0o711); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(a.Cache()); err == nil {
+		if n, err := quota.Owner(a.Cache()); err != nil {
+			return err
+		} else if n != 0 && n != a.N {
+			if _, err := quota.Run("btrfs", "subvolume", "delete", a.Cache()); err != nil {
+				return err
+			}
+		}
+	}
+	return quota.EnsureSubvol(a.Cache())
+}
+
+// limitCache gives the cache its own limit and hands it to the proxy, after it is in 1/N.
+func limitCache(a Agent) error {
+	if err := quota.LimitSubvol(a.Cache(), CacheMax()); err != nil {
+		return err
+	}
+	u, err := user.Lookup(ProxyUser)
+	if err != nil {
+		return fmt.Errorf("accounts: %s: %v (sysusers.d/agentbox.conf)", ProxyUser, err)
+	}
+	uid, _ := strconv.Atoi(u.Uid)
+	gid, _ := strconv.Atoi(u.Gid)
+	if err := os.Lchown(a.Cache(), uid, gid); err != nil {
+		return err
+	}
+	return os.Chmod(a.Cache(), 0o700)
+}
+
+// RemoveCache deletes a removed agent's cache, by name in the root-owned data/cache, unless another agent's 1/N holds
+// it (a new agent of the same name). It is not archived: it holds only public module files.
+func RemoveCache(a Agent) error {
+	if _, err := os.Lstat(a.Cache()); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	n, err := quota.Owner(a.Cache())
+	if err != nil {
+		return err
+	}
+	if n != 0 && n != a.N {
+		return nil
+	}
+	_, err = quota.Run("btrfs", "subvolume", "delete", a.Cache())
+	return err
 }
 
 // archive moves a retired agent's subvolumes to a.Archive(), only while a's uid still owns them: the same name may

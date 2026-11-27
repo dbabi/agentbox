@@ -576,8 +576,10 @@ type opView struct {
 // Who may send what. Every producer may raise taint and log its own effects; only rootd registers writers and
 // subjects, clears, restores, and reads op state.
 var (
+	// LLM is keys' record of each model request (§6.3: INTENT is ACKed before forwarding): it has no registry op, so
+	// it is logged like the other records here, and keys forwards only after the ACK
 	bestEffort = map[string]bool{"DENY": true, "DENY_FLOOD": true, "WITNESS": true, "GATE_MISMATCH": true,
-		"PAD_OVERRUN": true, "QUOTE": true, "ALERT": true, "CACHE": true, "PAUSE_PID_STALE": true}
+		"PAD_OVERRUN": true, "QUOTE": true, "ALERT": true, "CACHE": true, "PAUSE_PID_STALE": true, "LLM": true}
 	rootdOnly   = map[string]bool{"WRITER_ADD": true, "WRITER_DEL": true, "SUBJECT_ADD": true, "op.get": true}
 	rootdOnlyOp = map[string]bool{"taint.clear": true, "workspace.restore": true}
 	queryFrom   = map[string]bool{rootdProducer: true, "agentboxd": true} // taint.get

@@ -14,14 +14,17 @@ import (
 	"strings"
 	"time"
 
+	"agentbox/internal/audit"
 	"agentbox/internal/gate"
 	"agentbox/internal/ops"
+	"agentbox/internal/seccomp"
 )
 
 const (
-	gateDir       = "/run/agentbox-gate"
-	svcGateSock   = "/run/agentbox-rootd/svc-gate.sock"
-	rootdGateSock = "/run/agentbox-rootd/rootd.sock"
+	auditAgentboxdSock = "/run/agentbox-audit/agentboxd.sock"
+	gateDir            = "/run/agentbox-gate"
+	svcGateSock        = "/run/agentbox-rootd/svc-gate.sock"
+	rootdGateSock      = "/run/agentbox-rootd/rootd.sock"
 )
 
 // releaseGen is the running release's gen/: <release>/bin/agentbox, then <release>/gen.
@@ -41,6 +44,9 @@ func cmdAgentboxd(args []string) error {
 	if err := parse(fs, args); err != nil {
 		return err
 	}
+	if err := serviceFilter(); err != nil {
+		return err
+	}
 	if err := ops.Check(*genDir); err != nil {
 		return fmt.Errorf("op registry mismatch, refusing to start (§5.1): %v", err)
 	}
@@ -54,7 +60,8 @@ func cmdAgentboxd(args []string) error {
 		return errors.New("agentboxd: want exactly the svc-gate socket from systemd")
 	}
 	s := &gate.Server{Dir: gateDir, Forward: func(req map[string]any) ([]byte, error) { return lineCall(*rootdSock, req, 60*time.Second) },
-		AgentIDs: func(agent string) (uint32, uint32, error) { return uidOf("ag-" + agent) }, CLIs: []string{"claude", "codex"}}
+		AgentIDs: func(agent string) (uint32, uint32, error) { return uidOf("ag-" + agent) }, CLIs: []string{"claude", "codex"},
+		Taint: func(rec map[string]any) error { return audit.Send(auditAgentboxdSock, rec) }}
 	if os.Getenv("AGENTBOX_TEST_CLI") == "sh" {
 		s.CLIs = append(s.CLIs, "sh") // test boxes only: the prompt runs as a shell script in the task
 	}
@@ -65,6 +72,17 @@ func cmdAgentboxd(args []string) error {
 	}
 	sdNotify("READY=1")
 	return s.ServeControl(ctl)
+}
+
+// serviceFilter installs the service btrfs filter (§2 Common hardening) before a non-root service does anything else.
+// A service that can't install it refuses to start.
+func serviceFilter() error {
+	before, after, err := seccomp.InstallService()
+	if err != nil {
+		return fmt.Errorf("refusing to start without the service filter: %v", err)
+	}
+	log.Printf("service filter installed: Seccomp_filters %d -> %d", before, after)
+	return nil
 }
 
 // checkDenial runs the in-task check (§5.6 Integrity) on a gate reply line, as the in-task binary will: a -32010 error

@@ -138,7 +138,7 @@ func TestPolicyFiles(t *testing.T) {
 	}
 	s := strings.Join(Argv(Spec{Task: "task_x", Agent: "a"}), " ")
 	for _, want := range []string{"-e ANTHROPIC_BASE_URL=http://127.0.0.1:8081/anthropic", "-e DISABLE_UPDATES=1", "-e CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1",
-		"-e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"} {
+		"-e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "-e CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1", "-e CLAUDE_CODE_AUTO_MODE_SERVER=0"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("argv lacks %q", want)
 		}
@@ -290,6 +290,46 @@ func TestPostWritesEND(t *testing.T) {
 	}
 	if _, err := ops.ParseWitness(strings.TrimSuffix(string(g.witness), "\n")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The Go module filter's taint call is one task.taint_self{source: cache:go} on the gate socket, with no retry: a gate
+// that is down fails it at once, so go falls back to CONNECT.
+func TestGoFilterTaint(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "gof") // sun_path is 104 bytes on macOS
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "gate.sock")
+	slept := 0
+	r := &Runner{Sock: sock, Deadline: time.Now().Add(time.Hour), Now: time.Now, Sleep: func(time.Duration) { slept++ }}
+	t.Setenv("GOPRIVATE", "corp.example/*")
+	f := r.goFilter()
+	if err := f.Taint(); err == nil || slept != 0 || f.Private != "corp.example/*" {
+		t.Fatalf("a missing gate: %v after %d retries; private %q", err, slept, f.Private)
+	}
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	got := make(chan []byte, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		line, _ := bufio.NewReader(c).ReadBytes('\n')
+		got <- line
+		c.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}` + "\n"))
+		c.Close()
+	}()
+	if err := f.Taint(); err != nil {
+		t.Fatal(err)
+	}
+	if l := <-got; !strings.Contains(string(l), `"method":"task.taint_self","params":{"source":"cache:go"}`) {
+		t.Fatalf("request %s", l)
 	}
 }
 

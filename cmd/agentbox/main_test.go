@@ -269,7 +269,7 @@ func TestFWCheckRepair(t *testing.T) {
 	alertDir, alertSock, alertToken = filepath.Join(dir, "alerts"), filepath.Join(dir, "none"), filepath.Join(dir, "token") // no ntfy
 	alertDB = filepath.Join(dir, "rootd.db")
 	all := [][]string{{"restart", "agentbox-firewall.service"}, {"start", "agentbox-rootd.service"},
-		{"start", "agentbox-auditd.service", "agentboxd.service", "ntfy.service"}}
+		{"start", "agentbox-auditd.service", "agentboxd.service", "agentbox-keys.service", "ntfy.service"}}
 	for _, tc := range []struct {
 		name                          string
 		altered, failed, restartFails bool

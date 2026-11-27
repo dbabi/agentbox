@@ -88,9 +88,9 @@ func (s *server) moveLimit() {
 	}
 }
 
-// freeze sets cgroup.freeze on every active agent's user slice: its user manager, tasks and attach. An agent with no
-// slice has nothing running. shortcut: agent slices are the only writers under 2/0 today; the git and proxy brokers
-// join here once they write git/ and data/cache.
+// freeze sets cgroup.freeze on every active agent's user slice (its user manager, tasks and attach) and on the
+// proxy's service, which fills data/cache (§6.2). A unit with no cgroup has nothing running. shortcut: the git broker
+// joins here once it writes git/.
 func (s *server) freeze(on bool) {
 	all, err := accounts.List(s.db)
 	if err != nil {
@@ -101,18 +101,20 @@ func (s *server) freeze(on bool) {
 	if on {
 		v = []byte("1")
 	}
+	cgs := []string{filepath.Join(s.cfg.Tasks.Cgroup, "system.slice", ProxyUnit, "cgroup.freeze")}
 	for _, a := range all {
-		if !a.Active {
-			continue
+		if a.Active {
+			cgs = append(cgs, filepath.Join(s.cfg.Tasks.Cgroup, "user.slice", "user-"+strconv.Itoa(a.UID())+".slice", "cgroup.freeze"))
 		}
-		p := filepath.Join(s.cfg.Tasks.Cgroup, "user.slice", "user-"+strconv.Itoa(a.UID())+".slice", "cgroup.freeze")
+	}
+	for _, p := range cgs {
 		f, err := os.OpenFile(p, os.O_WRONLY, 0)
 		if err == nil {
 			_, err = f.Write(v)
 			f.Close()
 		}
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			log.Printf("quota: freeze %v %s: %v", on, a.Name, err)
+			log.Printf("quota: freeze %v %s: %v", on, p, err)
 		}
 	}
 }

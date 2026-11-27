@@ -22,6 +22,7 @@ import (
 	"agentbox/internal/ops"
 	"agentbox/internal/taskenv"
 	"agentbox/internal/taskrun"
+	"agentbox/internal/taskrun/gomodfilter"
 )
 
 // GateSock is the task's gate socket inside the container.
@@ -148,7 +149,8 @@ func (r *Runner) Setup() error {
 	return os.MkdirAll(filepath.Join(r.Home, ".agentbox"), 0o700)
 }
 
-// Taskrun is the container's PID 1 (§4.2): set up HOME, clean the env and start the forwarders, fetch the task, probe
+// Taskrun is the container's PID 1 (§4.2): set up HOME, clean the env and start the forwarders (and the Go module
+// filter when rootd set the cache GOPROXY), fetch the task, probe
 // the isolation from inside and tell the gate it passed, run the CLI with the prompt on stdin, post the result with
 // its END witness line. SIGTERM (the unit stopping) goes on to the CLI's process group; systemd SIGKILLs the rest after
 // TimeoutStopSec, and the payload is inside the unit's cgroup.
@@ -165,6 +167,12 @@ func Taskrun() int {
 	if err := taskrun.Start(context.Background(), taskrun.Channels, rec); err != nil {
 		fmt.Fprintln(os.Stderr, "taskrun: forwarders:", err)
 		return 1
+	}
+	if os.Getenv("GOPROXY") == taskenv.FilterGoProxy { // rootd set the cache GOPROXY (§6.2)
+		if err := gomodfilter.Start(context.Background(), r.goFilter()); err != nil {
+			fmt.Fprintln(os.Stderr, "taskrun: Go module filter:", err)
+			return 1
+		}
 	}
 	var job Job
 	if err := r.Call("task.fetch", map[string]any{}, &job); err != nil {
@@ -197,6 +205,19 @@ func Taskrun() int {
 		return 1
 	}
 	return code
+}
+
+// goFilter is the task's Go module filter (§6.2): the agent's go.private patterns from the launch env, one taint call
+// on the gate socket with no retry (a gate that is down means no cache, and go falls back to CONNECT), and the task's
+// proxy socket.
+func (r *Runner) goFilter() *gomodfilter.Filter {
+	return &gomodfilter.Filter{Private: os.Getenv("GOPRIVATE"),
+		Taint: func() error {
+			return r.call(request("task.taint_self", map[string]string{"source": gate.TaintSelfSource}), nil)
+		},
+		Dial: func(ctx context.Context) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", taskrun.Channels[0].Socket)
+		}}
 }
 
 // post sends res as task.result, with the logged denials and cut to one gate line. It writes END <sha256 of the params

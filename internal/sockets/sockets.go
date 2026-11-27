@@ -72,6 +72,14 @@ func Inventory() []Entry {
 		{Path: "/run/agentbox-rootd-approve/approve.sock", Type: s, User: "root", Group: "agentbox-approve", Mode: 0o660, By: "approvald's .socket unit (not built yet)", Peers: "uid agentbox-approve only"},
 		{Path: "/run/agentbox-audit", Type: d, User: "agentbox-audit", Group: "agentbox-audit", Mode: 0o711, By: Tmpfiles},
 		{Path: "/var/lib/agentbox/audit", Type: d, User: "agentbox-audit", Group: "agentbox-audit", Mode: 0o750, By: Tmpfiles}, // §9 chain
+		// install.sh makes it 0711 too; here, so the dirs below never leave it 0755 at boot
+		{Path: "/var/lib/agentbox/control", Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
+		// the brokers' encrypted credentials (#108): only PID 1 reads them, for each unit's LoadCredentialEncrypted=
+		{Path: "/var/lib/agentbox/control/credstore.encrypted", Type: d, User: "root", Group: "root", Mode: 0o700, By: Tmpfiles},
+		{Path: "/var/lib/agentbox/control/credstore.encrypted/keys", Type: d, User: "root", Group: "root", Mode: 0o700, By: Tmpfiles},
+		{Path: "/var/lib/agentbox/control/credstore.encrypted/git", Type: d, User: "root", Group: "root", Mode: 0o700, By: Tmpfiles},
+		// keys' spend ledger (§6.3)
+		{Path: "/var/lib/agentbox/keys", Type: d, User: "agentbox-keys", Group: "agentbox-keys", Mode: 0o700, By: Tmpfiles},
 		{Path: "/run/agentbox-witness", Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
 		{Path: "/run/agentbox-witness/t", Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},
 		{Path: "/run/agentbox-witness/t/<task>", Type: d, User: "root", Group: "ag-<agent>", Mode: 0o750, By: "rootd (task.start)"},
@@ -111,6 +119,8 @@ func Inventory() []Entry {
 			svc.By, svc.Service, svc.FDName, svc.RemoveOnStop = "agentboxd-svc-gate.socket", "agentboxd.service", "svc-gate", true
 		case "proxy":
 			svc.By, svc.Service, svc.FDName, svc.RemoveOnStop = "agentbox-proxy-svc.socket", "agentbox-proxy.service", "svc-proxy", true
+		case "keys":
+			svc.By, svc.Service, svc.FDName, svc.RemoveOnStop = "agentbox-keys-svc.socket", "agentbox-keys.service", "svc-keys", true
 		}
 		inv = append(inv, svc,
 			Entry{Path: r, Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},

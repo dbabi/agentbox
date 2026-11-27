@@ -32,7 +32,17 @@ func TestQuotaFence(t *testing.T) {
 	if err := os.MkdirAll(slice, 0o755); err != nil || os.WriteFile(filepath.Join(slice, "cgroup.freeze"), []byte("0"), 0o644) != nil {
 		t.Fatal(err)
 	}
-	frozen := func() string { b, _ := os.ReadFile(filepath.Join(slice, "cgroup.freeze")); return string(b) }
+	proxy := filepath.Join(cg, "system.slice", ProxyUnit) // the proxy fills data/cache (§6.2), so it freezes too
+	if err := os.MkdirAll(proxy, 0o755); err != nil || os.WriteFile(filepath.Join(proxy, "cgroup.freeze"), []byte("0"), 0o644) != nil {
+		t.Fatal(err)
+	}
+	frozen := func() string {
+		b, _ := os.ReadFile(filepath.Join(slice, "cgroup.freeze"))
+		if p, _ := os.ReadFile(filepath.Join(proxy, "cgroup.freeze")); string(p) != string(b) {
+			return "slice " + string(b) + ", proxy " + string(p)
+		}
+		return string(b)
+	}
 	flag, rescanErr, rescans, limits := true, errors.New("no space"), 0, 0
 	var alerts atomic.Int32
 	s := &server{db: db, tasks: &tasks{}, cfg: Config{Tasks: TaskConfig{Cgroup: cg}, Alert: func(_, _ string) error { alerts.Add(1); return nil },
@@ -79,6 +89,7 @@ func TestQuotaFence(t *testing.T) {
 		t.Fatalf("after the thaw: %v", rep)
 	}
 	os.WriteFile(filepath.Join(slice, "cgroup.freeze"), []byte("1"), 0o644) // someone else's freeze: a consistent check keeps it
+	os.WriteFile(filepath.Join(proxy, "cgroup.freeze"), []byte("1"), 0o644)
 	s.checkQuota()
 	if frozen() != "1" || alerts.Load() != 1 || limits != 2 {
 		t.Fatalf("consistent check: freeze %q, %d alerts, %d limit moves", frozen(), alerts.Load(), limits)

@@ -31,6 +31,7 @@ func cmdRootd(args []string) error {
 		AuditSocket: "/run/agentbox-audit/rootd.sock", SealCrash: crashHook()}
 	fs.DurationVar(&cfg.ElementTimeout, "element-timeout", 10*time.Minute, "dst set element timeout (Appendix B: 10m; shorter only for test VMs)")
 	fs.DurationVar(&cfg.RefillInterval, "refill-interval", 5*time.Minute, "timer refill and ntfy_dst refresh (§6.1: 5m)")
+	fs.DurationVar(&cfg.SweepInterval, "sweep-interval", time.Hour, "the Go module caches' nested-subvolume sweep (§4.1: 1h; shorter only for test VMs)")
 	if exe, err := os.Executable(); err == nil {
 		cfg.GenDir = filepath.Join(filepath.Dir(filepath.Dir(exe)), "gen") // <release>/bin/agentbox: the same release's gen/
 	}
@@ -41,6 +42,9 @@ func cmdRootd(args []string) error {
 	}
 	if cfg.ElementTimeout < 10*time.Second || cfg.ElementTimeout > 10*time.Minute || cfg.RefillInterval < 5*time.Second || cfg.RefillInterval >= cfg.ElementTimeout {
 		return errors.New("rootd: need 10s <= --element-timeout <= 10m and 5s <= --refill-interval < --element-timeout (ntfy_dst must refresh before it expires)")
+	}
+	if cfg.SweepInterval < 5*time.Second || cfg.SweepInterval > time.Hour {
+		return errors.New("rootd: need 5s <= --sweep-interval <= 1h")
 	}
 	cfg.Effects, cfg.RawAudit = testEffects()
 	cfg.QuotaHold = os.Getenv("AGENTBOX_TEST_QUOTA_HOLD") // hack/accounts-gate.sh holds a qgroup repair open; test VMs only

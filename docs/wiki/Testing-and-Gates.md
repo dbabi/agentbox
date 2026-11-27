@@ -1,7 +1,7 @@
 How agentbox is tested, what each test proves, and what it does not. For an overview, start at [Home](README.md).
 
 agentbox is early alpha. Every gate on this page runs in a QEMU virtual machine. No real hardware has run agentbox yet.
-The tests cover the installer, the OS layer, the milestone 2 host services (the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy) the milestone 3 request checks, the milestone 4 agent accounts, task containers and interactive sessions, and the milestone 5 connection code the brokers will share, which reaches only addresses the root daemon checked. The brokers, policy, approvals, agent bus and memory are not built, so no test covers them yet.
+The tests cover the installer, the OS layer, the milestone 2 host services (the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy) the milestone 3 request checks, the milestone 4 agent accounts, task containers and interactive sessions, and in milestone 5 the egress proxy, the keys broker and the connection code they share, which reaches only addresses the root daemon checked. The git service, policy, approvals, agent bus and memory are not built, so no test covers them yet.
 
 ## Two kinds of tests
 
@@ -35,6 +35,8 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | Task image gate (milestone 4) | `hack/image-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
 | Pinned dialing gate (milestone 5) | `hack/dial-gate.sh [install] [release] [checks]` | Apple Silicon Mac | about 11 min, with the `none` install |
 | Proxy gate (milestone 5) | `hack/proxy-gate.sh [install\|release\|checks ...]` | Apple Silicon Mac, with internet for the task image build | about 13 min, with the `none` install |
+| Go module cache gate (milestone 5) | `hack/gocache-gate.sh [install\|checks ...]` | Apple Silicon Mac, with internet for the task image build | not timed separately |
+| Keys broker gate (milestone 5) | `hack/keys-gate.sh [install\|checks\|apply ...]` | Apple Silicon Mac, with `npm` and internet for the Claude Code and Codex CLIs | about 7 min for `checks` after the `none` install, and 6 min for `apply` |
 | Fuzz tests | `hack/fuzz-all.sh [DURATION]` | macOS or Linux | 24 h by default |
 
 The times come from one Apple Silicon Mac. The milestone 2 and 3 times come from runs with four VMs at once.
@@ -116,7 +118,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 ```
 
 - The script runs the fuzz tests at low priority, `FUZZ_JOBS` at a time, each for the full duration. A crash stops only that test; the rest still run. Then it writes `summary.txt` under `.fuzz/<start time>/`, or under `$OUT`, which must not hold an earlier run. It exits 1 if any test fails.
-- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 55 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
+- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 62 tests at 12 jobs take 6 times the duration: a 24 h run takes 6 days.
 - Each `go test` process and each fuzz worker gets `GOMEMLIMIT=$FUZZ_MEM` (default `1GiB`). `FUZZ_PARALLEL` sets the workers per test (default 1).
 - It records the commit the run started on, and each test's CPU seconds (`cpu_s`, the build included).
 - Go keeps each test's corpus in `$(go env GOCACHE)/fuzz`, so the next run starts from it. `go clean -fuzzcache` deletes it.
@@ -124,7 +126,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 - A crash input lands in its package's `testdata/fuzz/<test>/`. Commit it with the fix, so it stays a regression test.
 - On a Mac, `caffeinate -i` keeps the machine from idle sleep. Keep it on power with the lid open.
 
-The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 55 tests take about 21 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
+The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 9 jobs at a time. So 62 tests take about 23 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
 
 ### The 24 h gate
 
@@ -526,21 +528,44 @@ The proxy gate starts with `install`: `hack/gate.sh none`, so `agentbox-proxy`, 
 caffeinate -i hack/proxy-gate.sh
 ```
 
+The keys broker gate starts with `install` (`hack/gate.sh none`), so rootd, agentboxd, taskrun, the keys broker and their units reach the box by the real path.
+
+```sh
+caffeinate -i hack/keys-gate.sh install checks apply
+```
+
+Its `checks` step builds this checkout's release and installs it on the box with its own `install.sh`, then reboots. It runs a stand-in for the LLM vendors on the Mac, built from `hack/keys-gate/upstream`: `api.anthropic.com` and `api.openai.com`, over TLS from a test certificate authority, on `127.0.0.1:7900+ID` only. The stand-in checks the injected key on every request and logs a fingerprint of it, never the key. On the box, a test DNS server answers the vendor names with a public-looking address. rootd resolves and checks that address like any other, and a test NAT rule sends it to the stand-in. The keys broker trusts the test authority through `SSL_CERT_FILE`. The gate fetches the pinned Claude Code and Codex CLIs with `npm`, as the agent CLI gate does. `apply` then runs three `os apply` cycles on the same box, so retention prunes the oldest generation. With `AGENTBOX_KEYS_MODE=tpm2`, the gate installs in `tpm2` mode, and `checks` also restarts the keys broker with the host key moved away.
+
+The Go module cache gate also starts with `install` (`hack/gate.sh none`). It has not passed yet.
+
+```sh
+caffeinate -i hack/gocache-gate.sh
+```
+
+Its `checks` step runs a fake `proxy.golang.org` on the Mac, built from `hack/gocache-gate/upstream`. It serves synthetic modules and a checksum database signed with a test key, over TLS from a test certificate authority. It listens on `127.0.0.1:7800+ID` only. `vm.sh` forwards that port to the VM as `10.0.2.2` for that one boot (`AGENTBOX_VM_FWD`). On the box the gate builds `image/task` with the test authority added, so the VM needs internet. The proxy does not serve the cache yet, so a stand-in (`hack/gocache-gate/standin`) runs the real cache code behind each task's proxy socket, as `agentbox-proxy`. It reaches the fake upstream directly, not through rootd's resolver. Each `checks` run uses new agent names, so it can run again on the same box.
+
 ### What the milestone 5 gates prove
 
 | Suite | Script | What it proves |
 |---|---|---|
 | `m5-dial` | `hack/dial-gate.sh` | rootd refuses an allowlisted name that answers with one of the box's own addresses: on the default interface, on another interface, the IPv6 address it made from the router's announcement (SLAAC), or an IPv6 address still in duplicate address detection. It also refuses a LAN host's global IPv6 address, `192.168.1.10`, `192.168.1.10` inside a NAT64 or a 6to4 address, and `240.0.0.1`. A name only `/etc/hosts` knows gets `no_such_name`. A name that a systemd 259 resolve hook answers is refused, and resolved never asks DNS for it. With the hook gone, the same name resolves. rootd reads the box's addresses at each resolution. A process under the keys broker's user, in the broker units' sandbox, dials through the shared dialer. It reaches only rootd's addresses, takes the first that answers, and keeps the name in SNI, the certificate check and `Host`. It never dials the `/etc/hosts` answer, makes no lookup and follows no redirect. An address that resets fails `refused` at once, and one that drops the SYN fails `timeout` after the 10 s budget. |
 | `m5-proxy` | `hack/proxy-gate.sh` | A task gets a typed denial for each CONNECT that must fail, and no byte of it reaches the registry. That covers an allowlisted name that answers a LAN address, loopback, `0.0.0.0`, a shared-address-space address or the metadata address `169.254.169.254`; one that answers an IPv6 ULA, link-local, loopback, IPv4-mapped or NAT64-wrapped private address, or `fd00:ec2::254`; and one that answers a public and a private address at once. Raw IPv4 and IPv6 targets, the metadata addresses among them, an unlisted name, an LLM vendor host and a deputy host are refused before rootd is asked. Plain HTTP is refused too. No denial names an IP address or any name but the one requested. Rebinding fails: the registry's own name, moved to its LAN address, loopback, the metadata address, or a public and a private address at once, is refused though it worked a moment before, and none of those answers reaches a firewall set. Without the proxy, a task reaches nothing over TCP or UDP, IPv4 or IPv6, and has no DNS. As the proxy's user, the firewall drops TCP and UDP to the LAN, the metadata address, DNS and any address rootd did not return, and the proxy's own mount namespace has no DNS. Through the proxy, a task fetches from the fake registry with `curl`, installs an npm package with 24 dependencies over more than 8 tunnels, and downloads a wheel with `pip`. TLS runs end to end: the client checks the registry's own certificate. Each tunnel goes to the address rootd returned, and auditd records its taint on the task before any byte flows; a refused CONNECT taints nothing. With auditd down, a CONNECT gets `503 AUDIT_UNAVAILABLE` and the registry gets no request. A second agent reaches the shared list's entry but not the first agent's own entries. A proxy restart and a crash mid-task each give the task its socket back. Revoking a task cuts its live tunnel within 5 s. The task's socket is `agentbox-proxy:ag-<agent>` 0660, another agent can't open it, and only root may use the control socket. No task's traffic made the firewall drop a packet for the proxy. The proxy runs as its own user with no capabilities, and its socket starts it at the first task. |
+| `m5-keys` | `hack/keys-gate.sh` | `agentbox secret set` stores only ciphertext, root-owned, and restarts the keys broker. Only `agentbox-keys` can read the decrypted key, from a read-only, memory-only directory; no other service user, the agent's user or `nobody` can. A task's model request through the broker gets the real key; the task holds only a placeholder, and a scan of its environment, home, temp files, workspace and socket directories finds no key. rootd resolved the vendor address and put it in the broker's firewall set, and the broker dialed only it; the broker's firewall drop counters stayed at 0. Each request is recorded with auditd before it leaves. URL images, URL PDFs, `mcp_servers` and an `http` image URL each get `403` in the vendor's error format and reach no vendor. A vendor web tool is refused until the policy file names it; then the task is tainted before the request leaves. A vendor `401` becomes the broker's own `502`, with no vendor bytes. A vendor's `Agentbox-Denial` header and `agentbox` member are stripped. A key echoed in an error, in a stream, split across two chunks, base64-encoded, percent-encoded or in a header never reaches the task; each raises an alert. A normal 1 MiB stream passes byte for byte. A 33 MiB body, a zip bomb, a slow request head and a 17th connection each get `CAP_REACHED`. Real Claude Code 2.1.330 and Codex 0.171.0 tasks run with 0 rejections. When the broker refuses a beta value Claude Code sends, Claude Code retries without it and the task completes. An agent over its daily share gets `429` with `x-should-retry: false`. Another agent's reply stays the same while the first is idle, at its share, or holding reservations up to its share. Claude Code and Codex each stop within their own retries. The local model never answers a clean task from an instance that served a tainted one. A key rotated in the middle of a task restarts the broker: the request in flight fails with a typed error, and the task's next request works with the new key. No key appears in audit or the journal. The key loads again after a reboot, and after each of three `os apply` cycles of clone, trial boot and commit. The third commit pruned the generation where the key was set, and a restarted broker still loaded it. |
+| `m5-keys-tpm2` | `AGENTBOX_KEYS_MODE=tpm2 hack/keys-gate.sh` | The same checks as `m5-keys`, on a `tpm2`-mode install. rootd encrypted the keys with the TPM: the keys broker restarted and loaded both keys with the host key moved away. They loaded again after a reboot, three `os apply` cycles and the prune of the generation where they were set. |
 
 ### What they do not prove
 
-- Both ran in `none` mode on arm64 UEFI only. Neither the dialer nor the proxy touches unlock or boot.
-- In `m5-dial`, a stand-in dials through the shared dialer as the keys broker's user. The keys broker and the git service are not built, so no task reaches a model, and their units are not tested.
-- The upstreams are test servers: inside the VM behind a test router for `m5-dial`, and a fake registry on the Mac for `m5-proxy`. No real public host is dialed. Fetches from npm, PyPI and the Go proxy through the box's proxy are not tested yet.
-- The proxy gate's NAT rule rewrites the registry's address before the firewall sees it. So an approved private-address entry lets the proxy reach that one port, not the proxy's own address set. rootd still checked the name, and the proxy dialed only rootd's answer.
-- The Go module cache is not built: every `/_cache/` request gets a plain 404.
+- `m5-dial` and `m5-proxy` ran in `none` mode on arm64 UEFI only. Neither the dialer nor the proxy touches unlock or boot. The keys gate ran in `none` and `tpm2` mode, but not in `tpm2+tang`.
+- In `m5-dial`, a stand-in dials through the shared dialer as the keys broker's user. The git service is not built, so its unit is not tested.
+- The upstreams are test servers: inside the VM behind a test router for `m5-dial`, a fake registry on the Mac for `m5-proxy`, and a stand-in for the vendors on the Mac for `m5-keys`. No real public host is dialed. Fetches from npm, PyPI and the Go proxy through the box's proxy are not tested yet.
+- No run of the keys broker has used a real API key or reached a real vendor. The stand-in answers like the vendors' public references, so how the real APIs answer the broker's requests is not tested. Claude Code and Codex ran against the stand-in only.
+- The proxy and keys gates each add a NAT rule that rewrites the test upstream's address before the firewall sees it. So an approved private-address entry lets the broker reach that one port, not the broker's own address set. rootd still checked the name, and the broker dialed only rootd's answer.
 - The proxy's answer to a failed dial (`EGRESS_DIAL_FAILED`) is covered by unit tests only. `m5-dial` covers the dialer's own `refused` and `timeout` on the box.
+- The local model behind the keys broker is a stand-in: no release ships llama-server yet (issue #287).
+- The task gate socket's `CAP_REACHED` replies to an over-long or stalled request line have unit tests only. Its connection cap still makes extra connections wait rather than refusing them.
+- The proxy does not serve the Go module cache yet: every `/_cache/` request gets a plain 404 (issue #299).
+- The Go module cache gate has not passed. Its last run stopped when the Mac running it ran out of disk space. It still stops the proxy units by the names they had before the proxy was built, so it can't pass on this release until issue #299 is fixed (issue #301).
+- The fuzz tests of the keys broker's request checks, its reply scanner and its body reader, and of the Go module filter, the cache and the checksum database client, have not run for 24 hours.
 
 ## Several VMs at once
 
@@ -552,7 +577,8 @@ caffeinate -i hack/proxy-gate.sh
 | Tang container | `agentbox-tang-<ID>` on `127.0.0.1:7500+ID`. The VM reaches it as `http://10.0.2.2:7500+ID`. |
 | Test release server | `127.0.0.1:7600+ID`. The VM reaches it as `http://10.0.2.2:7600+ID`. |
 | Loopback probe | `127.0.0.1:7700+ID` and `[::1]:7700+ID`. The VM must not reach it. |
-| Proxy gate's fake registry | `127.0.0.1:7900+ID`. The VM reaches it as `10.0.2.2:7900+ID`, during the proxy gate's checks only. |
+| Go module cache gate's fake `proxy.golang.org` | `127.0.0.1:7800+ID`. The VM reaches it as `10.0.2.2:7800+ID`, during that gate's checks only. |
+| Proxy gate's fake registry, or the keys gate's stand-in for the vendors | `127.0.0.1:7900+ID`. The VM reaches it as `10.0.2.2:7900+ID`, during that gate's checks only. |
 | Power-cut work directory | `$TMPDIR/agentbox-powercut-<ID>` |
 
 Everything else lives in the checkout's `.vm/`. So each VM also needs its own checkout. Use one git worktree per VM. `AGENTBOX_ISO_DIR` points every worktree at one copy of the ISOs.
@@ -631,7 +657,7 @@ Share only the `.txt` and `.log` files. `.vm/keys`, `.vm/id_vm` and `.vm/gate-se
 - **`test`** passes only if both `unit` runs passed. It is the check that branch protection requires.
 - **`bios`** runs after `test` passes, on pushes to `main` only. It runs `hack/gate.sh none bios` and `hack/gate.sh tpm2 bios` under KVM, with a 120-minute limit. If `/dev/kvm` is missing, the job fails instead of falling back to slow software emulation.
 - **`host-gates`** (`.github/workflows/host-gates.yml`) runs every Saturday, on manual dispatch, and on a pull request that changes it. On `ubuntu-26.04` under KVM, it installs one amd64 BIOS box with `hack/sockets-gate.sh bios install check`. The install seeds the `--ssh-from` prefixes that the firewall gate's checks expect, the ones `hack/fw-gate.sh` seeds itself. Then it runs the registry, agentboxd, firewall, audit, rootd and quota-ntfy gates' checks on that box. A failing gate does not stop the next one. It uploads `.vm/*-gate.txt` and `.vm/*-gate.log` as the `host-gates-amd64-bios` artifact.
-- **`fuzz`** (`.github/workflows/fuzz.yml`) runs every night and on manual dispatch. Each fuzz test runs for 3 hours in its own job, at most 8 jobs at a time, so pull request CI still gets runners. A run fits in a day, and a concurrency group makes a late run wait for the one before it. Each job carries its test's corpus to the next night in the Actions cache. A crash fails that job and uploads the crash input as an artifact.
+- **`fuzz`** (`.github/workflows/fuzz.yml`) runs every night and on manual dispatch. Each fuzz test runs for 3 hours in its own job, at most 9 jobs at a time, so pull request CI still gets runners. A run fits in a day, and a concurrency group makes a late run wait for the one before it. Each job carries its test's corpus to the next night in the Actions cache. A crash fails that job and uploads the crash input as an artifact.
 - The `ci` and `fuzz` jobs cache Go modules and builds, keyed on `go.sum`. The release build and `host-gates` start from a clean module download.
 - `bios` uploads `.vm/gate-*.txt`, `.vm/gate-*.log`, `.vm/install.log` and `.vm/boot-*.log` as artifacts named `gate-<mode>-bios`, kept for 14 days. It never uploads `.vm/keys` or `.vm/id_vm`.
 
@@ -755,6 +781,7 @@ The regression after the review fixes. Every VM gate ran on a fresh `none`-mode 
 |---|---|---|
 | `m5-dial` (issues #20, #145) | Passed on a fresh `none`-mode install, arm64 UEFI, Secure Boot on: 53 PASS, 0 FAIL. The hook check ran against the box's own systemd-resolved, which asked the gate's hook and never asked DNS. `w3-rootd` passed again with the new resolver checks: 115 PASS, 0 FAIL. | the branch of pull request #298, before it merged |
 | `m5-proxy` (issues #17, #282) | Passed on a fresh `none`-mode install, arm64 UEFI, Secure Boot on: 84 PASS, 0 FAIL, in 13 min, after the proxy moved to the shared dialer. Its install step passed 56. The npm install through the proxy took 840 ms. The run before that move also passed 84. The first run in development failed 20 checks, all in the gate script: the release's task image has no `npm` or `pip`, two helpers reused the rebinding loop's variable, and the drop counter missed numeric uids. The tasks, task env and agent CLI gates now stop the release's proxy while their stand-ins run. On fresh installs, `m4-tasks` passed 92 and `m4-cli` 26, 0 FAIL. On the box of the run before the move, the `m4-taskenv` checks passed 43, 0 FAIL. | the branch of pull request #300, before it merged |
+| `m5-keys` (issues #18, #108, #115) | Passed on a fresh `none`-mode install, arm64 UEFI, Secure Boot on: 70 PASS, 0 FAIL, in 20 min after the install. Its install step passed 56. The run covered the `apply` step too: three `os apply` cycles that re-installed one package and loaded the key again from the clone, and after the third commit the retention prune of the oldest generation left a restarted broker still loading the key. The tasks, task env and agent CLI gates now stop the release's keys broker with the proxy's while their stand-ins run. | the branch of pull request #302, before it merged |
 
 ## Troubleshooting
 

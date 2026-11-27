@@ -52,6 +52,9 @@ install -m 0644 "$R/$VER/sysusers.d/agentbox.conf" "$L/sysusers.d/agentbox.conf"
 systemd-sysusers "$L/sysusers.d/agentbox.conf"
 install -m 0644 "$R/$VER/tmpfiles.d/agentbox.conf" "$L/tmpfiles.d/agentbox.conf"
 systemd-tmpfiles --create "$L/tmpfiles.d/agentbox.conf"
+# The brokers' credentials (#108): rootd encrypts each secret.set value with systemd-creds, using this host key in
+# none mode (the TPM2 in the tpm2 modes); setup makes the key once and leaves an existing one as it is.
+systemd-creds setup >/dev/null || die "systemd-creds setup failed"
 # The task seccomp profile (§4.2): every task launch names this path.
 install -d -m 0711 "$A/control"
 install -m 0644 "$R/$VER/seccomp/seccomp-task.json" "$A/control/.seccomp-task.json.new"

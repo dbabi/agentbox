@@ -11,7 +11,7 @@ import (
 
 func TestEnv(t *testing.T) {
 	on := Env(true, "corp.example/*")
-	for _, want := range []string{"GOPROXY=https://proxy.golang.org,direct", "GOSUMDB=sum.golang.org",
+	for _, want := range []string{"GOPROXY=http://127.0.0.1:8083,https://proxy.golang.org,direct", "GOSUMDB=sum.golang.org",
 		"GOTOOLCHAIN=local", "GOPRIVATE=corp.example/*", "HTTPS_PROXY=http://127.0.0.1:8080", "https_proxy=http://127.0.0.1:8080",
 		"NO_PROXY=127.0.0.1,localhost,::1", "no_proxy=127.0.0.1,localhost,::1", "npm_config_audit=false",
 		"npm_config_fund=false", "npm_config_update_notifier=false", "NO_UPDATE_NOTIFIER=1", "PIP_DISABLE_PIP_VERSION_CHECK=1"} {
@@ -19,11 +19,10 @@ func TestEnv(t *testing.T) {
 			t.Errorf("with proxy.golang.org: no %s in %q", want, on)
 		}
 	}
-	// #223: nothing serves the Go module filter yet, and go stops at a GOPROXY entry it can't reach
-	if s := strings.Join(on, " "); strings.Contains(s, ":8083") {
-		t.Errorf("an env entry names the Go module filter: %s", s)
-	}
 	off := Env(false, "")
+	if s := strings.Join(off, " "); strings.Contains(s, ":8083") {
+		t.Errorf("without proxy.golang.org, an env entry names the Go module filter: %s", s)
+	}
 	if !slices.Contains(off, "GOPROXY=off") || !slices.Contains(off, "GOTOOLCHAIN=local") {
 		t.Errorf("without proxy.golang.org: %q", off)
 	}

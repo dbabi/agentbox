@@ -54,7 +54,8 @@ func stage(t *testing.T, stubs map[string]string) (c *exec.Cmd, box, trace strin
 	}
 	fakes := map[string]string{"id": "echo 0", "dpkg": `[ "$1" = -s ] && echo "Status: install ok installed" || echo arm64`, "systemctl": ":", "sync": `echo sync >> "$TRACE"`,
 		"systemd-sysusers": `echo "sysusers $*" >> "$TRACE"`, "systemd-tmpfiles": `echo "tmpfiles $*" >> "$TRACE"`,
-		"getent": ":", "apt-get": "exit 1",
+		"systemd-creds": `echo "creds $*" >> "$TRACE"`,
+		"getent":        ":", "apt-get": "exit 1",
 		// GNU mv -T renames onto the link itself; dropping the link first does the same with BSD mv
 		"mv": `echo "mv $*" >> "$TRACE"; [ "$1" != -T ] || { shift; rm -f "$2"; }; exec "` + mv + `" "$@"`}
 	for name, body := range stubs {
@@ -86,6 +87,9 @@ func TestSyncBeforeRename(t *testing.T) {
 	// the users and dirs the units name exist before systemctl enable; the copies are the release's
 	if !slices.Contains(got, "sysusers "+box+"/usr/lib/sysusers.d/agentbox.conf") || !slices.Contains(got, "tmpfiles --create "+box+"/usr/lib/tmpfiles.d/agentbox.conf") {
 		t.Errorf("want systemd-sysusers and systemd-tmpfiles --create on the installed copies; got:\n%s", b)
+	}
+	if !slices.Contains(got, "creds setup") { // #108: the host key rootd encrypts the brokers' credentials with in none mode
+		t.Errorf("want systemd-creds setup; got:\n%s", b)
 	}
 	if c, err := os.ReadFile(filepath.Join(box, "usr/lib/sysusers.d/agentbox.conf")); err != nil || string(c) != "u agentbox-x -\n" {
 		t.Errorf("sysusers copy: %q %v", c, err)

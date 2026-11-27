@@ -1,6 +1,6 @@
 Short answers to common questions. For an overview, start at [Home](README.md).
 
-agentbox is early alpha. Answers about the LLM key broker, the git service, policy and approvals describe the design. Those parts are not built yet. The egress proxy is built.
+agentbox is early alpha. Answers about the git service, policy and approvals describe the design. Those parts are not built yet. The egress proxy and the LLM keys broker are built.
 
 ## The basics
 
@@ -28,6 +28,10 @@ Tasks run two agent CLIs: Claude Code and Codex. opencode is not supported: its 
 - Every action that touches the host, secrets, the network, other agents or shared memory is a typed operation. Policy checks it, and the audit log records it. Risky operations wait for your approval.
 
 The rest comes in milestones 5 to 8 (see [Roadmap](Roadmap.md)). Milestones 2 to 4 built what it relies on: the firewall, the audit daemon, the root daemon's resolver, the request checks and the task containers.
+
+### Can tasks use my Claude or ChatGPT subscription?
+
+No. Tasks use API keys only, which the keys broker holds and adds to each request. A subscription login, including the one-year token from `claude setup-token`, is not supported in tasks. Codex tasks also use an OpenAI API key. opencode is not supported (see above). An interactive session can keep its own login in `session-home`.
 
 ### How is it different from a dev container?
 

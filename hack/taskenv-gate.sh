@@ -10,8 +10,8 @@
 #          sh script (AGENTBOX_TEST_CLI=sh) by taskrun after it starts the in-task forwarders. No --dns=none: podman
 #          refuses it with --network=none, and leaves the image's resolv.conf as it is (taskenv).
 #          A-G1: the Go, proxy and quiet npm/pip env for an agent with and without proxy.golang.org:443; GOPROXY=off
-#          fails at once with 0 CONNECTs; with it, go asks proxy.golang.org over the egress forwarder, not the Go module
-#          filter that nothing serves yet (#223); GOPRIVATE from go.private.set; the image's GOFLAGS, GONOSUMDB, GONOPROXY,
+#          fails at once with 0 CONNECTs; with it, go asks taskrun's Go module filter first and, when the filter answers
+#          404, proxy.golang.org over the egress forwarder; GOPRIVATE from go.private.set; the image's GOFLAGS, GONOSUMDB, GONOPROXY,
 #          GOINSECURE, HTTP_PROXY and ALL_PROXY never reach the task; the pinned Go; no cache survives into the next
 #          task; npm test and pip list open 0 CONNECTs. A-G2: a go.mod that needs a newer Go fails with go's own
 #          toolchain error and 0 CONNECTs. C-G2: direct lookups fail in under 1 s; resolv.conf names only 127.0.0.1; the
@@ -77,10 +77,13 @@ G=/var/tmp/gate
 mkdir -p $G && chmod 0755 $G
 
 # --- setup: the task image, two agents, the test CLI and image, stub brokers ---
-check "image/task builds on the box (ubuntu:26.04, apt tools, mise with the pinned Go)" 'podman build -q -t $IMG /tmp/gate-image/task </dev/null'
+# the build's RUN steps use the box's own resolver (--network=host): on some host networks slirp answers DNS over
+# IPv6 only, and a build container gets the IPv4 server
+check "image/task builds on the box (ubuntu:26.04, apt tools, mise with the pinned Go)" 'podman build -q --network=host -t $IMG /tmp/gate-image/task </dev/null'
 # the image sets what taskrun must unset, so the env checks see them removed, not merely absent
 printf 'FROM %s\nENV GOFLAGS=-mod=mod GONOSUMDB=corp.example GONOPROXY=corp.example GOINSECURE=corp.example HTTP_PROXY=http://10.9.9.9:3128 http_proxy=http://10.9.9.9:3128 ALL_PROXY=socks5://10.9.9.9:1080 all_proxy=socks5://10.9.9.9:1080\n' $IMG > $G/Containerfile
-podman build -q -t $IMG-env -f $G/Containerfile $G </dev/null >/dev/null && podman save -o $G/image.tar $IMG-env && chmod 0644 $G/image.tar
+# podman save won't write over the archive an earlier run on this box left
+podman build -q -t $IMG-env -f $G/Containerfile $G </dev/null >/dev/null && rm -f $G/image.tar && podman save -o $G/image.tar $IMG-env && chmod 0644 $G/image.tar
 # podman load runs through the agent's user manager, as rootd's ensureImage does, so podman's pause process gets its
 # own scope there, not a root session's
 for a in ga gb; do
@@ -164,8 +167,9 @@ s = socket.socket(socket.AF_UNIX); s.bind(ctl); os.chmod(ctl, 0o600); s.listen(1
 while True:
     c, _ = s.accept(); threading.Thread(target=serve, args=(c,), daemon=True).start()
 PY
-# the release's proxy owns svc-proxy.sock: it stops while the stand-in runs, and starts again at cleanup
-systemctl stop agentbox-proxy.service agentbox-proxy-svc.socket
+# the release's proxy and keys broker own svc-proxy.sock and svc-keys.sock: they stop while the stand-ins run, and start
+# again at cleanup
+systemctl stop agentbox-proxy.service agentbox-proxy-svc.socket agentbox-keys.service agentbox-keys-svc.socket
 for v in proxy keys; do python3 $G/svc.py $v $G </dev/null >>$G/broker.err 2>&1 & echo $! > $G/svc-$v.pid; done
 systemctl daemon-reload
 check "agentboxd with AGENTBOX_TEST_CLI=sh, rootd with the gate's task image, and the stub brokers' svc sockets" '
@@ -217,7 +221,7 @@ check "go.private.set{ga, corp.example/*} through rootd-admin.sock, audited" '$B
   [ "$(cat $E/ga.goprivate)" = "corp.example/*" ] && cat $A/seg-*.jsonl | grep "\"type\":\"INTENT\"" | grep -q "\"name\":\"go.private.set\""'
 check "  ... a pattern with a space is refused" '! $B goprivate set --agent ga --patterns "a b" && [ "$(cat $E/ga.goprivate)" = "corp.example/*" ]'
 task ga env > $G/env-ga; task gb env > $G/env-gb
-check "A-G1 ga (proxy.golang.org:443 allowlisted): GOPROXY is proxy.golang.org, then direct: no Go module filter yet (#223)" 'grep -qx "GOPROXY=https://proxy.golang.org,direct" $G/env-ga'
+check "A-G1 ga (proxy.golang.org:443 allowlisted): GOPROXY is the Go module filter, then proxy.golang.org, then direct" 'grep -qx "GOPROXY=http://127.0.0.1:8083,https://proxy.golang.org,direct" $G/env-ga'
 check "  ... GOSUMDB=sum.golang.org, GOTOOLCHAIN=local, GOPRIVATE=corp.example/*" 'grep -qx GOSUMDB=sum.golang.org $G/env-ga && grep -qx GOTOOLCHAIN=local $G/env-ga && grep -qx "GOPRIVATE=corp.example/\*" $G/env-ga'
 check "  ... the npm and pip flags and NO_UPDATE_NOTIFIER=1" 'for v in npm_config_audit=false npm_config_fund=false npm_config_update_notifier=false NO_UPDATE_NOTIFIER=1 PIP_DISABLE_PIP_VERSION_CHECK=1; do grep -qx $v $G/env-ga && grep -qx $v $G/env-gb || exit 1; done'
 check "A-G1 gb (no proxy.golang.org): GOPROXY=off, GOTOOLCHAIN=local, no GOSUMDB and no GOPRIVATE" 'grep -qx GOPROXY=off $G/env-gb && grep -qx GOTOOLCHAIN=local $G/env-gb && ! grep -q "^GOSUMDB=\|^GOPRIVATE=" $G/env-gb'
@@ -228,13 +232,13 @@ c=$(connects)
 check "A-G1 gb: go mod download fails at once with go's own GOPROXY=off error and 0 CONNECTs" '
   ! task gb "t0=\$(date +%s%N); go mod download; r=\$?; echo ms=\$(( (\$(date +%s%N)-t0)/1000000 )); exit \$r" > $G/gmd 2>&1 &&
   grep -q "module lookup disabled by GOPROXY=off" $G/gmd && [ "$(sed -n "s/^ms=//p" $G/gmd)" -lt 2000 ] && [ "$(connects)" = "$c" ]'
-# #223: the stub proxy refuses every CONNECT but ok.example, so the fetch fails; it must fail at proxy.golang.org's
-# CONNECT, not on a dial to 127.0.0.1:8083, where nothing listens
+# the stub proxy refuses every CONNECT but ok.example, so the fetch fails: the filter's live check is refused and it
+# answers 404, and go's own CONNECT to proxy.golang.org is refused too
 mkdir -p $WS/ga/gofx && cp $WS/gb/go.mod $WS/ga/gofx/go.mod && chown -R ag-ga:ag-ga $WS/ga
 c=$(connects)
-check "A-G1 ga: go mod download asks proxy.golang.org through the egress forwarder, and dials no 127.0.0.1:8083 (#223)" '
-  task ga "cd gofx && go mod download" > $G/gma 2>&1; cat $G/gma; ! grep -q "127.0.0.1:8083" $G/gma &&
-  grep -q "https://proxy.golang.org/" $G/gma && [ "$(connects)" -gt "$c" ] && grep -q "^CONNECT proxy.golang.org:443 " $G/proxy.log'
+check "A-G1 ga: go mod download asks the Go module filter, then proxy.golang.org through the egress forwarder" '
+  task ga "cd gofx && go mod download -x" > $G/gma 2>&1; cat $G/gma; grep -q "^# get http://127.0.0.1:8083/" $G/gma &&
+  grep -q "^# get https://proxy.golang.org/" $G/gma && [ "$(connects)" -gt "$c" ] && grep -q "^CONNECT proxy.golang.org:443 " $G/proxy.log'
 check "A-G1 go version is the image's pinned Go ($(sed -n "s/^go = \"\(.*\)\"/\1/p" /tmp/gate-image/task/mise.toml))" '
   task ga "go version" | grep -qx "go version go$(sed -n "s/^go = \"\(.*\)\"/\1/p" /tmp/gate-image/task/mise.toml) linux/arm64"'
 check "A-G1 a task writes \$GOCACHE, ~/go/pkg/mod and ~/.npm; the next task sees none of it, only taskrun's own HOME files" '
@@ -342,7 +346,7 @@ check "  ... and raises no alert: no GATE_MISMATCH record and no ALERT for that 
 
 # --- cleanup: the stand-ins go; the box's own state stays ---
 for v in proxy keys; do kill "$(cat $G/svc-$v.pid)" 2>/dev/null; rm -f /run/agentbox-rootd/svc-$v.sock; done
-systemctl start agentbox-proxy-svc.socket agentbox-proxy.service
+systemctl start agentbox-proxy-svc.socket agentbox-proxy.service agentbox-keys-svc.socket agentbox-keys.service
 rm -f $RS/agentboxd.service.d/50-taskenv.conf $RS/agentbox-rootd.service.d/50-taskenv.conf; systemctl daemon-reload
 systemctl restart agentbox-rootd.service agentboxd.service
 podman rmi -f $IMG-env $IMG >/dev/null 2>&1

@@ -89,6 +89,9 @@ func cmdBrokerStub(args []string) error {
 	if *svc != "proxy" && *svc != "keys" && *svc != "git" {
 		return errors.New("broker-stub: --svc must be proxy, keys or git")
 	}
+	if err := serviceFilter(); err != nil { // as the broker it stands in for
+		return err
+	}
 	ls, err := listenFDs()
 	if err != nil {
 		return err

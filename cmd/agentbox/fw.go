@@ -77,7 +77,7 @@ func cmdFWCheck(args []string) error {
 	// The restart restarts only the units that run: start the ones an earlier failed load or start left down (#218).
 	// rootd first: its READY=1 waits for its refill, which ntfy's own fwcheck compares. Agents' user managers start
 	// with their next task or attach.
-	for _, u := range [][]string{{"agentbox-rootd.service"}, {"agentbox-auditd.service", "agentboxd.service", "ntfy.service"}} {
+	for _, u := range [][]string{{"agentbox-rootd.service"}, {"agentbox-auditd.service", "agentboxd.service", "agentbox-keys.service", "ntfy.service"}} {
 		if out, err := systemctl(append([]string{"start"}, u...)...); err != nil {
 			return fmt.Errorf("fwcheck: start %s: %v: %s", strings.Join(u, " "), err, strings.TrimSpace(string(out)))
 		}

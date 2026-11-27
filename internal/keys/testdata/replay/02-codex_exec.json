@@ -1,0 +1,464 @@
+{
+ "cli": "codex_exec 0.171.0",
+ "path": "/v1/responses",
+ "query": "",
+ "beta": null,
+ "body": {
+  "client_metadata": {
+   "root_turn_id": "x",
+   "session_id": "x",
+   "thread_id": "x",
+   "turn_id": "x",
+   "x-codex-installation-id": "x",
+   "x-codex-turn-metadata": "x",
+   "x-codex-window-id": "x"
+  },
+  "include": [
+   "reasoning.encrypted_content"
+  ],
+  "input": [
+   {
+    "id": "x",
+    "role": "developer",
+    "tools": [
+     {
+      "description": "x",
+      "name": "x",
+      "tools": [
+       {
+        "description": "x",
+        "format": {
+         "definition": "x",
+         "syntax": "x",
+         "type": "grammar"
+        },
+        "name": "x",
+        "type": "custom"
+       },
+       {
+        "description": "x",
+        "name": "x",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "cell_id": {
+           "description": "x",
+           "type": "string"
+          },
+          "max_tokens": {
+           "description": "x",
+           "type": "number"
+          },
+          "terminate": {
+           "description": "x",
+           "type": "boolean"
+          },
+          "yield_time_ms": {
+           "description": "x",
+           "type": "number"
+          }
+         },
+         "required": [
+          "x"
+         ],
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       },
+       {
+        "description": "x",
+        "name": "x",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "questions": {
+           "description": "x",
+           "items": {
+            "additionalProperties": false,
+            "properties": {
+             "header": {
+              "description": "x",
+              "type": "string"
+             },
+             "id": {
+              "description": "x",
+              "type": "string"
+             },
+             "options": {
+              "description": "x",
+              "items": {
+               "additionalProperties": false,
+               "properties": {
+                "description": {
+                 "description": "x",
+                 "type": "string"
+                },
+                "label": {
+                 "description": "x",
+                 "type": "string"
+                }
+               },
+               "required": [
+                "x",
+                "x"
+               ],
+               "type": "object"
+              },
+              "type": "array"
+             },
+             "question": {
+              "description": "x",
+              "type": "string"
+             }
+            },
+            "required": [
+             "x",
+             "x",
+             "x",
+             "x"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "required": [
+          "x"
+         ],
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       },
+       {
+        "description": "x",
+        "name": "x",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "questions": {
+           "description": "x",
+           "items": {
+            "additionalProperties": false,
+            "properties": {
+             "options": {
+              "description": "x",
+              "items": {
+               "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+             },
+             "title": {
+              "description": "x",
+              "type": "string"
+             }
+            },
+            "required": [
+             "x"
+            ],
+            "type": "object"
+           },
+           "minItems": 1,
+           "type": "array"
+          }
+         },
+         "required": [
+          "x"
+         ],
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       },
+       {
+        "description": "x",
+        "name": "x",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "message": {
+           "description": "x",
+           "type": "string"
+          }
+         },
+         "required": [
+          "x"
+         ],
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       }
+      ],
+      "type": "namespace"
+     },
+     {
+      "description": "x",
+      "name": "x",
+      "tools": [
+       {
+        "description": "x",
+        "name": "x",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "duration_ms": {
+           "description": "x",
+           "type": "number"
+          }
+         },
+         "required": [
+          "x"
+         ],
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       }
+      ],
+      "type": "namespace"
+     },
+     {
+      "description": "x",
+      "name": "x",
+      "tools": [
+       {
+        "description": "x",
+        "name": "x",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "message": {
+           "description": "x",
+           "encrypted": true,
+           "type": "string"
+          },
+          "target": {
+           "description": "x",
+           "type": "string"
+          }
+         },
+         "required": [
+          "x",
+          "x"
+         ],
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       },
+       {
+        "description": "x",
+        "name": "x",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "target": {
+           "description": "x",
+           "type": "string"
+          }
+         },
+         "required": [
+          "x"
+         ],
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       },
+       {
+        "description": "x",
+        "name": "x",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "path_prefix": {
+           "description": "x",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       },
+       {
+        "description": "x",
+        "name": "x",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "message": {
+           "description": "x",
+           "encrypted": true,
+           "type": "string"
+          },
+          "target": {
+           "description": "x",
+           "type": "string"
+          }
+         },
+         "required": [
+          "x",
+          "x"
+         ],
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       },
+       {
+        "description": "x",
+        "name": "x",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "fork_turns": {
+           "description": "x",
+           "type": "string"
+          },
+          "message": {
+           "description": "x",
+           "encrypted": true,
+           "type": "string"
+          },
+          "model": {
+           "description": "x",
+           "type": "string"
+          },
+          "reasoning_effort": {
+           "description": "x",
+           "type": "string"
+          },
+          "task_name": {
+           "description": "x",
+           "type": "string"
+          }
+         },
+         "required": [
+          "x",
+          "x"
+         ],
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       },
+       {
+        "description": "x",
+        "name": "x",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "timeout_ms": {
+           "description": "x",
+           "type": "number"
+          }
+         },
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       }
+      ],
+      "type": "namespace"
+     }
+    ],
+    "type": "additional_tools"
+   },
+   {
+    "content": [
+     {
+      "text": "x",
+      "type": "input_text"
+     }
+    ],
+    "id": "x",
+    "role": "developer",
+    "type": "message"
+   },
+   {
+    "content": [
+     {
+      "text": "x",
+      "type": "input_text"
+     },
+     {
+      "text": "x",
+      "type": "input_text"
+     },
+     {
+      "text": "x",
+      "type": "input_text"
+     }
+    ],
+    "id": "x",
+    "role": "developer",
+    "type": "message"
+   },
+   {
+    "content": [
+     {
+      "text": "x",
+      "type": "input_text"
+     }
+    ],
+    "id": "x",
+    "role": "developer",
+    "type": "message"
+   },
+   {
+    "content": [
+     {
+      "text": "x",
+      "type": "input_text"
+     }
+    ],
+    "id": "x",
+    "role": "developer",
+    "type": "message"
+   },
+   {
+    "content": [
+     {
+      "text": "x",
+      "type": "input_text"
+     },
+     {
+      "text": "x",
+      "type": "input_text"
+     }
+    ],
+    "id": "x",
+    "role": "user",
+    "type": "message"
+   },
+   {
+    "content": [
+     {
+      "text": "x",
+      "type": "input_text"
+     }
+    ],
+    "id": "x",
+    "role": "user",
+    "type": "message"
+   }
+  ],
+  "model": "gpt-6.2-sol",
+  "parallel_tool_calls": false,
+  "prompt_cache_key": "x",
+  "reasoning": {
+   "context": "x",
+   "effort": "low"
+  },
+  "store": false,
+  "stream": true,
+  "text": {
+   "verbosity": "low"
+  },
+  "tool_choice": "auto"
+ }
+}

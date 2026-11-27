@@ -24,7 +24,7 @@ Milestone numbers refer to the ordered list on the [Roadmap](Roadmap.md). The pl
 | Firewall, disk quotas, audit daemon, rootd skeleton and resolver, ntfy | Built | 2 |
 | Operation registry, the agentboxd request gate, denial codes, the socket layout as code | Built (24-hour fuzz run pending) | 3 |
 | Agent accounts, task containers, interactive sessions | Built | 4 |
-| Brokers: proxy, keys, git | Proxy built (no Go module cache yet); keys and git designed | 5 |
+| Brokers: proxy, keys, git | Proxy built (no Go module cache yet); keys built; git designed | 5 |
 | Cedar policy, rootd floor, signed approvals | Designed | 6 |
 | Apps, file writes, workspace ops, OS ops for agents, nightly updates, decide | Designed | 7 |
 | Agent bus and shared memory | Designed | 8 |
@@ -89,7 +89,7 @@ These eight rules shape the whole design.
    Task containers have no network at all.
    Traffic leaves only through the task's own Unix sockets, to the brokers.
    Brokers may connect only to addresses that rootd resolved for allowlisted names.
-   *Built in part: the firewall and rootd's resolver (milestone 2), task containers with no network (milestone 4), and the proxy (milestone 5). The keys broker and the git service are designed (milestone 5).*
+   *Built in part: the firewall and rootd's resolver (milestone 2), task containers with no network (milestone 4), and the proxy and the keys broker (milestone 5). The git service is designed (milestone 5).*
 4. **The executor owns the floor.**
    `agentbox-rootd` stores every pending operation, bound to its exact inputs, such as commit IDs and package hashes.
    When an operation needs approval, rootd runs only the stored copy that a human signed.
@@ -107,7 +107,7 @@ These eight rules shape the whole design.
    Content from an untrusted source marks, or taints, the task that reads it.
    The mark spreads to what the task touches.
    Only a human can clear it.
-   *Built in part: auditd's taint ledger, where only rootd's admin path clears a subject (milestone 2), and taint that spreads from a task to its workspace and the next task (milestone 4). What sets taint is designed (milestones 5-8).*
+   *Built in part: auditd's taint ledger, where only rootd's admin path clears a subject (milestone 2), taint that spreads from a task to its workspace and the next task (milestone 4), and the taint the proxy and the keys broker set (milestone 5). The rest of what sets taint is designed (milestones 5-8).*
 8. **Honest guarantees.**
    The design states what each operation's rollback covers.
    It states the limits of disk encryption and of phone approvals.
@@ -229,6 +229,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 | `agentbox-rootd.service` and its sockets | the release | The root daemon: agent accounts, task start and stop, attach sessions, the resolver sockets for the three brokers, the admin socket, and the seal socket auditd calls. It starts after auditd and stops before it. At a stop it finishes the requests in flight, for up to 60 s, so their audit records still reach auditd. |
 | `agentboxd.service` and its socket | the release | The task gate: one socket per task, with no network. |
 | `agentbox-proxy.service` and its socket | the release | The egress proxy, as `agentbox-proxy`: one socket per task. Its socket starts it at the first task. |
+| `agentbox-keys.service` and its socket | the release | The LLM keys broker, as `agentbox-keys`: one socket per task. It starts at boot, and `agentbox secret set` restarts it. |
 | `ntfy.service` | the Ubuntu `ntfy` package | Notifications, as `_ntfy`, on a Unix socket only. `install.sh` installs the package; reconcile configures and enables it. It starts after rootd, once rootd has filled the firewall sets that ntfy's `fwcheck` compares. A `systemctl restart` of rootd, or a firewall repair, restarts it too. It has no systemd start limit, so many rootd restarts in a row can't leave it failed. |
 | `agentbox-agent-stub.service` | the release | A stand-in for an agent unit, for the gates. Not enabled. |
 
@@ -241,7 +242,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 
 ## The services
 
-**Status:** Mostly designed. `agentbox-auditd` and the packaged ntfy are built, and so are parts of `agentbox-rootd` and `agentboxd` (milestones 2-4). The table says which parts. So is `agentbox-proxy` (milestone 5). The keys broker, the git service, approvald, the local-model units and tailscaled don't exist yet. [Units on the box today](#units-on-the-box-today) lists what runs today.
+**Status:** Mostly designed. `agentbox-auditd` and the packaged ntfy are built, and so are parts of `agentbox-rootd` and `agentboxd` (milestones 2-4). The table says which parts. So are `agentbox-proxy` and `agentbox-keys` (milestone 5). The git service, approvald, the local-model units and tailscaled don't exist yet. [Units on the box today](#units-on-the-box-today) lists what runs today.
 
 In the design, rootd, agentboxd, auditd, approvald and the three brokers are all subcommands of the one `agentbox` binary.
 The local-model units run llama-server, and ntfy and tailscaled come from their own packages.
@@ -249,11 +250,11 @@ Each service runs as its own Linux user, with only the access it needs.
 
 | Service | Runs as | Job | Status |
 |---|---|---|---|
-| `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Built in part: the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing (milestone 2); agent accounts, task start and stop, and attach sessions (milestone 4). Its generation code is built. Pending operations and OS operations for agents are designed (milestones 6-7). |
+| `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Built in part: the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing (milestone 2); agent accounts, task start and stop, and attach sessions (milestone 4); the brokers' encrypted credentials and the agents' daily LLM shares (milestone 5). Its generation code is built. Pending operations and OS operations for agents are designed (milestones 6-7). |
 | `agentboxd` | `agentbox` | The front door for agents: the task gate, Cedar policy, the agent bus, memory and decide. Has no network. | Task gate built (milestone 3): one socket per task, argument and caller checks, typed denials. Policy, the agent bus, memory and decide are designed (milestones 6-8). |
 | `agentbox-auditd` | `agentbox-audit` | Writes the hash-chained audit log and the taint ledger. Has no network. | Built (milestones 2 and 3), including the per-field audit classes. |
 | `agentbox-proxy` | `agentbox-proxy` | Tunnels task traffic to allowlisted hosts. Holds no secrets. | Built (milestone 5), except its Go module cache |
-| `agentbox-keys` | `agentbox-keys` | Holds the LLM API keys and budgets. Checks every model request, then adds the key. | Designed (milestone 5) |
+| `agentbox-keys` | `agentbox-keys` | Holds the LLM API keys and budgets. Checks every model request, then adds the key. | Built (milestone 5). The local model behind it is not packaged yet. |
 | `agentbox-git` | `agentbox-git` | Hosts local git repos. Holds the GitHub token and runs the `gh.*` operations. | Designed (milestone 5) |
 | `agentbox-approvald` | `agentbox-approve` | Serves the phone approval page. Holds no keys. | Designed (milestone 6) |
 | `agentbox-llm@task`, `agentbox-llm@decide` | `agentbox-llm`, `agentbox-llm-decide` | Local models (llama-server) for tasks and for decide. Have no network. | Designed (milestones 5 and 7) |
@@ -278,7 +279,7 @@ Each service runs as its own Linux user, with only the access it needs.
 
 ## Task containers
 
-**Status:** Built (milestone 4), except where a bullet says otherwise. The proxy behind the egress socket is built (milestone 5). The keys broker and the git service are designed, so no task can reach a model yet.
+**Status:** Built (milestone 4), except where a bullet says otherwise. The proxy behind the egress forwarder and the keys broker behind the LLM forwarder are built (milestone 5). The git service is designed.
 
 ### Accounts
 
@@ -545,7 +546,7 @@ Root access is the approval.
 
 ## Network and secrets
 
-**Status:** The firewall and rootd's resolver are built (milestone 2), and so is the proxy (milestone 5). The keys broker and the git service are designed (milestone 5). The seed still masks the stock `nftables.service`: `agentbox-firewall.service` loads agentbox's own table instead.
+**Status:** The firewall and rootd's resolver are built (milestone 2), and so are the proxy and the keys broker (milestone 5). The git service is designed (milestone 5). The seed still masks the stock `nftables.service`: `agentbox-firewall.service` loads agentbox's own table instead.
 
 ### Firewall
 
@@ -590,7 +591,7 @@ Built today (milestone 2): the resolver, through systemd-resolved's Varlink sock
 rootd keeps its answers in `rootd.db`, refills the sets at start (before `READY=1`) and on a timer, and `agentbox egress list|refill|allow|remove` edits the allowlists.
 Built in milestone 5: the refusals of the box's own addresses and of hook answers, and the dialer the brokers share (`internal/dial`).
 It asks rootd, dials only rootd's addresses, in order, within one 10 s budget, and follows no redirect.
-The proxy uses it. The keys broker and the git service are not built.
+The proxy and the keys broker use it. The git service is not built.
 
 ### The proxy
 
@@ -617,16 +618,49 @@ Other task sockets serve 8, but npm keeps up to 15 open to one registry.
 ### The keys broker
 
 - It holds the LLM API keys.
-  A task sees only a local URL and a placeholder key.
-- It allows only a few model endpoints, such as Anthropic's `POST /v1/messages` and OpenAI's `POST /v1/responses`.
+  A task sees only a local URL (`http://127.0.0.1:8081/anthropic`, and `.../openai/v1` for Codex) and a placeholder key.
+- It allows only a few model endpoints: Anthropic's `POST /v1/messages` and `POST /v1/messages/count_tokens`, and OpenAI's `POST /v1/responses`, `POST /v1/chat/completions` and `GET /v1/models`.
+  It answers Claude Code's `HEAD /api/hello` startup probe itself.
 - It checks every request against a closed schema.
-  It rejects fields that make the vendor fetch a URL, such as `mcp_servers` or image URLs.
-- Vendor-side web tools are blocked unless policy allows them, and they taint the task.
+  It rejects fields that make the vendor fetch something or keep state, such as `mcp_servers`, `container`, image or PDF URLs, file IDs and `previous_response_id`.
+  It forces OpenAI's `store` to `false`.
+- It allows a fixed list of beta features.
+  For any other beta value, or a field outside the schema, it answers `400` in the vendor's own wording, so Claude Code retries without it.
+- Tasks set `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` and `CLAUDE_CODE_AUTO_MODE_SERVER=0`.
+  So Claude Code sends only the features the schema allows.
+- Vendor-side web tools are blocked unless policy allows them.
+  An allowed one taints the task before the request leaves.
+  For now that policy is a file, `/var/lib/agentbox/control/keys/server-tools`, with one tool name per line (`web_search`, `web_fetch`).
 - It strips the client's auth and adds the real key.
-- Before it forwards a request, it reserves the worst-case cost against the agent's, the trace's and the day's budgets.
-  Over the hard cap, it answers with a typed 429.
+  It records the request with auditd, and waits for the record to be stored, before it forwards anything.
+- Before it forwards a request, it reserves the worst-case cost against the agent's daily share and the task's trace budget.
+  The daily cap is split among the agents, so one agent's spending never blocks another.
+  Over either limit, it answers `429` with `x-should-retry: false`.
+- It checks every reply for the key: as sent, base64-encoded or URL-encoded, even when the key is split across chunks.
+  A reply with the key never reaches the task. Keys answers `502` instead, or cuts the stream, and raises an alert.
+- A vendor's `401` or `403` becomes keys' own `502`, with no vendor bytes.
+- It caps each request: the header size and time, the body size, before and after `gzip`, and 16 open connections per task.
 - It also fronts the local model.
+  It rebuilds the request from a short field list and names the fields it dropped.
   An instance that served a tainted request serves only tainted requests, until rootd restarts it.
+
+#### Setting the keys
+
+Run these as root on the box. The binary is not on `PATH`, so give its full path. Each command asks for the key without showing it, or reads it from standard input, so the key never lands in your shell history:
+
+```sh
+sudo /var/lib/agentbox/current/bin/agentbox secret set --name anthropic-api-key
+sudo /var/lib/agentbox/current/bin/agentbox secret set --name openai-api-key
+```
+
+rootd encrypts the value with `systemd-creds` and restarts `agentbox-keys`.
+Only that service can read the plaintext, from its own memory-only credentials directory.
+With `tpm2` or `tpm2+tang`, the encryption key is in the TPM.
+With `--encryption none`, it is a file on the same disk, so the encryption only hides the key from a casual look.
+
+Tasks use API keys only.
+`claude setup-token` and other subscription logins don't work in tasks, and Codex tasks use an OpenAI API key.
+A subscription login stays in `session-home`, for interactive sessions only.
 
 ### The git broker
 
@@ -643,7 +677,7 @@ Other task sockets serve 8, but npm keeps up to 15 open to one registry.
 | Secret | Where it lives | Status |
 |---|---|---|
 | LUKS disk key | Unlocked through clevis: the TPM, plus Tang in `tpm2+tang`. The 48-digit install key opens its own key slot. It is kept only in `recovery.bin`, encrypted to your offline recovery key. | Built |
-| LLM API keys | `agentbox-keys` only | Designed |
+| LLM API keys | `agentbox-keys` only, encrypted on disk with `systemd-creds` (see [Setting the keys](#setting-the-keys)) | Built |
 | Subscription logins | `session-home`, for interactive sessions only | Built. A login can't reach its servers from an attach yet (issue #90). |
 | GitHub token | `agentbox-git` only, scoped to registered repos | Designed |
 | Approval keys | Your laptop (SSH key) and your phone (passkey). Never on the box. | Designed |
@@ -795,9 +829,9 @@ The queue lives in `rootd.db`, so an alert survives a restart of ntfy or rootd. 
   Others are a compromised agent CLI or dependency, a thief, someone on your LAN or tailnet, and bugs in agentbox's own services.
 - The threat model lists seven non-negotiables that tests must prove.
   Five have built parts today:
-  - "Tasks have no network": task containers and the proxy are built. The keys broker and the git service are not.
+  - "Tasks have no network": task containers, the proxy and the keys broker are built. The git service is not.
   - "Agents never mutate the running OS": the generation mechanism is built. Agents are not.
-  - "Taint is sticky": auditd's taint ledger, and the spread from a task to its workspace, are built. What sets taint is not.
+  - "Taint is sticky": auditd's taint ledger, the spread from a task to its workspace, and the taint the proxy and the keys broker set are built. The rest of what sets taint is not.
   - "Nothing persists between tasks": built for task containers.
   - "The seed and logs contain no plaintext secrets": built. The seed still holds the admin password hash, so keep it private.
 - The threat model also lists accepted risks, many with a path for v2.
@@ -823,12 +857,14 @@ Read [Security Model](Security-Model.md) and the one-page threat model in the re
 | `internal/rootd/accounts`, `internal/task`, `internal/seccomp`, `internal/rootd/attach`, `internal/controlpaths` | Agent accounts, the task container and its seccomp profile, interactive sessions, and the workspace control-file list | Built (milestone 4) |
 | `internal/taskenv`, `internal/taskrun`, `internal/rootd/witness` | The task environment, the in-task forwarders and `agentbox why`, and the witness pipe rootd reads | Built (milestone 4) |
 | `internal/proxy`, `internal/dial` | The egress proxy (CONNECT checks, taint and tunnels), and the pinned dialer the brokers share | Built (milestone 5) |
+| `internal/keys`, `internal/broker`, `internal/budgets` | The keys broker (request schemas, the key, the reply scan, spend), the per-task socket server with admission caps that it runs on, and the agents' daily shares | Built (milestone 5) |
+| `internal/proxy/gocache`, `internal/taskrun/gomodfilter` | The Go module cache and its in-task filter | Built (milestone 5). The proxy does not serve the cache yet. |
 | `sysusers.d/`, `tmpfiles.d/` | The service users and the runtime directories | Built (milestones 2 and 3) |
 | `install/`, `systemd/` | The release's `install.sh` and its systemd units | Built |
 | `hack/` | The release builder, the ISO remaster script, the QEMU harness and the test gates | Built |
-| `internal/{policy,bus,memory,decide,dispatch,approvald,webauthn,keys,gitsvc,reconcile}`, the rest of `internal/rootd` | The rest of the agent runtime | Designed |
+| `internal/{policy,bus,memory,decide,dispatch,approvald,webauthn,gitsvc,reconcile}`, the rest of `internal/rootd` | The rest of the agent runtime | Designed |
 
-Today the code uses the Go standard library plus two modules: `golang.org/x/sys` and the pure-Go SQLite driver `modernc.org/sqlite` (for auditd's taint database and `rootd.db`).
+Today the code uses the Go standard library plus three modules: `golang.org/x/sys`, `golang.org/x/mod` (for the Go module cache) and the pure-Go SQLite driver `modernc.org/sqlite` (for auditd's taint database and `rootd.db`).
 The design adds more later, such as cedar-go, the MCP Go SDK and a WebAuthn library.
 
 ## Read more

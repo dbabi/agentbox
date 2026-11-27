@@ -2,6 +2,8 @@ package gate
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"agentbox/internal/ops"
 	"golang.org/x/sys/unix"
 )
 
@@ -221,5 +224,35 @@ func TestConnHandler(t *testing.T) {
 	c3.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := c3.Read(make([]byte, 1)); err == nil {
 		t.Fatal("the connection outlived revoke")
+	}
+}
+
+// #115: a line over MaxRequest, and a line that stops partway past the idle deadline, each get a typed CAP_REACHED
+// before the connection closes; an idle connection with nothing sent just closes.
+func TestLineCaps(t *testing.T) {
+	for _, c := range []struct {
+		name, what string
+		send       []byte
+	}{{"a line over MaxRequest", "body_bytes", bytes.Repeat([]byte("x"), MaxRequest+2)}, {"a stalled line", "read_timeout", []byte(`{"jsonrpc":"2.0"`)}} {
+		l, p := listen(t)
+		cl := dial(t, p)
+		sc, err := l.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		go lines(sc.(*net.UnixConn), 200*time.Millisecond, func([]byte) []byte { return []byte("{}") })
+		go cl.Write(c.send)
+		cl.SetReadDeadline(time.Now().Add(5 * time.Second))
+		line, err := bufio.NewReader(cl).ReadBytes('\n')
+		var rep struct {
+			Error struct {
+				Code    int
+				Message string
+				Data    ops.Denial
+			}
+		}
+		if err != nil || json.Unmarshal(line, &rep) != nil || rep.Error.Code != ops.RPCDenial || rep.Error.Data.Code != "CAP_REACHED" || rep.Error.Data.What != c.what {
+			t.Errorf("%s: %q %v", c.name, line, err)
+		}
 	}
 }
