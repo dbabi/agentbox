@@ -83,8 +83,9 @@ W=/var/lib/agentbox/data/workspaces/cg
 RS=/run/systemd/system
 G=/var/tmp/cli-gate
 M=/workspace/.gate-m # markers: in the workspace; on the host /workspace links to it, so one path works on both sides
-# Claude Code 2.1.330's tools in a -p task: every name across the recorded requests (#120)
-TOOLS="Agent Bash CronCreate CronDelete CronList DeferredToolPlaceholder Edit EnterWorktree ExitWorktree ListAgents Monitor NotebookEdit Read ReportFindings ScheduleWakeup SendMessage Skill TaskStop ToolSearch WebFetch Workflow Write"
+# Claude Code 2.1.330's tools in a -p task: every name across the recorded requests (#120). Tasks run with
+# CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (#18), which turns tool search off: no ToolSearch or DeferredToolPlaceholder (#306)
+TOOLS="Agent Bash CronCreate CronDelete CronList Edit EnterWorktree ExitWorktree ListAgents Monitor NotebookEdit Read ReportFindings ScheduleWakeup SendMessage Skill TaskStop WebFetch Workflow Write"
 rm -rf $G; mkdir -p $G && chmod 0755 $G
 as() { runuser -u ag-cg -- "$@"; }
 markers() { ls $W/.gate-m | tr '\n' ' '; }
