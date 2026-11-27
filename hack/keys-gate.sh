@@ -33,8 +33,9 @@
 #                answers a clean task from an instance that served a tainted one, and its dropped fields are named.
 #          C-G4  an upstream 401 is 502 KEYS_UPSTREAM{auth} with no upstream byte; an upstream Agentbox-Denial header
 #                and agentbox member are stripped; an agent at its own day share gets 429 KEYS_BUDGET{agent} with
-#                x-should-retry: false, while another agent's reply doesn't change; Claude Code stops within its own
-#                retries and the task result carries the denial.
+#                x-should-retry: false, while another agent's reply doesn't change (the first idle, at its share, or
+#                holding reservations up to its share); Claude Code and Codex each stop within their own retries and
+#                the task result carries the denial.
 #          #115  on keys.sock from a task: a 33 MiB body, a zip bomb, a slow head and a 17th connection each get
 #                CAP_REACHED with its what.
 #          A-G13 agentbox-keys runs one more seccomp filter than its unit gives.
@@ -379,6 +380,32 @@ check "C-G4 kb's reply is the same, apart from ids, with ka idle or at its share
   task kb "$M -d @/workspace/hi.json http://127.0.0.1:8081/anthropic/v1/messages; cat /tmp/b" > $G/kb1 &&
   printf "keys.day_cap_cents = 10000\n" | $B budget set >/dev/null && task kb "$M -d @/workspace/hi.json http://127.0.0.1:8081/anthropic/v1/messages; cat /tmp/b" > $G/kb0 &&
   cat $G/kb0 $G/kb1; cmp $G/kb0 $G/kb1 && head -1 $G/kb1 | grep -qx 200'
+# ka holding its largest reservations: a share that fits two of its 100000-token opus requests (200 cents each) on
+# top of what it spent today, not a third; kb asks while two are in flight
+S=$(python3 -c "import sqlite3, time; c = sqlite3.connect('file:/var/lib/agentbox/keys/spend.db?mode=ro', uri=True)
+print(c.execute('SELECT COALESCE(SUM(COALESCE(spent, reserved)), 0) FROM spend WHERE day = ? AND agent = ?', (int(time.time() * 1000) // 86400000, 'ka')).fetchone()[0])")
+printf "keys.day_cap_cents = 10000\nkeys.agent_day_share.ka = %s\n" $(( (S + 9999999) / 10000000 + 500 )) | $B budget set >/dev/null
+body hold '{"model":"claude-opus-5-5","max_tokens":100000,"messages":[{"role":"user","content":"GATE-MODE:slow-40"}]}'
+cat > $WS/ka/hold.sh <<'S'
+for i in 1 2 3; do
+  ( curl -s -o /tmp/b$i -D /tmp/h$i -w "%{http_code}\n" -H "x-api-key: agentbox-placeholder" -H "anthropic-version: 2023-06-01" \
+      -H "content-type: application/json" -d @/workspace/hold.json http://127.0.0.1:8081/anthropic/v1/messages > /tmp/s$i
+    cat /tmp/h$i /tmp/b$i >> /tmp/s$i; cp /tmp/s$i /workspace/.hold$i && mv /workspace/.hold$i /workspace/hold$i ) &
+done
+wait
+S
+chown ag-ka $WS/ka/hold.sh; rm -f $WS/ka/hold1 $WS/ka/hold2 $WS/ka/hold3
+task ka "sh /workspace/hold.sh" > $G/hold 2>&1 &
+HT=$!
+for i in $(seq 300); do [ -n "$(ls $WS/ka/hold1 $WS/ka/hold2 $WS/ka/hold3 2>/dev/null)" ] && break; sleep 0.2; done
+task kb "$M -d @/workspace/hi.json http://127.0.0.1:8081/anthropic/v1/messages; cat /tmp/b" > $G/kb2
+ls $WS/ka > $G/held
+wait $HT
+check "C-G4 kb's reply is the same, apart from ids, while ka holds its largest reservations (two in flight, a third refused)" '
+  echo "ka spent $S nanodollars today"; cat $G/kb2 $G/held $G/hold $WS/ka/hold1 $WS/ka/hold2 $WS/ka/hold3
+  cmp $G/kb0 $G/kb2 && [ "$(grep -c "^hold[123]$" $G/held)" = 1 ] &&
+  [ "$(head -qn1 $WS/ka/hold1 $WS/ka/hold2 $WS/ka/hold3 | sort | tr "\n" " ")" = "200 200 429 " ] &&
+  grep -l "^429" $WS/ka/hold1 $WS/ka/hold2 $WS/ka/hold3 | xargs grep -q "\"what\":\"agent\""'
 printf "keys.day_cap_cents = 10000\nkeys.agent_day_share.ka = 1\n" | $B budget set >/dev/null
 uplog > /dev/null
 check "C-G4 Claude Code at its share stops within its own retries, and the task result carries KEYS_BUDGET" '
@@ -386,6 +413,11 @@ check "C-G4 Claude Code at its share stops within its own retries, and the task 
   journalctl -b -u agentbox-keys -o cat | grep "task=$T"; journalctl -b -u agentboxd -o cat | grep "task $T result: "; uplog | tee $G/lbud
   [ "$(deny $T)" -ge 1 ] && [ "$(deny $T)" -le 12 ] &&
   journalctl -b -u agentboxd -o cat | grep "task $T result: " | grep -vq " 0 denials" && ! grep -q "\"path\":\"/v1/messages\"" $G/lbud'
+check "C-G4 Codex at its share stops within its own retries, and the task result carries KEYS_BUDGET" '
+  cli ka codex < $G/hi; T=$(cat $G/last); echo "task $T: $(deny $T) denials by keys, end $(field $T end_reason)"
+  journalctl -b -u agentbox-keys -o cat | grep "task=$T"; journalctl -b -u agentboxd -o cat | grep "task $T result: "; uplog | tee $G/lbudx
+  [ "$(deny $T)" -ge 1 ] && [ "$(deny $T)" -le 12 ] &&
+  journalctl -b -u agentboxd -o cat | grep "task $T result: " | grep -vq " 0 denials" && ! grep -q "\"path\":\"/v1/responses\"" $G/lbudx'
 printf "keys.day_cap_cents = 0\n" | $B budget set >/dev/null
 
 # --- #18: the local LLM (a stand-in for agentbox-llm@task) ---
