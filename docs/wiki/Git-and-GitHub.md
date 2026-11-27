@@ -30,25 +30,25 @@ The task gets `NEEDS_SIGNATURE` with the pending id at once, and can go on with 
 ## Set up GitHub access
 
 You need: the box set up, an agent (`agentbox agent add`), and root on the box.
+Run the commands below as root on the box. The `agentbox` binary is not on `PATH`, so they give its full path.
 
 1. On GitHub, make a fine-grained personal access token, or a GitHub App installation token, for only the repos you will register.
    Give it contents read and write, pull requests read and write, and issues read and write.
-2. On the box, put the token in agentbox-git's credential file, then restart the service.
-   The file is readable by root only. systemd hands it to the service, and no task or other service can read it.
+2. On the box, store the token. The command asks for it without showing it, or reads it from standard input, so the token never lands in your shell history.
+   rootd encrypts it with `systemd-creds` and restarts `agentbox-git`. Only that service can read the plaintext, from its own memory-only credentials directory.
    ```sh
-   sudo sh -c 'umask 077; cat > /var/lib/agentbox/control/secrets/git/github-token'   # paste the token, press Enter, then Ctrl-D
-   sudo systemctl restart agentbox-git
+   sudo /var/lib/agentbox/current/bin/agentbox secret set --name github-token
    ```
 3. Let the git service reach GitHub. rootd resolves these names for it, and it can reach no other address.
    ```sh
-   sudo agentbox egress allow --svc git --entry github.com:443
-   sudo agentbox egress allow --svc git --entry api.github.com:443
+   sudo /var/lib/agentbox/current/bin/agentbox egress allow --svc git --entry github.com:443
+   sudo /var/lib/agentbox/current/bin/agentbox egress allow --svc git --entry api.github.com:443
    ```
 4. Register each GitHub repo as a remote of one agent. `--project` names the agent's local repo that pushes to it; agentbox makes it if it is missing.
    agentbox asks GitHub for the repo's id and visibility, and every approval re-checks them.
    ```sh
-   sudo agentbox remote set --id claude-origin --agent claude --project app --url https://github.com/OWNER/REPO
-   sudo agentbox remote list
+   sudo /var/lib/agentbox/current/bin/agentbox remote set --id claude-origin --agent claude --project app --url https://github.com/OWNER/REPO
+   sudo /var/lib/agentbox/current/bin/agentbox remote list
    ```
 5. On GitHub, protect the repo:
    - Add a ruleset that lets the token update only `agent/**` branches.
@@ -57,9 +57,9 @@ You need: the box set up, an agent (`agentbox agent add`), and root on the box.
 ## Approve or deny
 
 ```sh
-sudo agentbox pending list
-sudo agentbox approve pnd_01...          # shows the operation, asks, then runs it
-sudo agentbox pending deny --id pnd_01...
+sudo /var/lib/agentbox/current/bin/agentbox pending list
+sudo /var/lib/agentbox/current/bin/agentbox approve pnd_01...          # shows the operation, asks, then runs it
+sudo /var/lib/agentbox/current/bin/agentbox pending deny --id pnd_01...
 ```
 
 `agentbox approve` shows the bound facts first: the remote, its visibility, the branch and commit.
@@ -77,6 +77,7 @@ A task can have 3 asks open at once, and its ask budget (3 by default) counts ev
 - **Before a push lands** (the local repos' hook): the branch is under `agent/<name>/`, the push fits the agent's daily cap, and no pushed file, commit or branch name holds the task's canary (below).
   A refusal prints two lines that git shows as `remote:` lines: a sentence, then the details as JSON.
 - **Push size:** at most 512 MiB in one push, and 4 GiB per agent per day (UTC). A push over the daily cap is refused before git stores any of it.
+  The daily cap is `git.push_bytes_day` in the box's budgets, which `agentbox budget set` replaces. The next push uses the new value.
 - **At approval:** the task is still running or finished normally, the remote is unchanged, GitHub still reports the same repo id and visibility, and the bound commit is still in a local branch.
   For a pull request, the branch on GitHub must still be at the commit the task named.
 - **Each write runs once.** The git service records every operation it starts and refuses to start one twice.
@@ -102,6 +103,10 @@ The box looks for the canary where a task's work leaves it: in every pushed obje
 It finds the raw value, the value split across lines or quoted pieces, its base64 at any offset, and its hex.
 A hit refuses the request with `EXFIL_CANARY`, taints the task, writes an audit record and sends you an alert.
 
+The keys broker looks for it too, in each model request a task sends: the body and the headers it passes on to the vendor.
+A hit there taints the task and alerts you once for that task, but the request still goes to the vendor.
+The vendor gets no real credential that way, and refusing would break a task whose conversation merely quotes its own environment.
+
 The hook also runs the credential rules of the workspace scan on every pushed file.
 A match alerts you, but the push still lands: only the canary is sure proof of an exfiltration attempt.
 
@@ -110,9 +115,8 @@ A match alerts you, but the push still lands: only the canary is sure proof of a
 - Until signed approvals land, an approval is a call on the box by a member of `agentbox-admin`. Anyone who can log in as the admin can approve.
 - There is no standing push policy yet, so every `repo.push` asks.
 - The canary is a detection aid, not a guarantee. A task can encode it in a way the scan doesn't cover, and tunnels through the proxy are not scanned.
-  Model requests are not scanned for it yet (issue #291).
 - A canary that a task writes into its workspace looks like a key to the workspace credential scan, which then blocks the agent's next task until you acknowledge it (issue #289).
-- The token is a plain file that only root can read. Encrypted storage comes with `agentbox secret set`.
+- In `--encryption none` mode, the key that encrypts the stored token is a file on the same disk, so the encryption only hides the token from a casual look. The [Security Model](Security-Model.md) explains it.
 
 ## See also
 

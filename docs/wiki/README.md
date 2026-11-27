@@ -2,7 +2,7 @@
 
 <img src="https://github.com/dbabi/agentbox/raw/main/mascot/agentbox-mascot.png" alt="The agentbox mascot, a pixel-art character" width="128">
 
-> **Early alpha. Not for production use.** agentbox runs no AI agents yet. It has run only in QEMU virtual machines, never on real hardware.
+> **Early alpha. Not for production use.** No AI agent can do useful work on agentbox yet. It has run only in QEMU virtual machines, never on real hardware.
 
 agentbox aims to be a headless operating system that is a home for AI coding agents.
 It is built on stock Ubuntu Server 26.04.
@@ -11,9 +11,11 @@ In the design, each task runs in a disposable container with no network and no c
 Anything that touches the host, secrets, the network, other agents or shared memory goes through typed operations.
 Policy checks each operation, and an audit log records it.
 Risky operations wait for a human to sign them.
-Part of the agent layer is built: the firewall, the audit log, the root daemon's resolver, the checks for agent requests, agent accounts and the task containers. The brokers, policy and approvals are not built yet.
+Part of the agent layer is built: the firewall, the audit log, the root daemon's resolver, the checks for agent requests, agent accounts, the task containers and the brokers. Policy and signed approvals are not built yet.
 
-Today agentbox is an installer, an OS layer, those host services and sealed task containers. No task can reach a model yet, because the brokers are not built.
+Today agentbox is an installer, an OS layer, those host services, sealed task containers and three brokers.
+A task reaches the internet only through the egress proxy, a model only through the LLM keys broker, and GitHub only through the git service.
+None of them has reached a real model vendor or GitHub yet: their tests use stand-ins.
 It installs Ubuntu unattended. Disk encryption is on by default, and `--encryption none` turns it off.
 It keeps the OS in btrfs A/B generations.
 A package change that fails to boot, or fails its health check, falls back on its own.
@@ -34,7 +36,8 @@ Two words mark the state of each part:
 
 ## Status
 
-At the time of writing (2026-11-25), milestones 1, 2 and 4 of 9 are built. Milestone 3, the checks for agent requests, is built and its VM tests passed. Its 24-hour fuzz run is still pending.
+At the time of writing (2026-11-27), milestones 1, 2 and 4 of 9 are built. Milestone 3, the checks for agent requests, is built and its VM tests passed. Its 24-hour fuzz run is still pending.
+Milestone 5, the brokers, is in progress: the egress proxy, the LLM keys broker and the git service are built. The proxy does not serve its Go module cache yet.
 The real-hardware test has not run yet.
 
 Built:
@@ -55,10 +58,14 @@ Built:
 - Agent accounts (milestone 4). `agentbox agent add` makes one Linux account per agent, with its own uid, sub-id range, disk quota and limits.
 - Task containers (milestone 4). `agentbox task new` runs each task in a disposable rootless podman container with no network, no capabilities, a seccomp profile and a fresh home. Nothing but the workspace reaches the next task.
 - Interactive sessions (milestone 4). `agentbox attach` opens a session with a separate, persistent home. Planted hooks don't run in it, and its output is filtered.
+- The egress proxy (milestone 5). It carries a task's HTTPS to the hosts on its agent's allowlist, holds no secrets, and dials only the addresses rootd checked.
+- The LLM keys broker (milestone 5). It holds the API keys, encrypted on disk, and checks every model request against a closed list of fields and the agent's budget.
+- The git service (milestone 5). It hosts each agent's git repos on the box and holds the GitHub token. Each write to GitHub waits for an admin's approval. [Git and GitHub](Git-and-GitHub.md) explains it.
 
 Not built yet:
 
-- Brokers, policy, approvals, the agent bus and shared memory. Until the brokers land, no task can reach a model or the internet.
+- Policy, signed approvals, the agent bus and shared memory.
+- A run against a real model vendor or GitHub. The brokers' tests use stand-ins for them.
 - Automatic security updates. Today an admin runs `os plan` and `os apply` by hand.
 - Updating agentbox itself on an installed box. This is out of scope for the first release. A new release means a reinstall.
 
@@ -66,7 +73,7 @@ Where it has run: QEMU VMs on an Apple Silicon Mac, and under KVM on CI's amd64 
 Most gates ran on an arm64 UEFI VM with Secure Boot on.
 Some gates also ran on an amd64 legacy BIOS VM.
 The milestone 2 and 3 gates ran in `none` mode only: on arm64 UEFI, and on amd64 BIOS in a weekly CI job.
-The milestone 4 gates ran in `none` mode on arm64 UEFI only.
+The milestone 4 and 5 gates ran in `none` mode on arm64 UEFI. The keys broker's also ran in `tpm2` mode.
 No amd64 UEFI install has run yet.
 No real machine has run agentbox yet.
 
@@ -80,10 +87,11 @@ No real machine has run agentbox yet.
 | [Encryption and Recovery](Encryption-and-Recovery.md) | The three encryption modes, what each protects against, the recovery key, and what happens when Tang is down. | Built |
 | [Generations and Updates](Generations-and-Updates.md) | btrfs A/B generations, `os plan` and `os apply`, trial boots, health commits, fallback and retention. | Built |
 | [Release Pipeline](Release-Pipeline.md) | `make release`, the signed tarball, the SHA-256 pin in the seed, and firstboot. | Built |
-| [Architecture](Architecture.md) | The target design: the services, task containers, approvals, network and secrets, the agent bus, memory and audit. | Mostly designed; the OS layer, firewall, audit, rootd skeleton, request checks and task containers are built |
+| [Architecture](Architecture.md) | The target design: the services, task containers, approvals, network and secrets, the agent bus, memory and audit. | Mostly designed; the OS layer, firewall, audit, rootd skeleton, request checks, task containers and brokers are built |
+| [Git and GitHub](Git-and-GitHub.md) | How agents use git: their repos on the box, GitHub access, approvals, taint and the canary. | Built, not yet run against GitHub itself |
 | [Security Model](Security-Model.md) | The threat model: what agentbox defends against, trust boundaries, accepted risks, and how to report a vulnerability. | Mostly designed |
-| [Roadmap](Roadmap.md) | The milestones in order, with the state of each. | Milestones 1, 2 and 4 built; milestone 3 in progress |
-| [Testing and Gates](Testing-and-Gates.md) | Unit tests, fuzz tests, the VM gates (milestones 1-4), power-cut tests, what each gate proves, and the results. | Built |
+| [Roadmap](Roadmap.md) | The milestones in order, with the state of each. | Milestones 1, 2 and 4 built; milestones 3 and 5 in progress |
+| [Testing and Gates](Testing-and-Gates.md) | Unit tests, fuzz tests, the VM gates (milestones 1-5), power-cut tests, what each gate proves, and the results. | Built |
 | [Contributing](Contributing.md) | Dev setup, repo layout, code style, tests and commit style. | n/a |
 
 ## Where to start
@@ -112,7 +120,7 @@ They run only on an installed box, as root.
 
 Try it in a VM first.
 
-1. Read [Status](#status) above. No agents run yet, and there are no automatic updates.
+1. Read [Status](#status) above. No agent can do useful work yet, and there are no automatic updates.
 2. [Getting Started](Getting-Started.md): install agentbox in a QEMU VM on an Apple Silicon Mac.
 3. [Encryption and Recovery](Encryption-and-Recovery.md): choose `tpm2+tang`, `tpm2` or `none`. For an encrypted mode, make the recovery key pair before you install.
 4. [Installing on Real Hardware](Installing-on-Real-Hardware.md): the zero-touch USB install. It has not run on real hardware yet.

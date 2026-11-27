@@ -1,4 +1,4 @@
-> **Early alpha. Not for production use.** Today agentbox is an installer, an OS layer, the first host services (a firewall, an audit daemon and a root daemon), agent accounts, sealed task containers, the egress proxy and the LLM keys broker. The git service, policy and approvals hold most of the rest of the security design, and they are not built. No external security review has happened yet.
+> **Early alpha. Not for production use.** Today agentbox is an installer, an OS layer, the first host services (a firewall, an audit daemon and a root daemon), agent accounts, sealed task containers, the egress proxy, the LLM keys broker and the git service. Policy and signed approvals hold most of the rest of the security design, and they are not built. No external security review has happened yet.
 
 This page summarizes the agentbox threat model. It covers what agentbox protects, who it defends against, the trust boundaries, and the risks that remain.
 
@@ -37,6 +37,8 @@ Built controls cover part of this today:
 
 - the LUKS key, and the data on the encrypted disk;
 - the LLM API keys, which only the keys broker can read, and which a task never holds;
+- the GitHub token, which only the git service can read, and which a task never holds;
+- GitHub itself, from a task: each write there waits for an admin's approval;
 - the agentbox release that firstboot installs;
 - the integrity of OS package changes;
 - outbound traffic from agentbox's own service users, which the host firewall holds to the addresses rootd resolved;
@@ -52,11 +54,11 @@ Everything else depends on parts that are designed, not built.
 
 | Attacker | Way in | Defense today | Planned |
 |---|---|---|---|
-| Prompt injection, the most likely attacker | Web pages, package READMEs, issues and pull requests, logs, other agents' messages, shared memory | Tasks are sealed: no network, and nothing but the workspace carries over to the next task. A task reaches the internet only through the egress proxy, to its agent's allowlist, and a model only through the keys broker. The proxy taints each task it connects. An agent you run outside a task is not confined. | The git service, policy and approvals (milestones 5-8) |
+| Prompt injection, the most likely attacker | Web pages, package READMEs, issues and pull requests, logs, other agents' messages, shared memory | Tasks are sealed: no network, and nothing but the workspace carries over to the next task. A task reaches the internet only through the egress proxy, to its agent's allowlist, and a model only through the keys broker. The proxy taints each task it connects. A task pushes only to its agent's repos on the box, and every write to GitHub waits for an admin's approval. An agent you run outside a task is not confined. | Policy and signed approvals (milestones 6-8) |
 | A compromised agent CLI or dependency | Code that runs inside a task | One disposable rootless container per task, with no network, no capabilities and a seccomp profile. **Built.** All tasks share the host kernel. | microVM tasks (v2) |
 | A thief | The disk alone, or the whole powered-off machine | Disk encryption. **Built.** | A signed PCR 11 policy for `tpm2` mode (v2) |
 | Someone on your LAN or Tailscale network | Open ports, the approval page | SSH accepts keys only. The host firewall drops inbound traffic by default. From the LAN it accepts SSH only from the seed's `--ssh-from` ranges. Besides SSH and replies to the box's own connections, it lets in only DHCP replies, IPv6 neighbor discovery and multicast listener queries, and Tailscale's UDP port 41641. It accepts everything that arrives over Tailscale. Tailscale and the approval page are not installed or built. | The approval page comes in milestone 6. Each approval needs a passkey, and the page handles low-risk operations only. |
-| A bug in agentbox's own code | Today: the seed generator, the installer, firstboot, `agentbox os`, and the parsers in rootd, auditd, agentboxd, the proxy and the keys broker. Designed: the parsers in the git service and in the local model server. | Strict input checks in `agentbox seed`. OS changes build offline. agentbox itself listens on no network port. Fuzz tests for the built services' parsers. The 24-hour fuzz run is pending (milestone 3). | Fuzz tests for the git service's parsers as it is built. The local model server runs with no network and no secrets. |
+| A bug in agentbox's own code | Today: the seed generator, the installer, firstboot, `agentbox os`, and the parsers in rootd, auditd, agentboxd, the proxy, the keys broker and the git service. Designed: the parsers in the local model server. | Strict input checks in `agentbox seed`. OS changes build offline. agentbox itself listens on no network port. Fuzz tests for the built services' parsers. The 24-hour fuzz run is pending (milestone 3). | Fuzz tests for the git service's parsers. The local model server runs with no network and no secrets. |
 
 ## Trust boundaries
 
@@ -79,7 +81,8 @@ A trust boundary is a place where data or control passes between parts that trus
 | Console to box | The keyboard and boot media | Console login needs the admin password. GRUB has no password. |
 | Container to host kernel | Task code | One rootless podman container per task, under the agent's own uid and sub-id range: no network, no capabilities, `no-new-privileges`, a read-only root and a seccomp profile. The profile blocks btrfs ioctls, namespace creation and 32-bit compat syscalls, and allows only Unix, IPv4, IPv6 and routing netlink sockets. All tasks share the host kernel. |
 | Task to the internet, through the proxy | HTTPS `CONNECT` requests | The proxy checks each target against the agent's allowlist and holds no secrets. It dials only the addresses rootd checked, and auditd records the task's taint before any byte flows. |
-| Task to the LLM vendors, through the keys broker | Model requests and replies | A closed schema for each endpoint. The key is added outside the task. auditd records each request before it leaves. A reply that carries the key never reaches the task. |
+| Task to the LLM vendors, through the keys broker | Model requests and replies | A closed schema for each endpoint. The key is added outside the task. auditd records each request before it leaves. A reply that carries the key never reaches the task. A request that carries the task's canary raises an alert. |
+| Task to GitHub, through the git service | Pushes to the agent's repos on the box, and asks for `repo.push`, `gh.*` writes and merges | A root-owned hook keeps a push inside the agent's `agent/<name>/` branches and its daily cap, and refuses one that holds the task's canary. Each write to GitHub waits for an admin's approval, which re-checks the remote and the commit, and runs once. The token stays in the git service. |
 | Task to its own sockets | Requests from task code | rootd creates a socket directory for each task, and revokes it when the task ends. agentboxd checks the caller of each request from the socket. |
 | Interactive session to the admin's terminal | Session output | rootd relays it through a filter that drops clipboard writes, DCS strings, and the device attribute, status and window report requests. |
 
@@ -191,11 +194,11 @@ The design sets seven rules, and tests must prove each one. Most of them depend 
 
 | # | Rule | Status |
 |---|---|---|
-| 1 | Tasks have no network. | **Built** and gate-proven for task containers (milestone 4) and for the proxy and the keys broker (milestone 5). The firewall that confines the brokers is built (milestone 2). The git service is designed. |
-| 2 | No credential exists inside a task. | **Built** and gate-proven for the LLM API keys (milestone 5): a task holds only a placeholder key, and the keys broker adds the real one. The GitHub token waits for the git service. |
+| 1 | Tasks have no network. | **Built** and gate-proven for task containers (milestone 4) and for the proxy, the keys broker and the git service (milestone 5). The firewall that confines the brokers is built (milestone 2). |
+| 2 | No credential exists inside a task. | **Built** and gate-proven for the LLM API keys and the GitHub token (milestone 5): a task holds only a fake key, its canary, and the brokers add the real credentials. A task that sends its canary out raises an alert. |
 | 3 | Agents never change the running OS. OS changes are built offline into a new generation, and committed only after a health check. | The generation mechanism is **built** and gate-proven. Agents and their path to it are designed. |
 | 4 | rootd runs only the stored operation a human signed. | Designed. Today, root approves a plan by passing its SHA-256 to `os apply`. |
-| 5 | Taint is sticky. Only a human clears it. | The ledger is **built** (milestone 2): a clear from any socket but rootd's admin path is rejected, and the row stays with its epoch moved on. A tainted task taints its workspace, and the next task there starts tainted (milestone 4). The proxy taints each task it connects, and the keys broker taints a task that uses a vendor web tool (milestone 5). The rest of what sets taint is designed. |
+| 5 | Taint is sticky. Only a human clears it. | The ledger is **built** (milestone 2): a clear from any socket but rootd's admin path is rejected, and the row stays with its epoch moved on. A tainted task taints its workspace, and the next task there starts tainted (milestone 4). The proxy taints each task it connects, and the keys broker taints a task that uses a vendor web tool (milestone 5). The git service taints the branches a tainted task pushes, and a merge carries their taint into `main` (milestone 5). The rest of what sets taint is designed. |
 | 6 | Nothing persists between tasks except the tainted workspace. | **Built** and gate-proven for task containers (milestone 4) |
 | 7 | The seed and logs contain no plaintext secrets. | **Built** and gate-proven. The seed holds the password hash, so keep it private. |
 
@@ -213,7 +216,6 @@ These are the known risks. They are listed so you can decide where agentbox fits
 - The default `--ssh-from` ranges hold every private LAN range and `100.64.0.0/10`, so any device on your LAN can reach SSH. ISPs also use `100.64.0.0/10` for carrier-grade NAT, so on such an uplink other customers can reach SSH too. Narrow the ranges with `--ssh-from` when you make the seed.
 - UDP port 41641 is open from any address, for Tailscale's direct connections.
 - Rootful Docker is unsupported. The ports it publishes go through the forward hook, which the host firewall does not filter.
-- The brokers don't exist yet, so nothing yet hides systemd-resolved's local Varlink and D-Bus interfaces from the broker uids. The broker units will do that (`docs/THREAT-MODEL.md` lists it).
 - While the disk is full, auditd refuses best-effort records such as denials, so those leave no audit record.
 - The milestone 2 gates ran in `none` mode only, on arm64 UEFI and amd64 BIOS, not in the encrypted modes.
 
@@ -226,6 +228,7 @@ These are the known risks. They are listed so you can decide where agentbox fits
 - Only listed files in `session-home` are control paths: the CLIs' instruction files and what the shells, editors, pagers, Python, ssh, git and go read at startup.
   Another tool's per-user config, or a cache that a tool trusts, is not. A session can plant one, and a later attach runs it when you use that tool.
 - The milestone 4 gates ran in `none` mode on arm64 UEFI only, with stand-in brokers.
+- Each task's canary, a fake credential, is a detection aid. A task can encode it in a way the scans miss, or send it out through a proxy tunnel, which no one scans. [Git and GitHub](Git-and-GitHub.md#the-canary) says where the box looks.
 
 **Updates**
 
@@ -239,6 +242,7 @@ These are the known risks. They are listed so you can decide where agentbox fits
 - A signed but malicious package in an approved plan runs as root at the trial boot. It can read the LUKS key and rewrite `/bootpart` and the EFI system partition. A/B fallback covers crashes, not hostile code. The v2 plan is a measured trial boot.
 - There is no protected-package floor yet. agentbox does not stop a plan from removing a package the box needs, such as `openssh-server`. Read every line of a plan before you approve it. The floor is planned for milestone 7.
 - Approval is one step by root today: pass the plan's SHA-256 to `os apply`. Signed approvals are planned for milestone 6.
+- A write to GitHub, and a merge into a local repo's `main`, is approved by an admin on the box with `agentbox approve`. Anyone who can log in as the admin can approve one. Signed approvals are planned for milestone 6.
 
 **Accounts and the seed**
 
@@ -253,7 +257,7 @@ These are the known risks. They are listed so you can decide where agentbox fits
 - If a thief also takes your Tang server, or can reach it from elsewhere, `tpm2+tang` protects no more than `tpm2`.
 - GRUB has no password. Anyone at the console can change the kernel command line at boot. In `tpm2` mode, or in `tpm2+tang` while Tang is reachable, an edited command line can give a root shell with the disk unlocked. No test has tried this.
 - `/bootpart` is not encrypted. It holds the kernels, initrds, GRUB files and `recovery.bin`. On UEFI, the EFI system partition is not encrypted either.
-- With `--encryption none`, the LLM API keys are encrypted on disk with a host key that sits on the same unencrypted disk. Anyone who reads the disk can decrypt them. In the TPM modes the TPM holds that key, with no PCR policy, so whoever can boot the machine can decrypt them too.
+- With `--encryption none`, the LLM API keys and the GitHub token are encrypted on disk with a host key that sits on the same unencrypted disk. Anyone who reads the disk can decrypt them. In the TPM modes the TPM holds that key, with no PCR policy, so whoever can boot the machine can decrypt them too.
 
 **Availability and recovery**
 

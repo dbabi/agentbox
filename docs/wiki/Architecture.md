@@ -89,7 +89,7 @@ These eight rules shape the whole design.
    Task containers have no network at all.
    Traffic leaves only through the task's own Unix sockets, to the brokers.
    Brokers may connect only to addresses that rootd resolved for allowlisted names.
-   *Built in part: the firewall and rootd's resolver (milestone 2), task containers with no network (milestone 4), and the proxy and the keys broker (milestone 5). The git service is designed (milestone 5).*
+   *Built in part: the firewall and rootd's resolver (milestone 2), task containers with no network (milestone 4), and the proxy, the keys broker and the git service (milestone 5).*
 4. **The executor owns the floor.**
    `agentbox-rootd` stores every pending operation, bound to its exact inputs, such as commit IDs and package hashes.
    When an operation needs approval, rootd runs only the stored copy that a human signed.
@@ -221,7 +221,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 |---|---|---|
 | `agentbox-firstboot.service` | the seed | Installs the signed release once. Retries every 60 s until it succeeds. |
 | `agentbox-boot-deadline.service` | the seed | Reboots an uncommitted generation after 900 s. |
-| `agentbox-reconcile.service` | the release | Re-applies agentbox's control state to the booted generation: the quota groups, the agent accounts, ntfy's config, ACLs and unit drop-in, and a systemd-networkd drop-in for every network config that records the NAT64 prefixes routers announce. |
+| `agentbox-reconcile.service` | the release | Re-applies agentbox's control state to the booted generation: the quota groups, the git service's ownership of its repos, the agent accounts, ntfy's config, ACLs and unit drop-in, and a systemd-networkd drop-in for every network config that records the NAT64 prefixes routers announce. |
 | `agentbox-accounts.service` | the release | Writes the agent accounts from rootd's `ids` table into `/etc`: users, groups, sub-id lines and the systemd drop-ins. |
 | `agentbox-firewall.service` | the release | Loads the `inet agentbox` nftables table before the network comes up. Every other agentbox unit `Requires=` it. It needs nothing from reconcile, so a failed reconcile keeps the agents down but not the firewall. |
 | `agentbox-health.service`, `agentbox-health.timer` | the release | Every 50 s: `agentbox fwcheck --repair`, then `agentbox os health`. |
@@ -230,6 +230,7 @@ More: [Release Pipeline](Release-Pipeline.md).
 | `agentboxd.service` and its socket | the release | The task gate: one socket per task, with no network. |
 | `agentbox-proxy.service` and its socket | the release | The egress proxy, as `agentbox-proxy`: one socket per task. Its socket starts it at the first task. |
 | `agentbox-keys.service` and its socket | the release | The LLM keys broker, as `agentbox-keys`: one socket per task. It starts at boot, and `agentbox secret set` restarts it. |
+| `agentbox-git.service` and its socket | the release | The git service, as `agentbox-git`: the agents' local repos, one socket per task, and the GitHub writes an admin approved. Its socket starts it at the first task or `remote set`, and `agentbox secret set --name github-token` restarts it. |
 | `ntfy.service` | the Ubuntu `ntfy` package | Notifications, as `_ntfy`, on a Unix socket only. `install.sh` installs the package; reconcile configures and enables it. It starts after rootd, once rootd has filled the firewall sets that ntfy's `fwcheck` compares. A `systemctl restart` of rootd, or a firewall repair, restarts it too. It has no systemd start limit, so many rootd restarts in a row can't leave it failed. |
 | `agentbox-agent-stub.service` | the release | A stand-in for an agent unit, for the gates. Not enabled. |
 
@@ -279,7 +280,7 @@ Each service runs as its own Linux user, with only the access it needs.
 
 ## Task containers
 
-**Status:** Built (milestone 4), except where a bullet says otherwise. The proxy behind the egress forwarder and the keys broker behind the LLM forwarder are built (milestone 5). The git service is designed.
+**Status:** Built (milestone 4), except where a bullet says otherwise. The proxy behind the egress forwarder, the keys broker behind the LLM forwarder and the git service behind the git forwarder are built (milestone 5).
 
 ### Accounts
 
@@ -546,7 +547,7 @@ Root access is the approval.
 
 ## Network and secrets
 
-**Status:** The firewall and rootd's resolver are built (milestone 2), and so are the proxy and the keys broker (milestone 5). The git service is designed (milestone 5). The seed still masks the stock `nftables.service`: `agentbox-firewall.service` loads agentbox's own table instead.
+**Status:** The firewall and rootd's resolver are built (milestone 2), and so are the proxy, the keys broker and the git service (milestone 5). The seed still masks the stock `nftables.service`: `agentbox-firewall.service` loads agentbox's own table instead.
 
 ### Firewall
 
@@ -591,7 +592,7 @@ Built today (milestone 2): the resolver, through systemd-resolved's Varlink sock
 rootd keeps its answers in `rootd.db`, refills the sets at start (before `READY=1`) and on a timer, and `agentbox egress list|refill|allow|remove` edits the allowlists.
 Built in milestone 5: the refusals of the box's own addresses and of hook answers, and the dialer the brokers share (`internal/dial`).
 It asks rootd, dials only rootd's addresses, in order, within one 10 s budget, and follows no redirect.
-The proxy and the keys broker use it. The git service is not built.
+The proxy, the keys broker and the git service use it. For a push, the git service hands rootd's addresses to git with `http.curloptResolve`, so git looks nothing up either.
 
 ### The proxy
 
@@ -618,7 +619,7 @@ Other task sockets serve 8, but npm keeps up to 15 open to one registry.
 ### The keys broker
 
 - It holds the LLM API keys.
-  A task sees only a local URL (`http://127.0.0.1:8081/anthropic`, and `.../openai/v1` for Codex) and a placeholder key.
+  A task sees only a local URL (`http://127.0.0.1:8081/anthropic`, and `.../openai/v1` for Codex) and a placeholder key: the task's canary, a fake credential (see [The git broker](#the-git-broker)).
 - It allows only a few model endpoints: Anthropic's `POST /v1/messages` and `POST /v1/messages/count_tokens`, and OpenAI's `POST /v1/responses`, `POST /v1/chat/completions` and `GET /v1/models`.
   It answers Claude Code's `HEAD /api/hello` startup probe itself.
 - It checks every request against a closed schema.
@@ -638,6 +639,8 @@ Other task sockets serve 8, but npm keeps up to 15 open to one registry.
   Over either limit, it answers `429` with `x-should-retry: false`.
 - It checks every reply for the key: as sent, base64-encoded or URL-encoded, even when the key is split across chunks.
   A reply with the key never reaches the task. Keys answers `502` instead, or cuts the stream, and raises an alert.
+- It checks every request for the task's canary, in the body and the headers it forwards.
+  A request with the canary still goes to the vendor, but the task is tainted and you get one alert for it.
 - A vendor's `401` or `403` becomes keys' own `502`, with no vendor bytes.
 - It caps each request: the header size and time, the body size, before and after `gzip`, and 16 open connections per task.
 - It also fronts the local model.
@@ -669,14 +672,16 @@ A subscription login stays in `session-home`, for interactive sessions only.
 - It hosts local bare repos, one set per agent, over git's smart HTTP on each task's own socket.
   A root-owned hook accepts pushes only to `agent/<name>/*` refs.
 - It holds the GitHub token, scoped to the repos you register, as a systemd credential no task or other service can read.
+  `agentbox secret set --name github-token` stores it encrypted, as for the LLM keys (see [Setting the keys](#setting-the-keys)).
 - Agents write to GitHub only through registry operations: `repo.push`, `gh.pr.create`, `gh.pr.comment` and `gh.issue.comment`.
   Each one waits for a human. rootd stores it with the remote's URL and GitHub id and the commits it names, re-checks them at approval, and has the git service run it once.
 - Each comment and pull request body ends with a hidden marker. After a restart, rootd finds an interrupted write on GitHub by that marker and never sends it twice.
-- By default, a push is capped at 512 MiB, and each agent at 4 GiB of pushes per day.
+- By default, a push is capped at 512 MiB, and each agent at 4 GiB of pushes per day (`git.push_bytes_day` in the box's budgets).
 - Taint follows commits.
   A tainted push taints the refs it updates and records its commits, a fetch that may deliver a tainted ref taints the fetcher, and a merge carries taint into the target branch.
 - Each task carries a canary, a fake credential. A push or a GitHub write that holds it is refused, the task is tainted, and you get an alert.
 - It never resolves a name. rootd resolves GitHub for it, and the firewall lets it reach only those addresses.
+- Like the other services, it installs its own seccomp filter at start, so neither it nor git can make btrfs subvolumes.
 
 ### Where secrets live
 
@@ -685,7 +690,7 @@ A subscription login stays in `session-home`, for interactive sessions only.
 | LUKS disk key | Unlocked through clevis: the TPM, plus Tang in `tpm2+tang`. The 48-digit install key opens its own key slot. It is kept only in `recovery.bin`, encrypted to your offline recovery key. | Built |
 | LLM API keys | `agentbox-keys` only, encrypted on disk with `systemd-creds` (see [Setting the keys](#setting-the-keys)) | Built |
 | Subscription logins | `session-home`, for interactive sessions only | Built. A login can't reach its servers from an attach yet (issue #90). |
-| GitHub token | `agentbox-git` only, scoped to registered repos: a root-only file that systemd hands to the service | Built. Encrypted at rest with `agentbox secret set` later. |
+| GitHub token | `agentbox-git` only, scoped to registered repos, encrypted on disk with `systemd-creds` | Built |
 | Approval keys | Your laptop (SSH key) and your phone (passkey). Never on the box. | Designed |
 
 In the design, no credential of any kind exists inside a task.
@@ -834,10 +839,11 @@ The queue lives in `rootd.db`, so an alert survives a restart of ntfy or rootd. 
 - Prompt injection is the most likely attack.
   Others are a compromised agent CLI or dependency, a thief, someone on your LAN or tailnet, and bugs in agentbox's own services.
 - The threat model lists seven non-negotiables that tests must prove.
-  Five have built parts today:
-  - "Tasks have no network": task containers, the proxy and the keys broker are built. The git service is not.
+  Six have built parts today:
+  - "Tasks have no network": task containers, the proxy, the keys broker and the git service are built.
+  - "No credential exists inside a task": built for the LLM API keys and the GitHub token.
   - "Agents never mutate the running OS": the generation mechanism is built. Agents are not.
-  - "Taint is sticky": auditd's taint ledger, the spread from a task to its workspace, and the taint the proxy and the keys broker set are built. The rest of what sets taint is not.
+  - "Taint is sticky": auditd's taint ledger, the spread from a task to its workspace, and the taint the proxy, the keys broker and the git service set are built. The rest of what sets taint is not.
   - "Nothing persists between tasks": built for task containers.
   - "The seed and logs contain no plaintext secrets": built. The seed still holds the admin password hash, so keep it private.
 - The threat model also lists accepted risks, many with a path for v2.
