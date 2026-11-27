@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,6 +75,9 @@ func ownGitStore(dir string) error {
 	uid, gid, err := uidOf("agentbox-git")
 	if err != nil {
 		return fmt.Errorf("no agentbox-git user (sysusers.d/agentbox.conf): %v", err)
+	}
+	if uid > math.MaxInt32 || gid > math.MaxInt32 { // Lchown takes ints, and -1 there means "unchanged"
+		return fmt.Errorf("agentbox-git's uid %d or gid %d is out of range", uid, gid)
 	}
 	if err := os.Lchown(dir, int(uid), int(gid)); err != nil {
 		return err

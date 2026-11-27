@@ -233,7 +233,7 @@ func Run(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	s := &server{cfg: cfg, db: db, svc: svc, seal: &audit.Files{Dir: cfg.AuditDir, UID: int(auid), GID: int(agid), Crash: cfg.SealCrash}, git: cfg.Git,
+	s := &server{cfg: cfg, db: db, svc: svc, seal: &audit.Files{Dir: cfg.AuditDir, UID: int(auid), GID: int(agid), Crash: cfg.SealCrash},
 		audit: func(r map[string]any) error { return auditSend(cfg.AuditSocket, r) },
 		store: accounts.EnsureStore, nested: nestedIn,
 		applyOS:      func() error { _, err := quota.Run("systemctl", "start", accounts.Unit); return err },
@@ -272,7 +272,7 @@ func Run(cfg Config) error {
 	} else {
 		s.checkQuota()
 	}
-	if s.git == nil {
+	if s.git = cfg.Git; s.git == nil {
 		s.git = gitCall
 	}
 	s.reconcileStart() // §5.2 recovery, before rootd listens: the pending rows auditd alone settles
