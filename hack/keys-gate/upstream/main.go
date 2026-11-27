@@ -5,12 +5,13 @@
 // gate sets the keys it accepts (a rotation revokes the old one) and reads the log. A GATE-MODE:<mode> marker in a
 // request body picks a hostile reply instead (see reply). Test fixture: never shipped.
 //
-//	upstream -listen 127.0.0.1:7901 -token HEX -out DIR [-keys anthropic=K1,openai=K2]   the vendors, over TLS
-//	upstream -listen 127.0.0.1:7901 -plain -record FILE                                  plain HTTP, every body kept
-//	upstream -llama                                                                      the local-LLM stand-in
+//	upstream -listen 127.0.0.1:7901 -token HEX -out DIR [-keys anthropic=K1,openai=K2] [-record FILE]   over TLS
+//	upstream -listen 127.0.0.1:7901 -plain [-record FILE]                                             plain HTTP
+//	upstream -llama                                                                                     local LLM
 //
-// -plain records what a CLI sends, for the replay corpus (internal/keys/testdata); -llama answers
-// POST /v1/chat/completions on the socket systemd passes it (LISTEN_FDS), naming its instance in every reply.
+// -record keeps what the CLIs sent, for the replay corpus (internal/keys/testdata/replay, go test ./internal/keys
+// -run TestReplay -record FILE); -llama answers POST /v1/chat/completions on the socket systemd passes it
+// (LISTEN_FDS), naming its instance in every reply.
 package main
 
 import (
@@ -57,7 +58,7 @@ func main() {
 	out := flag.String("out", "", "where ca.pem goes")
 	keys := flag.String("keys", "", "vendor=key,... accepted at start")
 	plain := flag.Bool("plain", false, "plain HTTP and no key check: a local recording run")
-	record := flag.String("record", "", "with -plain: append every request, body included, to this file")
+	record := flag.String("record", "", "append every request, body included and auth headers left out, to this file")
 	llama := flag.Bool("llama", false, "the local-LLM stand-in on systemd's socket")
 	flag.Parse()
 	if *llama {
@@ -79,12 +80,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if *plain {
-		if *record != "" {
-			if s.record, err = os.OpenFile(*record, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err != nil {
-				log.Fatal(err)
-			}
+	if *record != "" {
+		if s.record, err = os.OpenFile(*record, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err != nil {
+			log.Fatal(err)
 		}
+	}
+	if *plain {
 		log.Printf("upstream: plain HTTP on %s", *listen)
 		log.Fatal((&http.Server{Handler: mux, ReadHeaderTimeout: 30 * time.Second}).Serve(ln))
 	}
@@ -226,7 +227,8 @@ func names(h http.Header) []string {
 	return n
 }
 
-// check is the key verdict: ok (with the accepted key's position, k1, k2, ...), bad or none.
+// check is the key verdict: ok:<the first 8 hex digits of the key's sha256>, bad or none. The gate compares the
+// fingerprint with the key it set; the key itself never reaches the log.
 func (s *state) check(vendor string, h http.Header) (string, string) {
 	got := h.Get("x-api-key")
 	if vendor == "openai" {
@@ -237,8 +239,9 @@ func (s *state) check(vendor string, h http.Header) (string, string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if i := slices.Index(s.keys[vendor], got); i >= 0 {
-		return "k" + strconv.Itoa(i+1), got
+	if slices.Contains(s.keys[vendor], got) {
+		fp := sha256.Sum256([]byte(got))
+		return "ok:" + hex.EncodeToString(fp[:4]), got
 	}
 	return "bad", ""
 }
