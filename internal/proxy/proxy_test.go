@@ -354,8 +354,8 @@ func TestTunnelEndsWithTask(t *testing.T) {
 	}
 }
 
-// Requests that are not CONNECT: plain HTTP is refused; an origin-form /_cache/ request is a bare cache miss (no Go
-// module cache yet), which go needs to fall back; an absolute-form one is plain HTTP.
+// Requests that are not CONNECT: plain HTTP is refused; an origin-form /_cache/ request is the cache's, or with no cache a
+// bare miss, which go needs to fall back; an absolute-form one is plain HTTP.
 func TestNotConnect(t *testing.T) {
 	r := newRig(t, nil)
 	for _, c := range []struct {
@@ -384,7 +384,36 @@ func TestNotConnect(t *testing.T) {
 	if r.dial.n() != 0 || len(r.taints()) != 0 {
 		t.Fatal("a request that is not a CONNECT reached rootd or tainted")
 	}
+	// with the cache: every origin-form /_cache/ request goes to it, with the task and agent; nothing else does
+	fc := &fakeCache{}
+	r.s.Cache = fc
+	for _, head := range []string{"GET /_cache/go/golang.org/x/mod/@v/v0.20.0.mod HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n",
+		"POST /_cache/go/x HTTP/1.1\r\nHost: proxy\r\nContent-Length: 2\r\n\r\nab"} {
+		if resp, _, _ := r.do(t, "ga", head); resp.StatusCode != 299 {
+			t.Errorf("%q: %s, want the cache's 299", head, resp.Status)
+		}
+	}
+	resp, _, _ := r.do(t, "ga", "GET http://example.com/_cache/go/x/@v/v1.0.0.mod HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	denied(t, resp, 400, "EGRESS_WRONG_ROUTE")
+	if got := fc.log(); strings.Join(got, ",") != tid+" ga GET /_cache/go/golang.org/x/mod/@v/v0.20.0.mod,"+tid+" ga POST /_cache/go/x" {
+		t.Errorf("the cache got %q", got)
+	}
 }
+
+// fakeCache answers 299 to every request it gets and logs "task agent method uri".
+type fakeCache struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeCache) Serve(w io.Writer, task, agent string, req *http.Request) {
+	f.mu.Lock()
+	f.calls = append(f.calls, task+" "+agent+" "+req.Method+" "+req.RequestURI)
+	f.mu.Unlock()
+	io.WriteString(w, "HTTP/1.1 299 Cached\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+}
+
+func (f *fakeCache) log() []string { f.mu.Lock(); defer f.mu.Unlock(); return slices.Clone(f.calls) }
 
 // Allowlists that don't load (a bad line) fail closed, before rootd; a head over 16 KiB, or one cut short, gets no
 // answer.

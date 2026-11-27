@@ -1,10 +1,11 @@
 //go:build linux
 
-// Command standin is hack/gocache-gate.sh's agentbox-proxy until the proxy lands (#17), built for the guest and run as
-// agentbox-proxy in a transient agentbox-proxy.service with svc-proxy.sock from systemd. It serves the real Go module
-// cache (internal/proxy/gocache) on each task's proxy.sock, tunnels CONNECT proxy.golang.org:443 to the gate's fake
-// upstream after the task's taint record, and refuses every other request in the §5.6 CONNECT format. It logs every
-// request it gets. Test fixture: never shipped.
+// Command standin is hack/gocache-gate.sh's two test builds of the proxy (A-G6's that writes no taint record, A-G8's
+// hostile one), built for the guest and run as agentbox-proxy in a transient gocache-standin.service with
+// svc-proxy.sock from systemd, while the release's agentbox-proxy and its socket unit are stopped. It serves the real
+// Go module cache (internal/proxy/gocache) on each task's proxy.sock, tunnels CONNECT proxy.golang.org:443 to the
+// gate's fake upstream after the task's taint record, and refuses every other request in the §5.6 CONNECT format. It
+// logs every request it gets. Test fixture: never shipped.
 //
 //	standin serve -upstream 10.0.2.2:7801 -vkey FILE -ca FILE -log FILE [-no-taint] [-hostile]
 //	standin btrfs-probe [-no-filter] DIR   BTRFS_IOC_SUBVOL_CREATE on DIR under the service filter, plain and with
@@ -100,7 +101,7 @@ func serve(args []string) {
 	noTaint := fs.Bool("no-taint", false, "write no taint record (a broken proxy)")
 	hostile := fs.Bool("hostile", false, "forge every /_cache/ reply the cache would refuse")
 	fs.Parse(args)
-	before, after, err := seccomp.InstallService() // as the proxy will
+	before, after, err := seccomp.InstallService() // as the proxy does
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -133,7 +134,8 @@ func serve(args []string) {
 	lim.AgentFillDayBytes = b.Get("cache.agent_fill_day_bytes")
 	lim.MaxIdleDays = int(b.Get("cache.max_idle_days"))
 	lim.ReserveBytes = b.Get("disk.reserve_bytes")
-	s.cache = gocache.New(gocache.Config{Root: cacheRoot, Key: strings.TrimSpace(string(k)), Roots: pool, Limits: lim,
+	s.cache = gocache.New(gocache.Config{Root: cacheRoot, Key: strings.TrimSpace(string(k)), Roots: pool,
+		Limits: func() (gocache.Limits, error) { return lim, nil },
 		Upstream: func(ctx context.Context, task string) (net.Conn, error) {
 			if !s.live(task) {
 				return nil, errors.New("no live task") // the proxy makes no upstream request without one

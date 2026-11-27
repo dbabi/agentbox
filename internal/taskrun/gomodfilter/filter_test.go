@@ -327,3 +327,16 @@ func TestEscaped(t *testing.T) {
 		t.Fatalf("%+v %d %s", f, st, f.Escaped())
 	}
 }
+
+// The proxy's fail-closed private pattern: "*" matches every module path, so an unreadable go.private file refuses all.
+func TestPrivateAll(t *testing.T) {
+	for _, p := range []string{"/github.com/!burnt!sushi/toml/@v/v1.2.0.mod", "/example.com/m/@v/v1.0.0.mod", "/golang.org/x/mod/@v/v0.20.0.mod"} {
+		r := httptest.NewRequest("GET", p, nil)
+		if _, st := Request(r, "", []string{"mod"}, "*"); st != http.StatusNotFound {
+			t.Errorf("%s with private *: %d", p, st)
+		}
+		if _, st := Request(r, "", []string{"mod"}, ""); st != 0 {
+			t.Errorf("%s with no private patterns: %d", p, st)
+		}
+	}
+}

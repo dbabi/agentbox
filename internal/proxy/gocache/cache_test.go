@@ -53,6 +53,7 @@ type fixture struct {
 	nack    map[string]bool // record types auditd refuses
 	allowed map[string]bool
 	live    map[string]bool
+	lim     Limits // the tests change it between requests
 }
 
 // mods are two modules at two versions, each zip about 100 KiB of incompressible data, so blobs dwarf the index.
@@ -90,9 +91,9 @@ func newFixture(t *testing.T) *fixture {
 	for _, a := range []string{"ga", "gb", "gc"} {
 		os.Mkdir(filepath.Join(x.root, a), 0o700)
 	}
-	lim := DefaultLimits()
-	lim.SlotWait = time.Second
-	x.c = New(Config{Root: x.root, Key: up.VKey, Roots: pool, Limits: lim,
+	x.lim = DefaultLimits()
+	x.lim.SlotWait = time.Second
+	x.c = New(Config{Root: x.root, Key: up.VKey, Roots: pool, Limits: func() (Limits, error) { return x.lim, nil },
 		Upstream: func(ctx context.Context, task string) (net.Conn, error) {
 			if !x.isLive(task) {
 				return nil, errors.New("no live task")
@@ -358,7 +359,7 @@ func TestChecksumDatabase(t *testing.T) {
 // work. Eviction keeps the store under its limit and the newest entries.
 func TestCapsAndEviction(t *testing.T) {
 	x := newFixture(t)
-	x.c.cfg.Limits.TaskFillMaxFiles = 1
+	x.lim.TaskFillMaxFiles = 1
 	x.do(t, "T1", "ga", modA)
 	if st, _ := x.do(t, "T1", "ga", zipA); st != 404 {
 		t.Errorf("past the task's file cap: %d", st)
@@ -366,21 +367,21 @@ func TestCapsAndEviction(t *testing.T) {
 	if st, _ := x.do(t, "T1", "ga", modA); st != 200 {
 		t.Errorf("a hit past the cap: %d", st)
 	}
-	x.c.cfg.Limits.TaskFillMaxFiles = 100
-	x.c.cfg.Limits.AgentFillDayBytes = 1
+	x.lim.TaskFillMaxFiles = 100
+	x.lim.AgentFillDayBytes = 1
 	if st, _ := x.do(t, "T2", "ga", zipA); st != 404 {
 		t.Errorf("past the day cap: %d", st)
 	}
-	x.c.cfg.Limits.AgentFillDayBytes = 1 << 30
-	x.c.cfg.Free = func(string) (int64, error) { return x.c.cfg.Limits.ReserveBytes, nil }
+	x.lim.AgentFillDayBytes = 1 << 30
+	x.c.cfg.Free = func(string) (int64, error) { return x.lim.ReserveBytes, nil }
 	if st, _ := x.do(t, "T2", "ga", zipA); st != 404 {
 		t.Errorf("at the reserve: %d", st)
 	}
 	x.c.cfg.Free = nil // statfs
-	x.c.cfg.Limits.ReserveBytes = 0
+	x.lim.ReserveBytes = 0
 	z := int64(len(x.up.Zip("example.com/a", "v1.0.0")))
 	s0, _ := x.c.store("ga")
-	x.c.cfg.Limits.AgentMaxBytes = 3*z + s0.overhead() + z/2 // three zips and the index pass 90%
+	x.lim.AgentMaxBytes = 3*z + s0.overhead() + z/2 // three zips and the index pass 90%
 	for _, l := range []string{zipA, zipA1, "GET /_cache/go/example.com/b/@v/v1.0.0.zip", "GET /_cache/go/example.com/b/@v/v1.1.0.zip"} {
 		if st, _ := x.do(t, "T2", "ga", l); st != 200 {
 			t.Fatalf("%s: %d", l, st)
@@ -388,8 +389,8 @@ func TestCapsAndEviction(t *testing.T) {
 		time.Sleep(2 * time.Millisecond) // filled_at orders them
 	}
 	s, _ := x.c.store("ga")
-	if u, _ := s.usage(); u+s.overhead() > x.c.cfg.Limits.AgentMaxBytes {
-		t.Errorf("usage %d and overhead %d over the limit %d", u, s.overhead(), x.c.cfg.Limits.AgentMaxBytes)
+	if u, _ := s.usage(); u+s.overhead() > x.lim.AgentMaxBytes {
+		t.Errorf("usage %d and overhead %d over the limit %d", u, s.overhead(), x.lim.AgentMaxBytes)
 	}
 	if _, ok := s.row("go:example.com/b@v1.1.0.zip"); !ok {
 		t.Error("eviction dropped the newest entry")

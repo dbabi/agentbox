@@ -1,19 +1,15 @@
 // Package proxy is agentbox-proxy (ARCHITECTURE.md §6.2): the egress path of every task. It holds no secrets. Each
 // connection on a task's proxy.sock (bound through internal/gate) carries one HTTP request. A CONNECT to a host:port on
 // the agent's allowlist is resolved by rootd, dialed only at rootd's answers, recorded as taint on the task with an
-// auditd ACK before any byte flows, and then tunneled as bytes: no TLS interception, no redirects. Anything else gets a
-// §5.6 refusal in the CONNECT format.
-//
-// shortcut: no Go module cache yet (#21, #299): every origin-form /_cache/ request is a cache miss, a bare 404 (405
-// for another method), so go falls back to CONNECT as it would.
+// auditd ACK before any byte flows, and then tunneled as bytes: no TLS interception, no redirects. An origin-form
+// /_cache/ request is the Go module cache's (internal/proxy/gocache). Anything else gets a §5.6 refusal in the CONNECT
+// format.
 package proxy
 
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -24,7 +20,6 @@ import (
 	"sync"
 	"time"
 
-	"agentbox/internal/audit"
 	"agentbox/internal/dial"
 	"agentbox/internal/ops"
 	"agentbox/internal/rootd/resolve"
@@ -37,12 +32,17 @@ type Dialer interface {
 	Dial(ctx context.Context, task string, e resolve.Entry) (net.Conn, error)
 }
 
-// Server is the proxy. Every field is required.
+// Server is the proxy. Every field but Cache is required.
 type Server struct {
 	Egress string // the allowlists (resolve.EgressDir), read at every CONNECT
 	Dial   Dialer
-	// Taint sends one record on auditd's proxy.sock and returns nil only on its ACK (Audit).
+	// Taint sends one record on auditd's proxy.sock and returns nil only on its ACK (audit.Send).
 	Taint func(rec map[string]any) error
+	// Cache answers every origin-form /_cache/ request on a task's proxy.sock (gocache.Cache.Serve); nil: a bare 404,
+	// or 405 for another method, so go falls back to CONNECT.
+	Cache interface {
+		Serve(w io.Writer, task, agent string, req *http.Request)
+	}
 }
 
 // MaxConns is how many connections, so tunnels, one task's proxy.sock serves at once. §2.1's 8 for a per-task socket
@@ -73,7 +73,7 @@ func (s *Server) Serve(task, agent string, c net.Conn) {
 		lr.N = maxBody
 		io.Copy(io.Discard, req.Body)
 		c.SetReadDeadline(time.Time{})
-		s.notConnect(c, task, req)
+		s.notConnect(c, task, agent, req)
 		return
 	}
 	c.SetReadDeadline(time.Time{})
@@ -114,7 +114,8 @@ func (s *Server) Serve(task, agent string, c net.Conn) {
 		return
 	}
 	lr.N = 1<<63 - 1 // the head limit is lifted: from here on these are tunnel bytes
-	tunnel(c, br, up)
+	sent, got := tunnel(c, br, up)
+	log.Printf("task %s CONNECT %s: tunnel closed, %d bytes up, %d down", task, e, sent, got)
 }
 
 // check is §6.2 step 1, before any rootd call: the CONNECT target canonicalized, the LLM vendor list, the agent's
@@ -157,9 +158,14 @@ func deputy(e resolve.Entry) string {
 
 // notConnect answers a request that is not a CONNECT. An origin-form /_cache/ request is the Go module cache's; any
 // other one is plain HTTP, which never leaves the box.
-func (s *Server) notConnect(c net.Conn, task string, req *http.Request) {
+func (s *Server) notConnect(c net.Conn, task, agent string, req *http.Request) {
 	if !strings.HasPrefix(req.RequestURI, "/_cache/") {
 		refuse(c, task, ops.EgressWrongRoute, "plain_http", ops.Subject{}, "use CONNECT")
+		return
+	}
+	log.Printf("task %s %s %q", task, req.Method, req.RequestURI) // the cache logs no hit; this line is its trace
+	if s.Cache != nil {
+		s.Cache.Serve(c, task, agent, req)
 		return
 	}
 	// a bare reply with no denial header: go falls back to the next GOPROXY entry only on a plain 404 (§6.2)
@@ -170,20 +176,12 @@ func (s *Server) notConnect(c net.Conn, task string, req *http.Request) {
 	io.WriteString(c, "HTTP/1.1 "+status+"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 }
 
-// refuse writes the §5.6 CONNECT refusal: the code's status (502 for a dial refused or blocked, §6.2 step 3), the
-// reason phrase, the Agentbox-Denial header and the {error, agentbox} body, then the connection closes. Only the
-// requested host:port is named, and only if it passes the A-label grammar.
-//
-// shortcut: #21's ops.ConnectReply writes the same bytes; use it once that lands (#299).
+// refuse writes the §5.6 CONNECT refusal (ops.ConnectReply: the status, 502 for a dial refused or blocked, the reason
+// phrase, the Agentbox-Denial header and the {error, agentbox} body), then the connection closes. Only the requested
+// host:port is named, and only if it passes the A-label grammar.
 func refuse(c net.Conn, task string, code ops.Code, what string, sub ops.Subject, expect string) {
 	d := ops.Deny(code, what, ops.Slots{By: "proxy", Subject: sub, Expect: expect})
-	status := ops.HTTPStatus(code)
-	if code == ops.EgressDialFailed && d.What != "timeout" {
-		status = http.StatusBadGateway
-	}
-	body := ops.ConnectBody(d)
-	fmt.Fprintf(c, "HTTP/1.1 %d %s\r\n%s: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
-		status, ops.ConnectReason(d), ops.DenialHeaderName, ops.DenialHeader(d), len(body), body)
+	c.Write(ops.ConnectReply(d))
 	entry := "-"
 	if d.Subject != nil && d.Subject.Port != 0 {
 		entry = d.Subject.Host + ":" + strconv.FormatInt(d.Subject.Port, 10)
@@ -193,13 +191,16 @@ func refuse(c net.Conn, task string, code ops.Code, what string, sub ops.Subject
 	log.Printf("DENY by=proxy task=%s code=%s what=%s entry=%s id=%s", task, d.Code, d.What, entry, d.ID)
 }
 
-// tunnel relays both ways until both are done. An EOF half-closes the other side, so a client that finished sending
-// still gets its answer; an error on either side (revoke closing the task's end, a reset) closes both at once.
-func tunnel(c net.Conn, br io.Reader, up net.Conn) {
+// tunnel relays both ways until both are done, and returns the bytes sent up and down. An EOF half-closes the other
+// side, so a client that finished sending still gets its answer; an error on either side (revoke closing the task's
+// end, a reset) closes both at once.
+func tunnel(c net.Conn, br io.Reader, up net.Conn) (sent, got int64) {
 	var wg sync.WaitGroup
-	pipe := func(dst net.Conn, src io.Reader) {
+	pipe := func(dst net.Conn, src io.Reader, n *int64) {
 		defer wg.Done()
-		if _, err := io.Copy(dst, src); err != nil {
+		var err error
+		*n, err = io.Copy(dst, src)
+		if err != nil {
 			c.Close()
 			up.Close()
 			return
@@ -209,9 +210,10 @@ func tunnel(c net.Conn, br io.Reader, up net.Conn) {
 		}
 	}
 	wg.Add(2)
-	go pipe(up, br)
-	pipe(c, up)
+	go pipe(up, br, &sent)
+	pipe(c, up, &got)
 	wg.Wait()
+	return sent, got
 }
 
 // Pinned is the Dialer on rootd's resolve socket at this path: internal/dial's pinned dialing, naming the task, so rootd
@@ -231,31 +233,4 @@ func dialWhat(err error) string {
 		return de.What
 	}
 	return dial.Blocked
-}
-
-// Audit is Server.Taint for auditd's producer socket at path: one connection per record, nil only on its ACK.
-//
-// shortcut: #21's audit.Send is the same call; use it once that lands (#299).
-func Audit(path string) func(map[string]any) error {
-	return func(rec map[string]any) error {
-		c, err := net.DialTimeout("unix", path, 2*time.Second)
-		if err != nil {
-			return err
-		}
-		defer c.Close()
-		c.SetDeadline(time.Now().Add(10 * time.Second))
-		b, _ := json.Marshal(rec)
-		if _, err := c.Write(append(b, '\n')); err != nil {
-			return err
-		}
-		line, err := bufio.NewReader(c).ReadBytes('\n')
-		var rep audit.Reply
-		if err != nil || json.Unmarshal(line, &rep) != nil {
-			return fmt.Errorf("no reply: %v", err)
-		}
-		if !rep.OK {
-			return fmt.Errorf("NACK %s", rep.Code)
-		}
-		return nil
-	}
 }

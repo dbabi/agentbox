@@ -76,8 +76,10 @@ type Config struct {
 	Private func(agent string) string       // the agent's go.private patterns, "" for none
 	Live    func(task string) bool          // the task is still registered: a revoked task's fill inserts no row
 	Free    func(dir string) (int64, error) // free pool bytes; nil: statfs
-	Limits  Limits
-	Now     func() time.Time // nil: time.Now
+	// Limits are read at each store open, fill and nightly run: budgets.toml, as keys and git read theirs per request,
+	// so budget.set reaches the cache with no restart. An error fails the fill (404).
+	Limits func() (Limits, error)
+	Now    func() time.Time // nil: time.Now
 }
 
 // Cache is the proxy's cache: per-agent stores and per-task state.
@@ -204,7 +206,11 @@ func (c *Cache) store(agent string) (*store, error) {
 		s.close() // rootd deleted the store, and maybe made a new one: never write into the old one
 		delete(c.stores, agent)
 	}
-	s, err := openStore(c.cfg.Root, agent, c.cfg.Limits.Slots)
+	lim, err := c.cfg.Limits()
+	if err != nil {
+		return nil, err
+	}
+	s, err := openStore(c.cfg.Root, agent, lim.Slots)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +284,10 @@ var (
 // doFill is §6.2 Fill: preconditions, the download into tmp/, the checksum database check, then the blob, its audit
 // record's ACK, and the row, but only while the filling task is registered and no purge ran.
 func (c *Cache) doFill(ctx context.Context, ts *taskState, task string, s *store, gen uint64, f gomodfilter.File) error {
-	lim := c.cfg.Limits
+	lim, err := c.cfg.Limits()
+	if err != nil {
+		return err
+	}
 	ts.mu.Lock()
 	over := ts.bytes >= lim.TaskFillMaxBytes || ts.files >= lim.TaskFillMaxFiles
 	ts.mu.Unlock()
@@ -565,10 +574,14 @@ func (c *Cache) Open(agents ...string) error {
 // It makes no network request.
 func (c *Cache) Nightly(agents ...string) error {
 	var errs []error
+	lim, err := c.cfg.Limits()
+	if err != nil {
+		return err
+	}
 	for _, a := range agents {
 		s, err := c.store(a)
 		if err == nil {
-			err = s.evictIdle(c.now(), c.cfg.Limits.MaxIdleDays)
+			err = s.evictIdle(c.now(), lim.MaxIdleDays)
 		}
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, fmt.Errorf("%s: %v", a, err))
