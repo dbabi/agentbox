@@ -2,6 +2,7 @@ package gate
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"log"
@@ -73,6 +74,36 @@ func lines(c *net.UnixConn, idle time.Duration, f func([]byte) []byte) {
 	}
 }
 
+// fdFree is a task connection for a Conn handler: a read that brings ancillary data (SCM_RIGHTS included) closes the
+// descriptors and the connection, as lines does (§2.1).
+type fdFree struct {
+	*net.UnixConn
+	oob []byte
+}
+
+var errAncillary = errors.New("peer sent ancillary data: connection closed")
+
+func (f *fdFree) Read(p []byte) (int, error) {
+	if f.oob == nil {
+		f.oob = make([]byte, unix.CmsgSpace(64*4))
+	}
+	n, oobn, flags, _, err := f.ReadMsgUnix(p, f.oob)
+	if oobn > 0 || flags&unix.MSG_CTRUNC != 0 {
+		if msgs, perr := unix.ParseSocketControlMessage(f.oob[:oobn]); perr == nil {
+			for _, m := range msgs {
+				if fds, err := unix.ParseUnixRights(&m); err == nil {
+					for _, fd := range fds {
+						unix.Close(fd)
+					}
+				}
+			}
+		}
+		f.Close()
+		return 0, errAncillary
+	}
+	return max(n, 0), err
+}
+
 // MaxConns is how many connections one task's socket serves at once; more wait in the listen backlog. So a task can't
 // fill agentboxd's fd table, which would fail every other task's accept and its dials to rootd.sock.
 const MaxConns = 8
@@ -91,7 +122,7 @@ func acceptRetry(l net.Listener, name string) (net.Conn, error) {
 }
 
 func (s *Server) accept(t *task) {
-	slots := make(chan struct{}, MaxConns)
+	slots := make(chan struct{}, cmp.Or(s.Conns, MaxConns))
 	for {
 		slots <- struct{}{} // revoke closes every connection, so a full set always drains
 		c, err := acceptRetry(t.ln, "task "+t.id)
@@ -124,6 +155,10 @@ func (s *Server) serve(t *task, c *net.UnixConn) {
 	t.conns[c] = true
 	t.mu.Unlock()
 	defer func() { t.mu.Lock(); delete(t.conns, c); t.mu.Unlock() }()
+	if s.Conn != nil {
+		s.Conn(t.id, t.agent, &fdFree{UnixConn: c})
+		return
+	}
 	if s.Handle != nil {
 		lines(c, 10*time.Minute, func(l []byte) []byte { return s.Handle(t.id, l) })
 		return

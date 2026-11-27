@@ -106,8 +106,11 @@ func Inventory() []Entry {
 		r := "/run/agentbox-" + v
 		svc := Entry{Path: "/run/agentbox-rootd/svc-" + v + ".sock", Type: s, User: svcUser[v], Group: "root", Mode: 0o600,
 			By: "agentbox-" + v + "'s .socket unit (not built yet)", Peers: "uid 0 only: task registration and revocation"}
-		if v == "gate" {
+		switch v {
+		case "gate":
 			svc.By, svc.Service, svc.FDName, svc.RemoveOnStop = "agentboxd-svc-gate.socket", "agentboxd.service", "svc-gate", true
+		case "proxy":
+			svc.By, svc.Service, svc.FDName, svc.RemoveOnStop = "agentbox-proxy-svc.socket", "agentbox-proxy.service", "svc-proxy", true
 		}
 		inv = append(inv, svc,
 			Entry{Path: r, Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},

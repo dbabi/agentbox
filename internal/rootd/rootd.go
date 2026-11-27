@@ -238,6 +238,7 @@ func Run(cfg Config) error {
 		cfg.Tasks.Btrfs = checkedBtrfs{cfg.Tasks.Btrfs, s.fenceAfter}
 	}
 	s.tasks = &tasks{cfg: cfg.Tasks, db: db, audit: s.audit, fenced: s.fencedNow, alert: cfg.Alert, nested: s.nested, query: func(r map[string]any) (*auditReply, error) { return auditQuery(cfg.AuditSocket, r) }}
+	svc.TaskAgent = s.tasks.agentOf // before the accept loops start, so every resolve request sees it
 	s.tasks.reopenWitnesses()
 	s.tasks.resume()
 	if s.cfg.Attach == nil {

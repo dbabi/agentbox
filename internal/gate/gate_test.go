@@ -285,6 +285,24 @@ func TestResultLog(t *testing.T) {
 	}
 }
 
+// A service that rootd's register started rebinds that task from task.list_live first; the register then finds it
+// bound with the same agent and chain and keeps it. Another agent or chain for a live task is still refused.
+func TestRegisterAfterRebind(t *testing.T) {
+	s, tk := newServer(t, nil)
+	if rep := s.Control([]byte(`{"call":"register","task":"T1","agent":"claude","chain":["T0"]}`)); rep["ok"] != true || rep["socket"] != tk.path {
+		t.Fatalf("register of a task rebound with the same agent and chain: %v", rep)
+	}
+	if s.tasks["T1"] != tk {
+		t.Fatal("the registration was replaced")
+	}
+	for _, c := range []string{`{"call":"register","task":"T1","agent":"codex","chain":["T0"]}`,
+		`{"call":"register","task":"T1","agent":"claude","chain":["T9"]}`} {
+		if rep := s.Control([]byte(c)); rep["ok"] != false {
+			t.Fatalf("%s: %v", c, rep)
+		}
+	}
+}
+
 // After a restart, every live task rootd lists gets its socket back, provenance chain included.
 func TestRebind(t *testing.T) {
 	s, _ := newServer(t, nil)
