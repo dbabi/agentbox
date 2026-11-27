@@ -180,6 +180,75 @@ func TestVMInstallPin(t *testing.T) {
 	}
 }
 
+// TestVMFirmwareFallback runs vm.sh install for an arm64 seed with a fake curl for which launchpad.net does not answer:
+// fw fetches the AAVMF .deb from the Ubuntu archive pool instead, after launchpad.net, and the install goes on to the
+// seed ISO with the three firmware files in .vm/fw. A .deb that fails its pin is refused, and nothing reaches .vm/fw (#307).
+func TestVMFirmwareFallback(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash not installed")
+	}
+	src, err := os.ReadFile("vm.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+	fw := map[string]string{"AAVMF_CODE.ms.fd": "code\n", "AAVMF_VARS.ms.fd": "vars-ms\n", "AAVMF_VARS.fd": "vars\n"}
+	for _, pinned := range []bool{true, false} {
+		root, bin, seed := t.TempDir(), t.TempDir(), t.TempDir()
+		hack, vm := filepath.Join(root, "hack"), filepath.Join(root, ".vm")
+		os.MkdirAll(hack, 0o755)
+		os.MkdirAll(vm, 0o755)
+		os.WriteFile(filepath.Join(hack, "vm.sh"), src, 0o755)
+		iso := "ubuntu-26.04.1-live-server-arm64.iso"
+		os.WriteFile(filepath.Join(vm, iso), []byte("iso\n"), 0o644)
+		os.WriteFile(filepath.Join(seed, "user-data"), []byte("#cloud-config\n#\n# encryption=none boot=uefi\nserial: \"QEMU_NVMe_Ctrl_QM00001_1\"\n"), 0o644)
+		os.WriteFile(filepath.Join(seed, "meta-data"), nil, 0o644)
+		pins := sum("iso\n") + "  " + iso + "\n"
+		for f, c := range fw {
+			pins += sum(c) + "  " + f + "\n"
+		}
+		deb := sum("deb\n")
+		if !pinned {
+			deb = strings.Repeat("0", 64)
+		}
+		os.WriteFile(filepath.Join(hack, "SHA256SUMS"), []byte(pins+deb+"  qemu-efi-aarch64_2025.11-3ubuntu7.3_all.deb\n"), 0o644)
+		fakes := map[string]string{
+			// each URL it is asked for goes to $LOG; launchpad.net times out, the archive pool serves the .deb
+			"curl": "#!/bin/sh\nwhile [ $# -gt 1 ]; do [ \"$1\" = -o ] && out=$2; shift; done\necho \"$1\" >> \"$LOG\"\n" +
+				"case $1 in https://launchpad.net/*) exit 28 ;; http://archive.ubuntu.com/ubuntu/pool/main/e/edk2/*) printf 'deb\\n' > \"$out\" ;; *) exit 22 ;; esac\n",
+			"ar":      "#!/bin/sh\n: > data.tar.zst\n",
+			"tar":     "#!/bin/sh\nmkdir -p usr/share/AAVMF && cd usr/share/AAVMF && printf 'code\\n' > AAVMF_CODE.ms.fd && printf 'vars-ms\\n' > AAVMF_VARS.ms.fd && printf 'vars\\n' > AAVMF_VARS.fd\n",
+			"xorriso": "#!/bin/sh\necho fake xorriso >&2; exit 1\n",
+		}
+		for b, s := range fakes {
+			os.WriteFile(filepath.Join(bin, b), []byte(s), 0o755)
+		}
+		log := filepath.Join(t.TempDir(), "curl.log")
+		c := exec.Command(dash, filepath.Join(hack, "vm.sh"), "install", seed)
+		c.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "AGENTBOX_ISO_DIR="+vm, "LOG="+log, "SECUREBOOT=1", "DIRECT_KERNEL=0")
+		out, _ := c.CombinedOutput()
+		urls, _ := os.ReadFile(log)
+		if want := "https://launchpad.net/ubuntu/+archive/primary/+files/qemu-efi-aarch64_2025.11-3ubuntu7.3_all.deb\n" +
+			"http://archive.ubuntu.com/ubuntu/pool/main/e/edk2/qemu-efi-aarch64_2025.11-3ubuntu7.3_all.deb\n"; string(urls) != want {
+			t.Errorf("pinned=%v: curl was asked for\n%s, want\n%s", pinned, urls, want)
+		}
+		got, _ := os.ReadDir(filepath.Join(vm, "fw"))
+		if pinned {
+			if !strings.Contains(string(out), "fake xorriso") || len(got) != len(fw) {
+				t.Errorf("the archive's pinned .deb did not get the install to the seed ISO with %d firmware files (%d):\n%s", len(fw), len(got), out)
+			}
+			for f, want := range fw {
+				if b, _ := os.ReadFile(filepath.Join(vm, "fw", f)); string(b) != want {
+					t.Errorf(".vm/fw/%s = %q, want %q", f, b, want)
+				}
+			}
+		} else if !strings.Contains(string(out), "qemu-efi-aarch64_2025.11-3ubuntu7.3_all.deb does not match hack/SHA256SUMS") || len(got) != 0 {
+			t.Errorf("an unpinned .deb was not refused, or left firmware in .vm/fw (%d files):\n%s", len(got), out)
+		}
+	}
+}
+
 // TestVMInstallSleep runs vm.sh install with a fake clock that jumps 10000 s once, as when the host sleeps: that gap does
 // not count against INSTALL_TIMEOUT=100, so the install still finishes, and an installer error after it names the sleep.
 // QEMU is a fake that ends the install (or errors) once the clock has been read a set number of times.

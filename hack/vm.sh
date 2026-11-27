@@ -50,7 +50,10 @@ fw() {
   ok=1; for f; do pinned "$VM/fw/$f" || ok=; done
   [ -n "$ok" ] && return 0
   t=$(mktemp -d "$VM/fw.XXXXXX")
-  curl -fsSL --retry 3 -o "$t/$FWDEB" "https://launchpad.net/ubuntu/+archive/primary/+files/$FWDEB" || die "could not download $FWDEB"
+  # launchpad.net keeps every version, the archive pool only the current one; the pin below checks either (#307)
+  get() { curl -fsSL --retry 3 --connect-timeout 30 --speed-limit 1024 --speed-time 30 -o "$t/$FWDEB" "$1"; }
+  get "https://launchpad.net/ubuntu/+archive/primary/+files/$FWDEB" || get "http://archive.ubuntu.com/ubuntu/pool/main/e/edk2/$FWDEB" ||
+    die "could not download $FWDEB"
   pinned "$t/$FWDEB" || die "$FWDEB does not match hack/SHA256SUMS"
   (cd "$t" && ar x "$FWDEB" data.tar.zst && tar -xf data.tar.zst ./usr/share/AAVMF) || die "could not unpack $FWDEB"
   mkdir -p "$VM/fw"
