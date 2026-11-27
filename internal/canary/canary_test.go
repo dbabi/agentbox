@@ -19,7 +19,7 @@ func TestMint(t *testing.T) {
 	if h := secrets.Find("k.txt", []byte(`ANTHROPIC_API_KEY="`+c+`"`)); len(h) != 1 || h[0].Rule != "anthropic-api-key" {
 		t.Fatalf("gitleaks rules: %v", h)
 	}
-	if Mint() == Mint() {
+	if a, b := Mint(), Mint(); a == b {
 		t.Fatal("two mints gave the same canary")
 	}
 	for _, bad := range []string{"", Prefix + "short", c + "x", "x" + c[1:], c[:Len-2] + "AB", strings.Replace(c, c[20:21], "!", 1)} {

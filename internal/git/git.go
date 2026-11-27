@@ -38,7 +38,6 @@ var (
 	reAgent   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	reProject = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 	reOID     = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
-	reTask    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	// a GitHub owner or repo name: what GitHub itself allows, minus a leading dot
 	reGHName = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,99}$`)
 )
