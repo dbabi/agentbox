@@ -200,9 +200,18 @@ func TestTaskStop(t *testing.T) {
 	os.MkdirAll(cg, 0o755)
 	os.WriteFile(filepath.Join(cg, "cgroup.events"), []byte("populated 0\nfrozen 0\n"), 0o644)
 	os.WriteFile(filepath.Join(cg, "cgroup.kill"), nil, 0o644)
+	// the resolver's TaskAgent: a proxy resolution for a live task is checked against its agent's list (§6.2)
+	if a, ok := r.t.agentOf(p); !ok || a != "claude" {
+		t.Fatalf("agentOf a live task: %q %v", a, ok)
+	}
 	rep := r.t.stop(p, "canceled")
 	if rep["ok"] != true || rep["stopped"] != true || rep["empty"] != true {
 		t.Fatalf("stop: %v", rep)
+	}
+	for _, id := range []string{p, c, "task_01JD000000000000000000000Z"} {
+		if a, ok := r.t.agentOf(id); ok {
+			t.Fatalf("agentOf %s, ended or unknown: %q", id, a)
+		}
 	}
 	var why1, why2 string
 	r.db.QueryRow(`SELECT end_reason FROM task_registry WHERE task=?`, p).Scan(&why1)

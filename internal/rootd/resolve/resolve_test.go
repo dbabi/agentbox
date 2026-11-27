@@ -210,6 +210,38 @@ func TestEditListParsedRows(t *testing.T) {
 	}
 }
 
+// The proxy's lists: common.list for every agent, <agent>.list for that agent only, and never an LLM vendor host, even
+// one written into a list by hand (§6.2).
+func TestProxyLists(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "common.list"), []byte("pypi.org:443\napi.anthropic.com:443\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "ga.list"), []byte("registry.npmjs.org:443\napi.openai.com:443\n"), 0o644)
+	l, err := LoadLists(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		agent, host string
+		want        bool
+	}{{"ga", "pypi.org", true}, {"gb", "pypi.org", true}, {"ga", "registry.npmjs.org", true}, {"gb", "registry.npmjs.org", false},
+		{"", "registry.npmjs.org", false}, {"ga", "api.anthropic.com", false}, {"ga", "api.openai.com", false}} {
+		if got := l.Allowed("proxy", c.agent, Entry{c.host, 443}); got != c.want {
+			t.Errorf("Allowed(proxy, %q, %s:443) = %v, want %v", c.agent, c.host, got, c.want)
+		}
+	}
+	if l.AllowedAny("proxy", Entry{"api.openai.com", 443}) || !l.AllowedAny("proxy", Entry{"registry.npmjs.org", 443}) {
+		t.Error("AllowedAny: a vendor host is listed, or an agent's own entry is not")
+	}
+	if !(&Lists{Service: map[string][]Entry{"keys": {{"api.anthropic.com", 443}}}}).Allowed("keys", "", Entry{"api.anthropic.com", 443}) {
+		t.Error("keys' service.list lost its vendor upstream")
+	}
+	for _, h := range VendorHosts {
+		if _, err := EditList(dir, "proxy", Entry{h, 443}, true); err == nil {
+			t.Errorf("egress allow --svc proxy %s:443 went through", h)
+		}
+	}
+}
+
 // Concurrent edits each keep the others' changes: no removed entry comes back and no added one is lost.
 func TestEditListConcurrent(t *testing.T) {
 	dir := t.TempDir()

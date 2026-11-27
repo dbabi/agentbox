@@ -51,8 +51,8 @@ type Service struct {
 	Timeout time.Duration          // set element timeout: 10 min (Appendix B)
 	// Deny receives each refusal; detail (addresses, the failed check) is for audit only.
 	Deny func(svc, entry, reason, detail string)
-	// TaskAgent maps a live task to its agent, for the proxy's per-agent list. Until the task registry lands
-	// (weeks 4-6) it is nil, and the proxy resolves nothing.
+	// TaskAgent maps a live task to its agent, for the proxy's per-agent list (rootd's task registry). nil: the
+	// proxy resolves nothing.
 	TaskAgent func(task string) (string, bool)
 	// Pref64 lists the NAT64 prefixes networkd learned (Networkd.Pref64); nil skips that source.
 	Pref64 func(context.Context) ([]netip.Prefix, error)

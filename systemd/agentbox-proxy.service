@@ -1,0 +1,35 @@
+# agentbox-proxy (ARCHITECTURE.md §2, §6.2): the CONNECT egress of every task. It holds no secrets. rootd registers each
+# task on svc-proxy.sock; the proxy binds that task's /run/agentbox-proxy/t/<task>/proxy.sock in the dir rootd made,
+# checks each CONNECT against the agent's allowlist, has rootd resolve it on resolve-proxy.sock, dials only rootd's
+# answers (nft lets this uid reach nothing else), and taints the task through auditd before any byte flows.
+# No [Install]: agentbox-proxy-svc.socket starts it at rootd's first register, so a boot starts no proxy before a task.
+[Unit]
+Description=agentbox egress proxy
+Requires=agentbox-reconcile.service agentbox-firewall.service agentbox-proxy-svc.socket
+After=agentbox-reconcile.service agentbox-firewall.service agentbox-proxy-svc.socket agentbox-rootd.service agentbox-auditd.service
+# every firewall repair restarts it through Requires=; the start limit must never leave it down
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=agentbox-proxy
+Group=agentbox-proxy
+ExecStart=/var/lib/agentbox/current/bin/agentbox proxy
+Sockets=agentbox-proxy-svc.socket
+Restart=always
+RestartSec=1
+# proxy.sock is bound 0660 inside the setgid dir, so it is agentbox-proxy:ag-<agent> (§2.1)
+UMask=0117
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# no DNS of its own (§6.1): resolved's Varlink and D-Bus sockets are AF_UNIX, which nft never sees
+InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/agentbox-proxy
+PrivateTmp=yes
+NoNewPrivileges=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+CapabilityBoundingSet=

@@ -1,7 +1,7 @@
 agentbox is early alpha. It is not for production use.
 Milestones 1, 2 and 4 of 9 are built and tested in QEMU VMs: the installer, the OS layer, the first host services (firewall, audit daemon, root daemon skeleton, quotas, ntfy), agent accounts and task containers. Milestone 3, the request checks, is built and waits for its 24-hour fuzz run.
 No real hardware has run it yet.
-The brokers, policy and approvals are designed but not built.
+The egress proxy is built. The other brokers, policy and approvals are designed but not built.
 
 This page covers how to set up, change, test and submit code.
 
@@ -126,9 +126,10 @@ Without KVM the gate still runs, but in software emulation, which is much slower
 | `internal/ntfy/` | ntfy's config, ACLs, unit drop-in and fwcheck's ntfy check. |
 | `internal/rootd/accounts/`, `internal/task/`, `internal/seccomp/`, `internal/rootd/attach/` | Agent accounts, the task container and its seccomp profile, and interactive sessions. |
 | `internal/taskenv/`, `internal/taskrun/`, `internal/rootd/witness/`, `image/task/` | The task environment, the in-task forwarders and `agentbox why`, the witness pipe, and the test task image. |
+| `internal/proxy/`, `internal/dial/` | The egress proxy (CONNECT checks, taint and tunnels), and the pinned dialer the brokers share, which asks the root daemon and dials only its addresses. |
 | `sysusers.d/`, `tmpfiles.d/` | The service users and runtime directories the release installs under `/usr/lib`. |
 | `install/install.sh` | The release installer. Firstboot runs it with `--from-firstboot`. |
-| `systemd/` | The units in the release: health and reconcile, the firewall, auditd and its sockets, rootd and its sockets, and the agent stand-in the gates use. |
+| `systemd/` | The units in the release: health and reconcile, the firewall, auditd and its sockets, rootd and its sockets, the proxy and its socket, and the agent stand-in the gates use. |
 | `hack/` | Build and test tools. See the next table. |
 | `docs/THREAT-MODEL.md` | The one-page threat model. |
 | `.github/workflows/ci.yml` | CI. |
@@ -310,6 +311,8 @@ Then run the gate that covers what you changed:
 | `internal/task/`, `internal/seccomp/`, task start and stop in `internal/rootd/` | `hack/tasks-gate.sh` |
 | `internal/rootd/attach/`, `internal/controlpaths/` | `hack/attach-gate.sh` |
 | `internal/taskenv/`, `internal/taskrun/`, `internal/rootd/witness/`, `image/task/` | `hack/taskenv-gate.sh` |
+| `internal/proxy/`, `cmd/agentbox/proxy.go` | `hack/proxy-gate.sh` |
+| `internal/dial/` | `hack/dial-gate.sh`, then `hack/proxy-gate.sh` |
 | `hack/release/`, `install/install.sh` | `hack/gate.sh none`. Every install gate builds test releases, and firstboot installs one. |
 | `systemd/` | `hack/apply-gate.sh tpm2 install setup cycles`. The health timer commits each trial. |
 | `hack/vm.sh`, `hack/remaster-iso.sh`, `hack/SHA256SUMS` | `hack/gate.sh none`. Add `hack/gate.sh none bios` if the change touches the amd64 VM. |

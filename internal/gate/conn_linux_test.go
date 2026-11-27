@@ -3,6 +3,7 @@ package gate
 import (
 	"bufio"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -168,6 +169,57 @@ func TestReadErrorEndsConnection(t *testing.T) {
 	s.revoke("T1")
 	held.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := held.Read(make([]byte, 1)); err == nil {
+		t.Fatal("the connection outlived revoke")
+	}
+}
+
+// A Conn handler (the proxy) gets each task connection past the peer check, with its task and agent: bytes flow both
+// ways, Conns caps how many it serves at once, ancillary data closes the connection, and so does revoke.
+func TestConnHandler(t *testing.T) {
+	who := make(chan string, 8)
+	s, _ := newServer(t, nil, func(s *Server) {
+		s.Conn = func(task, agent string, c net.Conn) {
+			who <- task + " " + agent
+			io.Copy(c, c) // echo until the connection ends
+		}
+		s.Conns = 2
+	})
+	tk := addTask(t, s, "T2")
+	echo := func(c net.Conn, d time.Duration) bool {
+		c.Write([]byte("ping"))
+		c.SetReadDeadline(time.Now().Add(d))
+		b := make([]byte, 4)
+		_, err := io.ReadFull(c, b)
+		return err == nil && string(b) == "ping"
+	}
+	c1, c2 := dial(t, tk.path), dial(t, tk.path)
+	if !echo(c1, 5*time.Second) || !echo(c2, 5*time.Second) || <-who != "T2 claude" {
+		t.Fatal("the handler did not serve the task's connections")
+	}
+	c3 := dial(t, tk.path) // over Conns: waits in the backlog
+	if echo(c3, 300*time.Millisecond) {
+		t.Fatal("a connection over Conns was served")
+	}
+	c1.Close()
+	c3.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if b := make([]byte, 4); func() bool { _, err := io.ReadFull(c3, b); return err != nil || string(b) != "ping" }() {
+		t.Fatal("the queued connection was not served once a slot freed")
+	}
+	f, err := os.Open("/dev/null")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, _, err := c2.(*net.UnixConn).WriteMsgUnix([]byte("x"), unix.UnixRights(int(f.Fd())), nil); err != nil {
+		t.Fatal(err)
+	}
+	c2.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := c2.Read(make([]byte, 8)); err == nil {
+		t.Fatalf("a connection that passed a descriptor stayed open (read %d bytes)", n)
+	}
+	s.revoke("T2")
+	c3.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := c3.Read(make([]byte, 1)); err == nil {
 		t.Fatal("the connection outlived revoke")
 	}
 }

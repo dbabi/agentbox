@@ -24,7 +24,8 @@ type rpcRep struct {
 	} `json:"error"`
 }
 
-func newServer(t testing.TB, fwd func(map[string]any) ([]byte, error)) (*Server, *task) {
+// newServer registers T1 on a new Server; each set runs first, since T1's accept loop reads the Server's fields.
+func newServer(t testing.TB, fwd func(map[string]any) ([]byte, error), set ...func(*Server)) (*Server, *task) {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "gate") // sun_path is 104 bytes on macOS: t.TempDir is too long
 	if err != nil {
@@ -44,6 +45,9 @@ func newServer(t testing.TB, fwd func(map[string]any) ([]byte, error)) (*Server,
 	s := &Server{Dir: dir, Forward: fwd, AgentIDs: func(string) (uint32, uint32, error) {
 		return uint32(os.Getuid()), uint32(os.Getgid()), nil
 	}}
+	for _, f := range set {
+		f(s)
+	}
 	if rep := s.Control([]byte(`{"call":"register","task":"T1","agent":"claude","chain":["T0"]}`)); rep["ok"] != true {
 		t.Fatalf("register: %v", rep)
 	}
@@ -282,6 +286,24 @@ func TestResultLog(t *testing.T) {
 	}
 	if want := fmt.Sprintf(", 2 output bytes, 2 denials, sha256 %x, ", sha256.Sum256([]byte(p))); !strings.Contains(lb.String(), want) {
 		t.Fatalf("log %q lacks %q", lb.String(), want)
+	}
+}
+
+// A service that rootd's register started rebinds that task from task.list_live first; the register then finds it
+// bound with the same agent and chain and keeps it. Another agent or chain for a live task is still refused.
+func TestRegisterAfterRebind(t *testing.T) {
+	s, tk := newServer(t, nil)
+	if rep := s.Control([]byte(`{"call":"register","task":"T1","agent":"claude","chain":["T0"]}`)); rep["ok"] != true || rep["socket"] != tk.path {
+		t.Fatalf("register of a task rebound with the same agent and chain: %v", rep)
+	}
+	if s.tasks["T1"] != tk {
+		t.Fatal("the registration was replaced")
+	}
+	for _, c := range []string{`{"call":"register","task":"T1","agent":"codex","chain":["T0"]}`,
+		`{"call":"register","task":"T1","agent":"claude","chain":["T9"]}`} {
+		if rep := s.Control([]byte(c)); rep["ok"] != false {
+			t.Fatalf("%s: %v", c, rep)
+		}
 	}
 }
 

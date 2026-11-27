@@ -53,6 +53,11 @@ type Server struct {
 	Name string
 	// Handle, if set, answers each line on a task socket instead of the gate (a test stand-in for a broker).
 	Handle func(task string, line []byte) []byte
+	// Conn, if set, serves each connection on a task socket instead of the line protocol (a broker that speaks HTTP).
+	// The connection already passed the peer check, closes on any ancillary data, and revoke closes it.
+	Conn func(task, agent string, c net.Conn)
+	// Conns is how many connections one task's socket serves at once; 0 is MaxConns.
+	Conns int
 	// CLIs are the agent CLIs dispatch accepts.
 	CLIs []string
 
@@ -170,7 +175,8 @@ func (s *Server) dispatch(req, agent, cli, prompt string) map[string]any {
 }
 
 // register checks the dir rootd made (§2.1: a real dir, agentboxd's uid, group ag-<agent>, mode 2750), replaces only
-// this service's own stale socket in it, and binds gate.sock 0660.
+// this service's own stale socket in it, and binds gate.sock 0660. A task registered again with the same agent and
+// chain keeps its socket.
 func (s *Server) register(id, agent string, chain []string) error {
 	if !taskRe.MatchString(id) || !agentRe.MatchString(agent) {
 		return errors.New("bad task or agent name")
@@ -189,7 +195,12 @@ func (s *Server) register(id, agent string, chain []string) error {
 	if s.tasks == nil {
 		s.tasks = map[string]*task{}
 	}
-	if _, ok := s.tasks[id]; ok {
+	if t, ok := s.tasks[id]; ok {
+		if t.agent == agent && slices.Equal(t.chain, chain) {
+			// rebound from task.list_live while rootd's register waited for this service to start: the socket a
+			// socket-activated broker binds before it reads the register that started it
+			return nil
+		}
 		return errors.New("task already registered")
 	}
 	dir := filepath.Dir(s.sockPath(id))

@@ -153,7 +153,7 @@ func WriteGoPrivate(dir, agent, patterns string) (bool, error) {
 	if patterns == "" {
 		return true, os.Remove(goPrivateFile(dir, agent))
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := resolve.MkdirEgress(dir); err != nil {
 		return false, err
 	}
 	return true, gens.WriteAtomic(goPrivateFile(dir, agent), []byte(patterns+"\n"), 0o644)

@@ -23,7 +23,7 @@
 # A TPM is attached in both phases whenever the seed is encrypted. Logs go to .vm/<phase>*.log (serial console).
 # The network is hack/vmnet: QEMU's user network with the host loopback cut off. The guest reaches the internet, and the
 # host's 127.0.0.1 only on Tang's port 7500+ID and release-serve's 7600+ID, both as 10.0.2.2. Host ports listen on
-# 127.0.0.1 only.
+# 127.0.0.1 only. AGENTBOX_VM_FWD (space-separated ports) forwards more, for one boot: a gate's stub upstream.
 set -eu
 die() { echo "vm.sh: $*" >&2; exit 1; }
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -115,7 +115,9 @@ run_qemu() {
   amd64) set -- qemu-system-x86_64 -machine q35 -accel kvm -accel tcg -cpu max -device i6300esb "$@" ;;
   *) die "unknown VM arch $ARCH" ;;
   esac
-  exec "$VM/vmnet" "$SSH_PORT" "$TANG_PORT" "$REL_PORT" -- "$@"
+  for p in ${AGENTBOX_VM_FWD:-}; do case $p in *[!0-9]*) die "AGENTBOX_VM_FWD: $p is not a port" ;; esac; done
+  # shellcheck disable=SC2086 # the extra ports, one word each
+  exec "$VM/vmnet" "$SSH_PORT" "$TANG_PORT" "$REL_PORT" ${AGENTBOX_VM_FWD:-} -- "$@"
 }
 
 cmd=${1:-}; [ $# -gt 0 ] && shift

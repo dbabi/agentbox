@@ -2,7 +2,7 @@
 // Week 1 ships the operator-side commands (seed, recovery) and, on the box, the os.apply pipeline (os); week 3 adds
 // the firewall (fw, fwcheck), agentbox-auditd and `audit verify`, and agentbox-rootd with its egress CLI; week 4 adds
 // agentboxd's task gate; weeks 5-6 add tasks: one container each (task, taskrun), the task env, the in-task forwarders
-// and `agentbox why`, and the witness.
+// and `agentbox why`, and the witness; milestone 5 adds agentbox-proxy.
 package main
 
 import (
@@ -57,6 +57,7 @@ const usage = `usage:
   agentbox task undo --task T   (admin: restore the workspace from the snapshot taken when that task started)
   agentbox taskrun   (the task container's PID 1)
   agentbox secretscan --dir D   (rootd's workspace credential scan, in its no-network unit: a JSON report on stdout)
+  agentbox proxy   (agentbox-proxy.service: the tasks' CONNECT egress, on the box)
   agentbox broker-stub --svc proxy|keys|git   (test boxes: a broker stand-in for the restart gate)
   agentbox goprivate set --agent A --patterns 'corp.example/*,...'   (admin: go.private.set; "" clears)
   agentbox why [<CODE> | --errno <E>]   (in a task: recent denials, or fixed guidance; no gate call)
@@ -174,6 +175,8 @@ func run(args []string) error {
 		return cmdSecretscan(args[1:])
 	case "taskrun":
 		return cmdTaskrun(args[1:])
+	case "proxy":
+		return cmdProxy(args[1:])
 	case "broker-stub":
 		return cmdBrokerStub(args[1:])
 	case "goprivate":

@@ -24,8 +24,12 @@ var Brokers = []string{"proxy", "keys", "git"}
 // NtfyEntry is the one ntfy_dst entry, refreshed by rootd's timer (§6.1).
 var NtfyEntry = Entry{"ntfy.sh", 443}
 
-// deputyHosts are never in common.list (§6.2): only a human adds them, per agent.
-var deputyHosts = []string{"proxy.golang.org", "sum.golang.org"}
+// DeputyHosts are never in common.list (§6.2): only a human adds them, per agent.
+var DeputyHosts = []string{"proxy.golang.org", "sum.golang.org"}
+
+// VendorHosts is the release's LLM vendor list (§6.2, §6.3): the keys broker's upstreams. No proxy list admits one, so
+// a task can't reach a vendor with a key of its own and skip the keys broker's request checks.
+var VendorHosts = []string{"api.anthropic.com", "api.openai.com"}
 
 // Lists is the allowlist state rootd checks every resolution against.
 type Lists struct {
@@ -40,7 +44,7 @@ func (l *Lists) Allowed(svc, agent string, e Entry) bool {
 	case "ntfy":
 		return e == NtfyEntry
 	case "proxy":
-		return slices.Contains(l.Common, e) || (agent != "" && slices.Contains(l.Agent[agent], e))
+		return !slices.Contains(VendorHosts, e.Host) && (slices.Contains(l.Common, e) || (agent != "" && slices.Contains(l.Agent[agent], e)))
 	}
 	return slices.Contains(l.Service[svc], e)
 }
@@ -120,7 +124,7 @@ func LoadLists(dir string) (*Lists, error) {
 				return nil, fmt.Errorf("%s.list: %v", base, err)
 			}
 			if base == "common" {
-				if slices.Contains(deputyHosts, e.Host) {
+				if slices.Contains(DeputyHosts, e.Host) {
 					return nil, fmt.Errorf("common.list names deputy host %s: only a human adds it, per agent (§6.2)", e.Host)
 				}
 				l.Common = append(l.Common, e)
@@ -159,8 +163,11 @@ func EditList(dir, svc string, e Entry, add bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if add && svc == "proxy" && slices.Contains(deputyHosts, e.Host) {
+	if add && svc == "proxy" && slices.Contains(DeputyHosts, e.Host) {
 		return false, fmt.Errorf("%s is a deputy host: never in common.list (§6.2)", e.Host)
+	}
+	if add && svc == "proxy" && slices.Contains(VendorHosts, e.Host) {
+		return false, fmt.Errorf("%s is an LLM vendor host: tasks reach it only through the keys broker (§6.2)", e.Host)
 	}
 	editMu.Lock()
 	defer editMu.Unlock()
@@ -196,8 +203,17 @@ func EditList(dir, svc string, e Entry, add bool) (bool, error) {
 		}
 		b.WriteString(e.String() + "\n")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := MkdirEgress(dir); err != nil {
 		return false, err
 	}
 	return true, gens.WriteAtomic(p, []byte(b.String()), 0o644)
+}
+
+// MkdirEgress makes the egress dir 0755, whatever the umask: rootd's is 0077, and the brokers, running as their own
+// users, read their lists there (#282). It also repairs a dir an earlier release made 0700.
+func MkdirEgress(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o755)
 }

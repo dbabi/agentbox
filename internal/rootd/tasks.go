@@ -593,6 +593,14 @@ func (t *tasks) live() ([]liveRow, error) {
 	return out, rows.Err()
 }
 
+// agentOf is the resolver's TaskAgent: the agent of a task the registry holds live, so a proxy resolution is checked
+// against that agent's list and a task that ended resolves nothing (§6.2).
+func (t *tasks) agentOf(task string) (string, bool) {
+	var agent string
+	err := t.db.QueryRow(`SELECT agent FROM task_registry WHERE task=? AND ended_at IS NULL`, task).Scan(&agent)
+	return agent, err == nil
+}
+
 // listLive answers task.list_live (§2.1): a restarted service rebinds these tasks' sockets.
 func (t *tasks) listLive() reply {
 	l, err := t.live()

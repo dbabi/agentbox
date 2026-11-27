@@ -82,8 +82,8 @@ func (f *Forwarder) dial(ctx context.Context) (net.Conn, error) {
 }
 
 // Handler is the forwarder: CONNECT on egress is a tunnel; every other request goes through a reverse proxy.
-// shortcut: a non-CONNECT request on egress reaches the proxy in origin form, so the proxy can't yet tell an
-// absolute-form plain-http request (EGRESS_WRONG_ROUTE{plain_http}) from /_cache/; the proxy and that check are weeks 7-8.
+// shortcut: a non-CONNECT request on egress reaches the proxy in origin form, so the proxy can't tell an absolute-form
+// plain-http request for a /_cache/ path (EGRESS_WRONG_ROUTE{plain_http}) from the Go module cache's own (#286).
 func (f *Forwarder) Handler() http.Handler {
 	f.rp = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
