@@ -38,8 +38,9 @@
 #          #115  on keys.sock from a task: a 33 MiB body, a zip bomb, a slow head and a 17th connection each get
 #                CAP_REACHED with its what.
 #          A-G13 agentbox-keys runs one more seccomp filter than its unit gives.
-# apply    #108's os.apply half: an apply that re-installs one package (clone, trial boot, health commit) and the
-#          prune of the oldest generation, then the key still loads (run after checks, on the same box).
+# apply    #108's os.apply half: three applies that each re-install one package (clone, trial boot, health commit)
+#          and load the key, and the third commit's prune of the oldest generation, after which a restarted
+#          agentbox-keys still loads the key (run after checks, on the same box).
 # Stand-ins until their areas land: the vendors (the real POST /v1/messages needs a real key: needs_human), the local
 # LLM (llama-server is not packaged yet), no proxy or git broker (#17, #19).
 # PASS/FAIL lines go to .vm/keys-gate.txt, command output to .vm/keys-gate.log; exit 1 on any FAIL.
@@ -71,8 +72,8 @@ vm_off() { echo 'systemctl poweroff' | root >/dev/null 2>&1 || :; i=0
 up() { ! running || vm_off; { AGENTBOX_VM_FWD=$UP_PORT hack/vm.sh boot >>"$LOG" 2>&1 & }; wait_boot none 900 || die "no SSH (see $VM/boot-*.log)"; settle; }
 # reboot_vm: a reboot of the running VM (the forward stays: QEMU runs on)
 reboot_vm() { b=$(bootid); echo 'systemctl reboot' | root >/dev/null 2>&1 || :; wait_boot "$b" 900 || die "no SSH after the reboot"; settle; }
-guest() {
-  { cat "$K/env"; cat; } | root >"$VM/guest.out" 2>>"$LOG" || :
+guest() { # stdin: the check block; args: more NAME=value lines for it
+  { cat "$K/env"; printf '%s\n' "$@"; cat; } | root >"$VM/guest.out" 2>>"$LOG" || :
   while IFS= read -r l; do case $l in PASS*|FAIL*) log "$l" ;; *) echo "$l" >>"$LOG" ;; esac; done <"$VM/guest.out"
   grep -q '^fails=' "$VM/guest.out" || log "FAIL the check block on the VM did not finish (see $LOG)"
 }
@@ -467,29 +468,45 @@ EOF
 apply)
   [ -s "$K/env" ] || die "run checks first: apply uses its box and keys"
   running || up
-  guest <<'EOF'
+  # retention runs at each commit and keeps the three newest generations at or below the committed one (§3.3 step 7),
+  # so the third commit prunes the oldest generation, the one the key was set in on a fresh box
+  O=$(echo 'ls /bootpart/agentbox/gens' | root 2>>"$LOG" | sed -n 's/^gen-\([1-9][0-9]*\)$/\1/p' | sort -n | head -1)
+  [ -n "$O" ] || die "apply: no generation under /bootpart/agentbox/gens"
+  for n in 1 2 3; do
+    guest "CYCLE=$n" <<'EOF'
 fails=0
 check() { if (eval "$2") >/var/tmp/kg-out 2>&1; then echo "PASS $1"; else echo "FAIL $1"; sed 's/^/  | /' /var/tmp/kg-out | tail -40; fails=$((fails+1)); fi; }
 B=/var/lib/agentbox/current/bin/agentbox
 $B os plan --install hostname --reinstall > /tmp/kg-plan 2>&1; cat /tmp/kg-plan
 H=$(sed -n 's/^plan sha256: //p' /tmp/kg-plan)
-check "#108 os plan re-installs one package (a clone with no other change)" '[ -n "$H" ]'
+check "#108 apply $CYCLE: os plan re-installs one package (a clone with no other change)" '[ -n "$H" ]'
 $B os apply --approve "$H" --no-reboot > /tmp/kg-apply 2>&1; cat /tmp/kg-apply
-check "#108 os apply builds the clone" 'grep -q "^built " /tmp/kg-apply'
+check "#108 apply $CYCLE: os apply builds the clone" 'grep -q "^built " /tmp/kg-apply'
 echo "fails=$fails"
 EOF
-  reboot_vm
-  guest <<'EOF'
+    reboot_vm
+    guest "CYCLE=$n" <<'EOF'
 fails=0
 check() { if (eval "$2") >/var/tmp/kg-out 2>&1; then echo "PASS $1"; else echo "FAIL $1"; sed 's/^/  | /' /var/tmp/kg-out | tail -40; fails=$((fails+1)); fi; }
 B=/var/lib/agentbox/current/bin/agentbox
 g=$(findmnt -no FSROOT /); g=${g#/@}
-i=0; until [ ! -e /var/lib/agentbox/os/pending.json ] && grep -q "^agentbox-$g-" /bootpart/agentbox/committed; do i=$((i+1)); [ $i -lt 84 ] || break; sleep 5; done
+# one os health run commits the trial and prunes: wait for both
+i=0; until [ ! -e /var/lib/agentbox/os/pending.json ] && grep -q "^agentbox-$g-" /bootpart/agentbox/committed &&
+  [ "$(systemctl show -P ActiveState agentbox-health.service)" != activating ]; do i=$((i+1)); [ $i -lt 84 ] || break; sleep 5; done
 $B os status > /tmp/kg-status 2>&1; cat /tmp/kg-status
-check "#108 the trial ($g, a clone) booted and health committed it" '[ "$g" != gen-1 ] && grep -q "^agentbox-$g-" /bootpart/agentbox/committed'
-check "#108 in the committed clone agentbox-keys loads the key, readable by agentbox-keys only" '
+check "#108 apply $CYCLE: the trial ($g, a clone) booted and health committed it" '[ "$g" != gen-1 ] && grep -q "^agentbox-$g-" /bootpart/agentbox/committed'
+check "#108 apply $CYCLE: in the committed clone agentbox-keys loads the key, readable by agentbox-keys only" '
   systemctl is-active -q agentbox-keys && [ "$(runuser -u agentbox-keys -- cat /run/credentials/agentbox-keys.service/anthropic-api-key)" = "$KEY2" ] &&
   ! runuser -u agentbox-git -- cat /run/credentials/agentbox-keys.service/anthropic-api-key 2>/dev/null'
+echo "fails=$fails"
+EOF
+  done
+  guest "O=$O" <<'EOF'
+fails=0
+check() { if (eval "$2") >/var/tmp/kg-out 2>&1; then echo "PASS $1"; else echo "FAIL $1"; sed 's/^/  | /' /var/tmp/kg-out | tail -40; fails=$((fails+1)); fi; }
+check "#108 the third commit pruned gen-$O, the oldest generation, and a restarted agentbox-keys loads the key" '
+  ! btrfs subvolume list / | grep -qw "@gen-$O" && ! test -e /bootpart/agentbox/gens/gen-$O && systemctl restart agentbox-keys &&
+  [ "$(runuser -u agentbox-keys -- cat /run/credentials/agentbox-keys.service/anthropic-api-key)" = "$KEY2" ]'
 echo "fails=$fails"
 EOF
   ;;
