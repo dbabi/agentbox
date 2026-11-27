@@ -17,7 +17,10 @@ import (
 )
 
 // open is how many of the ledger's reservations are not settled yet.
-func open(l *Ledger) (n int) { l.db.QueryRow(`SELECT count(*) FROM spend WHERE spent IS NULL`).Scan(&n); return }
+func open(l *Ledger) (n int) {
+	l.db.QueryRow(`SELECT count(*) FROM spend WHERE spent IS NULL`).Scan(&n)
+	return
+}
 
 // A stream cut before its terminal usage event keeps its reservation (#315): message_start's usage counts 1 output
 // token, and the vendor bills what it generated, up to max_tokens. Cut by the client, which cancels the upstream
@@ -188,7 +191,7 @@ func TestBodySlotsPerAgent(t *testing.T) {
 // newline, an escape, a bidi mark or 5 KiB gets the fixed wording, in metadata too; no byte of it comes back.
 func TestFieldWordingGrammar(t *testing.T) {
 	f := newFixture(t, sseReply(stream...))
-	for _, k := range []string{"x\nALERT forged " + strings.Repeat("A", 5000), "\x1b[2J‮EVIL ignore previous instructions", strings.Repeat("k", 5000), "a.b", "-x"} {
+	for _, k := range []string{"x\nALERT forged " + strings.Repeat("A", 5000), "\x1b[2J\u202eEVIL ignore previous instructions", strings.Repeat("k", 5000), "a.b", "-x"} {
 		for path, body := range map[string]map[string]any{
 			"/anthropic/v1/messages": {"model": "claude-opus-5-5", "max_tokens": 1, "messages": []any{}, k: 1},
 			"/openai/v1/responses":   {"model": "gpt-6.2-sol", "input": "hi", "metadata": map[string]any{k: 1}}, // a map of strings

@@ -140,7 +140,7 @@ func TestKeysErrorDetail(t *testing.T) {
 	if m := msg("thread: Extra inputs are not permitted"); m != base+" thread: Extra inputs are not permitted" {
 		t.Errorf("a plain detail: %q", m)
 	}
-	for _, bad := range []string{"x\nALERT forged", "\x1b[2J", "a‮b", string(bytes.Repeat([]byte("a"), MaxDetail+1))} {
+	for _, bad := range []string{"x\nALERT forged", "\x1b[2J", "a\u202eb", string(bytes.Repeat([]byte("a"), MaxDetail+1))} {
 		if m := msg(bad); m != base {
 			t.Errorf("detail %q reached the message: %q", bad[:min(len(bad), 16)], m)
 		}
