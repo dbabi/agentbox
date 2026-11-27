@@ -740,7 +740,7 @@ The regression after the review fixes. Every VM gate ran on a fresh `none`-mode 
 
 | Suite | Result | Tested at |
 |---|---|---|
-| `m5-dial` (issues #20, #145) | Passed on a fresh `none`-mode install, arm64 UEFI, Secure Boot on: 53 PASS, 0 FAIL. The hook check ran against the box's own systemd-resolved, which asked the gate's hook and never asked DNS. `w3-rootd` passed again with the new resolver checks: 115 PASS, 0 FAIL. | `71fb7e5` |
+| `m5-dial` (issues #20, #145) | Passed on a fresh `none`-mode install, arm64 UEFI, Secure Boot on: 53 PASS, 0 FAIL. The hook check ran against the box's own systemd-resolved, which asked the gate's hook and never asked DNS. `w3-rootd` passed again with the new resolver checks: 115 PASS, 0 FAIL. | the branch of pull request #298, before it merged |
 
 ## Troubleshooting
 
