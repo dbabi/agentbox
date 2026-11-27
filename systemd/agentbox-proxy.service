@@ -1,7 +1,8 @@
 # agentbox-proxy (ARCHITECTURE.md §2, §6.2): the CONNECT egress of every task. It holds no secrets. rootd registers each
 # task on svc-proxy.sock; the proxy binds that task's /run/agentbox-proxy/t/<task>/proxy.sock in the dir rootd made,
 # checks each CONNECT against the agent's allowlist, has rootd resolve it on resolve-proxy.sock, dials only rootd's
-# answers (nft lets this uid reach nothing else), and taints the task through auditd before any byte flows.
+# answers (nft lets this uid reach nothing else), and taints the task through auditd before any byte flows. It also
+# keeps each agent's read-only Go module cache in /var/lib/agentbox/data/cache/<agent> (§6.2).
 # No [Install]: agentbox-proxy-svc.socket starts it at rootd's first register, so a boot starts no proxy before a task.
 [Unit]
 Description=agentbox egress proxy
@@ -26,10 +27,14 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/run/agentbox-proxy
+# data/cache is rootd's, made at the first agent.add; "-": the proxy still serves CONNECT on a box with no agent
+ReadWritePaths=/run/agentbox-proxy -/var/lib/agentbox/data/cache
 PrivateTmp=yes
 NoNewPrivileges=yes
 MemoryDenyWriteExecute=yes
 SystemCallFilter=@system-service
+# the binary installs its own btrfs ioctl filter at start (seccomp(2), which @system-service leaves out), and exits
+# without it (§2 Common hardening)
+SystemCallFilter=seccomp
 SystemCallArchitectures=native
 CapabilityBoundingSet=

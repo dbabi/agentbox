@@ -10,7 +10,7 @@ A *gate* is a test script. It installs agentbox in a VM, boots it, and checks th
 
 - An Apple Silicon Mac with [Homebrew](https://brew.sh). The arm64 test VM uses the macOS Hypervisor framework (`-accel hvf`), so it runs only on macOS.
 - About 12 GB of free disk space for the checkout's `.vm/` directory (at the time of writing).
-- An internet connection. You download a 3.1 GB Ubuntu ISO. The VM installs packages from the Ubuntu archive. The first install also downloads pinned UEFI firmware from launchpad.net.
+- An internet connection. You download a 3.1 GB Ubuntu ISO. The VM installs packages from the Ubuntu archive. The first install also downloads pinned UEFI firmware from launchpad.net, or from the Ubuntu archive if launchpad.net does not answer.
 - 4 CPU cores and 4 GiB of RAM for the VM.
 - Time for the gate: at the time of writing, `hack/gate.sh none` takes about 9-17 minutes.
 

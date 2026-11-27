@@ -80,7 +80,12 @@ func openStore(root, agent string, slots int) (*store, error) {
 		return nil, fmt.Errorf("gocache: %s is not a directory", dir)
 	}
 	for _, d := range []string{blobsDir, tmpDir, sumdbDir} {
-		if err := os.Mkdir(filepath.Join(dir, d), 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		p := filepath.Join(dir, d)
+		if err := os.Mkdir(p, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		// the unit's UMask=0117, for its 0660 task sockets, makes a Mkdir 0600: a dir no one can make a file in
+		if err := os.Chmod(p, 0o700); err != nil {
 			return nil, err
 		}
 	}

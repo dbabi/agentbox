@@ -231,6 +231,37 @@ func TestConnect(t *testing.T) {
 	}
 }
 
+// #286: plain HTTP on egress reaches the proxy in absolute form, whatever form the client used, so the proxy refuses it
+// as plain_http and never takes it for its own origin-form /_cache/ path. llm and git keep origin form.
+func TestPlainHTTPAbsoluteForm(t *testing.T) {
+	for _, c := range []struct{ ch, target, want string }{
+		{"egress", "http://example.com/_cache/go/x/@v/v1.0.0.mod", "http://example.com/_cache/go/x/@v/v1.0.0.mod"},
+		{"egress", "/_cache/go/x/@v/v1.0.0.mod", "http://HOST/_cache/go/x/@v/v1.0.0.mod"},
+		{"llm", "/v1/messages?beta=true", "/v1/messages?beta=true"},
+	} {
+		f, sock, _ := setup(t, c.ch, time.Second)
+		got := make(chan string, 1)
+		stop := broker(t, sock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got <- r.RequestURI }))
+		srv := httptest.NewServer(f.Handler())
+		conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		host := srv.Listener.Addr().String()
+		fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", c.target, host)
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("%s %s: %v %v", c.ch, c.target, resp, err)
+		}
+		if g := <-got; g != strings.ReplaceAll(c.want, "HOST", host) {
+			t.Errorf("%s %s: the broker got %q", c.ch, c.target, g)
+		}
+		conn.Close()
+		srv.Close()
+		stop()
+	}
+}
+
 func TestLogRingAndWitness(t *testing.T) {
 	_, _, rec := setup(t, "git", 0)
 	fd, err := syscall.Open(rec.Witness, syscall.O_RDWR|syscall.O_NONBLOCK, 0) // rootd's read end

@@ -181,6 +181,49 @@ func TestRevoke(t *testing.T) {
 	}
 }
 
+// The proxy's hooks (§6.2): cache.purge{agent} reaches Purge with a valid name only, and is an unknown call without
+// it; Live follows the registration; Revoked runs once the socket is gone.
+func TestPurgeLiveRevoked(t *testing.T) {
+	var purged, revoked []string
+	var sock string
+	s, tk := newServer(t, nil, func(s *Server) {
+		s.Purge = func(a string) error {
+			purged = append(purged, a)
+			if a == "bad" {
+				return errors.New("no store")
+			}
+			return nil
+		}
+		s.Revoked = func(id string) {
+			if _, err := os.Lstat(sock); !os.IsNotExist(err) {
+				t.Errorf("Revoked ran before the socket went: %v", err)
+			}
+			revoked = append(revoked, id)
+		}
+	})
+	sock = tk.path
+	for _, c := range []struct {
+		line string
+		ok   bool
+	}{{`{"call":"cache.purge","agent":"claude"}`, true}, {`{"call":"cache.purge","agent":"bad"}`, false}, {`{"call":"cache.purge","agent":"../x"}`, false}} {
+		if rep := s.Control([]byte(c.line)); rep["ok"] != c.ok {
+			t.Errorf("%s: %v", c.line, rep)
+		}
+	}
+	if strings.Join(purged, " ") != "claude bad" {
+		t.Errorf("purged %q", purged)
+	}
+	if !s.Live("T1") || s.Live("T2") {
+		t.Errorf("Live: T1 %v, T2 %v", s.Live("T1"), s.Live("T2"))
+	}
+	if rep := s.Control([]byte(`{"call":"revoke","task":"T1"}`)); rep["ok"] != true || s.Live("T1") || strings.Join(revoked, " ") != "T1" {
+		t.Errorf("revoke: %v, live %v, revoked %q", rep, s.Live("T1"), revoked)
+	}
+	if rep := (&Server{}).Control([]byte(`{"call":"cache.purge","agent":"claude"}`)); rep["ok"] != false || rep["error"] != "unknown call" {
+		t.Errorf("cache.purge with no Purge: %v", rep)
+	}
+}
+
 // register refuses a dir rootd didn't make the §2.1 way, and a symlink in its place.
 func TestRegisterChecksDir(t *testing.T) {
 	dir := t.TempDir()

@@ -100,12 +100,20 @@ func TestTaskOpIntentBeforeEffect(t *testing.T) {
 		// effect yet) is FLOOR_NEVER{never_available}, by floor
 		{request{Op: "task.op", Name: "secret.set", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"name":"k","value":"v"}`)}, "FLOOR_NEVER"},
 		{request{Op: "task.op", Name: "app.start", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"app":"a"}`)}, "FLOOR_NEVER"},
+		// C-G3: an LLM vendor host is never on a proxy list, whatever its case or a trailing dot
+		{request{Op: "task.op", Name: "net.allow_domain", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"host":"API.anthropic.com.","port":443,"reason":"r"}`)}, "FLOOR_NEVER vendor_host"},
+		{request{Op: "task.op", Name: "net.allow_domain", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"host":"api.openai.com","port":443,"reason":"r"}`)}, "FLOOR_NEVER vendor_host"},
+		{request{Op: "task.op", Name: "net.allow_domain", Task: "T1", Agent: "claude", Args: json.RawMessage(`{"host":"registry.npmjs.org","port":443,"reason":"r"}`)}, "FLOOR_NEVER"},
 	} {
 		rep := s.taskOp(c.r)
-		if code(c.r, rep) != c.want {
+		want, what, _ := strings.Cut(c.want, " ")
+		if what == "" && want == "FLOOR_NEVER" {
+			what = "never_available"
+		}
+		if code(c.r, rep) != want {
 			t.Fatalf("%+v: %v, want %s", c.r, rep, c.want)
 		}
-		if d := rep["denial"].(ops.Denial); d.By != "floor" || c.want == "FLOOR_NEVER" && d.What != "never_available" || strings.Contains(string(d.JSON()), "sk-") {
+		if d := rep["denial"].(ops.Denial); d.By != "floor" || d.What != what || strings.Contains(string(d.JSON()), "sk-") || strings.Contains(string(d.JSON()), "anthropic") {
 			t.Fatalf("%+v: %s", c.r, d.JSON())
 		}
 	}

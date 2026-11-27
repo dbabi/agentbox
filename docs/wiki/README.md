@@ -37,7 +37,7 @@ Two words mark the state of each part:
 ## Status
 
 At the time of writing (2026-11-27), milestones 1, 2 and 4 of 9 are built. Milestone 3, the checks for agent requests, is built and its VM tests passed. Its 24-hour fuzz run is still pending.
-Milestone 5, the brokers, is in progress: the egress proxy, the LLM keys broker and the git service are built. The proxy does not serve its Go module cache yet.
+Milestone 5, the brokers, is in progress: the egress proxy with its Go module cache, the LLM keys broker and the git service are built.
 The real-hardware test has not run yet.
 
 Built:

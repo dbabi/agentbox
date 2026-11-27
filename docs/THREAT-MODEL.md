@@ -35,7 +35,7 @@ Source of truth: [`docs/design/ARCHITECTURE.md`](design/ARCHITECTURE.md), §10. 
 3. **Agents never mutate the running OS.** Changes are built offline into a new generation and committed only after a health check.
 4. **rootd executes only the stored operation a human signed**, bound to its immutable inputs and re-checked at execution.
 5. **Taint is sticky.** Only a human clears it, after reviewing the diff, with control files called out first.
-6. **Nothing persists between tasks** except the sticky-tainted workspace.
+6. **Nothing persists between tasks** except the sticky-tainted workspace, and each agent's read-only Go module cache. Only the proxy writes the cache, with public module files that the Go checksum database binds to their version, and a task can read it only once it is tainted.
 7. **The seed and logs contain no plaintext secrets.** The seed holds the admin password hash (yescrypt, e.g. from `mkpasswd -m yescrypt`, or sha512-crypt with 100000+ rounds): keep it private. The LUKS key exists only in installer tmpfs and in `recovery.bin`, encrypted to the owner's offline RSA key.
 
 ## Accepted residuals (v1)

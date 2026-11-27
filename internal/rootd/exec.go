@@ -5,12 +5,14 @@ import (
 	"log"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"agentbox/internal/audit"
 	"agentbox/internal/git"
 	"agentbox/internal/ids"
 	"agentbox/internal/ops"
+	"agentbox/internal/rootd/resolve"
 )
 
 // sockGate is rootd.sock: agentboxd's forwarded task ops (§2.1, §5.2), uid agentbox only.
@@ -67,6 +69,10 @@ func (s *server) taskOp(r request) reply {
 	}
 	if rep := s.fenceDeny(o.Name); o.Class != ops.Read && rep != nil {
 		return rep
+	}
+	// an LLM vendor host is never on a proxy list: its route is keys (§6.2, C-G3)
+	if h, _ := args["host"].(string); o.Name == "net.allow_domain" && slices.Contains(resolve.VendorHosts, strings.TrimSuffix(strings.ToLower(h), ".")) {
+		return deny(floor(ops.FloorNever, "vendor_host", o.Name), "floor.vendor_host")
 	}
 	if pendingOps[o.Name] && s.tasks != nil {
 		return s.submit(o, r, args, receipt) // a remote write or merge waits for a human (§5.3)

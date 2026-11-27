@@ -66,6 +66,10 @@ type Server struct {
 	CLIs []string
 	// Taint sends one record on agentboxd's auditd producer socket and returns nil only on its ACK (task.taint_self).
 	Taint func(rec map[string]any) error
+	// Purge, if set, answers rootd's cache.purge{agent}: the proxy's Go module cache (§6.2). Unset, it is an unknown call.
+	Purge func(agent string) error
+	// Revoked, if set, runs after a revoke has closed the task's socket and connections (the cache's fills, §6.2).
+	Revoked func(task string)
 
 	mu    sync.Mutex
 	tasks map[string]*task
@@ -107,7 +111,8 @@ type task struct {
 }
 
 // Control is one request from rootd on svc-gate.sock (the caller checked SO_PEERCRED uid 0): register{task, agent,
-// chain} binds the task's gate socket; revoke{task} unlinks it, closes it and every connection it accepted (§2.1).
+// chain} binds the task's gate socket; revoke{task} unlinks it, closes it and every connection it accepted (§2.1);
+// cache.purge{agent} goes to Purge.
 func (s *Server) Control(line []byte) map[string]any {
 	var r struct {
 		Call, Task, Agent string
@@ -132,6 +137,17 @@ func (s *Server) Control(line []byte) map[string]any {
 		return map[string]any{"ok": true, "socket": s.sockPath(r.Task)}
 	case "revoke":
 		return map[string]any{"ok": s.revoke(r.Task)}
+	case "cache.purge":
+		if s.Purge == nil {
+			break
+		}
+		if !agentRe.MatchString(r.Agent) {
+			return map[string]any{"ok": false, "error": "bad agent name"}
+		}
+		if err := s.Purge(r.Agent); err != nil {
+			return map[string]any{"ok": false, "error": err.Error()}
+		}
+		return map[string]any{"ok": true}
 	case "dispatch":
 		return s.dispatch(r.Request, r.Agent, r.CLI, r.Prompt)
 	case "list":
@@ -266,6 +282,9 @@ func (s *Server) revoke(id string) bool {
 	s.mu.Lock()
 	delete(s.jobs, id)
 	s.mu.Unlock()
+	if s.Revoked != nil {
+		s.Revoked(id)
+	}
 	log.Printf("task %s revoked", id)
 	return true
 }
@@ -274,6 +293,13 @@ func (s *Server) live(t *task) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.tasks[t.id] == t
+}
+
+// Live reports whether rootd registered the task and has not revoked it.
+func (s *Server) Live(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tasks[id] != nil
 }
 
 type rpcReq struct {

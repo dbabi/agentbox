@@ -24,7 +24,7 @@ Milestone numbers refer to the ordered list on the [Roadmap](Roadmap.md). The pl
 | Firewall, disk quotas, audit daemon, rootd skeleton and resolver, ntfy | Built | 2 |
 | Operation registry, the agentboxd request gate, denial codes, the socket layout as code | Built (24-hour fuzz run pending) | 3 |
 | Agent accounts, task containers, interactive sessions | Built | 4 |
-| Brokers: proxy, keys, git | Proxy built (no Go module cache yet); keys built; git designed | 5 |
+| Brokers: proxy and its Go module cache, keys, git | Built (24-hour fuzz run pending) | 5 |
 | Cedar policy, rootd floor, signed approvals | Designed | 6 |
 | Apps, file writes, workspace ops, OS ops for agents, nightly updates, decide | Designed | 7 |
 | Agent bus and shared memory | Designed | 8 |
@@ -254,7 +254,7 @@ Each service runs as its own Linux user, with only the access it needs.
 | `agentbox-rootd` | root | The only executor. Stores pending operations, starts tasks, creates accounts, builds OS generations and fills the firewall's address sets. | Built in part: the resolver, the brokers' firewall sets, `egress` allowlist edits and audit sealing (milestone 2); agent accounts, task start and stop, and attach sessions (milestone 4); the brokers' encrypted credentials, the agents' daily LLM shares and the pending operations for the git service's writes (milestone 5). Its generation code is built. The floor, policy and OS operations for agents are designed (milestones 6-7). |
 | `agentboxd` | `agentbox` | The front door for agents: the task gate, Cedar policy, the agent bus, memory and decide. Has no network. | Task gate built (milestone 3): one socket per task, argument and caller checks, typed denials. Policy, the agent bus, memory and decide are designed (milestones 6-8). |
 | `agentbox-auditd` | `agentbox-audit` | Writes the hash-chained audit log and the taint ledger. Has no network. | Built (milestones 2 and 3), including the per-field audit classes. |
-| `agentbox-proxy` | `agentbox-proxy` | Tunnels task traffic to allowlisted hosts. Holds no secrets. | Built (milestone 5), except its Go module cache |
+| `agentbox-proxy` | `agentbox-proxy` | Tunnels task traffic to allowlisted hosts, and keeps each agent's read-only Go module cache. Holds no secrets. | Built (milestone 5) |
 | `agentbox-keys` | `agentbox-keys` | Holds the LLM API keys and budgets. Checks every model request, then adds the key. | Built (milestone 5). The local model behind it is not packaged yet. |
 | `agentbox-git` | `agentbox-git` | Hosts local git repos. Holds the GitHub token and runs the remote writes a human approved. | Built (milestone 5): local repos, the push hook, the remotes registry, `repo.push`, `gh.*` writes and `repo.merge`, taint and the canary. Approvals are made on the box until milestone 6. [Git and GitHub](Git-and-GitHub.md) |
 | `agentbox-approvald` | `agentbox-approve` | Serves the phone approval page. Holds no keys. | Designed (milestone 6) |
@@ -341,7 +341,7 @@ Each service runs as its own Linux user, with only the access it needs.
   Git hooks are off too.
 - Instruction files in the repo, such as `CLAUDE.md` and `AGENTS.md`, can still steer a later task.
   Taint covers that case: any task that mounts a tainted workspace is tainted too.
-- Tasks share no package caches.
+- Tasks share no package caches but one: each agent's read-only [Go module cache](#the-go-module-cache), which only the proxy writes.
   Tools are baked into the task image.
   Today the default image is a small root file system with the host's `/usr` mounted read-only.
   The pinned image with Go, `image/task`, is built only in a test so far. The box builds it from milestone 7.
@@ -606,7 +606,7 @@ The proxy, the keys broker and the git service use it. For a push, the git servi
   It goes through the keys broker, and it does not taint.
 - The proxy holds no secrets.
 
-Built today (milestone 5): the proxy, without its Go module cache.
+Built today (milestone 5): the proxy and its Go module cache.
 Each task's socket takes one request per connection.
 A CONNECT to an IP address, an unlisted name or an LLM vendor host is refused before rootd is asked.
 rootd re-checks the agent's list and resolves the name.
@@ -615,6 +615,21 @@ The proxy dials only rootd's addresses, within one 10 s budget, and auditd ackno
 A plain HTTP request is refused.
 Each task's proxy socket serves 64 connections at once.
 Other task sockets serve 8, but npm keeps up to 15 open to one registry.
+
+### The Go module cache
+
+- The proxy keeps one store of Go module files for each agent whose allowlist has `proxy.golang.org:443`.
+  It is `/var/lib/agentbox/data/cache/<agent>`, a btrfs subvolume with its own size limit, and tasks can't write it.
+- Inside each task, a filter on `127.0.0.1:8083` is the first `GOPROXY` entry.
+  It passes only exact `.info`, `.mod` and `.zip` requests.
+  Lists, `@latest`, checksum lookups and private paths get its own `404`, so `go` asks `proxy.golang.org` through the tunnel.
+- The filter taints the task through its gate socket before its first request, and checks each version live at `proxy.golang.org`.
+  The proxy taints the task too, before the first cache byte.
+- The proxy stores a file only if it matches Go's signed checksum database, and `go` checks it again.
+- Nothing is shared between agents. `agentbox cache purge --agent <name>` empties one agent's store, and removing an agent deletes it.
+  `agentbox goprivate set` keeps an agent's private module paths out of it.
+- Fills stop at per-task, per-day and disk-reserve limits, which `agentbox budget set` changes. `go` then downloads through the tunnel.
+- Each agentbox service that does not run as root refuses the btrfs call that creates a subvolume, so none can make one in the cache.
 
 ### The keys broker
 
@@ -844,7 +859,7 @@ The queue lives in `rootd.db`, so an alert survives a restart of ntfy or rootd. 
   - "No credential exists inside a task": built for the LLM API keys and the GitHub token.
   - "Agents never mutate the running OS": the generation mechanism is built. Agents are not.
   - "Taint is sticky": auditd's taint ledger, the spread from a task to its workspace, and the taint the proxy, the keys broker and the git service set are built. The rest of what sets taint is not.
-  - "Nothing persists between tasks": built for task containers.
+  - "Nothing persists between tasks": built for task containers. Each agent's read-only Go module cache is the one narrow exception.
   - "The seed and logs contain no plaintext secrets": built. The seed still holds the admin password hash, so keep it private.
 - The threat model also lists accepted risks, many with a path for v2.
   Examples: shared-kernel exploits (v2: microVM tasks), and an admin account that is root-equivalent.
@@ -870,7 +885,7 @@ Read [Security Model](Security-Model.md) and the one-page threat model in the re
 | `internal/taskenv`, `internal/taskrun`, `internal/rootd/witness` | The task environment, the in-task forwarders and `agentbox why`, and the witness pipe rootd reads | Built (milestone 4) |
 | `internal/proxy`, `internal/dial` | The egress proxy (CONNECT checks, taint and tunnels), and the pinned dialer the brokers share | Built (milestone 5) |
 | `internal/keys`, `internal/broker`, `internal/budgets` | The keys broker (request schemas, the key, the reply scan, spend), the per-task socket server with admission caps that it runs on, and the agents' daily shares | Built (milestone 5) |
-| `internal/proxy/gocache`, `internal/taskrun/gomodfilter` | The Go module cache and its in-task filter | Built (milestone 5). The proxy does not serve the cache yet. |
+| `internal/proxy/gocache`, `internal/taskrun/gomodfilter` | The Go module cache and its in-task filter | Built (milestone 5) |
 | `sysusers.d/`, `tmpfiles.d/` | The service users and the runtime directories | Built (milestones 2 and 3) |
 | `install/`, `systemd/` | The release's `install.sh` and its systemd units | Built |
 | `hack/` | The release builder, the ISO remaster script, the QEMU harness and the test gates | Built |

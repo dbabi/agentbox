@@ -128,7 +128,7 @@ Without KVM the gate still runs, but in software emulation, which is much slower
 | `internal/taskenv/`, `internal/taskrun/`, `internal/rootd/witness/`, `image/task/` | The task environment, the in-task forwarders and `agentbox why`, the witness pipe, and the test task image. |
 | `internal/proxy/`, `internal/dial/` | The egress proxy (CONNECT checks, taint and tunnels), and the pinned dialer the brokers share, which asks the root daemon and dials only its addresses. |
 | `internal/keys/`, `internal/broker/`, `internal/budgets/` | The keys broker (request schemas, the key, the reply scan, spend), the per-task socket server it runs on, and the agents' daily shares. |
-| `internal/proxy/gocache/`, `internal/taskrun/gomodfilter/` | The Go module cache and its in-task filter. The proxy does not serve the cache yet. |
+| `internal/proxy/gocache/`, `internal/taskrun/gomodfilter/` | The Go module cache the proxy keeps for each agent, and its in-task filter. |
 | `sysusers.d/`, `tmpfiles.d/` | The service users and runtime directories the release installs under `/usr/lib`. |
 | `install/install.sh` | The release installer. Firstboot runs it with `--from-firstboot`. |
 | `systemd/` | The units in the release: health and reconcile, the firewall, auditd and its sockets, rootd and its sockets, the proxy and its socket, the keys broker and its socket, and the agent stand-in the gates use. |
@@ -316,7 +316,7 @@ Then run the gate that covers what you changed:
 | `internal/proxy/`, `cmd/agentbox/proxy.go` | `hack/proxy-gate.sh` |
 | `internal/dial/` | `hack/dial-gate.sh`, then `hack/proxy-gate.sh` and `hack/keys-gate.sh` |
 | `internal/keys/`, `internal/broker/`, `cmd/agentbox/keys.go`, `secret.set` in `internal/rootd/` | `hack/keys-gate.sh`, and `AGENTBOX_KEYS_MODE=tpm2 hack/keys-gate.sh` if it touches the credentials |
-| `internal/proxy/gocache/`, `internal/taskrun/gomodfilter/` | `hack/gocache-gate.sh` (it has not passed yet, issue #301) |
+| `internal/proxy/gocache/`, `internal/taskrun/gomodfilter/` | `hack/gocache-gate.sh`, then `hack/proxy-gate.sh` |
 | `hack/release/`, `install/install.sh` | `hack/gate.sh none`. Every install gate builds test releases, and firstboot installs one. |
 | `systemd/` | `hack/apply-gate.sh tpm2 install setup cycles`. The health timer commits each trial. |
 | `hack/vm.sh`, `hack/remaster-iso.sh`, `hack/SHA256SUMS` | `hack/gate.sh none`. Add `hack/gate.sh none bios` if the change touches the amd64 VM. |
