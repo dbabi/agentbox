@@ -39,8 +39,9 @@ type Service struct {
 		ResolveHostname(context.Context, string) ([]netip.Addr, error)
 	}
 	Route func(netip.Addr) string // nl.CheckRoute
-	// Own lists the box's addresses on every interface (OwnAddrs), read again at each resolution.
-	Own func() ([]netip.Addr, error)
+	// Own lists the box's addresses on every interface with their prefix lengths (OwnAddrs), read again at each
+	// resolution.
+	Own func() ([]netip.Prefix, error)
 	Nft interface {
 		Run(string) error
 		List(string) ([]string, error)
@@ -125,10 +126,27 @@ func (s *Service) Resolve(ctx context.Context, svc, task string, e Entry) ([]net
 		if why == "" {
 			why = s.Route(a)
 		}
-		if why == "" && slices.Contains(own, a) {
-			// an address in DAD has no local route yet; with no prefix route either (SLAAC under an off-link prefix),
-			// the route check passes it
-			why = "own_address"
+		if why == "" {
+			// an address in DAD has no local route yet, and with no prefix route either (SLAAC under an off-link
+			// prefix) the route check passes it and the rest of its network
+			why = ownCheck(a, own)
+		}
+		for _, v4 := range wrapped4(a, nsp) {
+			if why != "" {
+				break
+			}
+			// a NAT64 or 6to4 answer goes out the IPv6 default route, but reaches its IPv4 address; with no IPv4
+			// default route (an IPv6-only NAT64 box) the route check has nothing to compare
+			w := s.Route(v4)
+			if w == nl.NoDefaultRoute {
+				w = ""
+			}
+			if w == "" {
+				w = ownCheck(v4, own)
+			}
+			if w != "" {
+				why = "wraps " + v4.String() + " " + w
+			}
 		}
 		switch why {
 		case "":

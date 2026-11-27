@@ -15,6 +15,8 @@ P=$D/probe
 S=/run/agentbox-rootd/resolve-keys.sock
 HOOK=/run/systemd/resolve.hook/dial-gate
 SLAAC=2600:ffff:200::ff:fe00:201 # EUI-64 of dgl0's MAC 02:00:00:00:02:01 under the LAN prefix 2600:ffff:200::/64
+OFFL=2600:ffff:201::ff:fe00:201  # the same under 2600:ffff:201::/64, which the router announces off-link
+NAMES="pub pub6 alt two dead drop wrong hook own4 ownif slaac dad lan6 lan4 nat64 sixto4 e hosts offlink nat64own nat64lan"
 fails=0
 # subshell: a check that calls exit must not end the phase
 check() { if (eval "$2") >>$D/check.log 2>&1; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails+1)); fi; }
@@ -66,6 +68,12 @@ EOF
   # SLAAC: the router announces 2600:ffff:200::/64 with router lifetime 0, so it adds no second default route
   check "the box takes its SLAAC address $SLAAC from the router's announcement" 'i=0; until ip -6 -o addr show dev dgl0 | grep " $SLAAC/64 " | grep -qv tentative; do ip netns exec dg-up $P ra dgl1 2600:ffff:200::/64; i=$((i+1)); [ $i -lt 20 ] || exit 1; sleep 1; done'
   check "  ... with an on-link route for the prefix, as a LAN gives" 'ip -6 route get 2600:ffff:200::99 | grep -q "dev dgl0" && ! ip -6 route get 2600:ffff:200::99 | grep -q via'
+  # some routers announce their prefix off-link (A=1, L=0): the box takes a SLAAC address but gets no route for the
+  # prefix, so the default route carries its neighbors and only rootd's own-prefix check sees them (#314)
+  check "the box takes $OFFL from a second prefix the router announces off-link" 'i=0; until ip -6 -o addr show dev dgl0 | grep " $OFFL/64 " | grep -qv tentative; do ip netns exec dg-up $P ra dgl1 2600:ffff:201::/64 offlink; i=$((i+1)); [ $i -lt 20 ] || exit 1; sleep 1; done'
+  check "  ... with no route for that prefix: a neighbor in it goes out the default route, through the router" 'ip -6 route get 2600:ffff:201::99 | grep -q "via fe80::64:1 dev dgl0"'
+  # a public-looking on-link IPv4 LAN, for a NAT64 answer that wraps a neighbor in it
+  ip addr add 192.88.97.1/24 dev dgl0
   # the box's own public-looking IPv4 addresses: one on the default route's interface, one on another
   ip addr add 192.88.95.15/32 dev dgl0
   ip link add dgo0 type dummy && ip link set dgo0 up && ip addr add 192.88.95.16/32 dev dgo0
@@ -80,6 +88,7 @@ EOF
     -a ownif.dial.test=192.88.95.16 -a slaac.dial.test=$SLAAC -a dad.dial.test=2600:ffff:95::77 \
     -a lan6.dial.test=2600:ffff:200::99 -a lan4.dial.test=192.168.1.10 -a nat64.dial.test=64:ff9b::c0a8:10a \
     -a sixto4.dial.test=2002:c0a8:10a::1 -a e.dial.test=240.0.0.1 -a ipv4only.arpa=192.0.0.170,192.0.0.171 \
+    -a offlink.dial.test=2600:ffff:201::99 -a nat64own.dial.test=64:ff9b::c058:5f0f -a nat64lan.dial.test=64:ff9b::c058:6102 \
     -hook $HOOK -hook-a hook.dial.test=192.88.96.1
   mkdir -p /run/systemd/resolved.conf.d
   printf '[Resolve]\nDNS=127.0.0.153\nDomains=~.\n' > /run/systemd/resolved.conf.d/90-dial-gate.conf
@@ -90,13 +99,13 @@ EOF
   sleep 2
   check "gate-dns answers through resolved" 'resolvectl query -4 alt.dial.test | grep -q 192.88.96.2'
   check "the upstreams answer root over IPv4 and IPv6 (curl, unconfined)" 'curl -fsSk https://192.88.96.1/ | grep -qx "pinned 192.88.96.1:443" && curl -fsSk "https://[2600:ffff:96::1]/" | grep -qxF "pinned [2600:ffff:96::1]:443"'
-  for n in pub pub6 alt two dead drop wrong hook own4 ownif slaac dad lan6 lan4 nat64 sixto4 e hosts; do $A egress allow --svc keys --entry $n.dial.test:443 >/dev/null; done
-  check "the 18 dial.test names are on keys' allowlist" '[ "$(grep -c "^keys .*\.dial\.test:443$" /var/lib/agentbox/control/egress/service.list)" = 18 ]'
+  for n in $NAMES; do $A egress allow --svc keys --entry $n.dial.test:443 >/dev/null; done
+  check "the 21 dial.test names are on keys' allowlist" '[ "$(grep -c "^keys .*\.dial\.test:443$" /var/lib/agentbox/control/egress/service.list)" = 21 ]'
   nft list chain inet agentbox output > $D/output-chain.txt
   ;;
 
 main)
-  echo "== refused answers (Appendix B): the box's own addresses, LAN, private, NAT64- and 6to4-wrapped, 240/4, /etc/hosts"
+  echo "== refused answers (Appendix B): the box's own addresses and networks, LAN, private, NAT64- and 6to4-wrapped, 240/4, /etc/hosts"
   mark
   check "a public answer resolves for keys" '[ "$(pres alt.dial.test:443)" = "addrs 192.88.96.2" ] && nft list set inet agentbox keys_dst4 | grep -qF "192.88.96.2 . 443"'
   # an address in DAD has no local route yet, and with no prefix route (as SLAAC gives under a prefix the router marks
@@ -106,19 +115,22 @@ main)
   check "2600:ffff:95::77 is the box's, still in DAD (tentative), with no prefix route" 'ip -6 -o addr show dev dgl0 | grep " 2600:ffff:95::77/128 " | grep -q tentative'
   check "  ... and the kernel routes it out the default route, through the router" 'ip -6 route get 2600:ffff:95::77 | grep -q "via fe80::64:1 dev dgl0"'
   before=$(nft list table inet agentbox | grep -c ' \. 443')
-  for n in own4 ownif slaac dad lan6 lan4 nat64 sixto4 e; do
+  for n in own4 ownif slaac dad lan6 offlink lan4 nat64 sixto4 nat64own nat64lan e; do
     check "$n.dial.test is refused non_public before any dial" "[ \"\$(pdial $n.dial.test:443)\" = 'refused non_public' ]"
   done
   check "hosts.dial.test, which only /etc/hosts names, is refused no_such_name" '[ "$(pdial hosts.dial.test:443)" = "refused no_such_name" ]'
-  check "none of their addresses reached any set" '[ "$(nft list table inet agentbox | grep -c " \. 443")" = "$before" ] && for a in 192.88.95.15 192.88.95.16 $SLAAC 2600:ffff:95::77 2600:ffff:200::99 192.168.1.10 64:ff9b::c0a8:10a 2002:c0a8:10a::1 240.0.0.1; do ! in_sets "$a . 443" || exit 1; done'
+  check "none of their addresses reached any set" '[ "$(nft list table inet agentbox | grep -c " \. 443")" = "$before" ] && for a in 192.88.95.15 192.88.95.16 $SLAAC 2600:ffff:95::77 2600:ffff:200::99 2600:ffff:201::99 192.168.1.10 64:ff9b::c0a8:10a 2002:c0a8:10a::1 64:ff9b::c058:5f0f 64:ff9b::c058:6102 240.0.0.1; do ! in_sets "$a . 443" || exit 1; done'
   check "the box's own IPv4 on the default route's interface: the route check (local)" 'den own4.dial.test "192.88.95.15: route_not_unicast"'
   check "the box's own IPv4 on another interface: the route check (local)" 'den ownif.dial.test "192.88.95.16: route_not_unicast"'
   check "the box's own SLAAC IPv6: the route check (local)" 'den slaac.dial.test "$SLAAC: route_not_unicast"'
   check "the box's own IPv6 in DAD: the own-address check" 'den dad.dial.test "2600:ffff:95::77: own_address"'
   check "a LAN host's global IPv6: the route check (on-link, no gateway)" 'den lan6.dial.test "2600:ffff:200::99: route_on_link"'
+  check "a LAN host's global IPv6 under the off-link prefix, which the route check passes: the own-prefix check" 'den offlink.dial.test "2600:ffff:201::99: own_prefix"'
   check "192.168.1.10: private4" 'den lan4.dial.test "192.168.1.10: private4"'
   check "NAT64-wrapped 192.168.1.10: nat64_private" 'den nat64.dial.test "64:ff9b::c0a8:10a: nat64_private"'
   check "6to4-wrapped 192.168.1.10: 6to4_private" 'den sixto4.dial.test "2002:c0a8:10a::1: 6to4_private"'
+  check "NAT64-wrapped 192.88.95.15, the box's own IPv4: the route check on the IPv4 it carries (local)" 'den nat64own.dial.test "64:ff9b::c058:5f0f: wraps 192.88.95.15 route_not_unicast"'
+  check "NAT64-wrapped 192.88.97.2, an on-link IPv4 neighbor: the route check on the IPv4 it carries" 'den nat64lan.dial.test "64:ff9b::c058:6102: wraps 192.88.97.2 route_on_link"'
   check "240.0.0.1: private4" 'den e.dial.test "240.0.0.1: private4"'
   check "resolved never read /etc/hosts for rootd: gate-dns was asked for hosts.dial.test" 'logs dg-dns.service | grep -q "query hosts.dial.test$"'
   ip -6 addr del 2600:ffff:95::77/128 dev dgl0
@@ -154,7 +166,7 @@ main)
   ;;
 
 cleanup)
-  for n in pub pub6 alt two dead drop wrong hook own4 ownif slaac dad lan6 lan4 nat64 sixto4 e hosts; do $A egress remove --svc keys --entry $n.dial.test:443 >/dev/null 2>&1; done
+  for n in $NAMES; do $A egress remove --svc keys --entry $n.dial.test:443 >/dev/null 2>&1; done
   systemctl stop dg-dns.service dg-up.service 2>/dev/null; systemctl reset-failed dg-dns.service dg-up.service 2>/dev/null
   rm -f $HOOK /run/systemd/resolved.conf.d/90-dial-gate.conf; systemctl restart systemd-resolved.service
   ip route del default via 100.127.200.2 dev dgl0 metric 1 2>/dev/null; ip -6 route del default via fe80::64:1 dev dgl0 metric 1 2>/dev/null
