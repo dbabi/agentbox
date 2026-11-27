@@ -1573,7 +1573,7 @@ autoinstall:
       # with no firewall, rootd, ntfy or health timer until its first reboot (#218). The firewall and rootd first:
       # rootd's READY=1 waits for the sets that ntfy's fwcheck compares
       systemctl start agentbox-firewall.service agentbox-rootd.service
-      systemctl start agentbox-auditd.service agentboxd.service ntfy.service sockets.target timers.target
+      systemctl start agentbox-auditd.service agentboxd.service agentbox-keys.service ntfy.service sockets.target timers.target
       touch /var/lib/agentbox/.firstboot-done
       FB
       printf '%s\n' 'AGENTBOX_RELEASE_URL=<RELEASE_URL>' 'AGENTBOX_RELEASE_SHA256=<RELEASE_SHA256>' 'AGENTBOX_MINISIGN_PUBKEY=<MINISIGN_PUBKEY>' \

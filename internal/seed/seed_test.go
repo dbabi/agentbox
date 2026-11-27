@@ -184,7 +184,7 @@ func TestRenderModes(t *testing.T) {
 					`minisign -Vm "$D/ab.tgz" -P "$AGENTBOX_MINISIGN_PUBKEY" || {`, `tar -xzf "$D/ab.tgz"`, `"$D/x/install.sh" --from-firstboot`,
 					"systemctl start agentbox-reconcile.service", "os mark-last-good",
 					"systemctl start agentbox-firewall.service agentbox-rootd.service\n",
-					"systemctl start agentbox-auditd.service agentboxd.service ntfy.service sockets.target timers.target\n",
+					"systemctl start agentbox-auditd.service agentboxd.service agentbox-keys.service ntfy.service sockets.target timers.target\n",
 					"touch /var/lib/agentbox/.firstboot-done", "'AGENTBOX_RELEASE_SHA256=" + testSHA + "'"} {
 					i := strings.Index(s, step)
 					if i <= last {
