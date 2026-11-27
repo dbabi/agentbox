@@ -87,6 +87,7 @@ checks)
   up
   printf 'TOKEN=%s\nRP=%s\n' "$TOKEN" "$RP" > "$K/env"
   tar -C "$K" -cf - env ca.pem gate-dns | hack/vm.sh ssh 'rm -rf /tmp/pg && mkdir /tmp/pg && tar -C /tmp/pg -xf -'
+  tar -C image -cf - task | hack/vm.sh ssh 'rm -rf /tmp/pg-image && mkdir /tmp/pg-image && tar -C /tmp/pg-image -xf -'
   guest <<'EOF'
 fails=0
 cd / # runuser keeps the working dir, and the agent can't enter the admin's home
@@ -104,6 +105,7 @@ mkdir -p $G && chmod 0755 $G
 R=$(( $(cat $G/run 2>/dev/null || echo 0) + 1 )); echo $R > $G/run
 PA=pa$R PB=pb$R
 PUB=192.88.96.50 # reg.gate.test: public by prefix, routed by the default route
+IMG=localhost/agentbox-task:proxy-gate
 PU=$(id -u agentbox-proxy)
 install -m 0755 $K/gate-dns $G/gate-dns && install -m 0644 $K/ca.pem $G/ca.pem
 
@@ -118,22 +120,23 @@ dns() { systemctl stop pg-dns.service 2>/dev/null; systemctl reset-failed pg-dns
   for r; do a="$a -a $r"; done
   # shellcheck disable=SC2086 # one -a flag per record
   systemd-run -q --unit=pg-dns $G/gate-dns -listen 127.0.0.153:53 -upstream 10.0.2.3:53 -a ping.gate.test=192.88.96.99 $a || return 1
-  for i in $(seq 50); do resolvectl flush-caches; resolvectl query -4 ping.gate.test >/dev/null 2>&1 && return 0; sleep 0.2; done; return 1; }
+  for n in $(seq 50); do resolvectl flush-caches; resolvectl query -4 ping.gate.test >/dev/null 2>&1 && return 0; sleep 0.2; done; return 1; }
 BASE="lan.gate.test=192.168.1.10 host.gate.test=10.0.2.2 meta.gate.test=169.254.169.254 meta6.gate.test=fd00:ec2::254
   lo.gate.test=127.0.0.1 lo6.gate.test=::1 ula.gate.test=fd00::1 ll6.gate.test=fe80::1 mapped.gate.test=::ffff:10.0.2.2
   nat64.gate.test=64:ff9b::a00:202 mixed.gate.test=$PUB,10.0.2.2 zero.gate.test=0.0.0.0 cgnat.gate.test=100.64.0.1"
 ended() { $B task list | python3 -c 'import json,sys; sys.exit(not [t for t in json.load(sys.stdin)["tasks"] if t["task"]==sys.argv[1] and t.get("end_reason")])' "$1"; }
 # task AGENT SCRIPT [ID]: one task through task.start; prints what the script printed and returns its exit code. The
-# id goes to $G/last, or $G/ID.
-task() { o=$WS/$1/.gate-out; rm -f $o $WS/$1/.gate-rc; id=$G/${3:-last}; rm -f $id
-  printf '(\n%s\n) </dev/null > /workspace/.gate-out 2>&1; echo $? > /workspace/.gate-rc\n' "$2" |
-    $B task new --agent $1 --cli sh --deadline 15m > $G/new; r=$?
-  sed -n 's/.*"task":"\(task_[0-9A-Z]*\)".*/\1/p' $G/new > $id
-  [ $r = 0 ] && [ -s $id ] || { cat $G/new; return 99; }
-  i=0; while [ ! -e $WS/$1/.gate-rc ]; do i=$((i+1)); [ $i -lt 6000 ] || { echo "task $(cat $id): no result"; return 98; }; sleep 0.1; done
-  i=0; until ended "$(cat $id)"; do i=$((i+1)); [ $i -lt 300 ] || break; sleep 0.1; done
-  cat $o; return "$(cat $WS/$1/.gate-rc)"; }
-wait_file() { i=0; while [ ! -e "$1" ]; do i=$((i+1)); [ $i -lt $(($2 * 10)) ] || return 1; sleep 0.1; done; }
+# id goes to $G/last, or $G/ID. Its output file is its own, so a task in the background and the next one don't share it.
+# The helpers' loop variables (k, n, w) are their own: sh has no local variables.
+task() { o=$WS/$1/.gate-out-${3:-last} rc=$WS/$1/.gate-rc-${3:-last}; rm -f $o $rc; id=$G/${3:-last}; rm -f $id
+  printf '(\n%s\n) </dev/null > %s 2>&1; echo $? > %s\n' "$2" "/workspace/${o##*/}" "/workspace/${rc##*/}" |
+    $B task new --agent $1 --cli sh --deadline 15m > $G/new-${3:-last}; r=$?
+  sed -n 's/.*"task":"\(task_[0-9A-Z]*\)".*/\1/p' $G/new-${3:-last} > $id
+  [ $r = 0 ] && [ -s $id ] || { cat $G/new-${3:-last}; return 99; }
+  k=0; while [ ! -e $rc ]; do k=$((k+1)); [ $k -lt 6000 ] || { echo "task $(cat $id): no result"; cat $o; return 98; }; sleep 0.1; done
+  k=0; until ended "$(cat $id)"; do k=$((k+1)); [ $k -lt 300 ] || break; sleep 0.1; done
+  cat $o; return "$(cat $rc)"; }
+wait_file() { w=0; while [ ! -e "$1" ]; do w=$((w+1)); [ $w -lt $(($2 * 10)) ] || return 1; sleep 0.1; done; }
 # arec TYPE [key=value...]: the audit records of TYPE whose body (or producer=) match, as "seq producer body"
 cat > $G/arec.py <<'PY'
 import glob, json, sys
@@ -152,8 +155,10 @@ for r in sorted(recs):
     print(*r)
 PY
 arec() { python3 $G/arec.py "$@"; }
-# pdrops: packets the ruleset dropped for agentbox-proxy, every drop rule that names it summed
-pdrops() { nft list chain inet agentbox output | grep '"agentbox-proxy"' | sed -n 's/.* counter packets \([0-9]*\) .* drop$/\1/p' | awk '{n += $1} END {print n + 0}'; }
+# pdrops: packets the ruleset dropped in every drop rule that names agentbox-proxy (nft prints its uid as a number; the
+# shared private-range and local-address rules count the other brokers and ntfy too)
+pdrops() { nft list chain inet agentbox output | grep -E "meta skuid (${PU} |\{[^}]*[{ ]${PU}[ ,}])" |
+  sed -n 's/.* counter packets \([0-9]*\) .* drop$/\1/p' | awk '{n += $1} END {print n + 0}'; }
 # tunnels TASK: the proxy's journal lines for TASK's tunnels
 tunnels() { journalctl -b -u agentbox-proxy.service -o cat | grep " task $1 CONNECT [^ ]*: tunnel to "; }
 # indst PATTERN: some element of a dst set (rootd's resolutions) matches PATTERN
@@ -192,9 +197,18 @@ chmod 0644 $G/svc.py
 check "at boot agentbox-proxy is not running; agentbox-proxy-svc.socket listens, bound by PID 1 as agentbox-proxy:root 0600" '
   ! systemctl is-active -q agentbox-proxy.service && systemctl is-active -q agentbox-proxy-svc.socket &&
   [ "$(stat -c "%U:%G %a" /run/agentbox-rootd/svc-proxy.sock)" = "agentbox-proxy:root 600" ]'
+# image/task (npm, pip, curl): the release's own image runs the host's /usr, which has no npm or pip. Built here before
+# resolved moves to gate-dns, with the box's own resolver (--network=host), and once more after a failed first try
+build() { podman build -q --network=host -t $IMG /tmp/pg-image/task </dev/null >/dev/null ||
+  { sleep 10; podman build -q --network=host -t $IMG /tmp/pg-image/task </dev/null >/dev/null; }; }
+for i in $(seq 30); do getent hosts registry-1.docker.io >/dev/null && break; sleep 2; done
+check "image/task builds on the box (ubuntu:26.04, curl, python3-pip, nodejs, npm, mise's Go)" '
+  build && rm -f $G/image.tar && podman save -o $G/image.tar $IMG && chmod 0644 $G/image.tar'
+# podman load runs through the agent's user manager, as rootd's own image load does
 for a in $PA $PB; do
-  check "agent add $a (rootd's agent.add)" '$B agent add --name $a >/dev/null && u=$(id -u ag-$a) &&
-    i=0; until systemctl is-active -q user@$u.service; do i=$((i+1)); [ $i -lt 50 ] || exit 1; sleep 0.2; done'
+  check "agent add $a (rootd's agent.add), and image/task in its podman" '$B agent add --name $a >/dev/null && u=$(id -u ag-$a) &&
+    i=0; until systemctl is-active -q user@$u.service; do i=$((i+1)); [ $i -lt 50 ] || exit 1; sleep 0.2; done &&
+    systemd-run --user -M ag-$a@ --wait --quiet --collect /usr/bin/podman load -q -i $G/image.tar </dev/null'
   mkdir -p $WS/$a/.pg && cp $G/ca.pem $WS/$a/.pg/ca.pem
 done
 mkdir -p /run/systemd/resolved.conf.d
@@ -219,9 +233,12 @@ check "egress allow --svc proxy --entry reg.gate.test:443 (common.list)" '$B egr
 { for n in lan meta6:80 meta:80 lo lo6 ula ll6 mapped nat64 mixed zero cgnat nx; do
     case $n in *:*) echo "${n%%:*}.gate.test:${n#*:}" ;; *) echo "$n.gate.test:443" ;; esac; done; echo "host.gate.test:$RP"; } > $E/$PA.list
 chmod 0644 $E/$PA.list
-mkdir -p $RS/agentboxd.service.d && printf '[Service]\nEnvironment=AGENTBOX_TEST_CLI=sh\n' > $RS/agentboxd.service.d/50-proxy-gate.conf
+mkdir -p $RS/agentboxd.service.d $RS/agentbox-rootd.service.d
+printf '[Service]\nEnvironment=AGENTBOX_TEST_CLI=sh\n' > $RS/agentboxd.service.d/50-proxy-gate.conf
+printf '[Service]\nEnvironment=AGENTBOX_TEST_TASK_IMAGE=%s\n' $IMG > $RS/agentbox-rootd.service.d/50-proxy-gate.conf
 systemctl daemon-reload
-check "agentboxd with AGENTBOX_TEST_CLI=sh" 'systemctl restart agentboxd.service && systemctl is-active -q agentboxd.service'
+check "agentboxd with AGENTBOX_TEST_CLI=sh, and rootd with image/task" 'systemctl restart agentbox-rootd.service agentboxd.service &&
+  systemctl is-active -q agentbox-rootd.service agentboxd.service'
 d0=$(pdrops)
 
 # --- a real fetch through the proxy, from a task: curl, npm (24 dependencies) and pip ---
@@ -515,7 +532,9 @@ nft delete table ip proxygate 2>/dev/null
 python3 -c "import sqlite3; c=sqlite3.connect(\"$DB\"); c.execute(\"delete from set_elements where set_name=\x27allow_private4\x27 and element=\x27$PU . 10.0.2.2 . $RP\x27\"); c.commit()"
 $B egress refill >/dev/null
 $B egress remove --svc proxy --entry reg.gate.test:443 >/dev/null
-rm -f $RS/agentboxd.service.d/50-proxy-gate.conf; systemctl daemon-reload; systemctl restart agentboxd.service
+rm -f $RS/agentboxd.service.d/50-proxy-gate.conf $RS/agentbox-rootd.service.d/50-proxy-gate.conf; systemctl daemon-reload
+systemctl restart agentbox-rootd.service agentboxd.service
+podman rmi -f $IMG >/dev/null 2>&1
 check "no task is left live" '[ "$($B task list | python3 -c "import json,sys; print(sum(1 for t in json.load(sys.stdin)[\"tasks\"] if \"end_reason\" not in t))")" = 0 ]'
 check "fwcheck passes, and allow_private4 is empty again" '$B fwcheck && ! nft list set inet agentbox allow_private4 | grep -q "10.0.2.2"'
 check "the audit chain verifies" '$B audit verify'

@@ -48,7 +48,7 @@ type Server struct {
 
 // MaxConns is how many connections, so tunnels, one task's proxy.sock serves at once. §2.1's 8 for a per-task socket
 // would hang npm for good: it keeps up to 15 keep-alive tunnels open per registry, so its fetches on the sockets past
-// the cap wait on tunnels that never close.
+// the cap wait on tunnels that never close (#285).
 const MaxConns = 64
 
 // DialBudget is §6.2 step 3's one budget for all of rootd's answers.
