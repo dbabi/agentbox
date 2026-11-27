@@ -189,7 +189,7 @@ The design sets seven rules, and tests must prove each one. Most of them depend 
 | # | Rule | Status |
 |---|---|---|
 | 1 | Tasks have no network. | **Built** and gate-proven for task containers (milestone 4). The firewall that confines the brokers is built (milestone 2). The brokers are designed. |
-| 2 | No credential exists inside a task. | Designed |
+| 2 | No credential exists inside a task. | **Built** and gate-proven for the LLM API keys (milestone 5): a task holds only a placeholder key, and the keys broker adds the real one. The GitHub token waits for the git service. |
 | 3 | Agents never change the running OS. OS changes are built offline into a new generation, and committed only after a health check. | The generation mechanism is **built** and gate-proven. Agents and their path to it are designed. |
 | 4 | rootd runs only the stored operation a human signed. | Designed. Today, root approves a plan by passing its SHA-256 to `os apply`. |
 | 5 | Taint is sticky. Only a human clears it. | The ledger is **built** (milestone 2): a clear from any socket but rootd's admin path is rejected, and the row stays with its epoch moved on. A tainted task taints its workspace, and the next task there starts tainted (milestone 4). What sets taint is designed. |
@@ -250,6 +250,7 @@ These are the known risks. They are listed so you can decide where agentbox fits
 - If a thief also takes your Tang server, or can reach it from elsewhere, `tpm2+tang` protects no more than `tpm2`.
 - GRUB has no password. Anyone at the console can change the kernel command line at boot. In `tpm2` mode, or in `tpm2+tang` while Tang is reachable, an edited command line can give a root shell with the disk unlocked. No test has tried this.
 - `/bootpart` is not encrypted. It holds the kernels, initrds, GRUB files and `recovery.bin`. On UEFI, the EFI system partition is not encrypted either.
+- With `--encryption none`, the LLM API keys are encrypted on disk with a host key that sits on the same unencrypted disk. Anyone who reads the disk can decrypt them. In the TPM modes the TPM holds that key, with no PCR policy, so whoever can boot the machine can decrypt them too.
 
 **Availability and recovery**
 
