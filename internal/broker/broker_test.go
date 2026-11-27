@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -116,6 +117,7 @@ func reply(t *testing.T, c net.Conn) (int, string) {
 // its task, and revoke closes the socket and every connection.
 func TestAdmission(t *testing.T) {
 	const max = 1 << 20
+	var gotMu sync.Mutex
 	var got []string
 	s, dir := newServer(t, Limits{HeadBytes: 4 << 10, HeadTimeout: 300 * time.Millisecond, ReadTimeout: time.Second, Conns: 2},
 		func(tk *Task) http.Handler {
@@ -133,7 +135,9 @@ func TestAdmission(t *testing.T) {
 					fmt.Fprintf(w, `{"code":%q,"what":%q}`, d.Code, d.What)
 					return
 				}
+				gotMu.Lock()
 				got = append(got, tk.ID+" "+tk.Trace+" "+fmt.Sprint(len(b), err))
+				gotMu.Unlock()
 				w.Write([]byte("ok"))
 			})
 		})

@@ -107,9 +107,9 @@ func TestLocal(t *testing.T) {
 	go func() { _, i := localCall(t, s, ta, `{"messages":[{"role":"user","content":"hold"}]}`); done <- i }()
 	<-fl.bodies
 	go func() { _, i := localCall(t, s, ta, `{"messages":[]}`); done <- -i }()
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	go func() { _, i := localCall(t, s, tb, `{"messages":[]}`); done <- i }()
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	close(fl.hold)
 	order := []int64{<-done, <-done, <-done}
 	<-fl.bodies
