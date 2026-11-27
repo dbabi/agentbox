@@ -101,11 +101,11 @@ checks)
   { echo x; cat "$K/stub/ca.pem"; } | hack/vm.sh ssh 'sudo -S -p "" sh -c "mkdir -p /run/gg && cat > /run/gg/ca.pem"' || die "copy the CA"
   CHECKED=1
   guest setup
-  ! grep -q '^FAIL' "$OUT" || { journal; die "the box setup failed; see $OUT and $VM/git-gate-journal.txt"; }
+  ! grep -q '^[0-9:]* FAIL' "$OUT" || { journal; die "the box setup failed; see $OUT and $VM/git-gate-journal.txt"; }
   guest main
   journal ;;
 *) die "unknown stage $s (install, release, checks)" ;;
 esac; done
 [ -n "${CHECKED:-}" ] || exit 0
-! grep -q '^FAIL' "$OUT" || die "git gate failed; see $OUT and $LOG"
+! grep -q '^[0-9:]* FAIL' "$OUT" || die "git gate failed; see $OUT and $LOG"
 log "git gate: all checks passed"

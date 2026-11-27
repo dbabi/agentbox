@@ -60,6 +60,8 @@ check "svc-git.sock listens from boot and starts agentbox-git, as agentbox-git (
 # a rerun starts from empty workspaces: a canary an earlier run left there would block the agent's tasks at the next
 # credential scan (issue #289)
 for a in gg gt go; do [ ! -d $WS/$a ] || find $WS/$a -mindepth 1 -delete; done
+# and from no repos or day totals of an earlier run (taint rows stay: auditd never deletes one)
+systemctl stop agentbox-git.service; rm -rf $GIT/gg $GIT/gt $GIT/go $GIT/.state.db*
 cp $G/ca.pem /usr/local/share/ca-certificates/agentbox-git-gate.crt && update-ca-certificates >/dev/null 2>&1
 U=$(id -u agentbox-git)
 # every https connection agentbox-git opens goes to the stub; the agentbox table then sees 10.0.2.2:UP, which only
@@ -176,7 +178,7 @@ agentbox why > /workspace/why.txt 2>&1 || :
 S
 rm -f $WG/go422 $WG/op-refused
 T3=$(new gg < $G/t3)
-wait_file $WG/op-refused 60
+i=0; until grep -qs pnd_ $WG/op-refused; do i=$((i+1)); [ $i -lt 300 ] || break; sleep 0.2; done
 P4=$(pnd $WG/op-refused)
 SECRET="sk-gate-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 stub "fail422?b64=$(printf 'Validation: %s' "$SECRET" | base64 | tr -d '\n')" >/dev/null
