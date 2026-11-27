@@ -110,8 +110,11 @@ func (s *Server) Control(line []byte) map[string]any {
 	var r struct {
 		Call, Task, Agent string
 		Chain             []string
-		Request, CLI      string
-		Prompt            string
+		// trace comes from task.launch for the keys broker only (§6.3); the task gate and the broker-stub carry no
+		// trace, so this just lets the field through DisallowUnknownFields
+		Trace        string
+		Request, CLI string
+		Prompt       string
 	}
 	d := json.NewDecoder(bytes.NewReader(line))
 	d.DisallowUnknownFields()
