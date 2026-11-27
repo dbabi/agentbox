@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agentbox/internal/broker"
@@ -48,7 +49,14 @@ type Server struct {
 	// DenyBetas are refused even though they are in the allowlist: AGENTBOX_TEST_KEYS_DENY_BETA, a test VM's way to
 	// see Claude Code retry without a value it really sends (#18)
 	DenyBetas []string
+
+	bodies chan struct{} // MaxBodies: the request bodies being read and checked at once, box-wide
+	once   sync.Once
 }
+
+// MaxBodies is how many request bodies keys reads and checks at once, across every task: with MaxBody each, that
+// bounds keys' memory under a flood of large requests (#115), and the unit's MemoryMax= backs it up.
+const MaxBodies = 8
 
 // Format is keys' denial surface for internal/broker (§5.6 Surfaces): the vendor's error envelope with the
 // agentbox member, and keys' headers.
@@ -150,7 +158,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, t *broker.Task) {
 		s.refuse(w, t, d, http.StatusForbidden, "")
 		return
 	}
+	s.once.Do(func() { s.bodies = make(chan struct{}, MaxBodies) })
+	select {
+	case s.bodies <- struct{}{}:
+	case <-r.Context().Done():
+		return
+	}
 	body, err := broker.ReadBody(w, r, MaxBody)
+	var c checked
+	var rj *rej
+	if err == nil && ep.vendor != "local" {
+		c, rj = validate(ep, body, s.allowed)
+	}
+	<-s.bodies
 	var capped *broker.Capped
 	switch {
 	case errors.As(err, &capped):
@@ -176,7 +196,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, t *broker.Task) {
 		s.reject(w, t, rj)
 		return
 	}
-	c, rj := validate(ep, body, s.allowed)
 	if rj != nil {
 		s.reject(w, t, rj)
 		return

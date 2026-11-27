@@ -273,6 +273,16 @@ for c in "a URL image|urlimage|anthropic/v1/messages" "a URL PDF|urlpdf|anthropi
     [ -z "$(uplog)" ]'
 done
 
+# --- #18: a vendor web tool, refused until the policy names it; then it taints the task before the request leaves ---
+body websearch "$(msg '"hi"' '"tools":[{"type":"web_search_20260209","name":"web_search","max_uses":1}],')"
+check "#18 a vendor web tool with no policy for it gets 403 KEYS_REQUEST_REJECTED{server_tool}" '
+  task ka "$(ask websearch)" > $G/rws; cat $G/rws; head -1 $G/rws | grep -qx 403 && grep -q "\"what\":\"server_tool\"" $G/rws && [ -z "$(uplog)" ]'
+mkdir -p /var/lib/agentbox/control/keys && echo web_search > /var/lib/agentbox/control/keys/server-tools && chmod 0644 /var/lib/agentbox/control/keys/server-tools
+check "#18 with the policy naming web_search, it goes through, and the task is tainted (keys:web_search) before it leaves" '
+  task ka "$(ask websearch)" > $G/rws; cat $G/rws; T=$(cat $G/last); head -1 $G/rws | grep -qx 200 &&
+  cat $A/seg-*.jsonl | grep "\"type\":\"TAINT\"" | grep "\"subject\":\"task:$T\"" | grep -q "\"source\":\"keys:web_search\"" && uplog | grep -q "\"path\":\"/v1/messages\""'
+rm -f /var/lib/agentbox/control/keys/server-tools
+
 # --- C-G4 and #18: what comes back ---
 body s401 "$(msg '"GATE-MODE:status-401"')"
 body agentbox "$(msg '"GATE-MODE:agentbox"')"
@@ -369,6 +379,7 @@ check "C-G4 kb's reply is the same, apart from ids, with ka idle or at its share
   printf "keys.day_cap_cents = 10000\n" | $B budget set >/dev/null && task kb "$M -d @/workspace/hi.json http://127.0.0.1:8081/anthropic/v1/messages; cat /tmp/b" > $G/kb0 &&
   cat $G/kb0 $G/kb1; cmp $G/kb0 $G/kb1 && head -1 $G/kb1 | grep -qx 200'
 printf "keys.day_cap_cents = 10000\nkeys.agent_day_share.ka = 1\n" | $B budget set >/dev/null
+uplog > /dev/null
 check "C-G4 Claude Code at its share stops within its own retries, and the task result carries KEYS_BUDGET" '
   cli ka claude < $G/hi; T=$(cat $G/last); echo "task $T: $(deny $T) denials by keys, end $(field $T end_reason)"
   journalctl -b -u agentbox-keys -o cat | grep "task=$T"; journalctl -b -u agentboxd -o cat | grep "task $T result: "; uplog | tee $G/lbud

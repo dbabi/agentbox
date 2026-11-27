@@ -36,6 +36,7 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | Pinned dialing gate (milestone 5) | `hack/dial-gate.sh [install] [release] [checks]` | Apple Silicon Mac | about 11 min, with the `none` install |
 | Proxy gate (milestone 5) | `hack/proxy-gate.sh [install\|release\|checks ...]` | Apple Silicon Mac, with internet for the task image build | about 13 min, with the `none` install |
 | Go module cache gate (milestone 5) | `hack/gocache-gate.sh [install\|checks ...]` | Apple Silicon Mac, with internet for the task image build | not timed separately |
+| Keys broker gate (milestone 5) | `hack/keys-gate.sh [install\|checks\|apply ...]` | Apple Silicon Mac, with `npm` and internet for the Claude Code and Codex CLIs | about 7 min for `checks` after the `none` install |
 | Fuzz tests | `hack/fuzz-all.sh [DURATION]` | macOS or Linux | 24 h by default |
 
 The times come from one Apple Silicon Mac. The milestone 2 and 3 times come from runs with four VMs at once.

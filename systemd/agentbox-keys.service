@@ -28,6 +28,9 @@ LoadCredentialEncrypted=anthropic-api-key:/var/lib/agentbox/control/credstore.en
 LoadCredentialEncrypted=openai-api-key:/var/lib/agentbox/control/credstore.encrypted/keys/openai-api-key
 # keys.sock is bound 0660 inside the setgid dir, so it is agentbox-keys:ag-<agent> (§2.1)
 UMask=0117
+# keys reads at most 8 request bodies of 32 MiB at once (#115); this backs that bound up, so no flood of large requests
+# can take the box's memory
+MemoryMax=2G
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # no DNS of its own (§6.1): resolved's Varlink and D-Bus sockets are AF_UNIX, which nft never sees
 InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket
