@@ -82,7 +82,7 @@ pkg() { # pkg FILE NPM-SPEC, as hack/cli-gate.sh fetches them
   mkdir -p "$VM/cli" && (cd "$VM/cli" && npm pack --silent "$2") >>"$LOG" 2>&1 || die "npm pack $2 failed"
   pinned "$VM/cli/$1" || die "$1 does not match hack/SHA256SUMS"
 }
-K="$VM/keys"
+K="$VM/keysgate" # the stand-in's files; .vm/keys holds gate.sh's test signing keys
 key() { printf '%s%s' "$1" "$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"; }
 # start_upstream: the vendors' stand-in on the host, recording every body for the replay corpus
 start_upstream() {

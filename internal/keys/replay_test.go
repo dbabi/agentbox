@@ -18,7 +18,7 @@ import (
 // schema reads), so the corpus holds no prompt, tool description or system text. TestReplay checks that keys passes
 // every one; TestReplayPins ties the corpus to the CLI versions the gates pin, so a version bump fails here until the
 // keys gate runs again with the new CLI and the corpus is recorded anew.
-var record = flag.String("record", "", "hack/keys-gate.sh's .vm/keys/requests.jsonl: write testdata/replay from it")
+var record = flag.String("record", "", "hack/keys-gate.sh's .vm/keysgate/requests.jsonl: write testdata/replay from it")
 
 type replayed struct {
 	CLI   string          `json:"cli"`
@@ -65,7 +65,7 @@ func TestReplay(t *testing.T) {
 	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	if len(files) == 0 {
-		t.Fatal("no replay corpus: run hack/keys-gate.sh checks, then go test ./internal/keys -run TestReplay -record <.vm/keys/requests.jsonl>")
+		t.Fatal("no replay corpus: run hack/keys-gate.sh checks, then go test ./internal/keys -run TestReplay -record <.vm/keysgate/requests.jsonl>")
 	}
 	clis := map[string]int{}
 	for _, f := range files {
