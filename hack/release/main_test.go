@@ -77,8 +77,8 @@ func TestBuild(t *testing.T) {
 	}
 	machine := map[string]elf.Machine{"bin/linux-amd64/agentbox": elf.EM_X86_64, "bin/linux-arm64/agentbox": elf.EM_AARCH64}
 	level := map[string]string{"bin/linux-amd64/agentbox": "GOAMD64=v1", "bin/linux-arm64/agentbox": "GOARM64=v8.0"}
-	mode := map[string]int64{"bin/linux-amd64/agentbox": 0o755, "bin/linux-arm64/agentbox": 0o755, "install.sh": 0o755}
-	want := "bin/linux-amd64/agentbox bin/linux-arm64/agentbox install.sh"
+	mode := map[string]int64{"bin/linux-amd64/agentbox": 0o755, "bin/linux-arm64/agentbox": 0o755, "install.sh": 0o755, "git-hooks/pre-receive": 0o755}
+	want := "bin/linux-amd64/agentbox bin/linux-arm64/agentbox git-hooks/pre-receive install.sh"
 	units, _ := filepath.Glob("systemd/*") // sorted, and every unit in the repo ships
 	sysusers, _ := filepath.Glob("sysusers.d/*")
 	tmpfiles, _ := filepath.Glob("tmpfiles.d/*")

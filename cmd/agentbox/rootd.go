@@ -130,12 +130,17 @@ func adminCall(req map[string]any, what string) error {
 
 // adminLine is adminCall without the print: it returns the reply line.
 func adminLine(req map[string]any, what string) ([]byte, error) {
+	return adminLineFor(req, what, 5*time.Minute) // agent.add and agent.remove wait for agentbox-accounts.service
+}
+
+// adminLineFor is adminLine with the caller's deadline for the whole call.
+func adminLineFor(req map[string]any, what string, d time.Duration) ([]byte, error) {
 	c, err := net.Dial("unix", AdminSocket)
 	if err != nil {
 		return nil, err
 	}
 	defer c.Close()
-	c.SetDeadline(time.Now().Add(5 * time.Minute)) // agent.add and agent.remove wait for agentbox-accounts.service
+	c.SetDeadline(time.Now().Add(d))
 	// encodeLine: a task new prompt full of '<' stays within rootd's line
 	if _, err := c.Write(encodeLine(req)); err != nil {
 		return nil, err

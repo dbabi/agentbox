@@ -15,8 +15,8 @@ import (
 
 type pushBox struct {
 	root, bare, hooks, req string
-	rootd, audit         *fake
-	tainted              bool
+	rootd, audit           *fake
+	tainted                bool
 }
 
 func newPushBox(t *testing.T, dayCap int64, c string) *pushBox {

@@ -110,7 +110,7 @@ func TestTaskStopEndAtomic(t *testing.T) {
 	if _, err := r.t.end(id, "claude", "canceled", true); err == nil {
 		t.Fatal("end without its block succeeded")
 	}
-	if l := r.t.listLive()["tasks"].([]liveRow); len(l) != 1 {
+	if l := r.t.listLive(false)["tasks"].([]liveRow); len(l) != 1 {
 		t.Fatalf("the task ended without its block: %+v", l)
 	}
 	r.db.Exec(`DROP TRIGGER no_leftover`)

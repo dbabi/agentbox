@@ -150,7 +150,7 @@ func TestTaskStartAdmin(t *testing.T) {
 			t.Fatalf("exports %s: %q %v", f, b, err)
 		}
 	}
-	if l := r.t.listLive()["tasks"].([]liveRow); len(l) != 1 || l[0].Task != id {
+	if l := r.t.listLive(false)["tasks"].([]liveRow); len(l) != 1 || l[0].Task != id {
 		t.Fatalf("list_live: %+v", l)
 	}
 }
@@ -231,7 +231,7 @@ func TestTaskStop(t *testing.T) {
 	if rep := r.t.stop(p, "bogus"); rep["ok"] != false {
 		t.Fatalf("bad reason accepted: %v", rep)
 	}
-	if l := r.t.listLive()["tasks"].([]liveRow); len(l) != 0 {
+	if l := r.t.listLive(false)["tasks"].([]liveRow); len(l) != 0 {
 		t.Fatalf("live after stop: %+v", l)
 	}
 }

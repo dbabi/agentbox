@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"agentbox/internal/canary"
 	"agentbox/internal/gate"
 	"agentbox/internal/ops"
 	"agentbox/internal/taskenv"
@@ -37,11 +38,12 @@ const MaxResultOutput = 16 << 10
 // MaxResultDenials is how many logged denials the result carries (§4.2 Inside the container, step 5).
 const MaxResultDenials = 20
 
-// Job is the task.fetch reply: what agentboxd dispatched.
+// Job is the task.fetch reply: what agentboxd dispatched, and the task's canary (#105).
 type Job struct {
 	Task   string `json:"task"`
 	CLI    string `json:"cli"`
 	Prompt string `json:"prompt"`
+	Canary string `json:"canary,omitempty"`
 }
 
 // Result is the task.result post. Probe names the isolation check that failed (taskrun.ProbeChecks), if one did.
@@ -149,6 +151,30 @@ func (r *Runner) Setup() error {
 	return os.MkdirAll(filepath.Join(r.Home, ".agentbox"), 0o700)
 }
 
+// Decoys plants the task's canary (#105) where a task looks for credentials: the LLM key slot (the placeholder the
+// keys broker swaps), GITHUB_TOKEN, ~/.netrc and gh's hosts.yml. It is a credential for nothing. A push or gh.* body
+// that carries it is refused, the task tainted and a human alerted. A value that is not a minted canary plants
+// nothing.
+func (r *Runner) Decoys(c string) error {
+	if !canary.Valid(c) {
+		return nil
+	}
+	for _, k := range []string{"ANTHROPIC_API_KEY", "GITHUB_TOKEN"} {
+		if err := os.Setenv(k, c); err != nil {
+			return err
+		}
+	}
+	netrc := "machine github.com\n  login x-access-token\n  password " + c + "\nmachine api.github.com\n  login x-access-token\n  password " + c + "\n"
+	hosts := "github.com:\n    oauth_token: " + c + "\n    user: agentbox\n    git_protocol: https\n"
+	if err := os.WriteFile(filepath.Join(r.Home, ".netrc"), []byte(netrc), 0o600); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(r.Home, ".config", "gh"), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(r.Home, ".config", "gh", "hosts.yml"), []byte(hosts), 0o600)
+}
+
 // Taskrun is the container's PID 1 (§4.2): set up HOME, clean the env and start the forwarders (and the Go module
 // filter when rootd set the cache GOPROXY), fetch the task, probe
 // the isolation from inside and tell the gate it passed, run the CLI with the prompt on stdin, post the result with
@@ -177,6 +203,10 @@ func Taskrun() int {
 	var job Job
 	if err := r.Call("task.fetch", map[string]any{}, &job); err != nil {
 		fmt.Fprintln(os.Stderr, "taskrun:", err)
+		return 1
+	}
+	if err := r.Decoys(job.Canary); err != nil {
+		fmt.Fprintln(os.Stderr, "taskrun: decoys:", err)
 		return 1
 	}
 	pt, perr := (&taskrun.Probe{Root: "/", Task: job.Task}).Run()

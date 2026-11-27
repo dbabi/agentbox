@@ -1,0 +1,41 @@
+# agentbox-git (ARCHITECTURE.md §2, §6.3): the git service. rootd registers each task on svc-git.sock; the service
+# binds that task's /run/agentbox-git/t/<task>/git.sock in the dir rootd made and serves the agent's own bare repos
+# under /var/lib/agentbox/git over smart HTTP, with the release's pre-receive hook. It holds the GitHub token (a
+# systemd credential from the root-only control/secrets/git) and runs the remote writes rootd sends it once a human
+# approved them. It never resolves a name: rootd does on resolve-git.sock, and nft lets this uid reach only git_dst.
+[Unit]
+Description=agentbox git service
+Requires=agentbox-reconcile.service agentbox-firewall.service agentbox-git-svc.socket
+After=agentbox-reconcile.service agentbox-firewall.service agentbox-git-svc.socket agentbox-rootd.service agentbox-auditd.service
+# every firewall repair restarts it through Requires=; the start limit must never leave it down
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=agentbox-git
+Group=agentbox-git
+ExecStart=/var/lib/agentbox/current/bin/agentbox git
+Sockets=agentbox-git-svc.socket
+Restart=always
+RestartSec=1
+# repos and their files are the service's alone; git.sock is set 0660 after its bind, in the setgid dir, so it is
+# agentbox-git:ag-<agent> (§2.1)
+UMask=0077
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# no DNS of its own (§6.1): resolved's Varlink and D-Bus sockets are AF_UNIX, which nft never sees
+InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/agentbox/git /run/agentbox-git
+PrivateTmp=yes
+NoNewPrivileges=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+# every file in the dir is one credential: github-token there is $CREDENTIALS_DIRECTORY/git_github-token
+LoadCredential=git:/var/lib/agentbox/control/secrets/git
+
+[Install]
+WantedBy=multi-user.target

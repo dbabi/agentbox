@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"agentbox/internal/canary"
 	"agentbox/internal/ids"
 	"agentbox/internal/image"
 	"agentbox/internal/rootd/accounts"
@@ -190,6 +191,7 @@ type startInfo struct {
 	taint          bool
 	source, origin string
 	request        string // admin:<request>: used up in the transaction that registers the task
+	canary         string // #105: planted in the task, watched for at git push and the gh.* binders
 }
 
 // start is task.start{task, agent, origin} from agentboxd (§4.2): rootd derives the provenance, registers the task, makes
@@ -204,6 +206,7 @@ func (t *tasks) start(id, agent, origin string) reply {
 		return fail("no_agent")
 	}
 	si, why := t.provenance(id, agent, origin)
+	si.canary = canary.Mint()
 	if why == "" {
 		if rep := t.secretGate(acct, 0); rep != nil {
 			log.Printf("task.start %s: %s: %v", id, rep["reason"], rep["error"])
@@ -274,6 +277,12 @@ func (t *tasks) register(id string, acct Account, si startInfo) string {
 		VALUES(?,?,?,?,?,?,?,?,?,?)`, id, si.parent, acct.Name, acct.UID, string(chain), si.origin, si.trace, si.deadline, t.now(), si.asks); err != nil {
 		log.Printf("task.start %s: registry: %v", id, err)
 		return "registry"
+	}
+	if si.canary != "" {
+		if _, err := tx.Exec(`INSERT INTO task_canaries(task, canary) VALUES(?,?)`, id, si.canary); err != nil {
+			log.Printf("task.start %s: canary: %v", id, err)
+			return "registry"
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return "registry"
@@ -373,6 +382,9 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 		req := map[string]any{"call": "register", "task": id, "agent": acct.Name, "chain": si.chain}
 		if v.Name == "keys" {
 			req["trace"] = si.trace // keys bills the task's trace (§6.3); the other services take no trace
+		}
+		if (v.Name == "gate" || v.Name == "git") && si.canary != "" {
+			req["canary"] = si.canary // the gate plants it, git watches pushes for it (#105)
 		}
 		rep, err := t.cfg.Svc(v.Name, req)
 		if errors.Is(err, ErrNoSvc) && v.Name != "gate" {
@@ -563,6 +575,15 @@ func (t *tasks) end(id, agent, reason string, leftover bool) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if _, err := tx.Exec(`DELETE FROM task_canaries WHERE task=?`, id); err != nil {
+		return 0, err
+	}
+	// §4.2 step 6: open asks stay until they expire only if the task completed
+	if reason != "completed" {
+		if _, err := tx.Exec(`UPDATE pending SET state='denied', reason='TASK_ENDED' WHERE task=? AND state IN ('pending','approved')`, id); err != nil {
+			return 0, err
+		}
+	}
 	if _, err := tx.Exec(`UPDATE delegations SET expires_at=? WHERE parent=? AND expires_at > ?`, now, id, now); err != nil {
 		return 0, err
 	}
@@ -571,16 +592,18 @@ func (t *tasks) end(id, agent, reason string, leftover bool) (int64, error) {
 
 // liveRow is one task_registry row with ended_at IS NULL.
 type liveRow struct {
-	Task  string   `json:"task"`
-	Agent string   `json:"agent"`
-	Chain []string `json:"chain"`
-	Trace string   `json:"trace"` // keys bills the trace (§6.3); the other services ignore it
-	uid   uint32
-	dl    int64
+	Task   string   `json:"task"`
+	Agent  string   `json:"agent"`
+	Chain  []string `json:"chain"`
+	Trace  string   `json:"trace"` // keys bills the trace (§6.3); the other services ignore it
+	Canary string   `json:"canary,omitempty"`
+	uid    uint32
+	dl     int64
 }
 
 func (t *tasks) live() ([]liveRow, error) {
-	rows, err := t.db.Query(`SELECT task, agent, chain, trace, uid, deadline FROM task_registry WHERE ended_at IS NULL ORDER BY task`)
+	rows, err := t.db.Query(`SELECT r.task, r.agent, r.chain, r.trace, r.uid, r.deadline, coalesce(c.canary, '') FROM task_registry r
+		LEFT JOIN task_canaries c ON c.task = r.task WHERE r.ended_at IS NULL ORDER BY r.task`)
 	if err != nil {
 		return nil, err
 	}
@@ -589,7 +612,7 @@ func (t *tasks) live() ([]liveRow, error) {
 	for rows.Next() {
 		var r liveRow
 		var c string
-		if err := rows.Scan(&r.Task, &r.Agent, &c, &r.Trace, &r.uid, &r.dl); err != nil {
+		if err := rows.Scan(&r.Task, &r.Agent, &c, &r.Trace, &r.uid, &r.dl, &r.Canary); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(c), &r.Chain)
@@ -606,11 +629,17 @@ func (t *tasks) agentOf(task string) (string, bool) {
 	return agent, err == nil
 }
 
-// listLive answers task.list_live (§2.1): a restarted service rebinds these tasks' sockets.
-func (t *tasks) listLive() reply {
+// listLive answers task.list_live (§2.1): a restarted service rebinds these tasks' sockets. Only the gate and git
+// get each task's canary (#105).
+func (t *tasks) listLive(withCanary bool) reply {
 	l, err := t.live()
 	if err != nil {
 		return fail("registry")
+	}
+	if !withCanary {
+		for i := range l {
+			l[i].Canary = ""
+		}
 	}
 	return reply{"ok": true, "tasks": l}
 }
@@ -735,6 +764,11 @@ func svcLine(req map[string]any) []byte {
 
 // svcCall sends one line to svc-<svc>.sock (uid 0 only, §2.1) and decodes the reply.
 func svcCall(svc string, req map[string]any) (map[string]any, error) {
+	return svcCallFor(svc, req, 60*time.Second) // dispatch waits for task.start
+}
+
+// svcCallFor is svcCall with the caller's timeout for the whole call.
+func svcCallFor(svc string, req map[string]any, timeout time.Duration) (map[string]any, error) {
 	p := "/run/agentbox-rootd/svc-" + svc + ".sock"
 	if _, err := os.Stat(p); errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNoSvc
@@ -744,7 +778,7 @@ func svcCall(svc string, req map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	defer c.Close()
-	c.SetDeadline(time.Now().Add(60 * time.Second)) // dispatch waits for task.start
+	c.SetDeadline(time.Now().Add(timeout))
 	if _, err := c.Write(svcLine(req)); err != nil {
 		return nil, err
 	}

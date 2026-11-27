@@ -27,6 +27,7 @@ import (
 	"sync"
 	"syscall"
 
+	"agentbox/internal/canary"
 	"agentbox/internal/ids"
 	"agentbox/internal/ops"
 )
@@ -92,6 +93,7 @@ func PromptLen(p string) int {
 
 type task struct {
 	id, agent string
+	canary    string // #105: taskrun plants it as the task's decoy credentials (task.fetch)
 	chain     []string
 	uid       uint32
 	ln        net.Listener
@@ -110,6 +112,7 @@ func (s *Server) Control(line []byte) map[string]any {
 	var r struct {
 		Call, Task, Agent string
 		Chain             []string
+		Canary            string
 		// trace comes from task.launch for the keys broker only (§6.3); the task gate and the broker-stub carry no
 		// trace, so this just lets the field through DisallowUnknownFields
 		Trace        string
@@ -123,7 +126,7 @@ func (s *Server) Control(line []byte) map[string]any {
 	}
 	switch r.Call {
 	case "register":
-		if err := s.register(r.Task, r.Agent, r.Chain); err != nil {
+		if err := s.register(r.Task, r.Agent, r.Chain, r.Canary); err != nil {
 			return map[string]any{"ok": false, "error": err.Error()}
 		}
 		return map[string]any{"ok": true, "socket": s.sockPath(r.Task)}
@@ -183,11 +186,11 @@ func (s *Server) dispatch(req, agent, cli, prompt string) map[string]any {
 }
 
 // register checks the dir rootd made (§2.1: a real dir, agentboxd's uid, group ag-<agent>, mode 2750), replaces only
-// this service's own stale socket in it, and binds gate.sock 0660. A task registered again with the same agent and
-// chain keeps its socket.
-func (s *Server) register(id, agent string, chain []string) error {
-	if !taskRe.MatchString(id) || !agentRe.MatchString(agent) {
-		return errors.New("bad task or agent name")
+// this service's own stale socket in it, and binds gate.sock 0660. A task registered again with the same agent,
+// chain and canary keeps its socket.
+func (s *Server) register(id, agent string, chain []string, c string) error {
+	if !taskRe.MatchString(id) || !agentRe.MatchString(agent) || c != "" && !canary.Valid(c) {
+		return errors.New("bad task, agent or canary")
 	}
 	for _, c := range chain {
 		if !chainRe.MatchString(c) {
@@ -204,7 +207,7 @@ func (s *Server) register(id, agent string, chain []string) error {
 		s.tasks = map[string]*task{}
 	}
 	if t, ok := s.tasks[id]; ok {
-		if t.agent == agent && slices.Equal(t.chain, chain) {
+		if t.agent == agent && slices.Equal(t.chain, chain) && t.canary == c {
 			// rebound from task.list_live while rootd's register waited for this service to start: the socket a
 			// socket-activated broker binds before it reads the register that started it
 			return nil
@@ -237,7 +240,7 @@ func (s *Server) register(id, agent string, chain []string) error {
 		os.Remove(p)
 		return err
 	}
-	t := &task{id: id, agent: agent, chain: chain, uid: uid, ln: ln, path: p, conns: map[net.Conn]bool{}}
+	t := &task{id: id, agent: agent, canary: c, chain: chain, uid: uid, ln: ln, path: p, conns: map[net.Conn]bool{}}
 	s.tasks[id] = t
 	go s.accept(t)
 	log.Printf("task %s (agent %s) registered: %s", id, agent, p)
@@ -396,7 +399,11 @@ func (s *Server) taskCall(t *task, r rpcReq) []byte {
 		if !found {
 			return rpcError(r.ID, -32001, "no prompt for this task", nil)
 		}
-		return ok(map[string]any{"task": t.id, "cli": j.cli, "prompt": j.prompt})
+		res := map[string]any{"task": t.id, "cli": j.cli, "prompt": j.prompt}
+		if t.canary != "" {
+			res["canary"] = t.canary
+		}
+		return ok(res)
 	}
 	if r.Method == "task.probed" {
 		if r.Params == nil || d.Decode(&struct{}{}) != nil {
@@ -466,15 +473,15 @@ func (s *Server) Rebind(list []byte) error {
 	var r struct {
 		OK    bool `json:"ok"`
 		Tasks []struct {
-			Task, Agent string
-			Chain       []string
+			Task, Agent, Canary string
+			Chain               []string
 		} `json:"tasks"`
 	}
 	if err := json.Unmarshal(list, &r); err != nil || !r.OK {
 		return fmt.Errorf("task.list_live: %s", bytes.TrimSpace(list))
 	}
 	for _, t := range r.Tasks {
-		if err := s.register(t.Task, t.Agent, t.Chain); err != nil {
+		if err := s.register(t.Task, t.Agent, t.Chain, t.Canary); err != nil {
 			log.Printf("task %s: rebind: %v", t.Task, err)
 		}
 	}

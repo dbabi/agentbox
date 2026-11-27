@@ -1,0 +1,4 @@
+#!/bin/sh
+# agentbox's pre-receive hook (ARCHITECTURE.md §6.3), root-owned in the release. agentbox-git sets core.hooksPath to
+# this dir for every local push, so no other hook runs. The binary is the same release's.
+exec "${0%/git-hooks/pre-receive}/bin/agentbox" git-hook pre-receive

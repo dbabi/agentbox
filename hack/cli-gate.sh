@@ -248,7 +248,8 @@ for k in keys:
 open(out, "wb").write(buf); os.kill(pid, 9)
 PY
 cat > $G/p <<'P'
-echo '{"hasCompletedOnboarding":true,"customApiKeyResponses":{"approved":["agentbox-placeholder"],"rejected":[]},"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}' > ~/.claude.json
+# the key slot holds the task's canary (#105): Claude Code approves a key by its last 20 characters
+echo '{"hasCompletedOnboarding":true,"customApiKeyResponses":{"approved":["'"$(printf %s "$ANTHROPIC_API_KEY" | tail -c 20)"'"],"rejected":[]},"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}' > ~/.claude.json
 cd /workspace && python3 .gate/ptyrun.py /tmp/st /status '\r' -- claude --setting-sources user --strict-mcp-config --settings /opt/agentbox/exports/claude-settings.json --mcp-config /opt/agentbox/exports/mcp.json
 sed 's/\x1b\[[0-9;?]*[A-Za-z]/ /g' /tmp/st | tr '\r' '\n' | grep -a 'Setting sources:'
 P

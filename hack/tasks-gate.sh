@@ -150,9 +150,10 @@ find $W -mindepth 1 -delete 2>/dev/null || : # a rerun on the same box starts fr
 check "  ... its user manager runs with the root-owned XDG dirs" 'i=0; until systemctl is-active -q user@$U.service; do i=$((i+1)); [ $i -lt 50 ] || exit 1; sleep 0.2; done &&
   tr "\0" "\n" < /proc/$(systemctl show -P MainPID user@$U.service)/environ | grep -qx "XDG_CONFIG_HOME=$X/config"'
 mkdir -p $RS/agentboxd.service.d && printf '[Service]\nEnvironment=AGENTBOX_TEST_CLI=sh\n' > $RS/agentboxd.service.d/50-tg.conf
-# the release's proxy and keys broker own svc-proxy.sock and svc-keys.sock: they stop while the stand-ins run, and start
-# again at the end
-systemctl stop agentbox-proxy.service agentbox-proxy-svc.socket agentbox-keys.service agentbox-keys-svc.socket
+# the release's proxy, keys broker and git service own svc-proxy.sock, svc-keys.sock and svc-git.sock: they stop
+# while the stand-ins run, and start again at the end
+systemctl stop agentbox-proxy.service agentbox-proxy-svc.socket agentbox-keys.service agentbox-keys-svc.socket \
+  agentbox-git.service agentbox-git-svc.socket
 for v in proxy keys git; do
   printf '[Socket]\nListenStream=/run/agentbox-rootd/svc-%s.sock\nSocketUser=agentbox-%s\nSocketGroup=root\nSocketMode=0600\nFileDescriptorName=svc-%s\nService=agentbox-%s-stub.service\nRemoveOnStop=yes\n' $v $v $v $v > $RS/agentbox-$v-stub.socket
   printf '[Unit]\nRequires=agentbox-%s-stub.socket\nAfter=agentbox-rootd.service\n[Service]\nType=notify\nNotifyAccess=main\nUser=agentbox-%s\nUMask=0117\nExecStart=%s broker-stub --svc %s\n' $v $v $B $v > $RS/agentbox-$v-stub.service
@@ -626,7 +627,8 @@ check "no task is left live, and no task container exists" 'sleep 5; [ "$($B tas
   [ -z "$(pod ps -a --format "{{.Names}}" | grep task-)" ]'
 systemctl stop agentbox-proxy-stub agentbox-keys-stub agentbox-git-stub agentbox-proxy-stub.socket agentbox-keys-stub.socket agentbox-git-stub.socket
 rm -f $RS/agentbox-*-stub.* $RS/agentboxd.service.d/50-tg.conf /usr/bin/claude; systemctl daemon-reload; systemctl restart agentboxd
-systemctl start agentbox-proxy-svc.socket agentbox-proxy.service agentbox-keys-svc.socket agentbox-keys.service
+systemctl start agentbox-proxy-svc.socket agentbox-proxy.service agentbox-keys-svc.socket agentbox-keys.service \
+  agentbox-git-svc.socket agentbox-git.service
 check "the audit chain verifies" '$B audit verify'
 check "no failed units" 'sleep 3; [ -z "$(systemctl --failed --no-legend --plain)" ]'
 journalctl -b -u agentbox-rootd -o short-precise --no-pager | grep -E "task|ALERT" | tail -80
