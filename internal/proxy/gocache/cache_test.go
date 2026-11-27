@@ -302,6 +302,101 @@ func TestTaintFirst(t *testing.T) {
 	}
 }
 
+// firstWrite records "write" in ev at its first write, after whatever the audit hook recorded.
+type firstWrite struct {
+	bytes.Buffer
+	ev *[]string
+}
+
+func (w *firstWrite) Write(b []byte) (int, error) {
+	if w.Len() == 0 {
+		*w.ev = append(*w.ev, "write")
+	}
+	return w.Buffer.Write(b)
+}
+
+// A-G6 for a hit (#317): a file another task stored is served only after this task's taint record. While auditd
+// refuses it, the hit gets a bare 503 with no body and its row is not touched; once ACKed, the record comes before
+// the reply's first byte.
+func TestTaintFirstOnHit(t *testing.T) {
+	x := newFixture(t)
+	if st, _ := x.do(t, "T1", "ga", zipA); st != 200 {
+		t.Fatalf("fill: %d", st)
+	}
+	s, _ := x.c.store("ga")
+	r0, _ := s.row("go:example.com/a@v1.0.0.zip")
+	later := time.Now().Add(2 * time.Hour) // past touch's hour, so a hit would move used_at
+	x.c.cfg.Now = func() time.Time { return later }
+	x.nack["TAINT"] = true
+	if st, b := x.do(t, "T2", "ga", zipA); st != 503 || len(b) != 0 {
+		t.Fatalf("a hit while auditd refuses the record: %d, %d body bytes", st, len(b))
+	}
+	if r, _ := s.row(r0.key); r.usedAt != r0.usedAt {
+		t.Errorf("the refused hit touched its row: used_at %d -> %d", r0.usedAt, r.usedAt)
+	}
+	x.nack["TAINT"] = false
+	var ev []string
+	audit := x.c.cfg.Audit
+	x.c.cfg.Audit = func(rec map[string]any) error {
+		if rec["type"] == "TAINT" {
+			ev = append(ev, "taint "+rec["subject"].(string))
+		}
+		return audit(rec)
+	}
+	req, _ := http.ReadRequest(bufio.NewReader(strings.NewReader(zipA + " HTTP/1.1\r\nHost: proxy\r\n\r\n")))
+	w := &firstWrite{ev: &ev}
+	x.c.Serve(w, "T2", "ga", req)
+	if strings.Join(ev, ",") != "taint task:T2,write" || !strings.HasPrefix(w.String(), "HTTP/1.1 200 ") {
+		t.Errorf("events %q, reply %.40q", ev, w.String())
+	}
+	if r, _ := s.row(r0.key); r.usedAt != later.UnixMilli() {
+		t.Errorf("the hit did not touch its row: %d", r.usedAt)
+	}
+}
+
+// A-G10's other preconditions (#317): past the task's byte cap a new miss gets 404 while a hit still works; with every
+// fill slot held, a fill that gets none within SlotWait gets 404, and the next one fills.
+func TestByteCapAndSlotWait(t *testing.T) {
+	x := newFixture(t)
+	x.lim.TaskFillMaxBytes = int64(len(x.up.Mod("example.com/a", "v1.0.0")))
+	if st, _ := x.do(t, "T1", "ga", modA); st != 200 {
+		t.Fatalf("the first fill: %d", st)
+	}
+	if st, _ := x.do(t, "T1", "ga", zipA); st != 404 {
+		t.Errorf("past the task's byte cap: %d", st)
+	}
+	if st, _ := x.do(t, "T1", "ga", modA); st != 200 {
+		t.Errorf("a hit past the byte cap: %d", st)
+	}
+	if st, _ := x.do(t, "T2", "ga", zipA); st != 200 {
+		t.Errorf("another task's fill: %d", st)
+	}
+
+	y := newFixture(t)
+	y.lim.Slots, y.lim.SlotWait = 1, 100*time.Millisecond // the store takes its slots when it opens
+	s, _ := y.c.store("ga")
+	y.up.Slow(time.Second, 0)
+	slow := make(chan int)
+	go func() { st, _ := y.do(t, "T1", "ga", zipA); slow <- st }()
+	for i := 0; len(s.slots) == 0; i++ {
+		if i == 200 {
+			t.Fatal("the slow fill never took the slot")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t0 := time.Now()
+	if st, _ := y.do(t, "T1", "ga", modA); st != 404 || time.Since(t0) < 100*time.Millisecond || time.Since(t0) > 900*time.Millisecond {
+		t.Errorf("a fill with no slot within the wait: %d after %v", st, time.Since(t0))
+	}
+	if st := <-slow; st != 200 {
+		t.Errorf("the slow fill: %d", st)
+	}
+	y.up.Slow(0, 0)
+	if st, _ := y.do(t, "T1", "ga", modA); st != 200 {
+		t.Errorf("once the slot is free: %d", st)
+	}
+}
+
 // A-G8 (a): upstream bytes that differ from the signed record are refused: sum_mismatch, an alert, no row, no blob;
 // (c) a blob changed on disk is deleted and filled again.
 func TestMismatchAndCorrupt(t *testing.T) {
@@ -371,8 +466,9 @@ func TestChecksumDatabase(t *testing.T) {
 	}
 }
 
-// A-G10: past a task's file or byte cap, or the agent's day cap, or below the disk reserve, a miss gets 404; hits still
-// work. Eviction keeps the store under its limit and the newest entries.
+// A-G10: past a task's file cap, or the agent's day cap, or below the disk reserve, a miss gets 404; hits still work
+// (the byte cap and the slot wait: TestByteCapAndSlotWait). Eviction keeps the store under its limit and the newest
+// entries.
 func TestCapsAndEviction(t *testing.T) {
 	x := newFixture(t)
 	x.lim.TaskFillMaxFiles = 1
