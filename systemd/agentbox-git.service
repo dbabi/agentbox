@@ -3,6 +3,7 @@
 # under /var/lib/agentbox/git over smart HTTP, with the release's pre-receive hook. It holds the GitHub token (a
 # systemd credential from the root-only control/secrets/git) and runs the remote writes rootd sends it once a human
 # approved them. It never resolves a name: rootd does on resolve-git.sock, and nft lets this uid reach only git_dst.
+# Its socket starts it: rootd's first call (a task's registration, remote.set) does, so it has no [Install] of its own.
 [Unit]
 Description=agentbox git service
 Requires=agentbox-reconcile.service agentbox-firewall.service agentbox-git-svc.socket
@@ -36,6 +37,3 @@ SystemCallArchitectures=native
 CapabilityBoundingSet=
 # every file in the dir is one credential: github-token there is $CREDENTIALS_DIRECTORY/git_github-token
 LoadCredential=git:/var/lib/agentbox/control/secrets/git
-
-[Install]
-WantedBy=multi-user.target

@@ -235,7 +235,12 @@ func (s *Server) register(id, agent, c string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, dup := s.tasks[id]; dup {
+	if t, dup := s.tasks[id]; dup {
+		// rootd's register can come after this service's own rebind took the task (its first call starts the
+		// service): the same registration again is a no-op
+		if t.agent == agent && t.canary == c {
+			return nil
+		}
 		return errors.New("task already registered")
 	}
 	p := s.sockPath(id)

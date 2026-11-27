@@ -213,15 +213,20 @@ func TestRegisterChecks(t *testing.T) {
 	if r := line(map[string]any{"call": "register", "task": id, "agent": "claude", "canary": canary.Prefix + "x"}); r["ok"] == true {
 		t.Fatal("registered with a malformed canary")
 	}
-	if r := line(map[string]any{"call": "register", "task": id, "agent": "claude", "canary": canary.Mint(), "chain": []string{"human:x"},
+	c := canary.Mint()
+	if r := line(map[string]any{"call": "register", "task": id, "agent": "claude", "canary": c, "chain": []string{"human:x"},
 		"trace": ids.New(ids.Trace)}); r["ok"] != true {
 		t.Fatalf("register: %v", r)
+	}
+	// the service's rebind can take a task before rootd's own register of it arrives: the same one again is a no-op
+	if r := line(map[string]any{"call": "register", "task": id, "agent": "claude", "canary": c}); r["ok"] != true {
+		t.Fatalf("the same registration again: %v", r)
 	}
 	if fi, err := os.Lstat(filepath.Join(dir, "git.sock")); err != nil || fi.Mode()&0o777 != 0o660 {
 		t.Fatalf("git.sock %v %v", fi, err)
 	}
 	if r := line(map[string]any{"call": "register", "task": id, "agent": "claude"}); r["ok"] == true {
-		t.Fatal("registered twice")
+		t.Fatal("registered again with another canary")
 	}
 	if r := line(map[string]any{"call": "revoke", "task": id}); r["revoked"] != true {
 		t.Fatalf("revoke: %v", r)

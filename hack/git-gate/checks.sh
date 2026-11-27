@@ -50,8 +50,9 @@ journalctl --rotate >/dev/null 2>&1 || :
 
 case ${1:-} in
 setup)
-check "agentbox-git runs as agentbox-git behind its svc-git.sock (agentbox-git:root 0600); git/ is the service's, 0700; the release's hook is root's" '
-  systemctl is-active -q agentbox-git.service agentbox-git-svc.socket && [ "$(systemctl show -P User agentbox-git.service)" = agentbox-git ] &&
+check "svc-git.sock listens from boot and starts agentbox-git, as agentbox-git (agentbox-git:root 0600); git/ is the service's, 0700; the release's hook is root's" '
+  systemctl is-active -q agentbox-git-svc.socket && systemctl start agentbox-git.service && systemctl is-active -q agentbox-git.service &&
+  [ "$(systemctl show -P User agentbox-git.service)" = agentbox-git ] &&
   [ "$(stat -c "%U:%G %a" /run/agentbox-rootd/svc-git.sock)" = "agentbox-git:root 600" ] && [ "$(stat -c "%U %a" $GIT)" = "agentbox-git 700" ] &&
   [ "$(stat -c "%U %a" /var/lib/agentbox/current/git-hooks/pre-receive)" = "root 755" ] && git --version'
 cp $G/ca.pem /usr/local/share/ca-certificates/agentbox-git-gate.crt && update-ca-certificates >/dev/null 2>&1
