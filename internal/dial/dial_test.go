@@ -165,30 +165,32 @@ func TestClient(t *testing.T) {
 	}
 }
 
-// The addresses share Budget: each attempt gets an even share of what is left, and a failure reports the first
-// address's kind. A name rootd refuses, a non-TCP network and a bad port dial nothing.
+// The addresses share Budget: each attempt gets an even share of what is left, and a failure reports what the last
+// address's attempt was. A name rootd refuses, a non-TCP network and a bad port dial nothing.
 func TestDialContext(t *testing.T) {
 	f := newRootd(t, map[string]string{"two.example": `{"ok":true,"addrs":["93.184.215.14","93.184.215.15"]}`,
 		"np.example": `{"ok":false,"reason":"non_public"}`, "1.2.3.4": `{"ok":false,"reason":"not_allowlisted"}`})
 	var deadlines []time.Duration
-	var fail error
+	var fail []error // the first and the second address's failure
 	start := time.Now()
 	d := Dialer{Sock: f.sock, dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
 		dl, _ := ctx.Deadline()
 		deadlines = append(deadlines, dl.Sub(start))
-		return nil, fail
+		return nil, fail[len(deadlines)-1]
 	}}
+	op := func(err error) error { return &net.OpError{Op: "dial", Net: "tcp", Err: err} }
+	refused, unreach := op(os.NewSyscallError("connect", syscall.ECONNREFUSED)), op(os.NewSyscallError("connect", syscall.EHOSTUNREACH))
+	timeout := op(os.ErrDeadlineExceeded)
 	for _, c := range []struct {
-		err  error
-		kind string
-	}{{&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}, Refused},
-		{&net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.EPERM)}, Blocked},
-		{&net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}, Timeout}} {
-		deadlines, fail, start = nil, c.err, time.Now()
+		fail []error
+		what string
+	}{{[]error{refused, refused}, Refused}, {[]error{timeout, unreach}, Blocked},
+		{[]error{unreach, op(os.NewSyscallError("connect", syscall.EPERM))}, Blocked}, {[]error{refused, timeout}, Timeout}} {
+		deadlines, fail, start = nil, c.fail, time.Now()
 		_, err := d.DialContext(context.Background(), "tcp", "two.example:443")
 		var de *Error
-		if !errors.As(err, &de) || de.Kind != c.kind || !errors.Is(err, c.err) {
-			t.Fatalf("%v: got %v, want kind %s", c.err, err, c.kind)
+		if !errors.As(err, &de) || de.What != c.what || !errors.Is(err, c.fail[1]) {
+			t.Fatalf("%v: got %v, want %s", c.fail, err, c.what)
 		}
 		if len(deadlines) != 2 || (deadlines[0]-Budget/2).Abs() > time.Second || (deadlines[1]-Budget).Abs() > time.Second {
 			t.Fatalf("deadlines %v, want about %v and %v", deadlines, Budget/2, Budget)
@@ -211,15 +213,25 @@ func TestDialContext(t *testing.T) {
 	}
 }
 
-// kind reads the errors the kernel and Go's dialer give: an expired budget is a timeout.
-func TestKind(t *testing.T) {
+// what reads the errors the kernel and Go's dialer give: a reset is refused, an expired budget a timeout, and the
+// rest blocked.
+func TestWhat(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 	_, err := new(net.Dialer).DialContext(ctx, "tcp", "127.0.0.1:9")
-	if k := kind(err); k != Timeout {
-		t.Errorf("%v: %s, want timeout", err, k)
+	if w := what(err); w != Timeout {
+		t.Errorf("%v: %s, want timeout", err, w)
 	}
-	if k := kind(&net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.EHOSTUNREACH)}); k != Refused {
-		t.Errorf("EHOSTUNREACH: %s, want refused", k)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	if _, err := net.Dial("tcp", addr); what(err) != Refused { // nothing listens: the kernel resets
+		t.Errorf("%v: %s, want refused", err, what(err))
+	}
+	if w := what(&net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ENETUNREACH)}); w != Blocked {
+		t.Errorf("ENETUNREACH: %s, want blocked", w)
 	}
 }

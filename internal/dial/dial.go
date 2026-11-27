@@ -24,20 +24,22 @@ import (
 // Budget is the one dial budget a connection's addresses share (§6.2 step 3; keys: §6.3).
 const Budget = 10 * time.Second
 
-// The kinds of a failed dial (EGRESS_DIAL_FAILED, §5.6).
+// What a failed dial was (EGRESS_DIAL_FAILED's what, §5.6). An nft drop is a timeout: the kernel keeps resending the
+// SYN it dropped.
 const (
-	Timeout = "timeout" // no address answered within Budget
-	Refused = "refused" // the upstream reset the connection, or the path to it failed
-	Blocked = "blocked" // nft dropped the SYN (EPERM): the address is not in <svc>_dst
+	Timeout = "timeout" // the budget ran out
+	Refused = "refused" // the upstream, or a reject on the way, reset the connection
+	Blocked = "blocked" // any other failure: no route, unreachable, not permitted
 )
 
-// Error is a dial that reached none of rootd's addresses. Err is the first address's failure.
+// Error is a dial that reached none of rootd's addresses. Err is the last address's failure, the one the rest of the
+// budget went to.
 type Error struct {
-	Kind string
+	What string
 	Err  error
 }
 
-func (e *Error) Error() string { return "dial " + e.Kind + ": " + e.Err.Error() }
+func (e *Error) Error() string { return "dial " + e.What + ": " + e.Err.Error() }
 func (e *Error) Unwrap() error { return e.Err }
 
 // Resolve asks rootd on sock for host:port and returns its checked addresses in order. The proxy names the task it
@@ -133,7 +135,7 @@ func (d Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn
 	ctx, cancel := context.WithTimeout(ctx, Budget)
 	defer cancel()
 	end, _ := ctx.Deadline()
-	var first error
+	var last error
 	for i, a := range addrs {
 		actx, acancel := context.WithDeadline(ctx, time.Now().Add(time.Until(end)/time.Duration(len(addrs)-i)))
 		c, err := dial(actx, "tcp", netip.AddrPortFrom(a, uint16(port)).String()) // an IP literal: no lookup
@@ -141,22 +143,20 @@ func (d Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn
 		if err == nil {
 			return c, nil
 		}
-		if first == nil {
-			first = err
-		}
+		last = err
 	}
-	return nil, &Error{Kind: kind(first), Err: first}
+	return nil, &Error{What: what(last), Err: last}
 }
 
-func kind(err error) string {
+func what(err error) string {
 	var ne net.Error
 	switch {
-	case errors.Is(err, syscall.EPERM):
-		return Blocked
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return Refused
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne) && ne.Timeout():
 		return Timeout
 	}
-	return Refused
+	return Blocked
 }
 
 // Transport is an http.Transport whose every connection is a pinned dial: never the environment's proxy, and TLS that
