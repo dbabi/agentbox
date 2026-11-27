@@ -378,9 +378,11 @@ systemctl stop agentbox-auditd.service "agentbox-auditd-*.socket"; touch $WS/$A1
 for i in $(seq 300); do [ -e $WS/$A1/done1 ] && break; sleep 0.1; done
 systemctl start "agentbox-auditd-*.socket" agentbox-auditd.service; wait $tp; cat $G/ad
 check "A-G6 with auditd stopped, a proxy cache request gets 503 and 0 body bytes" 'grep -q "^HTTP/1.1 503" $G/ad && grep -qx "body=0" $G/ad'
-rm -f $WS/$A1/go2 $WS/$A1/done2 $G/last
-task $A1 'while [ ! -e /workspace/go2 ]; do sleep 0.1; done; cd fx && go clean -modcache; go mod download -x 2>&1 | grep -c "^# get https://proxy.golang.org/" ; go test ./...; touch /workspace/done2' > $G/ab 2>&1 &
-tp=$!; for i in $(seq 600); do [ -s $G/last ] && [ -d /run/agentbox-proxy/t/$(cat $G/last) ] && break; sleep 0.1; done; T=$(cat $G/last)
+rm -f $WS/$A1/go2 $WS/$A1/done2 $WS/$A1/ready2 $G/last
+# agentboxd keeps the prompt in memory, and taskrun fetches it before the script runs: stop agentboxd only once the
+# script has started (ready2), or the task never gets its prompt and ends with no result
+task $A1 'touch /workspace/ready2; while [ ! -e /workspace/go2 ]; do sleep 0.1; done; cd fx && go clean -modcache; go mod download -x 2>&1 | grep -c "^# get https://proxy.golang.org/" ; go test ./...; touch /workspace/done2' > $G/ab 2>&1 &
+tp=$!; for i in $(seq 600); do [ -s $G/last ] && [ -e $WS/$A1/ready2 ] && break; sleep 0.1; done; T=$(cat $G/last)
 systemctl stop agentboxd.service; touch $WS/$A1/go2
 for i in $(seq 1200); do [ -e $WS/$A1/done2 ] && break; sleep 0.1; done
 systemctl start agentboxd.service; wait $tp; cat $G/ab
