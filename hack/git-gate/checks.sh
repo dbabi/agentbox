@@ -60,6 +60,8 @@ check "svc-git.sock listens from boot and starts agentbox-git, as agentbox-git (
   [ "$(systemctl show -P User agentbox-git.service)" = agentbox-git ] &&
   [ "$(stat -c "%U:%G %a" /run/agentbox-rootd/svc-git.sock)" = "agentbox-git:root 600" ] && [ "$(stat -c "%U %a" $GIT)" = "agentbox-git 700" ] &&
   [ "$(stat -c "%U %a" /var/lib/agentbox/current/git-hooks/pre-receive)" = "root 755" ] && git --version'
+check "agentbox-git runs under MemoryMax=4G and TasksMax=1024 (#316)" '[ "$(systemctl show -P MemoryMax agentbox-git.service)" = 4294967296 ] &&
+  [ "$(systemctl show -P TasksMax agentbox-git.service)" = 1024 ]'
 # a rerun starts from empty workspaces: a canary an earlier run left there would block the agent's tasks at the next
 # credential scan (issue #289)
 for a in gg gt go; do [ ! -d $WS/$a ] || find $WS/$a -mindepth 1 -delete; done
