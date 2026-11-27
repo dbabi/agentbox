@@ -8,7 +8,7 @@ toolchain go1.26.11
 require (
 	golang.org/x/mod v0.43.0
 	golang.org/x/sys v0.50.0
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 )
 
 require (
