@@ -506,9 +506,11 @@ check "A-G12 a fill whose task is revoked mid-download inserts no row" 'sleep 5 
 ctl "slow?ms=0&rate=0"
 
 # --- C-G4 and A-G10: budget.set, day shares, caps; the running proxy reads each change at its next fill ---
+# a rerun on the same box finds the last run's files: "changes nothing" compares them
 check "C-G4 budget.set refuses day shares that sum above the box cap, and changes nothing" '
+  b0=$(cat /var/lib/agentbox/control/budgets.toml /var/lib/agentbox/control/day-shares.json 2>/dev/null | sha256sum) &&
   ! printf "keys.day_cap_cents = 1000\nkeys.agent_day_share.$A1 = 600\nkeys.agent_day_share.$A2 = 500\n" | $B budget set > $G/bs && grep -q "above keys.day_cap_cents" $G/bs &&
-  [ ! -e /var/lib/agentbox/control/budgets.toml ]'
+  [ "$(cat /var/lib/agentbox/control/budgets.toml /var/lib/agentbox/control/day-shares.json 2>/dev/null | sha256sum)" = "$b0" ]'
 check "C-G4 budget.set with a box cap: the day shares split it equally, an explicit one first, and agent.add recomputes them" '
   printf "keys.day_cap_cents = 1000\nkeys.agent_day_share.$A1 = 600\n" | $B budget set >/dev/null && cat /var/lib/agentbox/control/day-shares.json &&
   n=$($B agent list | python3 -c "import json,sys; print(sum(a[\"active\"] for a in json.load(sys.stdin)[\"agents\"]))") &&
@@ -635,8 +637,9 @@ check "C-G3 plain HTTP through the forwarder gives 400 EGRESS_WRONG_ROUTE{plain_
   want http://example.com/_cache/go/example.com/m/@v/v1.0.0.mod 400 EGRESS_WRONG_ROUTE fix && grep -qx "origin 400" $G/c3a &&
   grep -q "\"what\":\"plain_http\"" $WS/$A3/.c3/r1-cache && grep -qx "socket 404" $G/c3a && [ "$(pj | grep -c "^task $T3 [A-Z]* \"/_cache/")" = 1 ]'
 # the four rejected answers for one name, each in its own task: a private IPv4, NAT64 around it, the box's own global
-# IPv6 (as SLAAC gives one) and a LAN host's global IPv6 on the on-link prefix of a dummy interface
-ip link add gcg0 type dummy 2>/dev/null; ip link set gcg0 up && ip -6 addr add 2600:ffff:200::1/64 dev gcg0 nodad 2>/dev/null || :
+# IPv6 (as SLAAC gives one) and a LAN host's global IPv6 on the on-link prefix, both on the default IPv6 interface
+IF6=$(ip -6 route show default | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1) # the box's own address and its LAN, on that interface
+ip -6 addr add 2600:ffff:200::1/64 dev "$IF6" nodad 2>/dev/null || :
 t0=$(date +%s.%N)
 for a in 192.168.1.10 64:ff9b::c0a8:10a 2600:ffff:200::1 2600:ffff:200::99; do
   dns drop.gate.test=$DROP rj.gate.test=$a
@@ -646,9 +649,9 @@ check "C-G3 rj.gate.test answering 192.168.1.10, NAT64-wrapped 192.168.1.10, the
   for a in 192.168.1.10 64:ff9b::c0a8:10a 2600:ffff:200::1 2600:ffff:200::99; do grep -q "^rj.gate.test:443 403 EGRESS_NAME_REJECTED stop " $G/rj-$a || exit 1
     sed -n "/^HTTP/,\$p" $G/rj-$a | sed "s/dn_[0-9A-Z]*/dn_ID/g" > $G/rjn-$a; ! grep -aEq "192\.168|c0a8|2600:ffff|64:ff9b" $G/rjn-$a || exit 1; done &&
   cmp $G/rjn-192.168.1.10 $G/rjn-64:ff9b::c0a8:10a && cmp $G/rjn-192.168.1.10 $G/rjn-2600:ffff:200::1 && cmp $G/rjn-192.168.1.10 $G/rjn-2600:ffff:200::99 &&
-  for d in "192.168.1.10: private4" "64:ff9b::c0a8:10a: nat64_private" "2600:ffff:200::1: route_" "2600:ffff:200::99: route_on_link"; do
+  for d in "192.168.1.10: private4" "64:ff9b::c0a8:10a: nat64_private" "2600:ffff:200::1: route_not_unicast" "2600:ffff:200::99: route_on_link"; do
     journalctl -u agentbox-rootd.service --since "@$t0" -o cat | grep "entry=rj.gate.test:443" | grep -qF "$d" || { echo "no rootd DENY for $d"; exit 1; }; done'
-ip link del gcg0 2>/dev/null || :
+ip -6 addr del 2600:ffff:200::1/64 dev "$IF6" 2>/dev/null || :
 task $A3 'cd /workspace/.c3 && rm -f dr && python3 pgc.py dr "CONNECT drop.gate.test:443" && cat dr' > $G/dr 2>&1; cat $G/dr
 check "C-G3 an allowlisted host whose address drops SYNs gives 504 EGRESS_DIAL_FAILED{timeout}, next retry, within 11 s" '
   set -- $(grep "^drop.gate.test:443 " $G/dr) && [ "$2 $3 $4" = "504 EGRESS_DIAL_FAILED retry" ] && [ "$5" -ge 9500 ] && [ "$5" -le 11000 ] &&
