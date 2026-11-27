@@ -2,9 +2,11 @@
 # Weeks 7-8 gate for the v5.3 additions (#21; PLAN.md row 7-8; PROPOSALS-v5.3 A-G3 to A-G13, A-G14's short run is go
 # test; C-G3; C-G4's budget.set; ARCHITECTURE.md §2, §4.1, §5.6, §6.2, §6.3) on the local arm64 QEMU VM, none mode,
 # against the release's own agentbox-proxy.
-#   hack/gocache-gate.sh [install|checks ...]   default: both, in order
+#   hack/gocache-gate.sh [install|release|checks ...]   default: install checks
 # install  hack/gate.sh none: the unattended install and the release pipeline, so rootd, agentboxd, taskrun, the proxy
 #          and their units arrive the real way.
+# release  installs this checkout as a new release on the box install made, with its own install.sh, for iterating;
+#          checks boots into it.
 # checks   a fake proxy.golang.org on the host (hack/gocache-gate/upstream: synthetic modules and a checksum database
 #          signed with a test key, TLS from a test CA) on 127.0.0.1:7800+ID, which vm.sh forwards to the guest as
 #          10.0.2.2 for this boot only (AGENTBOX_VM_FWD). On the box, resolved asks hack/gate-dns for this boot only:
@@ -83,6 +85,14 @@ for s; do case $s in
 install)
   hack/gate.sh none >>"$LOG" 2>&1 || die "hack/gate.sh none failed; see $VM/gate-none.txt"
   log "PASS install: hack/gate.sh none (install, release pipeline, firstboot, no failed units)" ;;
+release)
+  up
+  V=0.0.2-dev$(date +%s) R=$(mktemp -d "$VM/rel.XXXXXX")
+  make -s release VERSION="$V" MINISIGN_KEY="$VM/keys/minisign.key" DIST="$R" >/dev/null || die "make release"
+  hack/vm.sh ssh 'rm -rf /tmp/rel && mkdir /tmp/rel && tar -xz -C /tmp/rel' < "$R/agentbox-$V.tgz"
+  rm -rf "$R"
+  echo 'sh /tmp/rel/install.sh --from-firstboot' | root >>"$LOG" 2>&1 || die "install.sh $V failed; see $LOG"
+  log "installed release $V" ;;
 checks)
   K="$VM/gocache"
   mkdir -p "$K"
@@ -599,7 +609,9 @@ assert "connection: close" in h and "agentbox-denial: v1 code=egress_not_allowli
 assert b["error"] == d["msg"] and d["code"] == "EGRESS_NOT_ALLOWLISTED" and d["subject"] == {"host": "offlist.gate.test", "port": 443}, d
 assert d["remedy"][0]["op"] == "net.allow_domain", d
 PY'
-check "  ... and rootd never resolved it, nor the Python client's: gate-dns got no query for either name" '
+# rootd logs a DENY line for every resolve request it refuses, and it would refuse these as not_allowlisted
+check "  ... and rootd got no resolve call for it, nor for the Python client's: no rootd line names either, and gate-dns got no query" '
+  j=$(journalctl -b -u agentbox-rootd.service -o cat) && ! echo "$j" | grep -q "entry=offlist.gate.test:443" && ! echo "$j" | grep -q "entry=offpy.gate.test:443" &&
   ! journalctl -b -u gc-dns.service -o cat | grep -q "query offlist.gate.test" && ! journalctl -b -u gc-dns.service -o cat | grep -q "query offpy.gate.test"'
 check "C-G3 with 50 entries on the list, no refusal names any of them, and none holds an IP address" '
   for n in $(grep -v "^#" $E/$A3.list | cut -d: -f1); do ! grep -q "$n" $WS/$A3/.c3/r1 || { echo "names $n"; exit 1; }; done &&
@@ -655,6 +667,6 @@ journalctl -b -u agentbox-proxy.service -o short-precise --no-pager | grep -v '"
 echo "fails=$fails"
 EOF
   ;;
-*) die "unknown step $s (install or checks)" ;;
+*) die "unknown step $s (install, release or checks)" ;;
 esac; done
 ! grep -q '^[0-9:]* FAIL' "$OUT"
