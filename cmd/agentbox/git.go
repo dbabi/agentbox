@@ -137,7 +137,7 @@ func cmdRemote(args []string) error {
 }
 
 // cmdPending is the admin CLI for the asks waiting for a human (§5.4), over rootd-admin.sock.
-// shortcut: approve is the admin's own rootd-admin.sock call, not an SSHSIG over H made on the laptop (#24).
+// shortcut: approve is the admin's own rootd-admin.sock call, not an SSHSIG over H made on the laptop (#24, #303).
 func cmdPending(args []string) error {
 	if len(args) == 0 {
 		return errors.New("pending: expected list, get, approve or deny")

@@ -113,7 +113,12 @@ script t1 <<'S'
 repo; echo hello > a.txt && git add a.txt && git commit -qm clean && git rev-parse HEAD > /workspace/clean.oid
 push refs/heads/agent/gg/clean clean
 push refs/heads/main main
-for p in nosuch other; do curl -s -o /workspace/404-$p.body -w '%{http_code} %{time_starttransfer}\n' "http://127.0.0.1:8082/$p/info/refs?service=git-upload-pack" > /workspace/404-$p.meta; done
+# timed on CLOCK_MONOTONIC, the clock the service's floor sleeps on. curl times on CLOCK_MONOTONIC_RAW, which runs up to
+# 8% apart from it while chrony slews a fresh boot's clock
+for p in nosuch other; do python3 -c 'import http.client, sys, time
+c = http.client.HTTPConnection("127.0.0.1", 8082, timeout=10); t = time.monotonic()
+c.request("GET", "/%s/info/refs?service=git-upload-pack" % sys.argv[1]); r = c.getresponse(); d = time.monotonic() - t
+open("/workspace/404-%s.body" % sys.argv[1], "wb").write(r.read()); print(r.status, "%.6f" % d)' $p > /workspace/404-$p.meta; done
 # the decoys are checked here: a copy of the canary in the workspace would block the agent at its next credential scan
 c=$GITHUB_TOKEN
 { [ "$ANTHROPIC_API_KEY" = "$c" ] && printf %s "$c" | grep -Eq '^sk-ant-''api03-[A-Za-z0-9_-]{93}AA$' && grep -qxF "  password $c" ~/.netrc &&

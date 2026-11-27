@@ -400,10 +400,7 @@ func TestRecordFixed(t *testing.T) {
 func TestBrokerUnitsHideResolved(t *testing.T) {
 	for _, b := range []string{"proxy", "keys", "git"} {
 		u, err := os.ReadFile(filepath.Join("..", "..", "systemd", "agentbox-"+b+".service"))
-		if errors.Is(err, os.ErrNotExist) {
-			t.Logf("agentbox-%s.service not written yet", b)
-			continue
-		} else if err != nil {
+		if err != nil { // all three brokers are built
 			t.Fatal(err)
 		}
 		var hidden []string

@@ -29,6 +29,7 @@ import (
 //
 // shortcut: an approval is an agentbox-admin peer on rootd-admin.sock, not an SSHSIG over H (#24); no Cedar pass,
 // push policy, batch, quote or ask grant yet (#22, #23). The task's own ask budget and the 3 open asks are enforced.
+// #303 tracks moving the git service to them.
 
 // Ask windows (§5.4): an ask expires 15 min after creation, and an approval must start executing within 15 min.
 const (
@@ -407,7 +408,7 @@ func (s *server) pendingAdmin(r request, signer string) reply {
 
 // approve is the approval transaction (§5.2): the nonce used once, pending to approved only while unexpired; then the
 // execution. A row left approved by a rootd crash executes on the next approve, within the 15 min window.
-// shortcut: the signer is the admin's SO_PEERCRED user, not an SSHSIG over H (#24).
+// shortcut: the signer is the admin's SO_PEERCRED user, not an SSHSIG over H (#24, #303).
 func (s *server) approve(id, signer string) reply {
 	now := time.Now().UnixMilli()
 	tx, err := s.db.Begin()

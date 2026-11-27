@@ -199,7 +199,7 @@ func (s *server) effectiveTaint(task string) (bool, map[string]int64, error) {
 
 // canonJSON is v as JSON with every object's keys sorted, numbers as written and no HTML escaping: the bytes H and
 // the match key hash.
-// shortcut: Go's canonical JSON, not RFC 8785 JCS; the laptop recomputes H with JCS once SSHSIG approvals land (#24).
+// shortcut: Go's canonical JSON, not RFC 8785 JCS; the laptop recomputes H with JCS once SSHSIG approvals land (#24, #303).
 func canonJSON(v any) []byte {
 	b, _ := json.Marshal(v)
 	d := json.NewDecoder(bytes.NewReader(b))

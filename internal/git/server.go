@@ -516,7 +516,7 @@ var errSpoolFull = errors.New("request body over the limit")
 // spool makes a chunked request body plain: net/http/cgi refuses a chunked body, and git sends one for every POST over
 // http.postBuffer. The body goes to a file in git/.spool, so it counts against git/'s quota, of at most limit bytes,
 // and r gets it with its length. done removes the file.
-// shortcut: a push over the limit gets 413, not receive.maxInputSize's own message.
+// shortcut: a push over the limit gets 413, not receive.maxInputSize's own message (#304).
 func (s *Server) spool(r *http.Request, limit int64) (func(), error) {
 	dir := filepath.Join(s.Root, ".spool")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
