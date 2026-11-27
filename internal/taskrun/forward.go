@@ -2,6 +2,7 @@ package taskrun
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strconv"
 	"syscall"
 	"time"
@@ -81,24 +83,32 @@ func (f *Forwarder) dial(ctx context.Context) (net.Conn, error) {
 	}
 }
 
-// Handler is the forwarder: CONNECT on egress is a tunnel; every other request goes through a reverse proxy.
-// shortcut: a non-CONNECT request on egress reaches the proxy in origin form, so the proxy can't tell an absolute-form
-// plain-http request for a /_cache/ path (EGRESS_WRONG_ROUTE{plain_http}) from the Go module cache's own (#286).
+// Handler is the forwarder: CONNECT on egress is a tunnel; every other request goes through a reverse proxy. Plain HTTP
+// on egress reaches the proxy in absolute form, as a client sends it to an HTTP proxy, so the proxy refuses it
+// (EGRESS_WRONG_ROUTE{plain_http}) and never reads it as the Go module cache's origin-form /_cache/ path (#286).
 func (f *Forwarder) Handler() http.Handler {
+	tr := &http.Transport{
+		DialContext:        func(ctx context.Context, _, _ string) (net.Conn, error) { return f.dial(ctx) },
+		DisableCompression: true,
+		// -1 keeps no idle conn, so each request dials afresh: a kept-alive conn to a broker that restarted fails the
+		// next POST at once (the transport won't replay a body), and only dial retries ENOENT and ECONNREFUSED inside
+		// f.Retry. Not DisableKeepAlives: its Connection: close makes a Go broker that answers before it reads the
+		// whole body hang up at once, and the body write's EPIPE can then beat the answer out of RoundTrip (#168)
+		MaxIdleConnsPerHost: -1,
+	}
+	egress := f.Ch.Name == "egress"
+	if egress {
+		tr.Proxy = func(*http.Request) (*url.URL, error) { return &url.URL{Scheme: "http", Host: "broker"}, nil }
+	}
 	f.rp = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.Out.URL.Scheme, r.Out.URL.Host = "http", "broker"
+			if egress {
+				r.Out.URL.Host = cmp.Or(r.In.URL.Host, r.In.Host) // the client's target, never https: no TLS here
+			}
 			r.Out.Host = r.In.Host
 		},
-		Transport: &http.Transport{
-			DialContext:        func(ctx context.Context, _, _ string) (net.Conn, error) { return f.dial(ctx) },
-			DisableCompression: true,
-			// -1 keeps no idle conn, so each request dials afresh: a kept-alive conn to a broker that restarted fails the
-			// next POST at once (the transport won't replay a body), and only dial retries ENOENT and ECONNREFUSED inside
-			// f.Retry. Not DisableKeepAlives: its Connection: close makes a Go broker that answers before it reads the
-			// whole body hang up at once, and the body write's EPIPE can then beat the answer out of RoundTrip (#168)
-			MaxIdleConnsPerHost: -1,
-		},
+		Transport:     tr,
 		FlushInterval: -1, // streamed LLM replies and git packs pass through as they arrive
 		ModifyResponse: func(resp *http.Response) error {
 			f.saw(resp.Header, ops.Subject{})
