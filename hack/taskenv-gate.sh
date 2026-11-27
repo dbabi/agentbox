@@ -241,9 +241,10 @@ check "A-G1 ga: go mod download asks the Go module filter, then proxy.golang.org
   grep -q "^# get https://proxy.golang.org/" $G/gma && [ "$(connects)" -gt "$c" ] && grep -q "^CONNECT proxy.golang.org:443 " $G/proxy.log'
 check "A-G1 go version is the image's pinned Go ($(sed -n "s/^go = \"\(.*\)\"/\1/p" /tmp/gate-image/task/mise.toml))" '
   task ga "go version" | grep -qx "go version go$(sed -n "s/^go = \"\(.*\)\"/\1/p" /tmp/gate-image/task/mise.toml) linux/arm64"'
+# taskrun's own HOME files include the task's canary decoys (#105): ~/.config/gh/hosts.yml and ~/.netrc
 check "A-G1 a task writes \$GOCACHE, ~/go/pkg/mod and ~/.npm; the next task sees none of it, only taskrun's own HOME files" '
   task ga "for d in \$(go env GOCACHE) \$(go env GOMODCACHE) ~/.npm; do mkdir -p \$d && touch \$d/gate-mark; done; ls \$(go env GOCACHE)/gate-mark ~/go/pkg/mod/gate-mark ~/.npm/gate-mark" &&
-  task ga "[ \"\$(ls -A ~ | sort | tr \"\n\" \" \")\" = \".agentbox .claude .codex \" ] && ! ls \$(go env GOCACHE)/gate-mark ~/go/pkg/mod/gate-mark ~/.npm/gate-mark 2>/dev/null || { ls -la ~; false; }"'
+  task ga "[ \"\$(ls -A ~ | sort | tr \"\n\" \" \")\" = \".agentbox .claude .codex .config .netrc \" ] && ! ls \$(go env GOCACHE)/gate-mark ~/go/pkg/mod/gate-mark ~/.npm/gate-mark 2>/dev/null || { ls -la ~; false; }"'
 mkdir -p $WS/ga/js/node_modules/left-pad
 printf '{"name":"fx","version":"1.0.0","scripts":{"test":"node -e \\"process.exit(0)\\""}}\n' > $WS/ga/js/package.json
 echo 'module.exports = s => s' > $WS/ga/js/node_modules/left-pad/index.js

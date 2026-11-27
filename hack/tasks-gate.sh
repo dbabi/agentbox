@@ -225,10 +225,11 @@ cmp $HOME/.codex/config.toml /opt/agentbox/exports/codex-config.toml && echo sam
 echo x >> /opt/agentbox/exports/claude-settings.json 2>/dev/null || echo ro > /workspace/t3.exports
 git config --get core.hooksPath > /workspace/t3.git; echo done > /workspace/t3.done
 P
-check "  ... the next task's HOME is fresh: only the generated configs, byte for byte, read-only at the source" 'T3=$(new 2m < /tmp/tg-p) &&
+# taskrun also writes the task's canary decoys (#105): gh's hosts.yml and ~/.netrc
+check "  ... the next task's HOME is fresh: only the generated configs, byte for byte, read-only at the source, and the canary decoys" 'T3=$(new 2m < /tmp/tg-p) &&
   wait_end $T3 60 && [ "$(field $T3 end_reason)" = completed ] && [ "$(cat $W/t3.claude $W/t3.codex $W/t3.exports)" = "same
 same
-ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.agentbox/output /home/agent/.claude /home/agent/.claude/CLAUDE.md /home/agent/.claude/settings.json /home/agent/.codex /home/agent/.codex/AGENTS.md /home/agent/.codex/config.toml " ] || { cat $W/t3.home $W/t3.claude $W/t3.codex $W/t3.exports; false; }'
+ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.agentbox/output /home/agent/.claude /home/agent/.claude/CLAUDE.md /home/agent/.claude/settings.json /home/agent/.codex /home/agent/.codex/AGENTS.md /home/agent/.codex/config.toml /home/agent/.config /home/agent/.config/gh /home/agent/.config/gh/hosts.yml /home/agent/.netrc " ] || { cat $W/t3.home $W/t3.claude $W/t3.codex $W/t3.exports; false; }'
 check "  ... hooks are off for every settings source (disableAllHooks, the skill frontmatter hook included), MCP config empty, git hooks off" '
   grep -qx "  \"disableAllHooks\": true" /var/lib/agentbox/control/exports/gt/claude-settings.json && grep -q "\"mcpServers\": {}" /var/lib/agentbox/control/exports/gt/mcp.json &&
   [ "$(cat $W/t3.git)" = /opt/agentbox/exports/nohooks ] && [ -z "$(ls -A /var/lib/agentbox/control/exports/gt/nohooks)" ]'
