@@ -110,6 +110,7 @@ A match alerts you, but the push still lands: only the canary is sure proof of a
 - Until signed approvals land, an approval is a call on the box by a member of `agentbox-admin`. Anyone who can log in as the admin can approve.
 - There is no standing push policy yet, so every `repo.push` asks.
 - The canary is a detection aid, not a guarantee. A task can encode it in a way the scan doesn't cover, and tunnels through the proxy are not scanned.
+  Model requests are not scanned for it yet (issue #291).
 - A canary that a task writes into its workspace looks like a key to the workspace credential scan, which then blocks the agent's next task until you acknowledge it (issue #289).
 - The token is a plain file that only root can read. Encrypted storage comes with `agentbox secret set`.
 
