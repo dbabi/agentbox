@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -215,6 +216,21 @@ func TestFillAndHit(t *testing.T) {
 	}
 	if fi, err := os.Stat(filepath.Join(x.root, "ga", blobsDir, fills[1]["sha256"].(string))); err != nil || fi.Mode().Perm() != 0o444 {
 		t.Errorf("blob: %v %v", fi, err)
+	}
+}
+
+// agentbox-proxy.service's UMask=0117 (for its 0660 task sockets) leaves the store's dirs 0700, so a fill still stores
+// its file. Under that umask a plain Mkdir 0700 made them 0600, and every fill failed on the box.
+func TestServiceUmask(t *testing.T) {
+	x := newFixture(t) // its own dirs first, under the test's umask
+	defer syscall.Umask(syscall.Umask(0o117))
+	if st, b := x.do(t, "T1", "ga", zipA); st != 200 || !bytes.Equal(b, x.up.Zip("example.com/a", "v1.0.0")) {
+		t.Fatalf("a fill under the unit's umask: %d (%d bytes)", st, len(b))
+	}
+	for _, d := range []string{blobsDir, tmpDir, sumdbDir} {
+		if fi, err := os.Stat(filepath.Join(x.root, "ga", d)); err != nil || fi.Mode().Perm() != 0o700 {
+			t.Errorf("%s: %v %v", d, fi, err)
+		}
 	}
 }
 
