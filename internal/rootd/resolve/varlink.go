@@ -24,6 +24,15 @@ const (
 	ResolveFlags           = sdResolvedDNS | sdResolvedNoSearch | sdResolvedNoSynthesize | sdResolvedNoZone
 )
 
+// Reply flags that mark an answer resolved did not get over DNS (systemd src/shared/resolved-def.h). No request flag
+// turns the hooks off: since systemd 259 any privileged service with a socket in /run/systemd/resolve.hook/ may answer
+// (#145). ResolveFlags keep the other two out; they are checked again here.
+const (
+	sdResolvedSynthetic = 1 << 19 // /etc/hosts, localhost, _gateway
+	sdResolvedFromZone  = 1 << 21 // the box's own LLMNR and mDNS records
+	sdResolvedFromHook  = 1 << 27
+)
+
 // Refusal reasons a broker sees (§6.2 step 2). Addresses and the failed check never go to the broker.
 const (
 	NotAllowlisted = "not_allowlisted"
@@ -80,7 +89,8 @@ func parseVarlink(msg []byte) ([]netip.Addr, error) {
 				Family  int   `json:"family"`
 				Address []int `json:"address"`
 			} `json:"addresses"`
-			Rcode *int `json:"rcode"`
+			Rcode *int   `json:"rcode"`
+			Flags uint64 `json:"flags"`
 		} `json:"parameters"`
 		Error string `json:"error"`
 	}
@@ -116,6 +126,14 @@ func parseVarlink(msg []byte) ([]netip.Addr, error) {
 	}
 	if len(out) == 0 {
 		return nil, &Refused{NoSuchName, "no addresses"}
+	}
+	switch f := raw.Parameters.Flags; {
+	case f&sdResolvedFromHook != 0:
+		return nil, &Refused{NonPublic, fmt.Sprintf("from_hook (answers %v)", out)}
+	case f&sdResolvedSynthetic != 0:
+		return nil, &Refused{NonPublic, fmt.Sprintf("synthetic (answers %v)", out)}
+	case f&sdResolvedFromZone != 0:
+		return nil, &Refused{NonPublic, fmt.Sprintf("from_zone (answers %v)", out)}
 	}
 	return out, nil
 }

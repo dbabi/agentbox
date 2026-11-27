@@ -39,7 +39,9 @@ type Service struct {
 		ResolveHostname(context.Context, string) ([]netip.Addr, error)
 	}
 	Route func(netip.Addr) string // nl.CheckRoute
-	Nft   interface {
+	// Own lists the box's addresses on every interface (OwnAddrs), read again at each resolution.
+	Own func() ([]netip.Addr, error)
+	Nft interface {
 		Run(string) error
 		List(string) ([]string, error)
 	}
@@ -113,11 +115,20 @@ func (s *Service) Resolve(ctx context.Context, svc, task string, e Entry) ([]net
 	if err != nil {
 		return nil, time.Time{}, s.deny(svc, e, Unavailable, "NAT64 prefix discovery: "+err.Error())
 	}
+	own, err := s.Own()
+	if err != nil {
+		return nil, time.Time{}, s.deny(svc, e, Unavailable, "interface addresses: "+err.Error())
+	}
 	var use []netip.Addr
 	for _, a := range addrs {
 		why := CheckPrefix(a, nsp...)
 		if why == "" {
 			why = s.Route(a)
+		}
+		if why == "" && slices.Contains(own, a) {
+			// an address in DAD has no local route yet; with no prefix route either (SLAAC under an off-link prefix),
+			// the route check passes it
+			why = "own_address"
 		}
 		switch why {
 		case "":

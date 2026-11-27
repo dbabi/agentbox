@@ -1,11 +1,12 @@
 // Package resolve is rootd's resolver (ARCHITECTURE.md §6.1, §6.3, Appendix B): it resolves allowlisted host:port
 // names through systemd-resolved's Varlink socket, refuses any name with a non-public answer, and hands the answers to
-// the broker destination sets. Brokers use Client on their resolve-<svc>.sock.
+// the broker destination sets. Brokers ask on their resolve-<svc>.sock through internal/dial (pinned dialing).
 package resolve
 
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 var (
 	private4, private6 = prefixes(fw.Private4), prefixes(fw.Private6)
 	nat64              = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFour          = netip.MustParsePrefix("2002::/16") // RFC 3056: the IPv4 address is bits 16-47
 )
 
 func prefixes(s []string) []netip.Prefix {
@@ -38,9 +40,9 @@ func inAny(a netip.Addr, ps []netip.Prefix) bool {
 }
 
 // CheckPrefix is Appendix B checks 1 and 2: the address is in no special-purpose range, and an address under a NAT64
-// prefix does not wrap one. nsp are the network's own NAT64 prefixes (NAT64Prefixes); the well-known 64:ff9b::/96 is
-// always checked. Other NAT64 addresses pass, so NAT64-only LANs work. It returns the failed check's name, which goes
-// only to audit detail.
+// prefix, or a 6to4 address, does not wrap one. nsp are the network's own NAT64 prefixes (NAT64Prefixes); the
+// well-known 64:ff9b::/96 is always checked. Other NAT64 and 6to4 addresses pass, so NAT64-only LANs work. It returns
+// the failed check's name, which goes only to audit detail.
 func CheckPrefix(a netip.Addr, nsp ...netip.Prefix) string {
 	if a.Zone() != "" {
 		return "zoned"
@@ -59,7 +61,27 @@ func CheckPrefix(a netip.Addr, nsp ...netip.Prefix) string {
 			return "nat64_private"
 		}
 	}
+	if b := a.As16(); sixToFour.Contains(a) && inAny(netip.AddrFrom4([4]byte(b[2:6])), private4) {
+		return "6to4_private"
+	}
 	return ""
+}
+
+// OwnAddrs lists every address on the box's interfaces (RTM_GETADDR), tentative ones included, for Service.Own.
+func OwnAddrs() ([]netip.Addr, error) {
+	as, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	var out []netip.Addr
+	for _, a := range as {
+		if n, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(n.IP); ok {
+				out = append(out, ip.Unmap()) // Go gives IPv4 in its 16-byte form
+			}
+		}
+	}
+	return out, nil
 }
 
 // embedded4 is the IPv4 address a carries under NAT64 prefix p (RFC 6052 2.2: /32, /40, /48, /56, /64 or /96, with

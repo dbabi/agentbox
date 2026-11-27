@@ -577,13 +577,17 @@ Rootful Docker is unsupported: it publishes ports through the forward hook, whic
 - Brokers never use DNS.
   They ask rootd to resolve a name.
 - rootd resolves allowlisted names through systemd-resolved, over a Unix socket.
-- It rejects a name if any answer is in a private or special-purpose range, or is not routed through the default gateway.
+- It rejects a name if any answer is in a private or special-purpose range, is one of the box's own addresses, or is not routed through the default gateway.
+- It also rejects a name that a resolve hook answered instead of DNS.
+  Since systemd 259, any privileged local service can answer lookups that way.
 - rootd adds the answers to the broker's address set, with a timeout, and returns them.
 - The broker dials only those addresses.
   TLS still checks the original hostname.
 
 Built today (milestone 2): the resolver, through systemd-resolved's Varlink socket, with every refusal rule above, NAT64 prefixes included.
 rootd keeps its answers in `rootd.db`, refills the sets at start (before `READY=1`) and on a timer, and `agentbox egress list|refill|allow|remove` edits the allowlists.
+Built in milestone 5: the refusals of the box's own addresses and of hook answers, and the dialer the brokers will share (`internal/dial`).
+It asks rootd, dials only rootd's addresses, in order, within one 10 s budget, and follows no redirect.
 The brokers that will use it are not built.
 
 ### The proxy

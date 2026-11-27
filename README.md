@@ -298,7 +298,7 @@ agentbox is built in milestones, in this order. Each one ends with tests that mu
 2. **Firewall and audit log: done.** Outbound limits for agentbox services, an audit log you can verify, disk limits and local notifications. Tested in VMs only.
 3. **Checks for agent requests: in progress.** Built and tested in VMs. Each agent request is checked against one list of allowed operations before anything privileged runs. A 24-hour fuzz run is the last step.
 4. **Isolated tasks: done.** Agent accounts, one disposable container per task with no network, and interactive sessions. Tested in VMs only.
-5. **Brokers: next.** Credentials will stay outside tasks. Brokers will make network requests for each task.
+5. **Brokers: in progress.** Credentials will stay outside tasks. Brokers will make network requests for each task. Their shared code that connects only to addresses the root daemon checked is built and tested in VMs.
 6. **Signed approvals: planned.** Risky actions will need your SSH signature. A phone passkey will cover low-risk requests.
 7. **Apps and OS updates by agents: planned.** Agents will request app installs, file changes and package updates. OS changes will build offline into new generations.
 8. **Agent bus and shared memory: planned.** Tasks will hand work to each other. Facts from untrusted sources will stay marked.

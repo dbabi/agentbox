@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"encoding/json"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -68,6 +69,11 @@ func FuzzParseVarlink(f *testing.F) {
 	f.Add([]byte(`{"parameters":{"addresses":[{"ifindex":2,"family":2,"address":[93,184,215,14]},{"family":10,"address":[32,1,13,184,0,0,0,0,0,0,0,0,0,0,0,1]}],"name":"example.com","flags":0}}`))
 	f.Add([]byte(`{"error":"io.systemd.Resolve.DNSError","parameters":{"rcode":3}}`))
 	f.Add([]byte(`{"parameters":{"addresses":[{"family":2,"address":[1,2,3,256]}]}}`))
+	// a resolve hook's answer (#145), a synthesized one and a local zone's carry their flag next to the others
+	f.Add([]byte(`{"parameters":{"addresses":[{"family":2,"address":[93,184,215,14]}],"name":"a.example","flags":134217729}}`))
+	f.Add([]byte(`{"parameters":{"addresses":[{"family":10,"address":[32,1,13,184,0,0,0,0,0,0,0,0,0,0,0,1]}],"flags":8913409}}`))
+	f.Add([]byte(`{"parameters":{"addresses":[{"family":2,"address":[93,184,215,14]}],"flags":786945}}`))
+	f.Add([]byte(`{"parameters":{"addresses":[{"family":2,"address":[93,184,215,14]}],"flags":2097154}}`))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		as, err := parseVarlink(b)
 		if err != nil {
@@ -78,6 +84,10 @@ func FuzzParseVarlink(f *testing.F) {
 		}
 		if len(as) == 0 {
 			t.Fatal("no addresses and no error")
+		}
+		var raw struct{ Parameters struct{ Flags uint64 } }
+		if err := json.Unmarshal(b, &raw); err != nil || raw.Parameters.Flags&(sdResolvedFromHook|sdResolvedSynthetic|sdResolvedFromZone) != 0 {
+			t.Fatalf("accepted %s: flags %#x %v", b, raw.Parameters.Flags, err)
 		}
 		for _, a := range as {
 			if !a.IsValid() || a.Zone() != "" {

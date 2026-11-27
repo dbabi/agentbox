@@ -29,10 +29,19 @@ func TestCheckPrefix(t *testing.T) {
 		"2001:db8::1": "private6", "64:ff9b:1::1": "private6", "100::1": "private6", "3fff::10": "private6",
 		"2001:2::5": "private6", "2001:1ff::1": "private6", "5f00::1": "private6", "2001:200::1": "",
 		"64:ff9b::a00:1": "nat64_private", "64:ff9b::7f00:1": "nat64_private", "fe80::1%eth0": "zoned",
+		// 6to4 (RFC 3056) wraps an IPv4 address in bits 16-47, as NAT64 does in its low bits (#219 R147)
+		"2002:c0a8:10a::1": "6to4_private", "2002:a00:1:2::3": "6to4_private", "2002:f000:1::": "6to4_private",
+		"2002:5db8:d70e::1": "",
 	} {
 		if got := CheckPrefix(netip.MustParseAddr(a)); got != want {
 			t.Errorf("CheckPrefix(%s) = %q, want %q", a, got, want)
 		}
+	}
+}
+
+func TestOwnAddrs(t *testing.T) {
+	if as, err := OwnAddrs(); err != nil || !slices.Contains(as, netip.MustParseAddr("127.0.0.1")) {
+		t.Fatalf("%v %v: want the loopback address, in its 4-byte form", as, err)
 	}
 }
 
@@ -293,8 +302,32 @@ func TestParseVarlink(t *testing.T) {
 	}
 }
 
+// The reply's flags say where resolved got the answer: DNS from the network or its cache passes, with or without
+// DNSSEC and DoT. A resolve hook's answer (systemd 259, #145), a synthesized one (/etc/hosts) and one from the local
+// zone are refused non_public, and the detail names why.
+func TestParseVarlinkFlags(t *testing.T) {
+	reply := func(flags uint64) []byte {
+		return fmt.Appendf(nil, `{"parameters":{"addresses":[{"family":2,"address":[93,184,215,14]}],"name":"a.example","flags":%d}}`, flags)
+	}
+	const dns, authenticated, confidential, fromCache, fromNetwork = 1, 1 << 9, 1 << 18, 1 << 20, 1 << 23
+	for _, f := range []uint64{dns | fromNetwork, dns | fromCache, dns | authenticated | confidential | fromNetwork} {
+		if a, err := parseVarlink(reply(f)); err != nil || len(a) != 1 {
+			t.Errorf("flags %#x: %v %v", f, a, err)
+		}
+	}
+	for f, want := range map[uint64]string{dns | sdResolvedFromHook: "from_hook", sdResolvedFromHook | fromNetwork: "from_hook",
+		dns | authenticated | confidential | sdResolvedSynthetic: "synthetic", 1<<1 | sdResolvedFromZone: "from_zone"} {
+		_, err := parseVarlink(reply(f))
+		if r, ok := err.(*Refused); !ok || r.Reason != NonPublic || !strings.HasPrefix(r.Detail, want+" (answers [93.184.215.14])") {
+			t.Errorf("flags %#x: %v, want non_public %s", f, err, want)
+		}
+	}
+}
+
 // fakes for the resolver's dependencies
 func fixedClock() (string, int64) { return "boot-1", 0 }
+
+func noOwn() ([]netip.Addr, error) { return nil, nil }
 
 type fakeDNS map[string][]netip.Addr
 
@@ -351,6 +384,8 @@ func TestResolveAndRefill(t *testing.T) {
 	}
 	pub4, pub6 := netip.MustParseAddr("93.184.215.14"), netip.MustParseAddr("2606:2800:21f:cb07::1")
 	own := netip.MustParseAddr("93.184.215.99")
+	dad := netip.MustParseAddr("2606:2800:21f:cb07::99") // the box's, still in DAD: no local route yet
+	ifAddrs := []netip.Addr{own, netip.MustParseAddr("10.0.2.15"), dad}
 	now := time.UnixMilli(1_800_000_000_000)
 	nft := &fakeNft{map[string]map[string]bool{}}
 	noV6 := false // the box has no IPv6 default route (an IPv4-only LAN)
@@ -362,7 +397,9 @@ func TestResolveAndRefill(t *testing.T) {
 			"priv.example.com": {pub4, netip.MustParseAddr("10.0.0.1")},
 			// DNS64 with a network-specific prefix, and a name that publishes only an AAAA wrapping a LAN address
 			"ipv4only.arpa":   {netip.MustParseAddr("192.0.0.170"), netip.MustParseAddr("2a01:5c0:64::c000:aa")},
-			"nsp.example.com": {netip.MustParseAddr("2a01:5c0:64::c0a8:101")}, "ra.example.com": {netip.MustParseAddr("2a01:5c0:1:64:a:0:100:0")}},
+			"nsp.example.com": {netip.MustParseAddr("2a01:5c0:64::c0a8:101")}, "ra.example.com": {netip.MustParseAddr("2a01:5c0:1:64:a:0:100:0")},
+			"dad.example.com": {pub4, dad}},
+		Own: func() ([]netip.Addr, error) { return ifAddrs, nil },
 		Pref64: func(context.Context) ([]netip.Prefix, error) {
 			return []netip.Prefix{netip.MustParsePrefix("2a01:5c0:1:64::/64")}, nil
 		},
@@ -376,7 +413,7 @@ func TestResolveAndRefill(t *testing.T) {
 			return ""
 		},
 		Flows: func(a netip.Addr, p uint16) (int, error) { cut = append(cut, a.String()); return 1, nil },
-		Deny:  func(svc, entry, reason, detail string) { denied = append(denied, svc+" "+entry+" "+reason) },
+		Deny:  func(svc, entry, reason, detail string) { denied = append(denied, svc+" "+entry+" "+reason+" "+detail) },
 	}
 	resolve := func(svc, host string) (string, []netip.Addr) {
 		addrs, _, err := s.Resolve(context.Background(), svc, "", Entry{host, 443})
@@ -391,7 +428,7 @@ func TestResolveAndRefill(t *testing.T) {
 	if r, _ := resolve("keys", "api.example.com"); r != NotAllowlisted {
 		t.Fatalf("unlisted: %s", r)
 	}
-	for _, h := range []string{"api.example.com", "own.example.com", "priv.example.com", "nx.example.com", "nsp.example.com", "ra.example.com"} {
+	for _, h := range []string{"api.example.com", "own.example.com", "priv.example.com", "nx.example.com", "nsp.example.com", "ra.example.com", "dad.example.com"} {
 		if _, err := EditList(dir, "keys", Entry{h, 443}, true); err != nil {
 			t.Fatal(err)
 		}
@@ -403,11 +440,23 @@ func TestResolveAndRefill(t *testing.T) {
 		t.Fatalf("sets: %v", nft.sets)
 	}
 	for h, want := range map[string]string{"own.example.com": NonPublic, "priv.example.com": NonPublic, "nx.example.com": NoSuchName,
-		"nsp.example.com": NonPublic, "ra.example.com": NonPublic} {
+		"nsp.example.com": NonPublic, "ra.example.com": NonPublic, "dad.example.com": NonPublic} {
 		if r, _ := resolve("keys", h); r != want {
 			t.Errorf("%s: %s, want %s", h, r, want)
 		}
 	}
+	// the box's addresses are read again at each resolution: once dad is gone from the box, its name resolves
+	ifAddrs = ifAddrs[:2]
+	if r, a := resolve("keys", "dad.example.com"); r != "ok" || len(a) != 2 {
+		t.Fatalf("dad.example.com once the box no longer holds the address: %s %v", r, a)
+	}
+	EditList(dir, "keys", Entry{"dad.example.com", 443}, false)
+	ownFn := s.Own
+	s.Own = func() ([]netip.Addr, error) { return nil, errors.New("netlink: injected failure") }
+	if r, _ := resolve("keys", "api.example.com"); r != Unavailable {
+		t.Fatalf("no interface addresses: %s, want unavailable", r)
+	}
+	s.Own = ownFn
 	// on an IPv4-only LAN the AAAA answers are unusable, not a reason to refuse the name; they reach no set
 	EditList(dir, "keys", Entry{"v4only.example.com", 443}, true)
 	noV6 = true
@@ -467,7 +516,8 @@ func TestResolveAndRefill(t *testing.T) {
 	if _, err := LoadLists(dir); err == nil {
 		t.Fatal("loaded a common.list naming a deputy host")
 	}
-	if len(denied) == 0 || !strings.Contains(strings.Join(denied, "\n"), "keys own.example.com:443 non_public") {
+	if d := strings.Join(denied, "\n"); !strings.Contains(d, "keys own.example.com:443 non_public 93.184.215.99: route_not_unicast") ||
+		!strings.Contains(d, "keys dad.example.com:443 non_public 2606:2800:21f:cb07::99: own_address") {
 		t.Fatalf("denials: %v", denied)
 	}
 }
@@ -503,7 +553,7 @@ func TestRevocationRetriedAndSlack(t *testing.T) {
 	flowsFail := 0
 	var cut []string
 	s := &Service{DB: db, Dir: dir, Now: func() time.Time { return now }, Clock: fixedClock, Timeout: 10 * time.Minute, Nft: nft,
-		Resolver: fakeDNS{"a.example.com": {a1}, "b.example.com": {a2}, "ipv4only.arpa": wka}, Route: func(netip.Addr) string { return "" },
+		Resolver: fakeDNS{"a.example.com": {a1}, "b.example.com": {a2}, "ipv4only.arpa": wka}, Route: func(netip.Addr) string { return "" }, Own: noOwn,
 		Flows: func(a netip.Addr, p uint16) (int, error) {
 			if flowsFail > 0 {
 				flowsFail--
@@ -570,7 +620,7 @@ func TestRebaseOnClockStep(t *testing.T) {
 	nft := &fakeNft{map[string]map[string]bool{}}
 	s := &Service{DB: db, Dir: dir, Now: func() time.Time { return now }, Clock: func() (string, int64) { return boot, off },
 		Timeout: 10 * time.Minute, Nft: nft, Resolver: fakeDNS{"a.example.com": {netip.MustParseAddr("93.184.215.14")},
-			"ipv4only.arpa": wka}, Route: func(netip.Addr) string { return "" },
+			"ipv4only.arpa": wka}, Route: func(netip.Addr) string { return "" }, Own: noOwn,
 		Flows: func(netip.Addr, uint16) (int, error) { return 0, nil }}
 	EditList(dir, "keys", Entry{"a.example.com", 443}, true)
 	if _, _, err := s.Resolve(context.Background(), "keys", "", Entry{"a.example.com", 443}); err != nil {

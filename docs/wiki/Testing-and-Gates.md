@@ -1,7 +1,7 @@
 How agentbox is tested, what each test proves, and what it does not. For an overview, start at [Home](README.md).
 
 agentbox is early alpha. Every gate on this page runs in a QEMU virtual machine. No real hardware has run agentbox yet.
-The tests cover the installer, the OS layer, the milestone 2 host services (the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy) the milestone 3 request checks, and the milestone 4 agent accounts, task containers and interactive sessions. The brokers, policy, approvals, agent bus and memory are not built, so no test covers them yet.
+The tests cover the installer, the OS layer, the milestone 2 host services (the firewall, the audit daemon, the root daemon skeleton, disk quotas and ntfy) the milestone 3 request checks, the milestone 4 agent accounts, task containers and interactive sessions, and the milestone 5 connection code the brokers will share, which reaches only addresses the root daemon checked. The brokers, policy, approvals, agent bus and memory are not built, so no test covers them yet.
 
 ## Two kinds of tests
 
@@ -9,7 +9,7 @@ The tests cover the installer, the OS layer, the milestone 2 host services (the 
 - **Fuzz tests** are Go fuzz tests. Each one feeds random inputs to one parser for as long as you let it run. They need no VM.
 - **Gates** are shell scripts in `hack/`. A gate installs Ubuntu into a QEMU VM, boots it, and checks the result. Each check prints one `PASS` or `FAIL` line. A gate passes only if every check passes.
 
-The build plan also uses the word "gate" for the set of tests that ends a milestone (see [Roadmap](Roadmap.md)). The scripts on this page run the tests for milestones 1-4.
+The build plan also uses the word "gate" for the set of tests that ends a milestone (see [Roadmap](Roadmap.md)). The scripts on this page run the tests for milestones 1-4, and the first part of milestone 5.
 
 ## At a glance
 
@@ -33,6 +33,7 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | Task env gate (milestone 4) | `hack/taskenv-gate.sh [install\|checks ...]` | Apple Silicon Mac, with internet for the task image build | not timed separately |
 | Agent CLI gate (milestone 4) | `hack/cli-gate.sh [install\|checks ...]` | Apple Silicon Mac, with `npm` and internet for the Claude Code and Codex CLIs | not timed separately |
 | Task image gate (milestone 4) | `hack/image-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
+| Pinned dialing gate (milestone 5) | `hack/dial-gate.sh [install] [release] [checks]` | Apple Silicon Mac | about 11 min, with the `none` install |
 | Fuzz tests | `hack/fuzz-all.sh [DURATION]` | macOS or Linux | 24 h by default |
 
 The times come from one Apple Silicon Mac. The milestone 2 and 3 times come from runs with four VMs at once.
@@ -114,7 +115,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 ```
 
 - The script runs the fuzz tests at low priority, `FUZZ_JOBS` at a time, each for the full duration. A crash stops only that test; the rest still run. Then it writes `summary.txt` under `.fuzz/<start time>/`, or under `$OUT`, which must not hold an earlier run. It exits 1 if any test fails.
-- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 54 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
+- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 55 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
 - Each `go test` process and each fuzz worker gets `GOMEMLIMIT=$FUZZ_MEM` (default `1GiB`). `FUZZ_PARALLEL` sets the workers per test (default 1).
 - It records the commit the run started on, and each test's CPU seconds (`cpu_s`, the build included).
 - Go keeps each test's corpus in `$(go env GOCACHE)/fuzz`, so the next run starts from it. `go clean -fuzzcache` deletes it.
@@ -122,7 +123,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 - A crash input lands in its package's `testdata/fuzz/<test>/`. Commit it with the fix, so it stays a regression test.
 - On a Mac, `caffeinate -i` keeps the machine from idle sleep. Keep it on power with the lid open.
 
-The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 54 tests take about 21 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
+The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 55 tests take about 21 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
 
 ### The 24 h gate
 
@@ -508,6 +509,28 @@ The tasks, attach and agent CLI gates need `npm` and internet on the Mac. Their 
 - An attach session has no network, so a real Claude login can't reach its servers from an attach yet (issue #90).
 - The 300 ms check times the whole `systemd-run` call, an upper bound on the bridge's own overhead.
 
+## Milestone 5 gates
+
+The pinned dialing gate starts with `install`: `hack/gate.sh none`, so rootd and its resolver reach the box by the real path. Its `checks` step builds a broker stand-in (`hack/dial-gate/probe`) and the test DNS server for the VM, and runs every check as root on that box. It writes `PASS` and `FAIL` lines to `.vm/dial-gate.txt`, and exits 1 on any `FAIL`.
+
+```sh
+caffeinate -i hack/dial-gate.sh
+```
+
+The test network is inside the VM, so the Mac needs no internet for the checks. A virtual LAN, a veth pair into a network namespace, holds a router and the test servers on public-looking addresses. The gate makes that router the box's default route. The test DNS server answers the gate's names for systemd-resolved. It is also a resolve hook: since systemd 259, a local service can answer lookups for systemd-resolved through a socket, instead of DNS.
+
+### What the milestone 5 gates prove
+
+| Suite | Script | What it proves |
+|---|---|---|
+| `m5-dial` | `hack/dial-gate.sh` | rootd refuses an allowlisted name that answers with one of the box's own addresses: on the default interface, on another interface, the IPv6 address it made from the router's announcement (SLAAC), or an IPv6 address still in duplicate address detection. It also refuses a LAN host's global IPv6 address, `192.168.1.10`, `192.168.1.10` inside a NAT64 or a 6to4 address, and `240.0.0.1`. A name only `/etc/hosts` knows gets `no_such_name`. A name that a systemd 259 resolve hook answers is refused, and resolved never asks DNS for it. With the hook gone, the same name resolves. rootd reads the box's addresses at each resolution. A process under the keys broker's user, in the broker units' sandbox, dials through the shared dialer. It reaches only rootd's addresses, takes the first that answers, and keeps the name in SNI, the certificate check and `Host`. It never dials the `/etc/hosts` answer, makes no lookup and follows no redirect. An address that resets fails `refused` at once, and one that drops the SYN fails `timeout` after the 10 s budget. |
+
+### What they do not prove
+
+- The brokers are not built yet. A stand-in dials through the package the brokers will use, as the keys broker's user. The broker units themselves are not tested.
+- The upstreams are test servers inside the VM, behind a test router. No real public host is dialed.
+- It ran in `none` mode on arm64 UEFI only. The dialer does not touch unlock or boot.
+
 ## Several VMs at once
 
 `AGENTBOX_VM_ID` (0-9, default 0) picks each VM's ports and names:
@@ -712,6 +735,12 @@ The regression after the review fixes. Every VM gate ran on a fresh `none`-mode 
 | A user manager left failed by a remove during its start (issue #276) | On a fresh `none`-mode install, arm64 UEFI, Secure Boot on: `m4-accounts` 52 PASS, 0 FAIL. Its new check removes an agent while its user manager is held in `ExecStartPre`. The stop fails the unit, and the removal resets it, so no failed unit is left. At `0c6bc1b`, before the fix, `m4-accounts` failed only its "no failed units" check before the reboot. The failed unit was the user manager of the agent that the #273 checks remove. | the branch of pull request #278, before it merged |
 | rootd's start job timeout (issue #277) | On a fresh `none`-mode install, arm64 UEFI, Secure Boot on: `w3-rootd` 115 PASS, 0 FAIL. Its new check finds the 3 min start job timeout in systemd's view of rootd's unit. At `0c6bc1b` the setting sat in the wrong section of the unit file. systemd ignored it, so the unit had no timeout. The gate's rootd journal now has no unknown key warning. | the branch of pull request #279, before it merged |
 | Regression after pull requests #271, #272, #274 and #275 | Up to four VMs ran at once. Each VM gate ran on a fresh arm64 UEFI install with Secure Boot on. The mode was `tpm2+tang` for `gates-tpm2-tang-down-typed-recovery`, `tpm2` for the two `os-apply` suites, and `none` for the rest. `gates-none` 56, `gates-tpm2-tang-down-typed-recovery` 71, `os-apply-cycles-tpm2` 104 and `os-apply-breaks-tpm2` 113 PASS, 0 FAIL. `w3-firewall` 79, `w3-auditd` 118, `w3-rootd` 114, `w3-quota-ntfy` 62, `w4-registry` 12, `w4-agentboxd` 30 and `w4-sockets` 38 PASS, 0 FAIL. `m4-tasks` 92, `m4-attach` 51, `m4-taskenv` 44, `m4-cli` 26 and `m4-image` 17 PASS, 0 FAIL. `zero-touch-iso` passed. The amd64 host gates in CI run 45840979450: sockets 38, registry 11, agentboxd 29, firewall 78, audit 62, rootd 114 and quota-ntfy 61 PASS, 0 FAIL. `m4-accounts` failed only its "no failed units" check before the reboot: 50 PASS, 1 FAIL (issue #276). Its logs also showed that systemd ignored rootd's start job timeout (issue #277). After the fixes in pull requests #278 and #279, `m4-accounts` passed: 52 PASS, 0 FAIL. The other suites did not run again. Besides tests and gate checks, the two fixes change only agent removal and one setting in rootd's unit. | `0c6bc1b`; `m4-accounts` again at `0431ff1` |
+
+### Milestone 5
+
+| Suite | Result | Tested at |
+|---|---|---|
+| `m5-dial` (issues #20, #145) | Passed on a fresh `none`-mode install, arm64 UEFI, Secure Boot on: 53 PASS, 0 FAIL. The hook check ran against the box's own systemd-resolved, which asked the gate's hook and never asked DNS. `w3-rootd` passed again with the new resolver checks: 115 PASS, 0 FAIL. | the branch of pull request #298, before it merged |
 
 ## Troubleshooting
 
