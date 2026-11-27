@@ -121,6 +121,8 @@ func Inventory() []Entry {
 			svc.By, svc.Service, svc.FDName, svc.RemoveOnStop = "agentbox-proxy-svc.socket", "agentbox-proxy.service", "svc-proxy", true
 		case "keys":
 			svc.By, svc.Service, svc.FDName, svc.RemoveOnStop = "agentbox-keys-svc.socket", "agentbox-keys.service", "svc-keys", true
+		case "git":
+			svc.By, svc.Service, svc.FDName, svc.RemoveOnStop = "agentbox-git-svc.socket", "agentbox-git.service", "svc-git", true
 		}
 		inv = append(inv, svc,
 			Entry{Path: r, Type: d, User: "root", Group: "root", Mode: 0o711, By: Tmpfiles},

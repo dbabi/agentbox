@@ -1,0 +1,44 @@
+# agentbox-git (ARCHITECTURE.md §2, §6.3): the git service. rootd registers each task on svc-git.sock; the service
+# binds that task's /run/agentbox-git/t/<task>/git.sock in the dir rootd made and serves the agent's own bare repos
+# under /var/lib/agentbox/git over smart HTTP, with the release's pre-receive hook. It holds the GitHub token (an
+# encrypted systemd credential that secret.set stores) and runs the remote writes rootd sends it once a human
+# approved them. It never resolves a name: rootd does on resolve-git.sock, and nft lets this uid reach only git_dst.
+# Its socket starts it: rootd's first call (a task's registration, remote.set) does, so it has no [Install] of its own.
+[Unit]
+Description=agentbox git service
+Requires=agentbox-reconcile.service agentbox-firewall.service agentbox-git-svc.socket
+After=agentbox-reconcile.service agentbox-firewall.service agentbox-git-svc.socket agentbox-rootd.service agentbox-auditd.service
+# every firewall repair restarts it through Requires=; the start limit must never leave it down
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=agentbox-git
+Group=agentbox-git
+ExecStart=/var/lib/agentbox/current/bin/agentbox git
+Sockets=agentbox-git-svc.socket
+Restart=always
+RestartSec=1
+# repos and their files are the service's alone; git.sock is set 0660 after its bind, in the setgid dir, so it is
+# agentbox-git:ag-<agent> (§2.1)
+UMask=0077
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# no DNS of its own (§6.1): resolved's Varlink and D-Bus sockets are AF_UNIX, which nft never sees
+InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/agentbox/git /run/agentbox-git
+PrivateTmp=yes
+NoNewPrivileges=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+# the binary installs its own btrfs ioctl filter at start (seccomp(2), which @system-service leaves out), and exits
+# without it (§2 Common hardening); git, http-backend and the hook it runs inherit it
+SystemCallFilter=seccomp
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+# the GitHub token (#108): rootd encrypts the secret.set value into the credential store, and PID 1 decrypts only this
+# name, at start, into this unit's own non-swappable credentials dir, readable by agentbox-git alone. A new value
+# needs a restart, which secret.set does. rootd keeps a placeholder until a value is set, so the unit always starts.
+LoadCredentialEncrypted=github-token:/var/lib/agentbox/control/credstore.encrypted/git/github-token

@@ -64,7 +64,10 @@ func cmdKeys(args []string) error {
 		Audit:    func(rec map[string]any) error { return audit.Send(keysAuditSock, rec) },
 		Limits:   keysLimits, ServerTools: func() []string { return readList(keysPolicy) },
 		Local: &keys.Local{Socket: llamaSock, MaxTokens: keys.LocalMaxTokens, Tainted: tainted,
-			Recycle: func() error { return rootdKeysCall(map[string]any{"op": "llm.recycle"}, 3*time.Minute) }}}
+			Recycle: func() error { return rootdKeysCall(map[string]any{"op": "llm.recycle"}, 3*time.Minute) }},
+		CanaryHit: func(task string) error {
+			return rootdKeysCall(map[string]any{"op": "canary.hit", "task": task}, 10*time.Second)
+		}}
 	if b := os.Getenv("AGENTBOX_TEST_KEYS_DENY_BETA"); b != "" {
 		ks.DenyBetas = strings.Split(b, ",") // test VMs only: see Claude Code retry without a beta it sends (#18)
 		log.Printf("keys: refusing beta values %v (AGENTBOX_TEST_KEYS_DENY_BETA)", ks.DenyBetas)

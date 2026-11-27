@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"agentbox/internal/canary"
 	"agentbox/internal/ops"
 )
 
@@ -244,6 +246,7 @@ func TestPeerAndRegister(t *testing.T) {
 		`{"call":"register","task":"task_01JBBBBBBBBBBBBBBBBBBBBBBB","agent":"ga","trace":""}`,
 		`{"call":"register","task":"../x","agent":"ga","trace":"trace_01JAAAAAAAAAAAAAAAAAAAAAAA"}`,
 		`{"call":"register","task":"t","agent":"ga","trace":"trace_01JAAAAAAAAAAAAAAAAAAAAAAA","extra":1}`,
+		`{"call":"register","task":"task_01JDDDDDDDDDDDDDDDDDDDDDDD","agent":"ga","trace":"trace_01JAAAAAAAAAAAAAAAAAAAAAAA","canary":"sk-ant-api03-short"}`,
 	} {
 		if rep := s.Control([]byte(line)); rep["ok"] != false {
 			t.Errorf("%s: %v", line, rep)
@@ -251,6 +254,33 @@ func TestPeerAndRegister(t *testing.T) {
 	}
 	if rep := s.Control([]byte(`{"call":"list"}`)); fmt.Sprint(rep["tasks"]) != "[task_01JBBBBBBBBBBBBBBBBBBBBBBB]" {
 		t.Errorf("list: %v", rep)
+	}
+}
+
+// The task's canary (#105) comes with rootd's register and with task.list_live after a restart, and the handler's task
+// carries it.
+func TestRegisterCanary(t *testing.T) {
+	s, dir := newServer(t, Limits{}, func(*Task) http.Handler { return http.NotFoundHandler() })
+	c := canary.Mint()
+	for _, id := range []string{"task_01JEEEEEEEEEEEEEEEEEEEEEEE", "task_01JFFFFFFFFFFFFFFFFFFFFFFF"} {
+		d := filepath.Join(dir, "t", id)
+		os.MkdirAll(d, 0o755)
+		os.Chown(d, -1, os.Getgid())
+		os.Chmod(d, os.ModeSetgid|0o750)
+	}
+	if rep := s.Control([]byte(`{"call":"register","task":"task_01JEEEEEEEEEEEEEEEEEEEEEEE","agent":"ga","trace":"trace_01JAAAAAAAAAAAAAAAAAAAAAAA","canary":"` + c + `"}`)); rep["ok"] != true {
+		t.Fatalf("register: %v", rep)
+	}
+	l, _ := json.Marshal(map[string]any{"ok": true, "tasks": []map[string]any{{"task": "task_01JFFFFFFFFFFFFFFFFFFFFFFF", "agent": "ga",
+		"trace": "trace_01JAAAAAAAAAAAAAAAAAAAAAAA", "canary": c}}})
+	if err := s.Rebind(l); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"task_01JEEEEEEEEEEEEEEEEEEEEEEE", "task_01JFFFFFFFFFFFFFFFFFFFFFFF"} {
+		if tk, ok := s.Lookup(id); !ok || tk.Canary != c {
+			t.Errorf("%s: %+v %v", id, tk, ok)
+		}
+		s.Control([]byte(`{"call":"revoke","task":"` + id + `"}`))
 	}
 }
 

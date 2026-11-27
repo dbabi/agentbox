@@ -40,7 +40,8 @@ var (
 	KeysBudget           = Code{"KEYS_BUDGET"}
 	KeysUpstream         = Code{"KEYS_UPSTREAM"}
 	BrokerUnavailable    = Code{"BROKER_UNAVAILABLE"}
+	ExfilCanary          = Code{"EXFIL_CANARY"}
 )
 
 // genCodes is every generated code in table order; Validate checks it against CodeTable.
-var genCodes = []Code{InvalidArgs, UnknownOp, TaskEnded, NotFoundOrNotOwned, DeniedPolicy, PolicyError, MemoryQuarantined, CapReached, BusRefused, LeaseHeld, NeedsSignature, AskDenied, AskExpired, AskCap, Stale, Busy, AdmissionRejected, FloorNever, HumanOnly, RefOutsideNamespace, OidNotInRemoteRepo, RemoteRejected, EffectFailed, Indeterminate, BatchAborted, NestedSubvolume, AuditUnavailable, EgressNotAllowlisted, EgressWrongRoute, EgressNameRejected, EgressResolveFailed, EgressDialFailed, KeysRequestRejected, KeysBudget, KeysUpstream, BrokerUnavailable}
+var genCodes = []Code{InvalidArgs, UnknownOp, TaskEnded, NotFoundOrNotOwned, DeniedPolicy, PolicyError, MemoryQuarantined, CapReached, BusRefused, LeaseHeld, NeedsSignature, AskDenied, AskExpired, AskCap, Stale, Busy, AdmissionRejected, FloorNever, HumanOnly, RefOutsideNamespace, OidNotInRemoteRepo, RemoteRejected, EffectFailed, Indeterminate, BatchAborted, NestedSubvolume, AuditUnavailable, EgressNotAllowlisted, EgressWrongRoute, EgressNameRejected, EgressResolveFailed, EgressDialFailed, KeysRequestRejected, KeysBudget, KeysUpstream, BrokerUnavailable, ExfilCanary}

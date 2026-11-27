@@ -150,9 +150,10 @@ find $W -mindepth 1 -delete 2>/dev/null || : # a rerun on the same box starts fr
 check "  ... its user manager runs with the root-owned XDG dirs" 'i=0; until systemctl is-active -q user@$U.service; do i=$((i+1)); [ $i -lt 50 ] || exit 1; sleep 0.2; done &&
   tr "\0" "\n" < /proc/$(systemctl show -P MainPID user@$U.service)/environ | grep -qx "XDG_CONFIG_HOME=$X/config"'
 mkdir -p $RS/agentboxd.service.d && printf '[Service]\nEnvironment=AGENTBOX_TEST_CLI=sh\n' > $RS/agentboxd.service.d/50-tg.conf
-# the release's proxy and keys broker own svc-proxy.sock and svc-keys.sock: they stop while the stand-ins run, and start
-# again at the end
-systemctl stop agentbox-proxy.service agentbox-proxy-svc.socket agentbox-keys.service agentbox-keys-svc.socket
+# the release's proxy, keys broker and git service own svc-proxy.sock, svc-keys.sock and svc-git.sock: they stop
+# while the stand-ins run, and start again at the end
+systemctl stop agentbox-proxy.service agentbox-proxy-svc.socket agentbox-keys.service agentbox-keys-svc.socket \
+  agentbox-git.service agentbox-git-svc.socket
 for v in proxy keys git; do
   printf '[Socket]\nListenStream=/run/agentbox-rootd/svc-%s.sock\nSocketUser=agentbox-%s\nSocketGroup=root\nSocketMode=0600\nFileDescriptorName=svc-%s\nService=agentbox-%s-stub.service\nRemoveOnStop=yes\n' $v $v $v $v > $RS/agentbox-$v-stub.socket
   printf '[Unit]\nRequires=agentbox-%s-stub.socket\nAfter=agentbox-rootd.service\n[Service]\nType=notify\nNotifyAccess=main\nUser=agentbox-%s\nUMask=0117\nExecStart=%s broker-stub --svc %s\n' $v $v $B $v > $RS/agentbox-$v-stub.service
@@ -224,10 +225,11 @@ cmp $HOME/.codex/config.toml /opt/agentbox/exports/codex-config.toml && echo sam
 echo x >> /opt/agentbox/exports/claude-settings.json 2>/dev/null || echo ro > /workspace/t3.exports
 git config --get core.hooksPath > /workspace/t3.git; echo done > /workspace/t3.done
 P
-check "  ... the next task's HOME is fresh: only the generated configs, byte for byte, read-only at the source" 'T3=$(new 2m < /tmp/tg-p) &&
+# taskrun also writes the task's canary decoys (#105): gh's hosts.yml and ~/.netrc
+check "  ... the next task's HOME is fresh: only the generated configs, byte for byte, read-only at the source, and the canary decoys" 'T3=$(new 2m < /tmp/tg-p) &&
   wait_end $T3 60 && [ "$(field $T3 end_reason)" = completed ] && [ "$(cat $W/t3.claude $W/t3.codex $W/t3.exports)" = "same
 same
-ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.agentbox/output /home/agent/.claude /home/agent/.claude/CLAUDE.md /home/agent/.claude/settings.json /home/agent/.codex /home/agent/.codex/AGENTS.md /home/agent/.codex/config.toml " ] || { cat $W/t3.home $W/t3.claude $W/t3.codex $W/t3.exports; false; }'
+ro" ] && [ "$(tr "\n" " " < $W/t3.home)" = "/home/agent/.agentbox /home/agent/.agentbox/output /home/agent/.claude /home/agent/.claude/CLAUDE.md /home/agent/.claude/settings.json /home/agent/.codex /home/agent/.codex/AGENTS.md /home/agent/.codex/config.toml /home/agent/.config /home/agent/.config/gh /home/agent/.config/gh/hosts.yml /home/agent/.netrc " ] || { cat $W/t3.home $W/t3.claude $W/t3.codex $W/t3.exports; false; }'
 check "  ... hooks are off for every settings source (disableAllHooks, the skill frontmatter hook included), MCP config empty, git hooks off" '
   grep -qx "  \"disableAllHooks\": true" /var/lib/agentbox/control/exports/gt/claude-settings.json && grep -q "\"mcpServers\": {}" /var/lib/agentbox/control/exports/gt/mcp.json &&
   [ "$(cat $W/t3.git)" = /opt/agentbox/exports/nohooks ] && [ -z "$(ls -A /var/lib/agentbox/control/exports/gt/nohooks)" ]'
@@ -626,7 +628,8 @@ check "no task is left live, and no task container exists" 'sleep 5; [ "$($B tas
   [ -z "$(pod ps -a --format "{{.Names}}" | grep task-)" ]'
 systemctl stop agentbox-proxy-stub agentbox-keys-stub agentbox-git-stub agentbox-proxy-stub.socket agentbox-keys-stub.socket agentbox-git-stub.socket
 rm -f $RS/agentbox-*-stub.* $RS/agentboxd.service.d/50-tg.conf /usr/bin/claude; systemctl daemon-reload; systemctl restart agentboxd
-systemctl start agentbox-proxy-svc.socket agentbox-proxy.service agentbox-keys-svc.socket agentbox-keys.service
+systemctl start agentbox-proxy-svc.socket agentbox-proxy.service agentbox-keys-svc.socket agentbox-keys.service \
+  agentbox-git-svc.socket agentbox-git.service
 check "the audit chain verifies" '$B audit verify'
 check "no failed units" 'sleep 3; [ -z "$(systemctl --failed --no-legend --plain)" ]'
 journalctl -b -u agentbox-rootd -o short-precise --no-pager | grep -E "task|ALERT" | tail -80

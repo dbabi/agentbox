@@ -38,12 +38,15 @@
 #                the task result carries the denial.
 #          #115  on keys.sock from a task: a 33 MiB body, a zip bomb, a slow head and a 17th connection each get
 #                CAP_REACHED with its what.
+#          #291  a model request with the task's canary in its body, raw or base64, reaches the vendor and raises one
+#                alert and taint for the task; a clean one, with the canary in its auth header as every task sends it,
+#                raises none.
 #          A-G13 agentbox-keys runs one more seccomp filter than its unit gives.
 # apply    #108's os.apply half: three applies that each re-install one package (clone, trial boot, health commit)
 #          and load the key, and the third commit's prune of the oldest generation, after which a restarted
 #          agentbox-keys still loads the key (run after checks, on the same box).
 # Stand-ins until their areas land: the vendors (the real POST /v1/messages needs a real key: needs_human), the local
-# LLM (llama-server is not packaged yet), no git broker (#19).
+# LLM (llama-server is not packaged yet).
 # PASS/FAIL lines go to .vm/keys-gate.txt, command output to .vm/keys-gate.log; exit 1 on any FAIL.
 # AGENTBOX_VM_ID and AGENTBOX_ISO_DIR pass through to vm.sh and gate.sh. Test VMs only (password "x"; fake keys).
 # AGENTBOX_KEYS_MODE=tpm2 installs in tpm2 mode, where rootd encrypts the keys with the TPM: checks then also loads
@@ -261,16 +264,45 @@ check "  ... rootd resolved it: 192.88.96.10 . 443 is in keys_dst4, and keys dia
 check "  ... an LLM record for the task was ACKed first, with the trace rootd registered and no request text" '
   cat $A/seg-*.jsonl | grep "\"type\":\"LLM\"" | grep "\"task\":\"$T1\"" | grep -q "\"trace\":\"trace_" && ! cat $A/seg-*.jsonl | grep "\"type\":\"LLM\"" | grep -q hello'
 cat > $WS/ka/scan.sh <<'S'
-for f in /proc/self/environ /proc/1/environ; do tr '\0' '\n' < $f; done > /tmp/env
-grep -x 'ANTHROPIC_API_KEY=agentbox-placeholder' /tmp/env >/dev/null || echo "no placeholder key"
+tr '\0' '\n' < /proc/self/environ > /tmp/env0; tr '\0' '\n' < /proc/1/environ > /tmp/env1; cat /tmp/env0 /tmp/env1 > /tmp/env
+# podman starts taskrun with the placeholder; taskrun hands the CLI the task's canary in its place (#105)
+grep -x 'ANTHROPIC_API_KEY=agentbox-placeholder' /tmp/env1 >/dev/null || echo "no placeholder key"
+grep -Ex 'ANTHROPIC_API_KEY=sk-ant-api03-[A-Za-z0-9_-]{93}AA' /tmp/env0 >/dev/null || echo "no canary in the key slot"
 [ ! -e /run/credentials ] || echo "/run/credentials visible"
 grep -rlF -D skip "$1" /tmp/env $HOME /tmp /workspace /run/agentbox 2>/dev/null | sed 's/^/hit /'
 grep -rlF -D skip "$2" /tmp/env $HOME /tmp /workspace /run/agentbox 2>/dev/null | sed 's/^/hit /'
 echo scanned
 S
 chown ag-ka:ag-ka $WS/ka/scan.sh
-check "#18 no credential of any kind inside a task: the placeholder key only; no key in env, HOME, /tmp, the workspace or its socket dirs; no /run/credentials" '
+check "#18 no credential of any kind inside a task: the placeholder key, and the task's canary in its slot; no key in env, HOME, /tmp, the workspace or its socket dirs; no /run/credentials" '
   task ka "sh /workspace/scan.sh $(printf %s "$KEY1" | cut -c14-40) $(printf %s "$OKEY" | cut -c10-40)" > $G/scan; cat $G/scan; [ "$(cat $G/scan)" = scanned ]'
+
+# --- #291: a model request that carries the task's canary goes through, and keys alerts once for the task ---
+cat > $WS/ka/canary.sh <<'S'
+case $1 in
+raw) v="debug: ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" ;;
+b64) v="debug: $(printf 'key=%s' "$ANTHROPIC_API_KEY" | base64 -w0)" ;;
+*) v="nothing secret here" ;;
+esac
+printf '{"model":"claude-haiku-5-5","max_tokens":64,"messages":[{"role":"user","content":"%s"}]}' "$v" > /tmp/c.json
+for i in 1 2; do # the second request carries it again: one alert for the task
+  curl -s -o /tmp/b -w "%{http_code}\n" -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+    -d @/tmp/c.json http://127.0.0.1:8081/anthropic/v1/messages
+done
+S
+chown ag-ka:ag-ka $WS/ka/canary.sh
+calerts() { cat $A/seg-*.jsonl | grep "\"type\":\"ALERT\"" | grep "\"reason\":\"exfil_canary\"" | grep -c "\"task\":\"$1\"" || :; }
+ctaint() { cat $A/seg-*.jsonl | grep "\"type\":\"TAINT\"" | grep "\"subject\":\"task:$1\"" | grep -c "\"source\":\"canary:llm\"" || :; }
+for m in raw b64 clean; do
+  n=1; [ $m != clean ] || n=0
+  uplog > /dev/null
+  check "#291 a model request with the canary in its body ($m) reaches the vendor; keys raises $n alert and taint for the task, never for its auth header" '
+    task ka "sh /workspace/canary.sh '$m'" > $G/rc; T=$(cat $G/last); cat $G/rc; uplog > $G/lc
+    i=0; until [ "$(calerts $T)" = '$n' ] || [ $i -ge 25 ]; do i=$((i+1)); sleep 0.2; done; sleep 1
+    [ "$(cat $G/rc)" = "200
+200" ] && [ "$(grep -c "\"path\":\"/v1/messages\"" $G/lc)" = 2 ] && [ "$(calerts $T)" = '$n' ] && [ "$(ctaint $T)" = '$n' ] &&
+    [ "$(journalctl -b -u agentbox-keys -o cat | grep -c "ALERT keys: task $T: a model request carried the task.s canary")" = '$n' ]'
+done
 body urlimage "$(msg '[{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]')"
 body urlpdf "$(msg '[{"type":"document","source":{"type":"url","url":"https://example.com/a.pdf"}}]')"
 body mcp "$(msg '"x"' '"mcp_servers":[{"type":"url","url":"https://mcp.example.com/sse","name":"m"}],')"
@@ -359,14 +391,14 @@ check "  ... keys logged each with its what: body_bytes, decoded_bytes, header_t
 # --- #18: the real CLIs, recorded for the replay corpus ---
 echo "say hi" > $G/hi
 uplog > /dev/null
-check "#18 a Claude Code task (--cli claude) runs to completed with 0 rejections; its requests reach the vendor with the key" '
+check "#18 a Claude Code task (--cli claude) runs to completed with 0 rejections; its requests reach the vendor with the key, and raise no canary alert (#291)" '
   cli ka claude < $G/hi && T=$(cat $G/last) && [ "$(field $T end_reason)" = completed ] && [ "$(deny $T)" = 0 ] && uplog > $G/lcc && cat $G/lcc &&
-  grep -q "\"path\":\"/v1/messages\"" $G/lcc && ! grep -v "\"auth\":\"ok:$F1\"" $G/lcc | grep -q .'
+  grep -q "\"path\":\"/v1/messages\"" $G/lcc && ! grep -v "\"auth\":\"ok:$F1\"" $G/lcc | grep -q . && [ "$(calerts $T)" = 0 ]'
 grep -o '"beta":\[[^]]*\]' $G/lcc | head -1 > $G/ccbeta
-check "#18 a Codex task (--cli codex) runs to completed with 0 rejections; its requests reach the vendor with the key" '
+check "#18 a Codex task (--cli codex) runs to completed with 0 rejections; its requests reach the vendor with the key, and raise no canary alert (#291)" '
   cli ka codex < $G/hi; T=$(cat $G/last); journalctl -b -u agentbox-keys -o cat | grep "task=$T"
   [ -n "$T" ] && [ "$(field $T end_reason)" = completed ] && [ "$(deny $T)" = 0 ] && uplog > $G/lcx && cat $G/lcx &&
-  grep -q "\"path\":\"/v1/responses\"" $G/lcx && ! grep -v "\"auth\":\"ok:$FO\"" $G/lcx | grep -q .'
+  grep -q "\"path\":\"/v1/responses\"" $G/lcx && ! grep -v "\"auth\":\"ok:$FO\"" $G/lcx | grep -q . && [ "$(calerts $T)" = 0 ]'
 # the first beta Claude Code sent, other than claude-code-20250219: keys refuses it, and Claude Code must retry without it
 DB1=$(tr -d '"[]' < $G/ccbeta | sed 's/^beta://' | tr ',' '\n' | grep -v '^claude-code-' | head -1)
 echo "Claude Code's betas: $(cat $G/ccbeta); refusing $DB1"

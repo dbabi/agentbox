@@ -143,6 +143,9 @@ func agentboxd(o Op) Op { o.Rootd = false; return o }
 
 func taints(o Op, out ...Field) Op { o.TaintsOutput, o.Out = true, out; return o }
 
+// ghCommentOut is a gh.*.comment's outputs: remote is agentbox's, id and url GitHub's (§5.3 Op outputs).
+var ghCommentOut = fields(str("remote"), num("id").opt(), str("url").opt())
+
 // Registry is every op in §5.3, sorted by name for review; generation sorts again.
 var Registry = withAskFields([]Op{
 	admin("agent.add", SigNone, str("name"), num("diskBytes").opt()),
@@ -212,13 +215,15 @@ var Registry = withAskFields([]Op{
 	taints(rd("gh.issue.read", "Read a GitHub issue on one of your remotes. The output taints this task.", host, "", str("remote"), num("number")),
 		obj("issue").hash()),
 	{Name: "gh.issue.comment", Desc: "Comment on a GitHub issue on one of your remotes.", Class: Live, Group: GSideEffect, Resource: repo, ResourceFrom: "remote",
-		Args: fields(str("remote"), num("number"), str("body").hash()), Bound: []string{"body hash (op marker included)", "gh_node_id"},
+		Args: fields(str("remote"), num("number"), str("body").hash()), Out: ghCommentOut, Bound: []string{"body hash (op marker included)", "gh_node_id"},
 		Sig: SigAlways, Rollback: CovExternal, Rootd: true},
 	{Name: "gh.pr.comment", Desc: "Comment on a pull request on one of your remotes.", Class: Live, Group: GSideEffect, Resource: repo, ResourceFrom: "remote",
-		Args: fields(str("remote"), num("number"), str("body").hash()), Bound: []string{"body hash (op marker included)", "gh_node_id"},
+		Args: fields(str("remote"), num("number"), str("body").hash()), Out: ghCommentOut, Bound: []string{"body hash (op marker included)", "gh_node_id"},
 		Sig: SigAlways, Rollback: CovExternal, Rootd: true},
 	{Name: "gh.pr.create", Desc: "Open a pull request from a pushed agent/<you>/* ref.", Class: Live, Group: GSideEffect, Resource: repo, ResourceFrom: "remote",
-		Args:  fields(str("remote"), str("head"), str("base"), str("title").hash(), str("body").hash()),
+		Args: fields(str("remote"), str("head"), str("base"), str("title").hash(), str("body").hash()),
+		// remote and headOid are agentbox's; number and url are GitHub's (§5.3 Op outputs)
+		Out:   fields(str("remote"), str("headOid"), num("number").opt(), str("url").opt()),
 		Bound: []string{"head OID", "body hash (op marker included)", "gh_node_id"}, Sig: SigAlways, Rollback: CovExternal, Rootd: true},
 	taints(rd("gh.pr.read", "Read a pull request on one of your remotes. The output taints this task.", host, "", str("remote"), num("number")),
 		obj("pr").hash()),
@@ -258,13 +263,20 @@ var Registry = withAskFields([]Op{
 	admin("policy.set", SigNone, str("policy")),
 	admin("procedural.set", SigNone, str("body")),
 	admin("push.policy.set", SigNone, str("remote"), str("policy")),
-	admin("remote.set", SigNone, str("id"), str("url")),
+	func() Op {
+		// the remotes row (App. E): agent is its owner, project the local bare repo pushes run from (§5.3)
+		o := admin("remote.set", SigNone, str("id"), str("agent"), str("project"), str("url"))
+		o.Out = fields(str("nodeId"), str("visibility")) // read from GitHub REST at set time
+		return o
+	}(),
 	{Name: "repo.create", Desc: "Create a local git repo.", Class: Safe, Group: GSafe, Resource: []string{"Host", "Repo"},
 		Args: fields(str("name")), Sig: SigNone, Rollback: CovNone, Rootd: true},
 	{Name: "repo.merge", Desc: "Merge a branch into a local repo's main.", Class: Live, Group: GSideEffect, Resource: repo, ResourceFrom: "p",
-		Args: fields(str("p"), str("srcOid"), str("dstOid")), Bound: []string{"source and target OIDs"}, Sig: SigAlways, Rollback: CovRevert, Rootd: true},
+		Args: fields(str("p"), str("srcOid"), str("dstOid")), Out: fields(str("oid"), flag("tainted")),
+		Bound: []string{"source and target OIDs"}, Sig: SigAlways, Rollback: CovRevert, Rootd: true},
 	{Name: "repo.push", Desc: "Push an agent/<you>/* ref to one of your registered remotes.", Class: Live, Group: GSideEffect, Resource: repo, ResourceFrom: "remote",
-		Args: fields(str("remote"), str("ref"), str("oid")), Bound: []string{"OID", "remote_url", "gh_node_id"}, Sig: SigPolicy, Rollback: CovNone, Rootd: true},
+		Args: fields(str("remote"), str("ref"), str("oid")), Out: fields(str("remote"), str("oid")),
+		Bound: []string{"OID", "remote_url", "gh_node_id"}, Sig: SigPolicy, Rollback: CovNone, Rootd: true},
 	admin("secret.set", SigNone, str("name"), str("value").drop()),
 	rd("system.info", "Show box and release information.", host, ""),
 	admin("taint.clear", SigAlways, str("subject"), str("contentId")).signed(CovNone, "contentId", "the subject's taint epoch",

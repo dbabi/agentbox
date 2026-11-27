@@ -22,8 +22,10 @@ R=$A/releases
 N=$R/.$VER.new
 mkdir -p "$R"
 rm -rf "$N"
-mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d" "$N/tmpfiles.d" "$N/gen" "$N/seccomp" "$N/image"
+mkdir -p "$N/bin" "$N/systemd" "$N/sysusers.d" "$N/tmpfiles.d" "$N/gen" "$N/seccomp" "$N/image" "$N/git-hooks"
 install -m 0755 "$BIN" "$N/bin/agentbox"
+# agentbox-git's core.hooksPath: the only hook a local push runs (§6.3)
+install -m 0755 "$S/git-hooks/pre-receive" "$N/git-hooks/pre-receive"
 # rootd checks the task image against the release's SHA256SUMS before every load (#102)
 install -m 0644 "$S/image/linux-$ARCH/task.oci.tar" "$N/image/task.oci.tar"
 install -m 0644 "$S/SHA256SUMS" "$N/SHA256SUMS"
@@ -60,10 +62,11 @@ install -d -m 0711 "$A/control"
 install -m 0644 "$R/$VER/seccomp/seccomp-task.json" "$A/control/.seccomp-task.json.new"
 mv -f "$A/control/.seccomp-task.json.new" "$A/control/seccomp-task.json"
 # Packaged ntfy (§2): agentbox-reconcile then writes its config, tmpfiles, ACLs and firewall drop-in, and enables it.
-# Rootless podman runs the tasks (§4.2); uidmap brings newuidmap, dbus-user-session the user bus rootd launches over.
+# Rootless podman runs the tasks (§4.2); uidmap brings newuidmap, dbus-user-session the user bus rootd launches over;
+# git brings git http-backend for agentbox-git (§6.3).
 # policy-rc.d keeps the postinst from starting ntfy on its default config (HTTP on :80, every interface).
 need=
-for p in ntfy podman uidmap dbus-user-session; do
+for p in ntfy podman uidmap dbus-user-session git; do
   dpkg -s "$p" 2>/dev/null | grep -qx 'Status: install ok installed' || need="$need $p"
 done
 # This exact file is install.sh's own: a run that a power cut or SIGKILL stopped before its trap left it (#218).

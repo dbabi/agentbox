@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agentbox/internal/audit"
+	"agentbox/internal/git"
 	"agentbox/internal/ids"
 	"agentbox/internal/ops"
 )
@@ -48,6 +49,7 @@ func floor(c ops.Code, what, op string) ops.Denial {
 // takes agentboxd's task, agent and chain as given (the §5.2 compromise bound) and runs only ops that have an Effect.
 // Check the task's live row here once every gate registration comes from task.start (`agentbox gate register` skips it).
 func (s *server) taskOp(r request) reply {
+	receipt := time.Now()
 	// UNKNOWN_OP is the gate's code (§5.6), so an op the floor never runs here, one the gate should have refused or one
 	// with no effect yet, is FLOOR_NEVER{never_available}.
 	o, ok := ops.Lookup(r.Name)
@@ -66,7 +68,16 @@ func (s *server) taskOp(r request) reply {
 	if rep := s.fenceDeny(o.Name); o.Class != ops.Read && rep != nil {
 		return rep
 	}
+	if pendingOps[o.Name] && s.tasks != nil {
+		return s.submit(o, r, args, receipt) // a remote write or merge waits for a human (§5.3)
+	}
 	eff := s.cfg.Effects[o.Name]
+	if eff == nil && o.Name == "repo.create" && s.tasks != nil {
+		if name, _ := args["name"].(string); !git.ValidProject(name) {
+			return deny(ops.Deny(ops.InvalidArgs, "", ops.Slots{Op: o.Name, By: "floor", Subject: ops.Subject{Pointer: "/name"}, Expect: "valid"}), "floor.repo_name")
+		}
+		eff = s.repoCreate(r.Task, r.Agent)
+	}
 	if eff == nil {
 		return deny(floor(ops.FloorNever, "never_available", o.Name), "floor.not_built")
 	}
@@ -116,3 +127,20 @@ func (s *server) taskOp(r request) reply {
 type auditNACK struct{ code, detail string }
 
 func (e *auditNACK) Error() string { return fmt.Sprintf("NACK %s %s", e.code, e.detail) }
+
+// repoCreate is repo.create's effect (Safe, §5.3): agentbox-git makes the task's agent a local bare repo. The agent
+// comes from rootd's own registry row, never from the request.
+func (s *server) repoCreate(task, claimed string) Effect {
+	return func(_ string, args map[string]any) (map[string]any, error) {
+		agent, live, _, err := s.taskAgent(task)
+		if err != nil || !live || agent != claimed {
+			return nil, fmt.Errorf("task %s is not live for agent %s", task, claimed)
+		}
+		name, _ := args["name"].(string)
+		if !git.ValidProject(name) {
+			return nil, fmt.Errorf("bad repo name")
+		}
+		_, err = s.gitOK(map[string]any{"call": "repo.create", "agent": agent, "project": name}, time.Minute)
+		return nil, err
+	}
+}

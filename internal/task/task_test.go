@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"agentbox/internal/canary"
 	"agentbox/internal/gate"
 	"agentbox/internal/ops"
 	"agentbox/internal/taskenv"
@@ -352,6 +353,34 @@ func TestSetupAndExports(t *testing.T) {
 	for f, dst := range map[string]string{"CLAUDE.md": ".claude/CLAUDE.md", "AGENTS.md": ".codex/AGENTS.md"} {
 		if b, _ := os.ReadFile(filepath.Join(home, dst)); string(b) != string(ops.Exports()[f]) {
 			t.Fatalf("%s: %q", dst, b)
+		}
+	}
+}
+
+// #105: the canary goes where a task looks for credentials; a value that is not a minted canary plants nothing.
+func TestDecoys(t *testing.T) {
+	home := t.TempDir()
+	r := &Runner{Home: home}
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("ANTHROPIC_API_KEY", LLMKey)
+	if err := r.Decoys("not-a-canary"); err != nil || os.Getenv("ANTHROPIC_API_KEY") != LLMKey {
+		t.Fatalf("an invalid canary planted something: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".netrc")); !os.IsNotExist(err) {
+		t.Fatal("an invalid canary wrote ~/.netrc")
+	}
+	c := canary.Mint()
+	if err := r.Decoys(c); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("ANTHROPIC_API_KEY") != c || os.Getenv("GITHUB_TOKEN") != c {
+		t.Fatal("the env slots don't hold the canary")
+	}
+	for _, f := range []string{".netrc", ".config/gh/hosts.yml"} {
+		b, err := os.ReadFile(filepath.Join(home, f))
+		fi, _ := os.Stat(filepath.Join(home, f))
+		if err != nil || !canary.Scan(b, c) || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("%s: %q %v", f, b, err)
 		}
 	}
 }

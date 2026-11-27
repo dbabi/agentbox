@@ -80,7 +80,8 @@ func build(version, key, out string, sign bool) (string, []byte, error) {
 		name, src string
 		mode      int64
 	}
-	files := []file{{"install.sh", "install/install.sh", 0o755}}
+	// the local repos' pre-receive hook: agentbox-git points core.hooksPath at its dir in the release (§6.3)
+	files := []file{{"install.sh", "install/install.sh", 0o755}, {"git-hooks/pre-receive", "git-hooks/pre-receive", 0o755}}
 	for _, arch := range []string{"arm64", "amd64"} {
 		bin := filepath.Join(tmp, arch)
 		cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w -X main.version="+version, "-o", bin, "./cmd/agentbox")

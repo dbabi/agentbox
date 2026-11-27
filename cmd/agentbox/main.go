@@ -15,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf16"
 
+	"agentbox/internal/git"
 	"agentbox/internal/ntfy"
 	"agentbox/internal/recovery"
 	"agentbox/internal/rootd"
@@ -64,6 +65,12 @@ const usage = `usage:
   agentbox goprivate set --agent A --patterns 'corp.example/*,...'   (admin: go.private.set; "" clears)
   agentbox cache purge --agent A   (admin: cache.purge, empties the agent's Go module cache)
   agentbox budget set [--file budgets.toml]   (admin: budget.set, replaces budgets.toml; default: standard input)
+  agentbox git [--max-push-bytes N]   (agentbox-git.service: local repos and the remote writes; budgets.toml caps the day's pushes)
+  agentbox git-hook pre-receive   (the local repos' pre-receive hook)
+  agentbox git-credential get   (agentbox-git's credential helper)
+  agentbox remote set --id ID --agent A --project P --url https://github.com/O/R | list [--agent A]   (admin: remote.set)
+  agentbox pending list | get --id ID | approve --id ID | deny --id ID   (admin: the asks waiting for a human)
+  agentbox approve [--yes] ID   (admin: show one ask, then approve it)
   agentbox why [<CODE> | --errno <E>]   (in a task: recent denials, or fixed guidance; no gate call)
 `
 
@@ -193,6 +200,18 @@ func run(args []string) error {
 		return cmdCache(args[1:])
 	case "budget":
 		return cmdBudget(args[1:])
+	case "git":
+		return cmdGit(args[1:])
+	case "git-hook":
+		return cmdGitHook(args[1:])
+	case "git-credential":
+		return cmdGitCredential(args[1:])
+	case "remote":
+		return cmdRemote(args[1:])
+	case "pending":
+		return cmdPending(args[1:])
+	case "approve":
+		return cmdApprove(args[1:])
 	case "why":
 		return cmdWhy(args[1:])
 	case "-h", "--help", "help":
@@ -258,7 +277,7 @@ func cmdSeed(args []string) error {
 }
 
 // cmdReconcile is agentbox-reconcile.service (ARCHITECTURE.md §3.2): it re-applies the persistent control store to
-// whichever generation booted, before every agentbox unit: the disk reserve (§4.1), the agent accounts from rootd's
+// whichever generation booted, before every agentbox unit: the disk reserve (§4.1), git/'s owner, the agent accounts from rootd's
 // ids table (§4.1), the PAM login line that keeps task launches from running update-motd.d (Appendix C), the networkd
 // drop-ins that record PREF64 (Appendix B check 2) and packaged ntfy (§2).
 func cmdReconcile(args []string) error {
@@ -267,6 +286,9 @@ func cmdReconcile(args []string) error {
 	}
 	if err := quota.Ensure(); err != nil {
 		return err
+	}
+	if err := ownGitStore(git.Root); err != nil {
+		return fmt.Errorf("%s: %v", git.Root, err)
 	}
 	if err := applyAccounts(false); err != nil {
 		return err

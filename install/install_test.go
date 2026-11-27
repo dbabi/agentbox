@@ -44,7 +44,7 @@ func stage(t *testing.T, stubs map[string]string) (c *exec.Cmd, box, trace strin
 	for name, body := range map[string]string{"install.sh": s, "bin/linux-arm64/agentbox": "#!/bin/sh\necho 1.0.0\n",
 		"systemd/agentbox-x.service": "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=multi-user.target\n",
 		"sysusers.d/agentbox.conf":   "u agentbox-x -\n", "tmpfiles.d/agentbox.conf": "d /run/agentbox-x 0711 root root -\n",
-		"gen/cedar.schema": "namespace Agentbox {}\n", "seccomp/seccomp-task.json": "{}\n",
+		"gen/cedar.schema": "namespace Agentbox {}\n", "seccomp/seccomp-task.json": "{}\n", "git-hooks/pre-receive": "#!/bin/sh\n",
 		"image/linux-arm64/task.oci.tar": "oci\n", "SHA256SUMS": "x  image/linux-arm64/task.oci.tar\n"} {
 		os.MkdirAll(filepath.Dir(filepath.Join(rel, name)), 0o755)
 		os.WriteFile(filepath.Join(rel, name), []byte(body), 0o755)

@@ -30,6 +30,7 @@ var Defaults = map[string]int64{
 	"cache.agent_fill_day_bytes": 4 << 30,
 	"cache.max_idle_days":        30,
 	"disk.reserve_bytes":         2 << 30,
+	"git.push_bytes_day":         4 << 30, // each agent's pushed bytes per UTC day (§6.3): git's CAP_REACHED{push_bytes_day}
 	"keys.day_cap_cents":         0,
 	// a task tree's spend (§6.3, §7): rootd registers each task's trace with keys, which reserves against it, so a
 	// delegation fan-out has one cap; $20 until budget.set changes it

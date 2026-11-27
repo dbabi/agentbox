@@ -68,7 +68,8 @@
         "KEYS_REQUEST_REJECTED",
         "KEYS_BUDGET",
         "KEYS_UPSTREAM",
-        "BROKER_UNAVAILABLE"
+        "BROKER_UNAVAILABLE",
+        "EXFIL_CANARY"
       ],
       "type": "string"
     },
@@ -853,6 +854,21 @@
         "llm_vendor": "fix",
         "plain_http": "fix"
       }
+    },
+    "EXFIL_CANARY": {
+      "by": [
+        "git",
+        "floor",
+        "gate"
+      ],
+      "http": 403,
+      "msg": "{op} was refused: it carries a credential planted in this task, and a human was alerted.",
+      "next": "human",
+      "remedy": [
+        "human"
+      ],
+      "slots": null,
+      "whats": {}
     },
     "FLOOR_NEVER": {
       "by": [

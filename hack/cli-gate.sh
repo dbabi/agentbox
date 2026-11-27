@@ -83,8 +83,9 @@ W=/var/lib/agentbox/data/workspaces/cg
 RS=/run/systemd/system
 G=/var/tmp/cli-gate
 M=/workspace/.gate-m # markers: in the workspace; on the host /workspace links to it, so one path works on both sides
-# Claude Code 2.1.330's tools in a -p task: every name across the recorded requests (#120)
-TOOLS="Agent Bash CronCreate CronDelete CronList DeferredToolPlaceholder Edit EnterWorktree ExitWorktree ListAgents Monitor NotebookEdit Read ReportFindings ScheduleWakeup SendMessage Skill TaskStop ToolSearch WebFetch Workflow Write"
+# Claude Code 2.1.330's tools in a -p task: every name across the recorded requests (#120). Tasks run with
+# CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (#18), which turns tool search off: no ToolSearch or DeferredToolPlaceholder (#306)
+TOOLS="Agent Bash CronCreate CronDelete CronList Edit EnterWorktree ExitWorktree ListAgents Monitor NotebookEdit Read ReportFindings ScheduleWakeup SendMessage Skill TaskStop WebFetch Workflow Write"
 rm -rf $G; mkdir -p $G && chmod 0755 $G
 as() { runuser -u ag-cg -- "$@"; }
 markers() { ls $W/.gate-m | tr '\n' ' '; }
@@ -248,7 +249,8 @@ for k in keys:
 open(out, "wb").write(buf); os.kill(pid, 9)
 PY
 cat > $G/p <<'P'
-echo '{"hasCompletedOnboarding":true,"customApiKeyResponses":{"approved":["agentbox-placeholder"],"rejected":[]},"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}' > ~/.claude.json
+# the key slot holds the task's canary (#105): Claude Code approves a key by its last 20 characters
+echo '{"hasCompletedOnboarding":true,"customApiKeyResponses":{"approved":["'"$(printf %s "$ANTHROPIC_API_KEY" | tail -c 20)"'"],"rejected":[]},"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}' > ~/.claude.json
 cd /workspace && python3 .gate/ptyrun.py /tmp/st /status '\r' -- claude --setting-sources user --strict-mcp-config --settings /opt/agentbox/exports/claude-settings.json --mcp-config /opt/agentbox/exports/mcp.json
 sed 's/\x1b\[[0-9;?]*[A-Za-z]/ /g' /tmp/st | tr '\r' '\n' | grep -a 'Setting sources:'
 P

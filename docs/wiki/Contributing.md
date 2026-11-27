@@ -1,7 +1,7 @@
 agentbox is early alpha. It is not for production use.
 Milestones 1, 2 and 4 of 9 are built and tested in QEMU VMs: the installer, the OS layer, the first host services (firewall, audit daemon, root daemon skeleton, quotas, ntfy), agent accounts and task containers. Milestone 3, the request checks, is built and waits for its 24-hour fuzz run.
 No real hardware has run it yet.
-The egress proxy and the LLM keys broker are built. The git service, policy and approvals are designed but not built.
+The egress proxy, the LLM keys broker and the git service are built. Policy and signed approvals are designed but not built.
 
 This page covers how to set up, change, test and submit code.
 

@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"agentbox/internal/canary"
 	"agentbox/internal/ids"
 	"agentbox/internal/ops"
 )
@@ -59,11 +60,12 @@ func (l Limits) withDefaults() Limits {
 	return l
 }
 
-// Task is one task rootd registered: the socket is its, and so is every request on it.
+// Task is one task rootd registered: the socket is its, and so is every request on it. Canary is the task's canary
+// (#105), which the broker watches its requests for.
 type Task struct {
-	ID, Agent, Trace string
-	Chain            []string
-	UID              uint32
+	ID, Agent, Trace, Canary string
+	Chain                    []string
+	UID                      uint32
 }
 
 // Format writes a denial in the broker's own surface (§5.6 Surfaces): it sets h and returns the body.
@@ -98,12 +100,12 @@ var (
 	chainRe = regexp.MustCompile(`^([A-Za-z0-9_-]{1,64}|(human|agent):[a-z_][a-z0-9_.-]{0,31})$`)
 )
 
-// Control is one request from rootd on svc-<svc>.sock (the caller checked uid 0): register{task, agent, chain, trace}
-// binds the task's socket; revoke{task} unlinks it and closes it and every connection it accepted (§2.1).
+// Control is one request from rootd on svc-<svc>.sock (the caller checked uid 0): register{task, agent, chain, trace,
+// canary} binds the task's socket; revoke{task} unlinks it and closes it and every connection it accepted (§2.1).
 func (s *Server) Control(line []byte) map[string]any {
 	var r struct {
-		Call, Task, Agent, Trace string
-		Chain                    []string
+		Call, Task, Agent, Trace, Canary string
+		Chain                            []string
 	}
 	d := json.NewDecoder(bytes.NewReader(line))
 	d.DisallowUnknownFields()
@@ -112,7 +114,7 @@ func (s *Server) Control(line []byte) map[string]any {
 	}
 	switch r.Call {
 	case "register":
-		if err := s.register(Task{ID: r.Task, Agent: r.Agent, Trace: r.Trace, Chain: r.Chain}); err != nil {
+		if err := s.register(Task{ID: r.Task, Agent: r.Agent, Trace: r.Trace, Canary: r.Canary, Chain: r.Chain}); err != nil {
 			return map[string]any{"ok": false, "error": err.Error()}
 		}
 		return map[string]any{"ok": true, "socket": s.sockPath(r.Task)}
@@ -146,10 +148,10 @@ func (s *Server) Lookup(id string) (*Task, bool) {
 
 // register checks the dir rootd made (§2.1: a real dir, this service's uid, group ag-<agent>, mode 2750), replaces
 // only this service's own stale socket in it, and binds <Name>.sock 0660. A task without a trace has no budget to
-// bill (§6.3), so it is refused.
+// bill (§6.3), so it is refused. A canary, when rootd sends one, must have the minted shape.
 func (s *Server) register(t Task) error {
-	if !taskRe.MatchString(t.ID) || !agentRe.MatchString(t.Agent) || !ids.Is(ids.Trace, t.Trace) {
-		return errors.New("bad task, agent or trace")
+	if !taskRe.MatchString(t.ID) || !agentRe.MatchString(t.Agent) || !ids.Is(ids.Trace, t.Trace) || t.Canary != "" && !canary.Valid(t.Canary) {
+		return errors.New("bad task, agent, trace or canary")
 	}
 	for _, c := range t.Chain {
 		if !chainRe.MatchString(c) {
@@ -300,15 +302,15 @@ func (s *Server) Rebind(list []byte) error {
 	var r struct {
 		OK    bool `json:"ok"`
 		Tasks []struct {
-			Task, Agent, Trace string
-			Chain              []string
+			Task, Agent, Trace, Canary string
+			Chain                      []string
 		} `json:"tasks"`
 	}
 	if err := json.Unmarshal(list, &r); err != nil || !r.OK {
 		return fmt.Errorf("task.list_live: %s", bytes.TrimSpace(list))
 	}
 	for _, t := range r.Tasks {
-		if err := s.register(Task{ID: t.Task, Agent: t.Agent, Trace: t.Trace, Chain: t.Chain}); err != nil {
+		if err := s.register(Task{ID: t.Task, Agent: t.Agent, Trace: t.Trace, Canary: t.Canary, Chain: t.Chain}); err != nil {
 			log.Printf("task %s: rebind: %v", t.Task, err)
 		}
 	}

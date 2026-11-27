@@ -63,6 +63,7 @@ type Config struct {
 	CredStore string
 	Encrypt   func(name, value, out string) error
 	Restart   func(unit string, ifRunning bool) error
+	Git       GitCall // svc-git.sock; nil: gitCall
 }
 
 // Socket names: each .socket unit sets FileDescriptorName= to one of these.
@@ -95,7 +96,8 @@ func OpenDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
-	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, snapSchema, secretSchema, attach.Schema, attach.BaselineSchema, alertSchema, cacheAlertSchema} {
+	for _, schema := range []string{resolve.Schema, accounts.Schema, taskSchema, snapSchema, secretSchema, attach.Schema, attach.BaselineSchema, alertSchema,
+		cacheAlertSchema, gitSchema} {
 		if _, err := db.Exec(schema); err != nil {
 			db.Close()
 			return nil, err
@@ -270,6 +272,10 @@ func Run(cfg Config) error {
 	} else {
 		s.checkQuota()
 	}
+	if s.git = cfg.Git; s.git == nil {
+		s.git = gitCall
+	}
+	s.reconcileStart() // §5.2 recovery, before rootd listens: the pending rows auditd alone settles
 	for name, ln := range lns {
 		go s.accept(name, ln)
 	}
@@ -277,7 +283,8 @@ func Run(cfg Config) error {
 	if err := notify("READY=1\nSTATUS=sets match rootd.db"); err != nil {
 		return err
 	}
-	s.refresh(ctx) // ntfy_dst at start, then on the timer
+	go s.reconcileBrokers() // the rows agentbox-git must inspect; it starts after rootd
+	s.refresh(ctx)          // ntfy_dst at start, then on the timer
 	s.refreshShares()
 	t := time.NewTicker(cfg.RefillInterval)
 	defer t.Stop()
@@ -317,11 +324,16 @@ func refill(db *sql.DB, svc *resolve.Service) (resolve.RefillResult, error) {
 }
 
 type server struct {
-	cfg   Config
-	tasks *tasks // nil: no task ops (tests)
-	db    *sql.DB
-	svc   *resolve.Service
-	seal  audit.Sealer
+	cfg    Config
+	tasks  *tasks                                       // nil: no task ops (tests)
+	git    GitCall                                      // svc-git.sock
+	auditQ func(map[string]any) (map[string]any, error) // a query on auditd's rootd socket (op.get); nil: cfg.AuditSocket
+	// inflight is every pending id whose execution runs in this process: an approve of an executing row reconciles it
+	// only when it is not one of these
+	inflight sync.Map
+	db       *sql.DB
+	svc      *resolve.Service
+	seal     audit.Sealer
 	// audit sends one record to auditd's rootd producer socket and returns nil only on its ACK (auditSend)
 	audit func(map[string]any) error
 
@@ -495,6 +507,13 @@ type request struct {
 	Value *string `json:"value,omitempty"`
 	// task new --ack-secrets (#104): the credential count the admin acknowledges
 	AckSecrets int `json:"ackSecrets,omitempty"`
+	// pending.get, pending.approve, pending.deny: the pending id; remote.list: agent
+	ID string `json:"id,omitempty"`
+	// resolve-git.sock push.report (#19): the repo <agent>/<project>, the refs the push updates, and the gitleaks rules
+	// that matched its files
+	Repo    string   `json:"repo,omitempty"`
+	Refs    []string `json:"refs,omitempty"`
+	Secrets []string `json:"secrets,omitempty"`
 }
 
 // peer is a connection's SO_PEERCRED uid and SO_PEERGROUPS groups.
@@ -550,6 +569,12 @@ func (s *server) handle(sock string, p peer, r request) reply {
 		}
 		return reply{"ok": true, "addrs": out, "expires_at": exp.UnixMilli()}
 	case s.tasks == nil: // the task ops below need the registry; resolve above doesn't
+	case sock == "resolve-git" && r.Op == "push.report":
+		return s.pushReport(r)
+	case sock == "resolve-git" && r.Op == "canary.hit":
+		return s.canaryHit(r.Task, r.Name)
+	case sock == "resolve-keys" && r.Op == "canary.hit":
+		return s.canaryHit(r.Task, "llm") // a model request carried it (#291): keys alerts only
 	case sock == sockGate && r.Op == "task.start":
 		if rep := s.fenceDeny(r.Op); rep != nil {
 			return rep
@@ -561,7 +586,7 @@ func (s *server) handle(sock string, p peer, r request) reply {
 		}
 		return s.tasks.stop(r.Task, r.Reason)
 	case (sock == sockGate || strings.HasPrefix(sock, "resolve-")) && r.Op == "task.list_live":
-		return s.tasks.listLive()
+		return s.tasks.listLive(sock == sockGate || sock == "resolve-git" || sock == "resolve-keys") // the proxy gets no canary
 	case sock == "resolve-keys" && r.Op == "task.tainted":
 		return s.taskTainted(r.Task)
 	}
@@ -655,6 +680,19 @@ func (s *server) admin(r request, p peer) reply {
 		return s.secretSet(r)
 	case "budget.set":
 		return s.budgetSet(r)
+	case "remote.set":
+		return s.remoteSet(r)
+	case "remote.list":
+		return s.remoteList(r.Agent)
+	case "pending.list", "pending.get", "pending.approve", "pending.deny":
+		if s.tasks == nil {
+			return fail("bad_request")
+		}
+		u, err := user.LookupId(strconv.Itoa(int(p.uid)))
+		if err != nil {
+			return reply{"ok": false, "error": fmt.Sprintf("uid %d names no user on this box, so the approval can't name its human", p.uid)}
+		}
+		return s.pendingAdmin(r, u.Username+":admin")
 	case "sets.refill":
 		return s.refill(r)
 	case "quota.check":

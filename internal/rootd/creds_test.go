@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agentbox/internal/canary"
 	"agentbox/internal/ids"
 )
 
@@ -121,24 +122,57 @@ func TestLLMRecycleAndTaint(t *testing.T) {
 }
 
 // keys gets the task's trace at register and in task.list_live (§6.3); the other services' calls stay as they were.
+// The gate, keys and git get the task's canary at register (#105, #291); the proxy never does.
 func TestKeysTrace(t *testing.T) {
 	r := newRig(t)
 	var regs []string
 	r.t.cfg.Svc = func(svc string, req map[string]any) (map[string]any, error) {
 		if req["call"] == "register" {
 			_, has := req["trace"]
-			regs = append(regs, svc+" "+map[bool]string{true: "trace", false: "-"}[has])
+			c, _ := req["canary"].(string)
+			regs = append(regs, svc+" "+map[bool]string{true: "trace", false: "-"}[has]+" "+map[bool]string{true: "canary", false: "-"}[canary.Valid(c)])
 		}
 		return map[string]any{"ok": true}, nil
 	}
 	id := ids.New(ids.Task)
 	req, _ := r.t.newRequest("boxadmin", "claude", 3, time.Hour)
 	rep := r.t.start(id, "claude", "admin:"+req)
-	if rep["ok"] != true || !slices.Equal(regs, []string{"gate -", "proxy -", "keys trace", "git -"}) {
+	if rep["ok"] != true || !slices.Equal(regs, []string{"gate - canary", "proxy - -", "keys trace canary", "git - canary"}) {
 		t.Fatalf("start %v, registers %v", rep, regs)
 	}
-	b, _ := json.Marshal(r.t.listLive())
+	b, _ := json.Marshal(r.t.listLive(false))
 	if !strings.Contains(string(b), `"trace":"`+rep["trace"].(string)+`"`) {
 		t.Errorf("task.list_live: %s", b)
+	}
+}
+
+// Each broker unit loads exactly the credentials secret.set gives its service, from that service's dir in the store,
+// and no other unit loads any (#108).
+func TestUnitCredentials(t *testing.T) {
+	want := map[string][]string{}
+	for name, svc := range Credentials {
+		want["agentbox-"+svc+".service"] = append(want["agentbox-"+svc+".service"], "LoadCredentialEncrypted="+name+":"+CredStore+"/"+svc+"/"+name)
+	}
+	units, _ := filepath.Glob("../../systemd/*.service")
+	if len(units) == 0 {
+		t.Fatal("no units")
+	}
+	for _, u := range units {
+		b, err := os.ReadFile(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, l := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(l, "LoadCredential") || strings.HasPrefix(l, "SetCredential") || strings.HasPrefix(l, "ImportCredential") {
+				got = append(got, l)
+			}
+		}
+		w := want[filepath.Base(u)]
+		slices.Sort(got)
+		slices.Sort(w)
+		if !slices.Equal(got, w) {
+			t.Errorf("%s: credentials %q, want %q", filepath.Base(u), got, w)
+		}
 	}
 }

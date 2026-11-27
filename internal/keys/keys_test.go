@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"agentbox/internal/broker"
+	"agentbox/internal/canary"
 	"agentbox/internal/ops"
 )
 
@@ -373,6 +374,63 @@ func TestAuditFirst(t *testing.T) {
 		f.audits[0]["subject"] != "task:"+f.t.ID || f.audits[0]["source"] != "keys:web_search" || f.audits[1]["type"] != "LLM" {
 		t.Errorf("web_search with the policy: %d %v", resp.StatusCode, f.audits)
 	}
+}
+
+// #291: a model request that carries the task's canary, raw or base64 in the body or in a forwarded header, still
+// goes to the vendor and tells rootd once for the task; a clean one doesn't, though its auth headers hold the canary,
+// as every task's do. A canary.hit rootd didn't record is sent again with the next such request.
+func TestCanaryAlert(t *testing.T) {
+	f := newFixture(t, sseReply(stream...))
+	c := canary.Mint()
+	f.t.Canary = c
+	var mu sync.Mutex
+	var hits []string
+	fail := true
+	f.s.CanaryHit = func(task string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		hits = append(hits, task)
+		if fail {
+			fail = false
+			return errors.New("rootd down")
+		}
+		return nil
+	}
+	body := func(text string) string {
+		b, _ := json.Marshal(map[string]any{"model": "claude-opus-5-5", "max_tokens": 10, "messages": []any{map[string]any{"role": "user", "content": text}}})
+		return string(b)
+	}
+	for i, r := range []struct {
+		body string
+		h    []string
+		hits int
+	}{
+		{body("hi"), []string{"x-api-key", c, "Authorization", "Bearer " + c}, 0},
+		{body("env: ANTHROPIC_API_KEY=" + c), nil, 1}, // rootd fails this one
+		{body("b64 " + base64.StdEncoding.EncodeToString([]byte("token="+c+"\n"))), nil, 2},
+		{body("again " + c), nil, 2}, // the task's hit is recorded: no second alert
+	} {
+		n := f.vendor.count()
+		if resp, b := f.do(t, "POST", "/anthropic/v1/messages", r.body, r.h...); resp.StatusCode != 200 || f.vendor.count() != n+1 {
+			t.Fatalf("request %d: %d %s, %d reached the vendor", i, resp.StatusCode, b, f.vendor.count()-n)
+		}
+		mu.Lock()
+		if len(hits) != r.hits || r.hits > 0 && hits[r.hits-1] != f.t.ID {
+			t.Errorf("request %d: canary.hit %v, want %d", i, hits, r.hits)
+		}
+		mu.Unlock()
+	}
+	// a forwarded header is scanned too
+	f2 := newFixture(t, sseReply(stream...))
+	f2.t.Canary = c
+	n := 0
+	f2.s.CanaryHit = func(string) error { n++; return nil }
+	if resp, _ := f2.do(t, "POST", "/anthropic/v1/messages", body("hi"), "User-Agent", "x/"+c); resp.StatusCode != 200 || n != 1 {
+		t.Errorf("the canary in User-Agent: %d, %d hits", resp.StatusCode, n)
+	}
+	f3 := newFixture(t, sseReply(stream...))
+	f3.s.CanaryHit = func(string) error { t.Error("a task with no canary reported one"); return nil }
+	f3.do(t, "POST", "/anthropic/v1/messages", body(c))
 }
 
 // OpenAI: the Bearer key, store forced to false, and no key at all is KEYS_UPSTREAM{auth} before any upstream byte.

@@ -17,8 +17,8 @@ import (
 
 // C-G1: the table, the constants, the schema and the golden list agree; codes are append-only.
 func TestCodesTable(t *testing.T) {
-	if len(CodeTable) != 36 || len(genCodes) != 36 {
-		t.Fatalf("v1 has 36 codes: table %d, constants %d", len(CodeTable), len(genCodes))
+	if len(CodeTable) != 37 || len(genCodes) != 37 {
+		t.Fatalf("v1 has 36 codes plus EXFIL_CANARY (#105): table %d, constants %d", len(CodeTable), len(genCodes))
 	}
 	g, err := os.ReadFile(filepath.Join(genDir, filepath.Base(GoldenFile)))
 	if err != nil || !bytes.Equal(g, golden(CodeTable)) {
@@ -217,7 +217,7 @@ func whatNames(c CodeDef) []string {
 
 // Leak rules: free-text, hash- and drop-class args never reach a denial, nor does a value that fails its grammar.
 func TestDenyLeaks(t *testing.T) {
-	const canary = "CANARYsk-ant-api03-ZZZ"
+	const canary = "ZQXJsk-ant-api03-ZZZ" // the needle is in no code name or message (EXFIL_CANARY holds "CANARY")
 	args := map[string]json.RawMessage{}
 	for k, v := range map[string]string{"remote": "origin", "ref": "refs/heads/main\x1b[2J" + canary, "oid": "zz" + canary, "title": canary,
 		"body": canary, "head": "refs/heads/agent/a/x", "base": canary} {
@@ -229,7 +229,7 @@ func TestDenyLeaks(t *testing.T) {
 	}
 	for _, c := range genCodes {
 		d := Deny(c, "", Slots{Op: "gh.pr.create", Subject: sub})
-		if bytes.Contains(d.JSON(), []byte("CANARY")) {
+		if bytes.Contains(d.JSON(), []byte("ZQXJ")) {
 			t.Fatalf("%s leaks: %s", c.name, d.JSON())
 		}
 	}
