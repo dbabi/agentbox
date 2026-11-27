@@ -9,7 +9,7 @@ The tests cover the installer, the OS layer, the milestone 2 host services (the 
 - **Fuzz tests** are Go fuzz tests. Each one feeds random inputs to one parser for as long as you let it run. They need no VM.
 - **Gates** are shell scripts in `hack/`. A gate installs Ubuntu into a QEMU VM, boots it, and checks the result. Each check prints one `PASS` or `FAIL` line. A gate passes only if every check passes.
 
-The build plan also uses the word "gate" for the set of tests that ends a milestone (see [Roadmap](Roadmap.md)). The scripts on this page run the tests for milestones 1-4.
+The build plan also uses the word "gate" for the set of tests that ends a milestone (see [Roadmap](Roadmap.md)). The scripts on this page run the tests for milestones 1-4, and the first part of milestone 5.
 
 ## At a glance
 
@@ -33,6 +33,7 @@ The build plan also uses the word "gate" for the set of tests that ends a milest
 | Task env gate (milestone 4) | `hack/taskenv-gate.sh [install\|checks ...]` | Apple Silicon Mac, with internet for the task image build | not timed separately |
 | Agent CLI gate (milestone 4) | `hack/cli-gate.sh [install\|checks ...]` | Apple Silicon Mac, with `npm` and internet for the Claude Code and Codex CLIs | not timed separately |
 | Task image gate (milestone 4) | `hack/image-gate.sh [install\|checks ...]` | Apple Silicon Mac | not timed separately |
+| Pinned dialing gate (milestone 5) | `hack/dial-gate.sh [install] [release] [checks]` | Apple Silicon Mac | TIME |
 | Fuzz tests | `hack/fuzz-all.sh [DURATION]` | macOS or Linux | 24 h by default |
 
 The times come from one Apple Silicon Mac. The milestone 2 and 3 times come from runs with four VMs at once.
@@ -114,7 +115,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 ```
 
 - The script runs the fuzz tests at low priority, `FUZZ_JOBS` at a time, each for the full duration. A crash stops only that test; the rest still run. Then it writes `summary.txt` under `.fuzz/<start time>/`, or under `$OUT`, which must not hold an earlier run. It exits 1 if any test fails.
-- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 54 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
+- `FUZZ_JOBS` defaults to what half the RAM holds, at most one per CPU. So 55 tests at 12 jobs take 5 times the duration: a 24 h run takes 5 days.
 - Each `go test` process and each fuzz worker gets `GOMEMLIMIT=$FUZZ_MEM` (default `1GiB`). `FUZZ_PARALLEL` sets the workers per test (default 1).
 - It records the commit the run started on, and each test's CPU seconds (`cpu_s`, the build included).
 - Go keeps each test's corpus in `$(go env GOCACHE)/fuzz`, so the next run starts from it. `go clean -fuzzcache` deletes it.
@@ -122,7 +123,7 @@ caffeinate -i hack/fuzz-all.sh 24h
 - A crash input lands in its package's `testdata/fuzz/<test>/`. Commit it with the fix, so it stays a regression test.
 - On a Mac, `caffeinate -i` keeps the machine from idle sleep. Keep it on power with the lid open.
 
-The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 54 tests take about 21 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
+The `fuzz` workflow in CI runs each fuzz test for 3 hours, every night, in its own job, 8 jobs at a time. So 55 tests take about 21 hours. A run that is still going when the next night starts makes that run wait, so two runs never hold runners at once. A crash fails that job and uploads the crash input. Each job restores its test's corpus from the last run, and saves it at the end. Its log shows the corpus size at the start and the end, and the CPU seconds.
 
 ### The 24 h gate
 
@@ -507,6 +508,28 @@ The tasks, attach and agent CLI gates need `npm` and internet on the Mac. Their 
 - podman refuses `--dns=none` together with `--network=none`. The task env gate checks the image's `resolv.conf` instead.
 - An attach session has no network, so a real Claude login can't reach its servers from an attach yet (issue #90).
 - The 300 ms check times the whole `systemd-run` call, an upper bound on the bridge's own overhead.
+
+## Milestone 5 gates
+
+The pinned dialing gate starts with `install`: `hack/gate.sh none`, so rootd and its resolver reach the box by the real path. Its `checks` step builds a broker stand-in (`hack/dial-gate/probe`) and the test DNS server for the VM, and runs every check as root on that box. It writes `PASS` and `FAIL` lines to `.vm/dial-gate.txt`, and exits 1 on any `FAIL`.
+
+```sh
+caffeinate -i hack/dial-gate.sh
+```
+
+The test network is inside the VM, so the Mac needs no internet for the checks. A virtual LAN, a veth pair into a network namespace, holds a router and the test servers on public-looking addresses. The gate makes that router the box's default route. The test DNS server answers the gate's names for systemd-resolved, and is also a resolve hook.
+
+### What the milestone 5 gates prove
+
+| Suite | Script | What it proves |
+|---|---|---|
+| `m5-dial` | `hack/dial-gate.sh` | rootd refuses an allowlisted name that answers with one of the box's own addresses: on the default interface, on another interface, its SLAAC IPv6 address, or an IPv6 address still in duplicate address detection. It also refuses a LAN host's global IPv6 address, `192.168.1.10`, `192.168.1.10` inside a NAT64 or a 6to4 address, and `240.0.0.1`. A name only `/etc/hosts` knows gets `no_such_name`. A name that a systemd 259 resolve hook answers is refused, and resolved never asks DNS for it. With the hook gone, the same name resolves. rootd reads the box's addresses at each resolution. A process under the keys broker's user, in the broker units' sandbox, dials through the shared dialer. It reaches only rootd's addresses, takes the first that answers, and keeps the name in SNI, the certificate check and `Host`. It never dials the `/etc/hosts` answer, makes no lookup and follows no redirect. An address that resets fails `refused` at once, and one that drops the SYN fails `timeout` after the 10 s budget. |
+
+### What they do not prove
+
+- The brokers are not built yet. A stand-in dials through the package the brokers will use, as the keys broker's user. The broker units themselves are not tested.
+- The upstreams are test servers inside the VM, behind a test router. No real public host is dialed.
+- It ran in `none` mode on arm64 UEFI only. The dialer does not touch unlock or boot.
 
 ## Several VMs at once
 

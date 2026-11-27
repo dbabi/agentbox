@@ -126,7 +126,8 @@ func (s *Service) Resolve(ctx context.Context, svc, task string, e Entry) ([]net
 			why = s.Route(a)
 		}
 		if why == "" && slices.Contains(own, a) {
-			// an address still in DAD has no local route yet, so the route check passes it
+			// an address in DAD has no local route yet; with no prefix route either (SLAAC under an off-link prefix),
+			// the route check passes it
 			why = "own_address"
 		}
 		switch why {
