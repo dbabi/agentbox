@@ -69,6 +69,27 @@ func dial(t *testing.T, sock string) net.Conn {
 }
 
 // reply reads one response off c and returns its status and the CAP_REACHED what, if any.
+// settle polls until the task's listener has at most n open connections, so a following dial sees the cap it tests
+// rather than the race against the prior connection's release. The go scheduler on a slow CI runner delays it.
+func settle(t *testing.T, s *Server, task string, n int) {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		s.mu.Lock()
+		tk, ok := s.tasks[task]
+		s.mu.Unlock()
+		if ok {
+			tk.ln.mu.Lock()
+			k := len(tk.ln.conns)
+			tk.ln.mu.Unlock()
+			if k <= n {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("task %s: still %d connections after 1 s", task, n)
+}
+
 func reply(t *testing.T, c net.Conn) (int, string) {
 	t.Helper()
 	c.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -160,11 +181,13 @@ func TestAdmission(t *testing.T) {
 	if grew := ms1.TotalAlloc - ms0.TotalAlloc; grew > 32<<20 {
 		t.Errorf("the zip bomb cost %d MiB of allocation", grew>>20)
 	}
+	settle(t, s, "task_01JAAAAAAAAAAAAAAAAAAAAAAA", 0)
 	c = dial(t, sock)
 	io.WriteString(c, "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\nshort")
 	if st, w := reply(t, c); st != 408 || w != "read_timeout" {
 		t.Errorf("slow body: %d %s", st, w)
 	}
+	settle(t, s, "task_01JAAAAAAAAAAAAAAAAAAAAAAA", 0)
 	// two connections held by a slow handler, then a third
 	h1, h2 := dial(t, sock), dial(t, sock)
 	post(h1, "/hold", "", nil)
