@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,10 +26,11 @@ import (
 // and any read are not: rootd records those as failed and reconciles only the unknown.
 func TestGitHubUnknown(t *testing.T) {
 	ctx := context.Background()
-	mode := ""
+	var mode atomic.Value // a slow reply can outlast its case
+	mode.Store("")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
-		switch mode {
+		switch mode.Load().(string) {
 		case "502":
 			w.WriteHeader(502)
 		case "422":
@@ -55,7 +57,7 @@ func TestGitHubUnknown(t *testing.T) {
 		mode    string
 		unknown bool
 	}{{"502", true}, {"reset", true}, {"short201", true}, {"html201", true}, {"slow", true}, {"422", false}} {
-		mode = c.mode
+		mode.Store(c.mode)
 		_, err := g.Comment(ctx, "acme", "app", 7, "hello")
 		var ae *APIError
 		if !errors.As(err, &ae) || ae.Unknown != c.unknown {
