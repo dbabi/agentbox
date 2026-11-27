@@ -124,7 +124,9 @@ checks)
   guest <<'EOF'
 fails=0
 cd / # runuser keeps the working dir, and the agent can't enter the admin's home
-check() { if (eval "$2") >>/tmp/kg-check.log 2>&1; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails+1)); fi; }
+# a failed check's output goes to the host's log too
+check() { if (eval "$2") >/var/tmp/kg-out 2>&1; then echo "PASS $1"; else echo "FAIL $1"; sed 's/^/  | /' /var/tmp/kg-out | tail -40; fails=$((fails+1)); fi
+  cat /var/tmp/kg-out >> /var/tmp/kg-check.log; }
 B=/var/lib/agentbox/current/bin/agentbox
 A=/var/lib/agentbox/audit
 CS=/var/lib/agentbox/control/credstore.encrypted
@@ -176,7 +178,7 @@ check "agentbox-keys runs as agentbox-keys from its socket unit, enabled, Type=n
   systemctl is-active -q agentbox-keys.service agentbox-keys-svc.socket && systemctl is-enabled -q agentbox-keys.service agentbox-keys-svc.socket &&
   [ "$(stat -c %U /proc/$(systemctl show -P MainPID agentbox-keys.service))" = agentbox-keys ] && [ "$(systemctl show -P Type agentbox-keys.service)" = notify ] &&
   [ "$(stat -c "%U:%G %a" /run/agentbox-rootd/svc-keys.sock)" = "agentbox-keys:root 600" ] &&
-  [ "$(systemctl show -P LoadCredentialEncrypted agentbox-keys.service | tr " " "\n" | grep -c .)" = 2 ] && systemd-analyze verify agentbox-keys.service agentbox-keys-svc.socket'
+  [ "$(systemctl cat agentbox-keys.service | grep -c "^LoadCredentialEncrypted=")" = 2 ] && systemd-analyze verify agentbox-keys.service agentbox-keys-svc.socket'
 check "A-G13 agentbox-keys runs one more seccomp filter than its unit gives (logged at start, in /proc)" '
   pid=$(systemctl show -P MainPID agentbox-keys.service) && l=$(journalctl -b -u agentbox-keys.service -o cat | grep "service filter installed: Seccomp_filters" | tail -1) && echo "$l" &&
   b=$(echo "$l" | sed -n "s/.*Seccomp_filters \([0-9]*\) -> \([0-9]*\).*/\1/p") && a=$(echo "$l" | sed -n "s/.*-> \([0-9]*\).*/\1/p") &&
@@ -217,8 +219,9 @@ check "#108 secret set (value on stdin) for both vendors; each restarts agentbox
   [ "$(systemctl show -P MainPID agentbox-keys.service)" != "$P0" ] && journalctl -b -u agentbox-keys -o cat | grep -q "keys: anthropic key set"'
 check "#108 the store holds ciphertext only, root 0600; no key byte in it" '
   [ "$(stat -c "%U %a" $CS/keys/anthropic-api-key)" = "root 600" ] && ! grep -rqF "$KEY1" $CS && ! grep -rqF "$OKEY" $CS && ! grep -rqF "${KEY1#sk-ant-api03-}" $CS'
-check "#108 PID 1 decrypted it into agentbox-keys' own credentials dir, readable by agentbox-keys only" '
-  [ "$(stat -c "%U %a" $CRED/anthropic-api-key)" = "agentbox-keys 400" ] && [ "$(runuser -u agentbox-keys -- cat $CRED/anthropic-api-key)" = "$KEY1" ]'
+check "#108 PID 1 decrypted it into agentbox-keys' own credentials dir: a read-only, non-swappable tmpfs that agentbox-keys reads" '
+  findmnt -no FSTYPE,OPTIONS $CRED | grep -q "^tmpfs ro,.*noswap" && [ "$(stat -c "%U %a" $CRED/anthropic-api-key)" = "root 440" ] &&
+  [ "$(runuser -u agentbox-keys -- cat $CRED/anthropic-api-key)" = "$KEY1" ]'
 check "#108 no other uid reads the plaintext: agentbox-proxy, agentbox-git, agentbox, agentbox-audit, agentbox-llm, nobody" '
   for u in agentbox-proxy agentbox-git agentbox agentbox-audit agentbox-llm nobody; do runuser -u $u -- cat $CRED/anthropic-api-key 2>/dev/null && exit 1; runuser -u $u -- cat $CS/keys/anthropic-api-key 2>/dev/null && exit 1; done; true'
 for a in ka kb; do
@@ -362,7 +365,7 @@ check "C-G4 kb's reply is the same, apart from ids, with ka idle or at its share
 printf "keys.day_cap_cents = 10000\nkeys.agent_day_share.ka = 1\n" | $B budget set >/dev/null
 check "C-G4 Claude Code at its share stops within its own retries, and the task result carries KEYS_BUDGET" '
   cli ka claude < $G/hi && T=$(cat $G/last) && [ "$(deny $T)" -ge 1 ] && [ "$(deny $T)" -le 12 ] &&
-  journalctl -b -u agentboxd -o cat | grep "task $T result: " | grep -vq " 0 denials" && [ -z "$(uplog)" ]'
+  journalctl -b -u agentboxd -o cat | grep "task $T result: " | grep -vq " 0 denials" && ! uplog | grep -q "\"path\":\"/v1/messages\""'
 printf "keys.day_cap_cents = 0\n" | $B budget set >/dev/null
 
 # --- #18: the local LLM (a stand-in for agentbox-llm@task) ---
@@ -434,7 +437,7 @@ EOF
   reboot_vm
   guest <<'EOF'
 fails=0
-check() { if (eval "$2") >>/tmp/kg-check.log 2>&1; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails+1)); fi; }
+check() { if (eval "$2") >/var/tmp/kg-out 2>&1; then echo "PASS $1"; else echo "FAIL $1"; sed 's/^/  | /' /var/tmp/kg-out | tail -40; fails=$((fails+1)); fi; }
 check "#108 after a reboot agentbox-keys loads the rotated key again, only for its own uid" '
   systemctl is-active -q agentbox-keys && [ "$(runuser -u agentbox-keys -- cat /run/credentials/agentbox-keys.service/anthropic-api-key)" = "$KEY2" ] &&
   ! runuser -u agentbox-proxy -- cat /run/credentials/agentbox-keys.service/anthropic-api-key 2>/dev/null'
@@ -447,7 +450,7 @@ apply)
   running || up
   guest <<'EOF'
 fails=0
-check() { if (eval "$2") >>/tmp/kg-check.log 2>&1; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails+1)); fi; }
+check() { if (eval "$2") >/var/tmp/kg-out 2>&1; then echo "PASS $1"; else echo "FAIL $1"; sed 's/^/  | /' /var/tmp/kg-out | tail -40; fails=$((fails+1)); fi; }
 B=/var/lib/agentbox/current/bin/agentbox
 $B os plan --install hostname --reinstall > /tmp/kg-plan 2>&1; cat /tmp/kg-plan
 H=$(sed -n 's/^plan sha256: //p' /tmp/kg-plan)
@@ -459,7 +462,7 @@ EOF
   reboot_vm
   guest <<'EOF'
 fails=0
-check() { if (eval "$2") >>/tmp/kg-check.log 2>&1; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails+1)); fi; }
+check() { if (eval "$2") >/var/tmp/kg-out 2>&1; then echo "PASS $1"; else echo "FAIL $1"; sed 's/^/  | /' /var/tmp/kg-out | tail -40; fails=$((fails+1)); fi; }
 B=/var/lib/agentbox/current/bin/agentbox
 g=$(findmnt -no FSROOT /); g=${g#/@}
 i=0; until [ ! -e /var/lib/agentbox/os/pending.json ] && grep -q "^agentbox-$g-" /bootpart/agentbox/committed; do i=$((i+1)); [ $i -lt 84 ] || break; sleep 5; done

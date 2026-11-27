@@ -88,7 +88,11 @@ func errorType(status int) string {
 // refuse writes d. detail is grammar-checked request bytes or a fixed string only (§5.6 leak rule 1): the vendor's
 // wording for a field, or capability_rejected: beta_header:<value>, which Claude Code's retry matches (#18).
 func (s *Server) refuse(w http.ResponseWriter, t *broker.Task, d ops.Denial, status int, detail string) {
-	log.Printf("DENY by=keys task=%s code=%s what=%s id=%s", t.ID, d.Code, d.What, d.ID)
+	ptr := ""
+	if d.Subject != nil && d.Subject.Pointer != "" {
+		ptr = " ptr=" + d.Subject.Pointer // the caller's own field, grammar-checked: never a value
+	}
+	log.Printf("DENY by=keys task=%s code=%s what=%s id=%s%s", t.ID, d.Code, d.What, d.ID, ptr)
 	h := w.Header()
 	ops.KeysHeaders(h, d, s.now())
 	body := ops.KeysError(d, errorType(status), detail)

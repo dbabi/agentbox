@@ -167,8 +167,9 @@ s = socket.socket(socket.AF_UNIX); s.bind(ctl); os.chmod(ctl, 0o600); s.listen(1
 while True:
     c, _ = s.accept(); threading.Thread(target=serve, args=(c,), daemon=True).start()
 PY
-# the release's proxy owns svc-proxy.sock: it stops while the stand-in runs, and starts again at cleanup
-systemctl stop agentbox-proxy.service agentbox-proxy-svc.socket
+# the release's proxy and keys broker own svc-proxy.sock and svc-keys.sock: they stop while the stand-ins run, and start
+# again at cleanup
+systemctl stop agentbox-proxy.service agentbox-proxy-svc.socket agentbox-keys.service agentbox-keys-svc.socket
 for v in proxy keys; do python3 $G/svc.py $v $G </dev/null >>$G/broker.err 2>&1 & echo $! > $G/svc-$v.pid; done
 systemctl daemon-reload
 check "agentboxd with AGENTBOX_TEST_CLI=sh, rootd with the gate's task image, and the stub brokers' svc sockets" '
@@ -345,7 +346,7 @@ check "  ... and raises no alert: no GATE_MISMATCH record and no ALERT for that 
 
 # --- cleanup: the stand-ins go; the box's own state stays ---
 for v in proxy keys; do kill "$(cat $G/svc-$v.pid)" 2>/dev/null; rm -f /run/agentbox-rootd/svc-$v.sock; done
-systemctl start agentbox-proxy-svc.socket agentbox-proxy.service
+systemctl start agentbox-proxy-svc.socket agentbox-proxy.service agentbox-keys-svc.socket agentbox-keys.service
 rm -f $RS/agentboxd.service.d/50-taskenv.conf $RS/agentbox-rootd.service.d/50-taskenv.conf; systemctl daemon-reload
 systemctl restart agentbox-rootd.service agentboxd.service
 podman rmi -f $IMG-env $IMG >/dev/null 2>&1

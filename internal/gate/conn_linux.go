@@ -7,7 +7,10 @@ import (
 	"errors"
 	"log"
 	"net"
+	"os"
 	"time"
+
+	"agentbox/internal/ops"
 
 	"golang.org/x/sys/unix"
 )
@@ -31,8 +34,9 @@ func peerUID(c *net.UnixConn) (uint32, error) {
 	return uid, err
 }
 
-// lines calls f for each "\n"-terminated line on c and writes its reply. Ancillary data (SCM_RIGHTS included) or a
-// line over MaxRequest closes the connection: the gate takes no descriptors (§2.1).
+// lines calls f for each "\n"-terminated line on c and writes its reply. Ancillary data (SCM_RIGHTS included) closes
+// the connection: the gate takes no descriptors (§2.1). So does a line over MaxRequest, and a line that stops partway
+// for idle, each after a typed CAP_REACHED reply, body_bytes or read_timeout (#115).
 func lines(c *net.UnixConn, idle time.Duration, f func([]byte) []byte) {
 	var buf []byte
 	b := make([]byte, 4096)
@@ -61,6 +65,7 @@ func lines(c *net.UnixConn, idle time.Duration, f func([]byte) []byte) {
 				break
 			}
 			if i > MaxRequest {
+				capped(c, "body_bytes", MaxRequest)
 				return
 			}
 			if _, err := c.Write(append(f(buf[:i]), '\n')); err != nil {
@@ -68,7 +73,14 @@ func lines(c *net.UnixConn, idle time.Duration, f func([]byte) []byte) {
 			}
 			buf = buf[i+1:]
 		}
-		if len(buf) > MaxRequest || err != nil {
+		switch {
+		case len(buf) > MaxRequest:
+			capped(c, "body_bytes", MaxRequest)
+			return
+		case err != nil && len(buf) > 0 && errors.Is(err, os.ErrDeadlineExceeded):
+			capped(c, "read_timeout", idle.Milliseconds())
+			return
+		case err != nil:
 			return
 		}
 	}
@@ -102,6 +114,14 @@ func (f *fdFree) Read(p []byte) (int, error) {
 		return 0, errAncillary
 	}
 	return max(n, 0), err
+}
+
+// capped is the reply to a line past an admission cap: a JSON-RPC error with no id, since the request never parsed.
+func capped(c *net.UnixConn, what string, limit int64) {
+	d := ops.Deny(ops.CapReached, what, ops.Slots{By: "gate", Limit: &limit})
+	log.Printf("DENY by=gate code=%s what=%s id=%s", d.Code, what, d.ID)
+	c.SetWriteDeadline(time.Now().Add(time.Second))
+	c.Write(append(denied(nil, d), '\n'))
 }
 
 // MaxConns is how many connections one task's socket serves at once; more wait in the listen backlog. So a task can't
