@@ -1,6 +1,7 @@
 package canary
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -127,6 +128,24 @@ func TestScanStream(t *testing.T) {
 		if !s.Hit() {
 			t.Fatalf("one byte per write: missed %q", data[:20])
 		}
+	}
+}
+
+// One large write is scanned in pieces (a model request body is up to 32 MiB): a canary across a piece boundary, in
+// each form, is still found.
+func TestScanLarge(t *testing.T) {
+	c := Mint()
+	for _, form := range []string{c, base64.StdEncoding.EncodeToString([]byte("p" + c)), "0x" + hex.EncodeToString([]byte(c))} {
+		for _, at := range []int{piece - 1 - len(form)/2, 3*piece - 7} {
+			data := append(bytes.Repeat([]byte{' '}, at), form...)
+			data = append(data, bytes.Repeat([]byte{' '}, piece)...)
+			if !Scan(data, c) {
+				t.Fatalf("%q at %d of %d: missed", form[:8], at, len(data))
+			}
+		}
+	}
+	if Scan(bytes.Repeat([]byte("x"), 5*piece), c) {
+		t.Fatal("a hit in a large clean write")
 	}
 }
 

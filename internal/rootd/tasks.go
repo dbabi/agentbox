@@ -191,7 +191,7 @@ type startInfo struct {
 	taint          bool
 	source, origin string
 	request        string // admin:<request>: used up in the transaction that registers the task
-	canary         string // #105: planted in the task, watched for at git push and the gh.* binders
+	canary         string // #105: planted in the task, watched for at git push, the gh.* binders and keys
 }
 
 // start is task.start{task, agent, origin} from agentboxd (§4.2): rootd derives the provenance, registers the task, makes
@@ -383,8 +383,8 @@ func (t *tasks) launch(id string, acct Account, si startInfo) (bool, error) {
 		if v.Name == "keys" {
 			req["trace"] = si.trace // keys bills the task's trace (§6.3); the other services take no trace
 		}
-		if (v.Name == "gate" || v.Name == "git") && si.canary != "" {
-			req["canary"] = si.canary // the gate plants it, git watches pushes for it (#105)
+		if (v.Name == "gate" || v.Name == "git" || v.Name == "keys") && si.canary != "" {
+			req["canary"] = si.canary // the gate plants it; git and keys watch pushes and model requests for it (#105)
 		}
 		rep, err := t.cfg.Svc(v.Name, req)
 		if errors.Is(err, ErrNoSvc) && v.Name != "gate" {
@@ -630,7 +630,7 @@ func (t *tasks) agentOf(task string) (string, bool) {
 	return agent, err == nil
 }
 
-// listLive answers task.list_live (§2.1): a restarted service rebinds these tasks' sockets. Only the gate and git
+// listLive answers task.list_live (§2.1): a restarted service rebinds these tasks' sockets. Only the gate, git and keys
 // get each task's canary (#105).
 func (t *tasks) listLive(withCanary bool) reply {
 	l, err := t.live()

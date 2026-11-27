@@ -851,7 +851,8 @@ func (s *server) pushReport(r request) reply {
 var reRule = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 
 // canaryHit records a task that tried to send its canary out (#105): the task is tainted (ACKed), an ALERT goes to
-// auditd and ntfy. The hook calls it on resolve-git.sock; rootd's own gh.* binder calls it directly.
+// auditd and ntfy. The hook calls it on resolve-git.sock and keys on resolve-keys.sock (op llm, #291); rootd's own gh.*
+// binder calls it directly.
 func (s *server) canaryHit(task, op string) reply {
 	agent, _, _, err := s.taskAgent(task)
 	if err != nil || agent == "" {
@@ -863,7 +864,11 @@ func (s *server) canaryHit(task, op string) reply {
 	if err := s.audit(map[string]any{"type": "TAINT", "subject": "task:" + task, "source": "canary:" + op}); err != nil {
 		log.Printf("canary hit task %s: TAINT: %v", task, err)
 	}
-	msg := fmt.Sprintf("task %s (agent %s) tried to send its canary credential out through %s; the request was refused and the task is tainted", task, agent, op)
+	what := "tried to send its canary credential out through " + op + "; the request was refused"
+	if op == "llm" { // keys only alerts: the model request went on to the vendor
+		what = "sent its canary credential to the LLM vendor in a model request; keys let the request through"
+	}
+	msg := fmt.Sprintf("task %s (agent %s) %s, and the task is tainted", task, agent, what)
 	log.Printf("ALERT %s", msg)
 	go s.audit(map[string]any{"type": "ALERT", "reason": "exfil_canary", "task": task, "op": op})
 	if s.cfg.Alert != nil {

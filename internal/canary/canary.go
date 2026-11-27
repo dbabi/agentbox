@@ -1,7 +1,8 @@
 // Package canary is the per-task canary secret (#105). rootd mints one at task.start and plants it where a task looks
 // for credentials: the LLM key slot, GITHUB_TOKEN, ~/.netrc and gh's hosts.yml. It is no credential for anything. The
-// points where a task's output leaves the box scan for it: git pre-receive and the gh.* binders (bus.send,
-// memory.write and the keys broker when they land), and a hit means the task tried to send a credential out.
+// points where a task's output leaves the box scan for it: git pre-receive, the gh.* binders and the keys broker's
+// model requests (bus.send and memory.write when they land, #292), and a hit means the task tried to send a credential
+// out.
 // It is a detection aid, not a guarantee: an encoding Scan doesn't cover (a cipher, compression) is missed.
 package canary
 
@@ -117,11 +118,22 @@ func New(c string) *Scanner {
 	return s
 }
 
+// piece bounds what one view keeps at once: Write scans a large p in pieces, so a whole request body costs about the
+// same memory as a small one.
+const piece = 64 << 10
+
 // Write scans p. It never fails.
 func (s *Scanner) Write(p []byte) (int, error) {
-	if s.hit {
-		return len(p), nil
+	n := len(p)
+	for len(p) > 0 && !s.hit {
+		k := min(len(p), piece)
+		s.write(p[:k])
+		p = p[k:]
 	}
+	return n, nil
+}
+
+func (s *Scanner) write(p []byte) {
 	for i, v := range s.views {
 		h := s.tails[i]
 		prev := s.prev
@@ -149,7 +161,6 @@ func (s *Scanner) Write(p []byte) (int, error) {
 	if len(p) > 0 {
 		s.prev = p[len(p)-1]
 	}
-	return len(p), nil
 }
 
 // Hit reports whether anything written so far holds the canary.

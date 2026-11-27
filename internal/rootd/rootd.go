@@ -573,6 +573,8 @@ func (s *server) handle(sock string, p peer, r request) reply {
 		return s.pushReport(r)
 	case sock == "resolve-git" && r.Op == "canary.hit":
 		return s.canaryHit(r.Task, r.Name)
+	case sock == "resolve-keys" && r.Op == "canary.hit":
+		return s.canaryHit(r.Task, "llm") // a model request carried it (#291): keys alerts only
 	case sock == sockGate && r.Op == "task.start":
 		if rep := s.fenceDeny(r.Op); rep != nil {
 			return rep
@@ -584,7 +586,7 @@ func (s *server) handle(sock string, p peer, r request) reply {
 		}
 		return s.tasks.stop(r.Task, r.Reason)
 	case (sock == sockGate || strings.HasPrefix(sock, "resolve-")) && r.Op == "task.list_live":
-		return s.tasks.listLive(sock == sockGate || sock == "resolve-git") // only the gate and git hold a task's canary
+		return s.tasks.listLive(sock == sockGate || sock == "resolve-git" || sock == "resolve-keys") // the proxy gets no canary
 	case sock == "resolve-keys" && r.Op == "task.tainted":
 		return s.taskTainted(r.Task)
 	}

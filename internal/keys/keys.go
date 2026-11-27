@@ -1,8 +1,8 @@
 // Package keys is agentbox-keys (ARCHITECTURE.md §6.3, §4.3): the LLM broker. Each task reaches it on its own
-// keys.sock (internal/broker) with a placeholder key. keys checks each request against a closed schema, reserves its
-// worst-case price against the agent's day share and the task's trace, audits it, swaps in the real key and sends it
-// to the vendor over pinned dialing. On the way back it strips what only the box may say, turns an auth failure into
-// its own denial, and refuses any reply that carries the key back (#18).
+// keys.sock (internal/broker) with a placeholder key, its canary (#105). keys checks each request against a closed
+// schema, reserves its worst-case price against the agent's day share and the task's trace, audits it, swaps in the
+// real key and sends it to the vendor over pinned dialing. On the way back it strips what only the box may say, turns
+// an auth failure into its own denial, and refuses any reply that carries the key back (#18).
 package keys
 
 import (
@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"agentbox/internal/broker"
+	"agentbox/internal/canary"
 	"agentbox/internal/ids"
 	"agentbox/internal/ops"
 )
@@ -49,9 +50,13 @@ type Server struct {
 	// DenyBetas are refused even though they are in the allowlist: AGENTBOX_TEST_KEYS_DENY_BETA, a test VM's way to
 	// see Claude Code retry without a value it really sends (#18)
 	DenyBetas []string
+	// CanaryHit tells rootd that a task's model request carried its canary (#105, canary.hit on resolve-keys.sock):
+	// rootd taints the task, audits and alerts. nil: none.
+	CanaryHit func(task string) error
 
 	bodies chan struct{} // MaxBodies: the request bodies being read and checked at once, box-wide
 	once   sync.Once
+	hits   sync.Map // task ids whose canary hit rootd recorded: a canary kept in a conversation alerts once
 }
 
 // MaxBodies is how many request bodies keys reads and checks at once, across every task: with MaxBody each, that
@@ -233,6 +238,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, t *broker.Task) {
 			return
 		}
 	}
+	if carriesCanary(r, t, c.body) {
+		s.canaryHit(t)
+	}
 	sum := sha256.Sum256(c.body)
 	if err := s.Audit(map[string]any{"type": "LLM", "task": t.ID, "agent": t.Agent, "trace": t.Trace, "vendor": ep.vendor,
 		"endpoint": ep.path, "model": c.model, "reservedNanos": reserved, "server": c.server,
@@ -257,6 +265,38 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, t *broker.Task) {
 	}
 	defer resp.Body.Close()
 	settle(s.relay(w, t, ep, c, key, resp, reserved))
+}
+
+// carriesCanary is #105's check of what leaves for the vendor: the forwarded headers and the checked body. Never the
+// client's auth headers: the canary is the task's key slot, so they always hold it, and they never leave.
+func carriesCanary(r *http.Request, t *broker.Task, body []byte) bool {
+	sc := canary.New(t.Canary)
+	if sc == nil {
+		return false
+	}
+	for _, k := range forwardHeaders {
+		for _, v := range r.Header.Values(k) {
+			sc.Write([]byte(v + "\n"))
+		}
+	}
+	sc.Write(body)
+	return sc.Hit()
+}
+
+// canaryHit has rootd record t's canary hit, once per task. keys only alerts (#105): the request still goes to the
+// vendor, which holds no credential of the box's in it.
+func (s *Server) canaryHit(t *broker.Task) {
+	if _, seen := s.hits.LoadOrStore(t.ID, true); seen {
+		return
+	}
+	log.Printf("ALERT keys: task %s: a model request carried the task's canary", t.ID)
+	if s.CanaryHit == nil {
+		return
+	}
+	if err := s.CanaryHit(t.ID); err != nil {
+		log.Printf("task %s: rootd did not record the canary hit: %v", t.ID, err)
+		s.hits.Delete(t.ID) // the next request that carries it tries again
+	}
 }
 
 func (s *Server) allowed(f string) bool {

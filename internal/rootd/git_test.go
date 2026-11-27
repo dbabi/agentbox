@@ -415,6 +415,31 @@ func TestPushReport(t *testing.T) {
 	}
 }
 
+// #291: keys reports a model request that carried the task's canary on resolve-keys.sock; rootd taints the task and
+// alerts, saying the request went through. The canary reaches the gate, git and keys in task.list_live, never the
+// proxy.
+func TestKeysCanaryHit(t *testing.T) {
+	g := newGitRig(t)
+	if r := g.s.handle("resolve-keys", peer{}, request{Op: "canary.hit", Task: g.task}); r["ok"] != true {
+		t.Fatalf("canary.hit: %v", r)
+	}
+	if !strings.Contains(g.chain(), `"body":{"source":"canary:llm","subject":"task:`+g.task+`"}`) {
+		t.Fatalf("no TAINT from canary:llm: %s", g.chain())
+	}
+	if len(g.alerts) != 1 || !strings.Contains(g.alerts[0], "keys let the request through") {
+		t.Fatalf("alerts %v", g.alerts)
+	}
+	if r := g.s.handle("resolve-proxy", peer{}, request{Op: "canary.hit", Task: g.task}); r["ok"] == true {
+		t.Fatalf("the proxy reported a canary hit: %v", r)
+	}
+	for sock, want := range map[string]bool{sockGate: true, "resolve-git": true, "resolve-keys": true, "resolve-proxy": false} {
+		b, _ := json.Marshal(g.s.handle(sock, peer{}, request{Op: "task.list_live"}))
+		if strings.Contains(string(b), g.c) != want {
+			t.Errorf("%s task.list_live: %s", sock, b)
+		}
+	}
+}
+
 // remote.set (App. E): GitHub gives the node id and visibility; the local repo is made; the row is audited.
 func TestRemoteSet(t *testing.T) {
 	g := newGitRig(t)
