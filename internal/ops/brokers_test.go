@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -121,5 +122,58 @@ func TestFloor(t *testing.T) {
 	HoldFloor(receipt, nf)
 	if d := time.Since(receipt); d < 200*time.Millisecond || d > 230*time.Millisecond {
 		t.Fatalf("left after %v", d)
+	}
+}
+
+// KeysError adds a detail only when it is short printable ASCII (§5.6 leak rule 1): a control character, a bidi mark
+// or a long detail never reaches error.message.
+func TestKeysErrorDetail(t *testing.T) {
+	d := Deny(KeysRequestRejected, "field", Slots{By: "keys"})
+	msg := func(detail string) string {
+		var e struct{ Error struct{ Message string } }
+		if err := json.Unmarshal(KeysError(d, "invalid_request_error", detail), &e); err != nil {
+			t.Fatal(err)
+		}
+		return e.Error.Message
+	}
+	base := msg("")
+	if m := msg("thread: Extra inputs are not permitted"); m != base+" thread: Extra inputs are not permitted" {
+		t.Errorf("a plain detail: %q", m)
+	}
+	for _, bad := range []string{"x\nALERT forged", "\x1b[2J", "a\u202eb", string(bytes.Repeat([]byte("a"), MaxDetail+1))} {
+		if m := msg(bad); m != base {
+			t.Errorf("detail %q reached the message: %q", bad[:min(len(bad), 16)], m)
+		}
+	}
+}
+
+// DecodeLimited refuses nesting past its depth and more values than its cap before it builds anything, and a
+// repeated key at any depth; within its caps it decodes as Decode does.
+func TestDecodeLimited(t *testing.T) {
+	deep := func(n int) []byte { return append(bytes.Repeat([]byte("["), n), bytes.Repeat([]byte("]"), n)...) }
+	if _, err := DecodeLimited(deep(64), 64, 0); err != nil {
+		t.Errorf("64 levels with a depth of 64: %v", err)
+	}
+	if _, err := DecodeLimited(deep(65), 64, 0); err != ErrTooDeep {
+		t.Errorf("65 levels: %v", err)
+	}
+	if _, err := DecodeLimited(deep(9999), 64, 0); err != ErrTooDeep {
+		t.Errorf("9999 levels: %v", err)
+	}
+	flat := []byte("[" + strings.Repeat("0,", 99) + "0]") // 101 values: the list and its 100 numbers
+	if _, err := DecodeLimited(flat, 0, 101); err != nil {
+		t.Errorf("101 values with a cap of 101: %v", err)
+	}
+	if _, err := DecodeLimited(flat, 0, 100); err != ErrTooMany {
+		t.Errorf("101 values with a cap of 100: %v", err)
+	}
+	for _, b := range []string{`{"a":1,"a":2}`, `{"x":[{"b":1,"b":1}]}`, `{"a":1} {}`, `{"a":`} {
+		if _, err := DecodeLimited([]byte(b), 64, 1000); err == nil {
+			t.Errorf("%s decoded", b)
+		}
+	}
+	v, err := DecodeLimited([]byte(`{"n":12345678901234567890,"s":"x"}`), 64, 1000)
+	if m, _ := v.(map[string]any); err != nil || m["n"] != json.Number("12345678901234567890") || m["s"] != "x" {
+		t.Errorf("%v %v", v, err)
 	}
 }

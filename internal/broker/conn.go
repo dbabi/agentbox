@@ -221,12 +221,50 @@ func (c *Capped) Error() string { return "CAP_REACHED " + c.What }
 // ErrEncoding is a request body in a Content-Encoding other than identity or gzip.
 var ErrEncoding = errors.New("unsupported Content-Encoding")
 
+// BodyGrace and MinBodyRate pace a request body (#315): after BodyGrace it must keep arriving at MinBodyRate on
+// average, or it is cut with CAP_REACHED{read_timeout}. A local forwarder sends megabytes a second; a body that
+// trickles in only holds a slot or a spool file.
+const (
+	BodyGrace   = 2 * time.Second
+	MinBodyRate = 256 << 10 // bytes a second
+)
+
+// Paced is r's body under the pace: before each read it moves the connection's read deadline to the time the bytes so
+// far allow, never past the server's ReadTimeout from now (DefaultReadTimeout with none). A read past it fails with
+// os.ErrDeadlineExceeded. The caller lifts the deadline once the body is read.
+func Paced(w http.ResponseWriter, r *http.Request) io.Reader {
+	lim := DefaultReadTimeout
+	if srv, ok := r.Context().Value(http.ServerContextKey).(*http.Server); ok && srv.ReadTimeout > 0 {
+		lim = srv.ReadTimeout
+	}
+	now := time.Now()
+	return &paced{r: r.Body, rc: http.NewResponseController(w), start: now, end: now.Add(lim)}
+}
+
+type paced struct {
+	r          io.Reader
+	rc         *http.ResponseController
+	start, end time.Time
+	n          int64
+}
+
+func (p *paced) Read(b []byte) (int, error) {
+	d := p.start.Add(BodyGrace + time.Duration(p.n)*time.Second/MinBodyRate)
+	if d.After(p.end) {
+		d = p.end
+	}
+	p.rc.SetReadDeadline(d)
+	n, err := p.r.Read(b)
+	p.n += int64(n)
+	return n, err
+}
+
 // ReadBody reads r's body within the caps (#115): at most max bytes as sent (body_bytes) and, for a gzip body, at most
-// max bytes decoded (decoded_bytes), so a zip bomb stops at the cap; all within the server's ReadTimeout
-// (read_timeout). Memory stays within about twice max. It then lifts the connection's read deadline, so a long
-// streamed answer is not cut off once ReadTimeout passes.
+// max bytes decoded (decoded_bytes), so a zip bomb stops at the cap; all within the server's ReadTimeout and at the
+// pace of Paced (read_timeout). Memory stays within about twice max. It then lifts the connection's read deadline, so
+// a long streamed answer is not cut off once ReadTimeout passes.
 func ReadBody(w http.ResponseWriter, r *http.Request, max int64) ([]byte, error) {
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, max))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, io.NopCloser(Paced(w, r)), max))
 	var mb *http.MaxBytesError
 	switch {
 	case errors.As(err, &mb):

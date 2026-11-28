@@ -24,15 +24,45 @@ type rej struct {
 	limit                    int64
 }
 
-// path is a JSON pointer under construction.
+// path is a JSON pointer under construction. The checks push onto one shared slice, from root(): key and idx write the
+// slot past p, so a path is valid only during the check it was made for, and a refusal turns it into a string at
+// once. So a path costs memory only as deep as the value (#315), never a copy at every level.
 type path []string
 
-func (p path) key(k string) path { return append(slices.Clip(p), k) }
-func (p path) idx(i int) path    { return append(slices.Clip(p), strconv.Itoa(i)) }
+func root() path                 { return make(path, 0, 2*MaxDepth) }
+func (p path) key(k string) path { return append(p, k) }
+func (p path) idx(i int) path    { return append(p, strconv.Itoa(i)) }
 func (p path) ptr() string       { return "/" + strings.Join(p, "/") }
 
-// dotted is the vendor's own way of naming a field in an error: output_config.effort, messages.3.content.0.
-func (p path) dotted() string { return strings.Join(p, ".") }
+// reSeg is a path segment a refusal's wording may name: a field in the vendors' grammar, or an index.
+var reSeg = regexp.MustCompile(`^(?:[A-Za-z_][A-Za-z0-9_]{0,63}|[0-9]{1,9})$`)
+
+// maxWordPath bounds the path a wording names.
+const maxWordPath = 256
+
+// dotted is the vendor's own way of naming a field in an error: output_config.effort, messages.3.content.0. It is ""
+// when a segment is outside reSeg or the path is longer than maxWordPath: the client's own keys come back only in
+// that grammar (§5.6 leak rule 1).
+func (p path) dotted() string {
+	d := strings.Join(p, ".")
+	if len(d) > maxWordPath {
+		return ""
+	}
+	for _, s := range p {
+		if !reSeg.MatchString(s) {
+			return ""
+		}
+	}
+	return d
+}
+
+// at is the vendor's wording msg for the field at p: "<dotted>: msg", or msg alone when p can't be named.
+func (p path) at(msg string) string {
+	if d := p.dotted(); d != "" {
+		return d + ": " + msg
+	}
+	return msg
+}
 
 // A spec checks one value at p.
 type spec func(v any, p path) *rej
@@ -44,7 +74,7 @@ type obj map[string]spec
 func (o obj) check(v any, p path) *rej {
 	m, ok := v.(map[string]any)
 	if !ok {
-		return &rej{what: "field", ptr: p.ptr(), wording: p.dotted() + ": Input should be an object"}
+		return &rej{what: "field", ptr: p.ptr(), wording: p.at("Input should be an object")}
 	}
 	for _, k := range sortedKeys(m) {
 		s, ok := o[k]
@@ -64,7 +94,7 @@ func (o obj) check(v any, p path) *rej {
 func (o obj) spec() spec { return o.check }
 
 func extra(p path) *rej {
-	return &rej{what: "field", ptr: p.ptr(), wording: p.dotted() + ": Extra inputs are not permitted"}
+	return &rej{what: "field", ptr: p.ptr(), wording: p.at("Extra inputs are not permitted")}
 }
 
 func sortedKeys(m map[string]any) []string {
@@ -81,21 +111,21 @@ func anyv(any, path) *rej { return nil }
 
 func str(v any, p path) *rej {
 	if _, ok := v.(string); !ok {
-		return &rej{what: "field", ptr: p.ptr(), wording: p.dotted() + ": Input should be a valid string"}
+		return &rej{what: "field", ptr: p.ptr(), wording: p.at("Input should be a valid string")}
 	}
 	return nil
 }
 
 func boolean(v any, p path) *rej {
 	if _, ok := v.(bool); !ok {
-		return &rej{what: "field", ptr: p.ptr(), wording: p.dotted() + ": Input should be a valid boolean"}
+		return &rej{what: "field", ptr: p.ptr(), wording: p.at("Input should be a valid boolean")}
 	}
 	return nil
 }
 
 func num(v any, p path) *rej {
 	if _, ok := v.(json.Number); !ok {
-		return &rej{what: "field", ptr: p.ptr(), wording: p.dotted() + ": Input should be a valid number"}
+		return &rej{what: "field", ptr: p.ptr(), wording: p.at("Input should be a valid number")}
 	}
 	return nil
 }
@@ -103,7 +133,7 @@ func num(v any, p path) *rej {
 func oneOf(vals ...string) spec {
 	return func(v any, p path) *rej {
 		if s, ok := v.(string); !ok || !slices.Contains(vals, s) {
-			return &rej{what: "field", ptr: p.ptr(), wording: p.dotted() + ": Input should be " + strings.Join(vals, ", ")}
+			return &rej{what: "field", ptr: p.ptr(), wording: p.at("Input should be " + strings.Join(vals, ", "))}
 		}
 		return nil
 	}
@@ -113,7 +143,7 @@ func list(each spec) spec {
 	return func(v any, p path) *rej {
 		a, ok := v.([]any)
 		if !ok {
-			return &rej{what: "field", ptr: p.ptr(), wording: p.dotted() + ": Input should be a valid list"}
+			return &rej{what: "field", ptr: p.ptr(), wording: p.at("Input should be a valid list")}
 		}
 		for i, e := range a {
 			if r := each(e, p.idx(i)); r != nil {
@@ -139,7 +169,7 @@ func tagged(what string, byType map[string]obj) spec {
 	return func(v any, p path) *rej {
 		m, ok := v.(map[string]any)
 		if !ok {
-			return &rej{what: "field", ptr: p.ptr(), wording: p.dotted() + ": Input should be an object"}
+			return &rej{what: "field", ptr: p.ptr(), wording: p.at("Input should be an object")}
 		}
 		t, _ := m["type"].(string)
 		o, ok := byType[t]
@@ -157,7 +187,7 @@ func typeRej(what string, p path, t string) *rej {
 	r := &rej{what: what, ptr: p.key("type").ptr()}
 	if reName.MatchString(t) {
 		r.name = t
-		r.wording = p.dotted() + ".type: Input tag '" + t + "' found using 'type' does not match any of the expected tags"
+		r.wording = p.key("type").at("Input tag '" + t + "' found using 'type' does not match any of the expected tags")
 	}
 	return r
 }
@@ -195,7 +225,7 @@ var (
 		case "system":
 			return obj{"role": nil, "content": sysContent, "output_config": obj{"effort": effort}.spec(), "cache_control": cacheControl}.check(v, p)
 		}
-		return &rej{what: "field", ptr: p.key("role").ptr(), wording: p.dotted() + ".role: Input should be 'user', 'assistant' or 'system'"}
+		return &rej{what: "field", ptr: p.key("role").ptr(), wording: p.key("role").at("Input should be 'user', 'assistant' or 'system'")}
 	}
 	toolChoice = obj{"type": oneOf("auto", "any", "tool", "none"), "name": str, "disable_parallel_tool_use": boolean}.spec()
 	thinking   = obj{"type": oneOf("adaptive", "enabled", "disabled", "between_tools"), "budget_tokens": num,
@@ -286,7 +316,7 @@ func tools(client map[string]obj, allowed func(string) bool, used *[]string) spe
 	return list(func(v any, p path) *rej {
 		m, ok := v.(map[string]any)
 		if !ok {
-			return &rej{what: "field", ptr: p.ptr(), wording: p.dotted() + ": Input should be an object"}
+			return &rej{what: "field", ptr: p.ptr(), wording: p.at("Input should be an object")}
 		}
 		t, _ := m["type"].(string)
 		if o, ok := client[t]; ok {
@@ -357,7 +387,7 @@ var (
 	strMap = func(v any, p path) *rej {
 		m, ok := v.(map[string]any)
 		if !ok {
-			return &rej{what: "field", ptr: p.ptr(), wording: p.dotted() + ": Input should be an object"}
+			return &rej{what: "field", ptr: p.ptr(), wording: p.at("Input should be an object")}
 		}
 		for _, k := range sortedKeys(m) {
 			if r := str(m[k], p.key(k)); r != nil {
@@ -382,7 +412,7 @@ var (
 	chatTool = obj{"type": nil, "function": obj{"name": str, "description": str, "parameters": nil, "strict": boolean}.spec()}
 	one      = func(v any, p path) *rej {
 		if n, ok := v.(json.Number); !ok || n.String() != "1" {
-			return &rej{what: "field", ptr: p.ptr(), wording: p.dotted() + ": only 1 is allowed"}
+			return &rej{what: "field", ptr: p.ptr(), wording: p.at("only 1 is allowed")}
 		}
 		return nil
 	}
@@ -509,8 +539,8 @@ func validate(ep endpoint, body []byte, allowed func(string) bool) (checked, *re
 		return c, &rej{what: "field", ptr: "/", wording: "the request body is not valid UTF-8"}
 	}
 	v, err := decodeJSON(body)
-	if err != nil {
-		return c, &rej{what: "field", ptr: "/", wording: "the request body is not one JSON object with unique keys"}
+	if r := decodeRej(err); r != nil {
+		return c, r
 	}
 	top, ok := v.(map[string]any)
 	if !ok {
@@ -521,7 +551,7 @@ func validate(ep endpoint, body []byte, allowed func(string) bool) (checked, *re
 			return c, &rej{what: "field", ptr: path{k}.ptr()}
 		}
 	}
-	if r := urlScan(top, nil); r != nil {
+	if r := urlScan(top, root()); r != nil {
 		return c, r
 	}
 	var schema obj
@@ -533,7 +563,7 @@ func validate(ep endpoint, body []byte, allowed func(string) bool) (checked, *re
 	default:
 		schema = chatBody(allowed, &c.server)
 	}
-	if r := schema.check(top, nil); r != nil {
+	if r := schema.check(top, root()); r != nil {
 		return c, r
 	}
 	c.model, _ = top["model"].(string)

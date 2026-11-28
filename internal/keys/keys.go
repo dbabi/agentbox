@@ -56,12 +56,48 @@ type Server struct {
 
 	bodies chan struct{} // MaxBodies: the request bodies being read and checked at once, box-wide
 	once   sync.Once
-	hits   sync.Map // task ids whose canary hit rootd recorded: a canary kept in a conversation alerts once
+	mu     sync.Mutex
+	agents map[string]chan struct{} // AgentBodies of the slots per agent
+	hits   sync.Map                 // task ids whose canary hit rootd recorded: a canary kept in a conversation alerts once
 }
 
-// MaxBodies is how many request bodies keys reads and checks at once, across every task: with MaxBody each, that
-// bounds keys' memory under a flood of large requests (#115), and the unit's MemoryMax= backs it up.
-const MaxBodies = 8
+// MaxBodies is how many request bodies keys reads and checks at once, across every task (#115, #315). One slot holds
+// at most 64 MiB of body (MaxBody as sent and decoded) and a check's peak: about 110 MiB for a MaxBody of MaxValues
+// strings, the costliest shape measured. So the slots stay near 1 GiB, half the unit's MemoryMax=, and its
+// GOMEMLIMIT= has the runtime collect garbage before that. AgentBodies of them at most go to one agent, so one agent's
+// slow senders never starve another's requests; broker.ReadBody cuts a body that trickles in.
+const (
+	MaxBodies   = 6
+	AgentBodies = 2
+)
+
+// slot takes one of the agent's AgentBodies, then one of the box's MaxBodies; release gives both back. ok is false
+// when the client went away while it waited.
+func (s *Server) slot(ctx context.Context, agent string) (release func(), ok bool) {
+	s.once.Do(func() { s.bodies = make(chan struct{}, MaxBodies) })
+	s.mu.Lock()
+	a := s.agents[agent]
+	if a == nil {
+		if s.agents == nil {
+			s.agents = map[string]chan struct{}{}
+		}
+		a = make(chan struct{}, AgentBodies)
+		s.agents[agent] = a // one per agent on the box, kept: agents are few
+	}
+	s.mu.Unlock()
+	select {
+	case a <- struct{}{}:
+	case <-ctx.Done():
+		return nil, false
+	}
+	select {
+	case s.bodies <- struct{}{}:
+	case <-ctx.Done():
+		<-a
+		return nil, false
+	}
+	return func() { <-s.bodies; <-a }, true
+}
 
 // Format is keys' denial surface for internal/broker (§5.6 Surfaces): the vendor's error envelope with the
 // agentbox member, and keys' headers.
@@ -163,19 +199,23 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, t *broker.Task) {
 		s.refuse(w, t, d, http.StatusForbidden, "")
 		return
 	}
-	s.once.Do(func() { s.bodies = make(chan struct{}, MaxBodies) })
-	select {
-	case s.bodies <- struct{}{}:
-	case <-r.Context().Done():
+	release, ok := s.slot(r.Context(), t.Agent)
+	if !ok {
 		return
 	}
 	body, err := broker.ReadBody(w, r, MaxBody)
 	var c checked
 	var rj *rej
-	if err == nil && ep.vendor != "local" {
+	var local []byte
+	var dropped []string
+	switch {
+	case err != nil:
+	case ep.vendor == "local":
+		local, dropped, rj = s.Local.rebuild(body) // it builds the same tree as validate, so it holds the slot too
+	default:
 		c, rj = validate(ep, body, s.allowed)
 	}
-	<-s.bodies
+	release()
 	var capped *broker.Capped
 	switch {
 	case errors.As(err, &capped):
@@ -189,7 +229,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, t *broker.Task) {
 		return // the client went away
 	}
 	if ep.vendor == "local" {
-		s.Local.serve(w, r, t, body, s)
+		if rj != nil {
+			s.reject(w, t, rj)
+			return
+		}
+		s.Local.serve(w, r, t, local, dropped, s)
 		return
 	}
 	allow, hdr := betas, "anthropic-beta"
@@ -479,8 +523,13 @@ func (s *Server) relay(w http.ResponseWriter, t *broker.Task, ep endpoint, c che
 	}
 	w.Write(m.rest())
 	rc.Flush()
-	if us.u.known {
+	if us.final {
 		return c.price.cost(us.u)
+	}
+	// cut before the terminal usage event, by the client or the vendor: the vendor may bill up to max_tokens, which
+	// only the reservation covers, and message_start's usage counts 1 output token (#315)
+	if us.u.known {
+		return max(reserved, c.price.cost(us.u))
 	}
 	return reserved
 }

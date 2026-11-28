@@ -77,13 +77,28 @@ func TestUsage(t *testing.T) {
 			s.feed([]byte(c[i:min(i+7, len(c))]))
 		}
 	}
-	if s.u != (usage{in: 100, cacheRead: 50, out: 20, known: true}) {
-		t.Errorf("anthropic stream: %+v", s.u)
+	if s.u != (usage{in: 100, cacheRead: 50, out: 20, known: true}) || !s.final {
+		t.Errorf("anthropic stream: %+v final %v", s.u, s.final)
+	}
+	// message_start alone is not the final count (#315)
+	s0 := &sseUsage{vendor: "anthropic"}
+	s0.feed([]byte(stream[0] + stream[1]))
+	if !s0.u.known || s0.final {
+		t.Errorf("message_start: %+v final %v", s0.u, s0.final)
+	}
+	c := &sseUsage{vendor: "openai"}
+	c.feed([]byte("data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"x\"}}],\"usage\":null}\n\n"))
+	if c.u.known || c.final {
+		t.Errorf("a chat chunk with no usage: %+v final %v", c.u, c.final)
+	}
+	c.feed([]byte("data: {\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n"))
+	if c.u != (usage{in: 9, out: 2, known: true}) || !c.final {
+		t.Errorf("chat usage chunk: %+v final %v", c.u, c.final)
 	}
 	o := &sseUsage{vendor: "openai"}
 	o.feed([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":30,\"input_tokens_details\":{\"cached_tokens\":10},\"output_tokens\":5}}}\n\n"))
-	if o.u != (usage{in: 20, cacheRead: 10, out: 5, known: true}) {
-		t.Errorf("responses stream: %+v", o.u)
+	if o.u != (usage{in: 20, cacheRead: 10, out: 5, known: true}) || !o.final {
+		t.Errorf("responses stream: %+v final %v", o.u, o.final)
 	}
 	if u, ok := fromJSON("openai", []byte(`{"usage":{"prompt_tokens":9,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":4}}}`)); !ok || u != (usage{in: 5, cacheRead: 4, out: 2, known: true}) {
 		t.Errorf("chat: %+v", u)

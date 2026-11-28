@@ -184,13 +184,33 @@ func exactDecode(b []byte, v any) error {
 // noDupKeys refuses a key repeated in any object at any depth. Go keeps the last duplicate, but auditd stores the raw
 // bytes, so a check that read one value would log the other. Call it only on bytes json.Unmarshal accepted (which
 // bounds the depth).
-func noDupKeys(b []byte) error {
+func noDupKeys(b []byte) error { return walkJSON(b, 0, 0) }
+
+// ErrTooDeep and ErrTooMany are DecodeLimited's refusals: a value nested deeper, or made of more values, than its caps.
+var (
+	ErrTooDeep = errors.New("JSON nested too deep")
+	ErrTooMany = errors.New("JSON with too many values")
+)
+
+// walkJSON is noDupKeys with caps on the nesting depth and on the count of values (0: no cap), checked token by
+// token, so a value past either cap is refused before anything holds it.
+func walkJSON(b []byte, depth, values int) error {
 	dec := json.NewDecoder(bytes.NewReader(b))
-	var walk func() error
-	walk = func() error {
+	n := 0
+	var walk func(d int) error
+	walk = func(d int) error {
+		if n++; values > 0 && n > values {
+			return ErrTooMany
+		}
 		t, err := dec.Token()
 		if err != nil {
 			return err
+		}
+		if t == json.Delim('{') || t == json.Delim('[') {
+			if depth > 0 && d >= depth {
+				return ErrTooDeep
+			}
+			d++
 		}
 		switch t {
 		case json.Delim('{'):
@@ -204,13 +224,13 @@ func noDupKeys(b []byte) error {
 					return fmt.Errorf("duplicate key %q", k)
 				}
 				seen[k.(string)] = true
-				if err := walk(); err != nil {
+				if err := walk(d); err != nil {
 					return err
 				}
 			}
 		case json.Delim('['):
 			for dec.More() {
-				if err := walk(); err != nil {
+				if err := walk(d); err != nil {
 					return err
 				}
 			}
@@ -220,5 +240,5 @@ func noDupKeys(b []byte) error {
 		_, err = dec.Token()
 		return err
 	}
-	return walk()
+	return walk(0)
 }

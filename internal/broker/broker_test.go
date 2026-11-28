@@ -226,6 +226,50 @@ func TestAdmission(t *testing.T) {
 	}
 }
 
+// A body that stops arriving is cut after BodyGrace with CAP_REACHED{read_timeout}, long before the server's 60 s
+// ReadTimeout (#315); one that keeps coming at the pace passes.
+func TestBodyPace(t *testing.T) {
+	s, dir := newServer(t, Limits{}, func(*Task) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, err := ReadBody(w, r, 4<<20)
+			if c := (*Capped)(nil); errors.As(err, &c) {
+				d, st := Cap("keys", c.What, c.Limit)
+				w.Header().Set(ops.DenialHeaderName, ops.DenialHeader(d))
+				w.WriteHeader(st)
+				fmt.Fprintf(w, `{"code":%q,"what":%q}`, d.Code, d.What)
+				return
+			}
+			fmt.Fprintf(w, "read %d", len(b))
+		})
+	})
+	sock := addTask(t, s, dir, "task_01JAAAAAAAAAAAAAAAAAAAAAAA")
+	c := dial(t, sock)
+	t0 := time.Now()
+	io.WriteString(c, "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\nshort")
+	if st, w := reply(t, c); st != 408 || w != "read_timeout" || time.Since(t0) < BodyGrace || time.Since(t0) > BodyGrace+3*time.Second {
+		t.Errorf("a stalled body: %d %s after %v", st, w, time.Since(t0))
+	}
+	// 3 s of 64 KiB every 100 ms (640 KiB/s): above the pace throughout, past the grace
+	c = dial(t, sock)
+	const n = 30 * 64 << 10
+	fmt.Fprintf(c, "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n", n)
+	go func() {
+		for range 30 {
+			c.Write(make([]byte, 64<<10))
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
+	c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || string(b) != fmt.Sprintf("read %d", n) {
+		t.Errorf("a body at the pace: %d %s", resp.StatusCode, b)
+	}
+}
+
 // A peer that is not the task's agent uid is closed before any byte; register refuses a dir rootd didn't make and a
 // task with no trace to bill.
 func TestPeerAndRegister(t *testing.T) {

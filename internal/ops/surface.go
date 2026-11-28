@@ -50,16 +50,20 @@ func ConnectBody(d Denial) []byte {
 // clients read) with the message starting `agentbox <CODE>:`, plus the agentbox member.
 func KeysBody(d Denial) []byte { return KeysError(d, "api_error", "") }
 
+// MaxDetail bounds the detail KeysError adds to a denial's message.
+const MaxDetail = 512
+
 // KeysError is KeysBody with the vendor's error type for its status and detail after msg: the vendor's own wording or
 // a `capability_rejected:` token, which a CLI's retry matches (#18). The caller puts only grammar-checked request bytes
-// in detail (a beta name, a field path).
+// in detail (a beta name, a field path); a detail past MaxDetail or with a byte outside printable ASCII is left out,
+// so no request byte reaches the message unchecked (§5.6 leak rule 1).
 func KeysError(d Denial, typ, detail string) []byte {
 	type inner struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	}
 	msg := "agentbox " + d.Code + ": " + d.Msg
-	if detail != "" {
+	if detail != "" && len(detail) <= MaxDetail && printable([]byte(detail)) {
 		msg += " " + detail
 	}
 	b, _ := json.Marshal(struct {

@@ -59,20 +59,35 @@ func (u *usage) merge(v usage) {
 // fromJSON is the usage in one reply object or SSE event: the top-level usage member, or the one inside message
 // (Anthropic's message_start) or response (OpenAI's response.completed).
 func fromJSON(vendor string, b []byte) (usage, bool) {
+	u, ok, _ := event(vendor, b)
+	return u, ok
+}
+
+// event is fromJSON for one SSE event, and whether its usage is the request's final count: Anthropic's message_delta,
+// which comes after the last content block (message_start's counts 1 output token); OpenAI's response.completed,
+// .incomplete or .failed; a Chat Completions chunk, which carries usage only last.
+func event(vendor string, b []byte) (usage, bool, bool) {
 	var ev struct {
+		Type     string                      `json:"type"`
+		Object   string                      `json:"object"`
 		Usage    *usageJSON                  `json:"usage"`
 		Message  *struct{ Usage *usageJSON } `json:"message"`
 		Response *struct{ Usage *usageJSON } `json:"response"`
 	}
 	if json.Unmarshal(b, &ev) != nil {
-		return usage{}, false
+		return usage{}, false, false
 	}
 	for _, u := range []*usageJSON{ev.Usage, nested(ev.Message), nested(ev.Response)} {
 		if u != nil {
-			return u.usage(vendor), true
+			final := ev.Type == "message_delta"
+			if vendor != "anthropic" {
+				final = ev.Type == "response.completed" || ev.Type == "response.incomplete" || ev.Type == "response.failed" ||
+					ev.Type == "" && ev.Object == "chat.completion.chunk"
+			}
+			return u.usage(vendor), true, final
 		}
 	}
-	return usage{}, false
+	return usage{}, false, false
 }
 
 func nested(x *struct{ Usage *usageJSON }) *usageJSON {
@@ -82,11 +97,13 @@ func nested(x *struct{ Usage *usageJSON }) *usageJSON {
 	return x.Usage
 }
 
-// sseUsage collects usage from an SSE stream as it passes, a line at a time.
+// sseUsage collects usage from an SSE stream as it passes, a line at a time. final is set once the request's final
+// count came: only then is u what the vendor bills.
 type sseUsage struct {
 	vendor string
 	line   []byte
 	u      usage
+	final  bool
 }
 
 func (s *sseUsage) feed(b []byte) {
@@ -101,8 +118,9 @@ func (s *sseUsage) feed(b []byte) {
 		l := append(s.line, b[:i]...)
 		s.line, b = s.line[:0], b[i+1:]
 		if d, ok := bytes.CutPrefix(bytes.TrimRight(l, "\r"), []byte("data:")); ok {
-			if u, ok := fromJSON(s.vendor, bytes.TrimSpace(d)); ok {
+			if u, ok, final := event(s.vendor, bytes.TrimSpace(d)); ok {
 				s.u.merge(u)
+				s.final = s.final || final
 			}
 		}
 	}
