@@ -102,19 +102,35 @@ func TestLocal(t *testing.T) {
 		t.Errorf("clean after tainted: instance %d, %d recycles", inst, fl.recycles.Load())
 	}
 	<-fl.bodies
-	// a tainted call holds the instance; a clean and a tainted call queue; the clean one goes first, on a new instance
-	done := make(chan int64, 3)
-	go func() { _, i := localCall(t, s, ta, `{"messages":[{"role":"user","content":"hold"}]}`); done <- i }()
+	// a tainted call holds the instance; a tainted and then a clean call queue; the clean one goes first, on a new
+	// instance. The stand-in's order of arrival is the serving order: a reply can be read after the next one's (#327)
+	type served struct {
+		who  string
+		inst int64
+	}
+	done := make(chan served, 3)
+	call := func(who string, tk *broker.Task) {
+		_, i := localCall(t, s, tk, `{"messages":[{"role":"user","content":"`+who+`"}]}`)
+		done <- served{who, i}
+	}
+	go call("hold", ta)
 	<-fl.bodies
-	go func() { _, i := localCall(t, s, ta, `{"messages":[]}`); done <- -i }()
+	go call("tainted", ta)
 	time.Sleep(500 * time.Millisecond)
-	go func() { _, i := localCall(t, s, tb, `{"messages":[]}`); done <- i }()
+	go call("clean", tb)
 	time.Sleep(500 * time.Millisecond)
 	close(fl.hold)
-	order := []int64{<-done, <-done, <-done}
-	<-fl.bodies
-	<-fl.bodies
-	if order[0] != 2 || order[1] != 3 || order[2] != -3 {
-		t.Errorf("order %v: want the holder on 2, the clean caller on a fresh 3, then the tainted one", order)
+	ran := map[string]int64{}
+	for range 3 {
+		r := <-done
+		ran[r.who] = r.inst
+	}
+	var order []string
+	for range 2 {
+		b, _ := json.Marshal((<-fl.bodies)["messages"])
+		order = append(order, map[bool]string{true: "clean", false: "tainted"}[strings.Contains(string(b), "clean")])
+	}
+	if ran["hold"] != 2 || ran["clean"] != 3 || ran["tainted"] != 3 || strings.Join(order, ",") != "clean,tainted" {
+		t.Errorf("instances %v, served %v: want the holder on 2, the clean caller on a fresh 3, then the tainted one", ran, order)
 	}
 }
