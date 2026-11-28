@@ -24,16 +24,17 @@
 #          task; the filter's and the proxy's grammar refusals, with no proxy request, taint, upstream request or store
 #          change; +incompatible and pseudo-versions served. A-G6: a clean task's first cache use gets one TAINT per
 #          producer (agentboxd, proxy) before its first fill, also for 20 parallel first requests; a proxy that writes
-#          none still leaves the task tainted first; auditd down gives 503 with no body; agentboxd down leaves go to
-#          CONNECT; a vendored build makes no cache request and ends clean. A-G7: GOPROXY=off and a 404 with no taint for
-#          an agent without the entry; the same go test output and taint without the filter entry. A-G8: an altered
-#          upstream zip is refused (sum_mismatch); a blob altered with its row makes go stop with or without a go.sum
-#          line; a flipped byte is refilled; a hostile proxy's forged lists, @latest and .info never reach go; a
-#          withdrawn version gets 404. A-G9: another agent's miss is its own upstream fetch and touches nothing of the
-#          first agent's store. A-G10: the task file cap, the day cap and the disk reserve stop fills while go still
-#          works; eviction keeps the store under its limit and the newest entries; a write past the kernel limit as
-#          agentbox-proxy gets EDQUOT; budget.set reaches the running proxy. A-G11: no request naming a GOPRIVATE path
-#          reaches the cache path, the checksum client or the upstream. A-G12: agent.remove deletes the store;
+#          none still leaves the task tainted first; auditd down gives 503 with no body, for a hit and a miss;
+#          agentboxd down leaves go to CONNECT; a vendored build makes no cache request and ends clean. A-G7:
+#          GOPROXY=off and a 404 with no taint for an agent without the entry; the same go test output and taint
+#          without the filter entry. A-G8: an altered upstream zip is refused (sum_mismatch); a blob altered with its
+#          row makes go stop with or without a go.sum line; a flipped byte is refilled; a hostile proxy's forged lists,
+#          @latest and .info never reach go; a withdrawn version gets 404. A-G9: another agent's miss is its own
+#          upstream fetch and touches nothing of the first agent's store. A-G10: the task file and byte caps, the day
+#          cap and the disk reserve stop fills while go still works; eviction keeps the store under its limit and the
+#          newest entries; a write past the kernel limit as agentbox-proxy gets EDQUOT; budget.set reaches the running
+#          proxy. A-G11: no request naming a GOPRIVATE path reaches the cache path, the checksum client or the
+#          upstream. A-G12: agent.remove deletes the store;
 #          cache.purge empties one agent's only; a proxy killed mid-fill leaves no temp file, orphan blob or row without
 #          blob; a revoked task's fill inserts no row. A-G13: agentboxd, auditd, the proxy, keys and git run one more
 #          seccomp filter than their units give; BTRFS_IOC_SUBVOL_CREATE gets EOPNOTSUPP under it as agentbox-proxy,
@@ -372,12 +373,15 @@ check "A-G6 a test proxy that writes no taint record: the filter's record still 
   f=$(arec CACHE event=fill task=$T | head -1 | cut -d" " -f1) && [ "$g" -lt "$f" ]'
 real
 rm -f $WS/$A1/go1 $WS/$A1/done1 $G/last
-task $A1 'while [ ! -e /workspace/go1 ]; do sleep 0.1; done; curl -s -D - -o /tmp/b --unix-socket /run/agentbox/egress/proxy.sock http://proxy/_cache/go/example.com/m/@v/v1.1.0.mod; echo body=$(wc -c < /tmp/b); touch /workspace/done1' > $G/ad 2>&1 &
+# a hit (m01's .mod, which A-G4 stored for this agent) and a miss: the hit must not be served before the record (#317)
+task $A1 'while [ ! -e /workspace/go1 ]; do sleep 0.1; done; for p in example.com/w/m01/@v/v1.0.0.mod example.com/m/@v/v1.1.0.mod; do curl -s -D - -o /tmp/b --unix-socket /run/agentbox/egress/proxy.sock http://proxy/_cache/go/$p | head -1; echo body=$(wc -c < /tmp/b); done; touch /workspace/done1' > $G/ad 2>&1 &
 tp=$!; for i in $(seq 600); do [ -s $G/last ] && [ -d /run/agentbox-proxy/t/$(cat $G/last) ] && break; sleep 0.1; done
 systemctl stop agentbox-auditd.service "agentbox-auditd-*.socket"; touch $WS/$A1/go1
 for i in $(seq 300); do [ -e $WS/$A1/done1 ] && break; sleep 0.1; done
 systemctl start "agentbox-auditd-*.socket" agentbox-auditd.service; wait $tp; cat $G/ad
-check "A-G6 with auditd stopped, a proxy cache request gets 503 and 0 body bytes" 'grep -q "^HTTP/1.1 503" $G/ad && grep -qx "body=0" $G/ad'
+check "A-G6 with auditd stopped, a proxy cache request gets 503 and 0 body bytes, for a file the store holds and for a miss" '
+  python3 -c "import sqlite3,sys; sys.exit(not sqlite3.connect(\"file:$C/$A1/index.db?mode=ro\", uri=True).execute(\"select 1 from entries where key=?\", (\"go:example.com/w/m01@v1.0.0.mod\",)).fetchone())" &&
+  [ "$(grep -c "^HTTP/1.1 503" $G/ad)" = 2 ] && [ "$(grep -cx "body=0" $G/ad)" = 2 ]'
 rm -f $WS/$A1/go2 $WS/$A1/done2 $WS/$A1/ready2 $G/last
 # agentboxd keeps the prompt in memory, and taskrun fetches it before the script runs: stop agentboxd only once the
 # script has started (ready2), or the task never gets its prompt and ends with no result
@@ -526,6 +530,12 @@ task $A5 'for i in $(seq -w 41 46); do curl -s -o /dev/null -w "%{http_code}\n" 
 check "A-G10 past cache.task_fill_max_files (3) new misses get 404, with no proxy restart since budget.set" '[ "$(head -3 $G/c10 | grep -cx 200)" = 3 ] && [ "$(tail -3 $G/c10 | grep -cx 404)" = 3 ] &&
   [ "$(arec CACHE event=fill task=$T | wc -l)" = 3 ] && [ "$(systemctl show -P MainPID agentbox-proxy.service)" = "$P0" ]'
 cp -r $K/fixture $WS/$A5/fx && chown -R ag-$A5:ag-$A5 $WS/$A5/fx
+check "  ... and go test still passes, over CONNECT" 'task $A5 "cd fx && go test ./... 2>&1" | grep -q "^ok[[:space:]]*example.com/fx"'
+# the byte cap (#317): a task's first fill may pass it, and none after; two modules no earlier check stored for this agent
+printf 'cache.task_fill_max_bytes = 1\n' | $B budget set >/dev/null
+task $A5 'for p in example.com/inc/@v/v2.0.0+incompatible.mod example.com/pseudo/@v/v0.0.0-20260101000000-abcdefabcdef.mod; do curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8083/$p; done' > $G/c10b; T=$(cat $G/last); cat $G/c10b
+check "A-G10 past cache.task_fill_max_bytes (1 byte) the task's next miss gets 404, with no proxy restart since budget.set" '[ "$(tr "\n" " " < $G/c10b)" = "200 404 " ] &&
+  [ "$(arec CACHE event=fill task=$T | wc -l)" = 1 ] && [ "$(systemctl show -P MainPID agentbox-proxy.service)" = "$P0" ]'
 check "  ... and go test still passes, over CONNECT" 'task $A5 "cd fx && go test ./... 2>&1" | grep -q "^ok[[:space:]]*example.com/fx"'
 printf 'cache.agent_fill_day_bytes = 1\n' | $B budget set >/dev/null
 check "A-G10 past the agent's cache.agent_fill_day_bytes, a miss gets 404" 'task $A5 "curl -s -o /dev/null -w \"%{http_code}\n\" http://127.0.0.1:8083/example.com/w/m50/@v/v1.0.0.zip" | grep -qx 404'
