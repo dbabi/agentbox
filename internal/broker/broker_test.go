@@ -148,22 +148,28 @@ func TestAdmission(t *testing.T) {
 		fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n%s\r\n", path, len(body), hdr)
 		c.Write(body)
 	}
+	// next dials once the listener holds no connection: a slot frees on its connection's own goroutine, which can
+	// close it after the test read the reply (#325)
+	next := func() net.Conn {
+		settle(t, s, "task_01JAAAAAAAAAAAAAAAAAAAAAAA", 0)
+		return dial(t, sock)
+	}
 	c := dial(t, sock)
 	post(c, "/ok", "", []byte("hello"))
 	if st, _ := reply(t, c); st != 200 || len(got) != 1 || got[0] != "task_01JAAAAAAAAAAAAAAAAAAAAAAA trace_01JAAAAAAAAAAAAAAAAAAAAAAA 5 <nil>" {
 		t.Fatalf("a good request: %d %v", st, got)
 	}
-	c = dial(t, sock)
+	c = next()
 	post(c, "/x", "X-Pad: "+strings.Repeat("a", 8<<10)+"\r\n", nil)
 	if st, w := reply(t, c); st != 431 || w != "header_bytes" {
 		t.Errorf("head bytes: %d %s", st, w)
 	}
-	c = dial(t, sock)
+	c = next()
 	io.WriteString(c, "POST /x HTTP/1.1\r\nHost: x\r\n")
 	if st, w := reply(t, c); st != 408 || w != "header_timeout" {
 		t.Errorf("slow head: %d %s", st, w)
 	}
-	c = dial(t, sock)
+	c = next()
 	post(c, "/x", "", bytes.Repeat([]byte("a"), max+1))
 	if st, w := reply(t, c); st != 413 || w != "body_bytes" {
 		t.Errorf("body bytes: %d %s", st, w)
@@ -177,7 +183,7 @@ func TestAdmission(t *testing.T) {
 	var ms0, ms1 runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&ms0)
-	c = dial(t, sock)
+	c = next()
 	post(c, "/x", "Content-Encoding: gzip\r\n", bomb.Bytes())
 	st, w := reply(t, c)
 	runtime.ReadMemStats(&ms1)
@@ -187,8 +193,7 @@ func TestAdmission(t *testing.T) {
 	if grew := ms1.TotalAlloc - ms0.TotalAlloc; grew > 32<<20 {
 		t.Errorf("the zip bomb cost %d MiB of allocation", grew>>20)
 	}
-	settle(t, s, "task_01JAAAAAAAAAAAAAAAAAAAAAAA", 0)
-	c = dial(t, sock)
+	c = next()
 	io.WriteString(c, "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\nshort")
 	if st, w := reply(t, c); st != 408 || w != "read_timeout" {
 		t.Errorf("slow body: %d %s", st, w)
@@ -206,8 +211,7 @@ func TestAdmission(t *testing.T) {
 	}
 	reply(t, h1)
 	reply(t, h2)
-	time.Sleep(100 * time.Millisecond)
-	c = dial(t, sock)
+	c = next()
 	post(c, "/ok", "", nil)
 	if st, _ := reply(t, c); st != 200 {
 		t.Errorf("once the held connections ended: %d", st)
