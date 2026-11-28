@@ -490,19 +490,23 @@ func (s *Server) handler(t *task) http.Handler {
 		for i, x := range kv {
 			env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, x[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, x[1]))
 		}
-		if r.Method == http.MethodPost {
-			// every body at broker's pace, so a sender that trickles holds no spool file, memory or CGI for long (#316)
-			r.Body = struct {
-				io.Reader
-				io.Closer
-			}{broker.Paced(w, r), r.Body}
-		}
-		if r.Method == http.MethodPost && (r.ContentLength < 0 || len(r.TransferEncoding) > 0) {
+		chunked := r.Method == http.MethodPost && (r.ContentLength < 0 || len(r.TransferEncoding) > 0)
+		if chunked {
 			release, ok := s.spoolSlot(r.Context(), t.agent)
 			if !ok {
 				return
 			}
 			defer release()
+		}
+		if r.Method == http.MethodPost {
+			// every body at broker's pace, so a sender that trickles holds no spool file, memory or CGI for long (#316);
+			// from the time it may flow, after the wait for a spool slot, which is not the sender's
+			r.Body = struct {
+				io.Reader
+				io.Closer
+			}{broker.Paced(w, r), r.Body}
+		}
+		if chunked {
 			done, err := s.spool(r, s.MaxPush+spoolSlack)
 			if errors.Is(err, errSpoolFull) {
 				http.Error(w, "agentbox-git: the push is over receive.maxInputSize", http.StatusRequestEntityTooLarge)

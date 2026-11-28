@@ -179,3 +179,37 @@ func TestSocketAdmission(t *testing.T) {
 		t.Errorf("spool files left: %v", l)
 	}
 }
+
+// Each agent spools at most AgentSpools chunked bodies at once (#316): another waits, with no spool file. Its pace
+// starts once it has a slot, so the wait never cuts it.
+func TestAgentSpools(t *testing.T) {
+	b := newHTTPBox(t)
+	_, sock := regTask(t, b)
+	files := func() int { l, _ := os.ReadDir(filepath.Join(b.s.Root, ".spool")); return len(l) }
+	var cs []net.Conn
+	for range AgentSpools + 1 {
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		io.WriteString(c, "POST /app/git-receive-pack HTTP/1.1\r\nHost: x\r\nContent-Type: application/x-git-receive-pack-request\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n")
+		cs = append(cs, c)
+		time.Sleep(50 * time.Millisecond) // in order: the last one waits
+	}
+	time.Sleep(500 * time.Millisecond)
+	if n := files(); n != AgentSpools {
+		t.Fatalf("%d spool files for %d bodies of one agent", n, AgentSpools+1)
+	}
+	// the first ones stall and are cut after the grace; the last then takes a slot, with a grace of its own
+	for _, c := range cs[:AgentSpools] {
+		if st, what := denialOf(t, c); st != 408 || what != "read_timeout" {
+			t.Errorf("a stalled push that held a slot: %d %q", st, what)
+		}
+	}
+	time.Sleep(broker.BodyGrace / 2)
+	io.WriteString(cs[AgentSpools], "0\r\n\r\n")
+	if st, what := denialOf(t, cs[AgentSpools]); st == 408 || what != "" {
+		t.Errorf("the push that waited for a slot: %d %q", st, what)
+	}
+}
