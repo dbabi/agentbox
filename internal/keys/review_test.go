@@ -138,14 +138,26 @@ func TestBodySlotsPerAgent(t *testing.T) {
 	other := httptest.NewServer(f.s.Handler(&broker.Task{ID: "task_01JCCCCCCCCCCCCCCCCCCCCCCC", Agent: "gb", Trace: "trace_01JDDDDDDDDDDDDDDDDDDDDDDD"}))
 	t.Cleanup(other.Close)
 	var slow []net.Conn
+	held := func() int { // ga's slots taken
+		f.s.mu.Lock()
+		defer f.s.mu.Unlock()
+		return len(f.s.agents["ga"])
+	}
 	t0 := time.Now()
-	for range MaxBodies {
+	for i := range MaxBodies {
 		c, err := net.Dial("tcp", strings.TrimPrefix(f.srv.URL, "http://"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		fmt.Fprintf(c, "POST /anthropic/v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{")
 		slow = append(slow, c)
+		// the dial order is not the order the server takes slots in: the first holds one before the rest dial (#329)
+		for j := 0; i == 0 && held() == 0; j++ {
+			if j == 1000 {
+				t.Fatal("the first slow body never took a slot")
+			}
+			time.Sleep(time.Millisecond)
+		}
 	}
 	defer func() {
 		for _, c := range slow {
@@ -173,7 +185,7 @@ func TestBodySlotsPerAgent(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Error("gb's request waited on ga's slow bodies")
 	}
-	// the first of ga's slow bodies to hold a slot is cut after the grace, with its typed denial
+	// the first of ga's slow bodies, which holds a slot, is cut after the grace, with its typed denial
 	slow[0].SetReadDeadline(time.Now().Add(broker.BodyGrace + 5*time.Second))
 	resp, err := http.ReadResponse(bufio.NewReader(slow[0]), nil)
 	if err != nil {
