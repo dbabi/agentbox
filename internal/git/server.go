@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"agentbox/internal/broker"
 	"agentbox/internal/budgets"
 	"agentbox/internal/canary"
 	"agentbox/internal/ids"
@@ -50,11 +51,21 @@ type Server struct {
 	Now  func() time.Time
 
 	store  *sql.DB
+	adm    *broker.Server // the task sockets' admission (#115): peer uid, connections, head caps
 	mu     sync.Mutex
 	tasks  map[string]*task
+	spools map[string]chan struct{} // AgentSpools per agent
 	denyMu sync.Mutex
 	denied map[string]int64 // task and code: when its DENY record went out, so a loop sends one a minute
 }
+
+// AgentSpools is how many chunked request bodies one agent's tasks spool into git/ at once; another waits. With the
+// pace broker.Paced holds each to, one agent's slow senders can't fill git/, which every agent shares (#316).
+const AgentSpools = 2
+
+// readTimeout bounds a whole request, a push's body included: a 512 MiB push from a task's container takes seconds,
+// but its pack comes as git writes it.
+const readTimeout = 30 * time.Minute
 
 type task struct {
 	id, agent, canary string
@@ -92,7 +103,12 @@ func (s *Server) Open() error {
 	os.RemoveAll(filepath.Join(s.Root, ".spool")) // request bodies a crash left
 	s.store = db
 	s.tasks = map[string]*task{}
+	s.spools = map[string]chan struct{}{}
 	s.denied = map[string]int64{}
+	s.adm = &broker.Server{By: "git", Peer: s.Peer, Format: func(h http.Header, d ops.Denial, _ int) []byte {
+		h.Set("Content-Type", "text/plain; charset=utf-8")
+		return ops.GitBody(d)
+	}}
 	return nil
 }
 
@@ -137,11 +153,16 @@ func ok(kv ...any) map[string]any {
 
 func bad(err error) map[string]any { return map[string]any{"ok": false, "error": err.Error()} }
 
-// refused is an effect GitHub or git refused: what for the task's REMOTE_REJECTED, detail for humans only.
+// refused is an effect GitHub or git refused: what for the task's REMOTE_REJECTED, detail for humans only. unknown is
+// a write that may have taken effect (APIError.Unknown): rootd reconciles it instead of recording a failure.
 func refused(err error) map[string]any {
 	var ae *APIError
 	if errors.As(err, &ae) {
-		return map[string]any{"ok": false, "what": ae.What, "detail": ae.Detail}
+		m := map[string]any{"ok": false, "what": ae.What, "detail": ae.Detail}
+		if ae.Unknown {
+			m["unknown"] = true
+		}
+		return m
 	}
 	return map[string]any{"ok": false, "what": "other", "detail": err.Error()}
 }
@@ -267,9 +288,12 @@ func (s *Server) register(id, agent, c string) error {
 		return err
 	}
 	t := &task{id: id, agent: agent, canary: c, uid: uid, path: p}
-	t.srv = &http.Server{Handler: s.handler(t), ReadHeaderTimeout: 30 * time.Second, ErrorLog: log.New(io.Discard, "", 0)}
+	// the head caps of internal/broker's listener need its head time cap here (#316)
+	t.srv = &http.Server{Handler: s.handler(t), ReadHeaderTimeout: broker.DefaultHeadTimeout, ReadTimeout: readTimeout,
+		MaxHeaderBytes: broker.DefaultHeadBytes, ErrorLog: log.New(io.Discard, "", 0)}
+	t.srv.SetKeepAlivesEnabled(false) // the listener checks each connection's first head; the forwarder dials per request
 	s.tasks[id] = t
-	go t.srv.Serve(peerListener{ul, s, uid})
+	go t.srv.Serve(s.adm.Listen(ul, id, uid))
 	log.Printf("task %s (agent %s) registered: %s", id, agent, p)
 	return nil
 }
@@ -314,26 +338,6 @@ func (s *Server) live(t *task) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.tasks[t.id] == t
-}
-
-// peerListener accepts only connections from uid (§2.1 peer check); any other peer is closed, and Accept waits on.
-type peerListener struct {
-	net.Listener
-	s   *Server
-	uid uint32
-}
-
-func (l peerListener) Accept() (net.Conn, error) {
-	for {
-		c, err := l.Listener.Accept()
-		if err != nil {
-			return nil, err
-		}
-		if u, err := l.s.Peer(c); err == nil && u == l.uid {
-			return c, nil
-		}
-		c.Close()
-	}
 }
 
 // ServeControl serves svc-git.sock: one JSON line per call, uid 0 only (§2.1).
@@ -408,14 +412,42 @@ func (s *Server) denyOnce(d ops.Denial, t *task, detail string) {
 // writeDenial writes a smart-HTTP refusal (§5.6 Surfaces): text/plain, msg then the denial JSON, 404 for
 // NOT_FOUND_OR_NOT_OWNED, else the code's status.
 func writeDenial(w http.ResponseWriter, d ops.Denial) {
+	c, _ := ops.LookupCode(d.Code)
+	writeStatus(w, d, ops.HTTPStatus(c))
+}
+
+func writeStatus(w http.ResponseWriter, d ops.Denial, status int) {
 	body := ops.GitBody(d)
 	h := w.Header()
 	h.Set("Content-Type", "text/plain; charset=utf-8")
 	h.Set(ops.DenialHeaderName, ops.DenialHeader(d))
 	h.Set("Content-Length", strconv.Itoa(len(body)))
-	c, _ := ops.LookupCode(d.Code)
-	w.WriteHeader(ops.HTTPStatus(c))
+	w.WriteHeader(status)
 	w.Write(body)
+}
+
+// readTimedOut is a request body that fell below broker.Paced's pace: CAP_REACHED{read_timeout}, as keys answers it.
+func (s *Server) readTimedOut(w http.ResponseWriter, t *task) {
+	d, st := broker.Cap("git", "read_timeout", 0)
+	s.denyOnce(d, t, "")
+	writeStatus(w, d, st)
+}
+
+// spoolSlot waits for one of agent's AgentSpools; release gives it back. ok is false when the client went away.
+func (s *Server) spoolSlot(ctx context.Context, agent string) (release func(), ok bool) {
+	s.mu.Lock()
+	c := s.spools[agent]
+	if c == nil {
+		c = make(chan struct{}, AgentSpools)
+		s.spools[agent] = c // one per agent on the box, kept: agents are few
+	}
+	s.mu.Unlock()
+	select {
+	case c <- struct{}{}:
+		return func() { <-c }, true
+	case <-ctx.Done():
+		return nil, false
+	}
 }
 
 // rePath is the smart-HTTP surface: info/refs for one of the two services, and their POSTs. Nothing of the dumb
@@ -458,10 +490,30 @@ func (s *Server) handler(t *task) http.Handler {
 		for i, x := range kv {
 			env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, x[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, x[1]))
 		}
-		if r.Method == http.MethodPost && (r.ContentLength < 0 || len(r.TransferEncoding) > 0) {
+		chunked := r.Method == http.MethodPost && (r.ContentLength < 0 || len(r.TransferEncoding) > 0)
+		if chunked {
+			release, ok := s.spoolSlot(r.Context(), t.agent)
+			if !ok {
+				return
+			}
+			defer release()
+		}
+		if r.Method == http.MethodPost {
+			// every body at broker's pace, so a sender that trickles holds no spool file, memory or CGI for long (#316);
+			// from the time it may flow, after the wait for a spool slot, which is not the sender's
+			r.Body = struct {
+				io.Reader
+				io.Closer
+			}{broker.Paced(w, r), r.Body}
+		}
+		if chunked {
 			done, err := s.spool(r, s.MaxPush+spoolSlack)
 			if errors.Is(err, errSpoolFull) {
 				http.Error(w, "agentbox-git: the push is over receive.maxInputSize", http.StatusRequestEntityTooLarge)
+				return
+			}
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				s.readTimedOut(w, t)
 				return
 			}
 			if err != nil {
@@ -494,6 +546,10 @@ func (s *Server) handler(t *task) http.Handler {
 			env = append(env, HookEnv+"="+p)
 		case m[2] == "git-upload-pack":
 			body, err := s.readTaint(t, project, r)
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				s.readTimedOut(w, t)
+				return
+			}
 			if err != nil {
 				d := ops.Deny(ops.AuditUnavailable, "", ops.Slots{By: "git"})
 				s.denyOnce(d, t, "fetch read taint: "+err.Error())

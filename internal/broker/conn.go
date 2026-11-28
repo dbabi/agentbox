@@ -231,7 +231,7 @@ const (
 
 // Paced is r's body under the pace: before each read it moves the connection's read deadline to the time the bytes so
 // far allow, never past the server's ReadTimeout from now (DefaultReadTimeout with none). A read past it fails with
-// os.ErrDeadlineExceeded. The caller lifts the deadline once the body is read.
+// os.ErrDeadlineExceeded. At the body's end it lifts the deadline, so a long reply is not cut off.
 func Paced(w http.ResponseWriter, r *http.Request) io.Reader {
 	lim := DefaultReadTimeout
 	if srv, ok := r.Context().Value(http.ServerContextKey).(*http.Server); ok && srv.ReadTimeout > 0 {
@@ -256,6 +256,9 @@ func (p *paced) Read(b []byte) (int, error) {
 	p.rc.SetReadDeadline(d)
 	n, err := p.r.Read(b)
 	p.n += int64(n)
+	if err == io.EOF {
+		p.rc.SetReadDeadline(time.Time{}) // the whole body came: the reply may take as long as it takes
+	}
 	return n, err
 }
 

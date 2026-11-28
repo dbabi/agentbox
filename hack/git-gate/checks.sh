@@ -6,6 +6,7 @@
 fails=0
 cd /
 G=/run/gg B=/var/lib/agentbox/current/bin/agentbox RS=/run/systemd/system
+GH_WEB=192.88.96.20 GH_API=192.88.96.21 # what gate-dns answers for github.com and api.github.com
 DB=/var/lib/agentbox/rootd.db TDB=/var/lib/agentbox/audit/taint.db GIT=/var/lib/agentbox/git A=/var/lib/agentbox/audit
 WS=/var/lib/agentbox/data/workspaces
 check() { if (eval "$2") >>$G/check.log 2>&1; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails+1)); fi; }
@@ -40,6 +41,8 @@ for x in json.load(sys.stdin)["nftables"]:
     if any("drop" in t for t in e) and any(git(t["match"]) for t in e if "match" in t):
         n+=sum(t["counter"]["packets"] for t in e if "counter" in t)
 print(n)'; }
+# dnats: the packets of the gate's NAT rule, agentbox-git's connections to GitHub's test addresses
+dnats() { nft list table ip gg | sed -n 's/.*counter packets \([0-9]*\) .*dnat.*/\1/p' | awk '{n += $1} END {print n + 0}'; }
 # script NAME < body: a task script, with the helpers it needs inside the container
 script() { { cat <<'S'
 op() { agentbox gate call --socket /run/agentbox/gate/gate.sock "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" > "/workspace/$3" 2>&1 || :; }
@@ -57,6 +60,8 @@ check "svc-git.sock listens from boot and starts agentbox-git, as agentbox-git (
   [ "$(systemctl show -P User agentbox-git.service)" = agentbox-git ] &&
   [ "$(stat -c "%U:%G %a" /run/agentbox-rootd/svc-git.sock)" = "agentbox-git:root 600" ] && [ "$(stat -c "%U %a" $GIT)" = "agentbox-git 700" ] &&
   [ "$(stat -c "%U %a" /var/lib/agentbox/current/git-hooks/pre-receive)" = "root 755" ] && git --version'
+check "agentbox-git runs under MemoryMax=4G and TasksMax=1024 (#316)" '[ "$(systemctl show -P MemoryMax agentbox-git.service)" = 4294967296 ] &&
+  [ "$(systemctl show -P TasksMax agentbox-git.service)" = 1024 ]'
 # a rerun starts from empty workspaces: a canary an earlier run left there would block the agent's tasks at the next
 # credential scan (issue #289)
 for a in gg gt go; do [ ! -d $WS/$a ] || find $WS/$a -mindepth 1 -delete; done
@@ -64,20 +69,26 @@ for a in gg gt go; do [ ! -d $WS/$a ] || find $WS/$a -mindepth 1 -delete; done
 systemctl stop agentbox-git.service; rm -rf $GIT/gg $GIT/gt $GIT/go $GIT/.state.db*
 cp $G/ca.pem /usr/local/share/ca-certificates/agentbox-git-gate.crt && update-ca-certificates >/dev/null 2>&1
 U=$(id -u agentbox-git)
-# every https connection agentbox-git opens goes to the stub; the agentbox table then sees 10.0.2.2:UP, which only
-# this allow_private4 tuple admits (the gate's stand-in for GitHub's own addresses)
+# GitHub's names answer public-looking addresses for this boot (gate-dns, which relays the rest to slirp's DNS), and
+# only agentbox-git's https connections to those go to the stub; the agentbox table then sees 10.0.2.2:UP, which only
+# this allow_private4 tuple admits. The rule's counter shows agentbox-git dialed rootd's answers; a dial of any other
+# address meets the agentbox table as it is, and its drop (#316).
+systemctl stop gg-dns.service 2>/dev/null; systemctl reset-failed gg-dns.service 2>/dev/null
+systemd-run -q --unit=gg-dns $G/gate-dns -listen 127.0.0.153:53 -upstream 10.0.2.3:53 -a github.com=$GH_WEB -a api.github.com=$GH_API
+mkdir -p /run/systemd/resolved.conf.d && printf '[Resolve]\nDNS=127.0.0.153\nDomains=~.\n' > /run/systemd/resolved.conf.d/90-git-gate.conf
+systemctl restart systemd-resolved.service; sleep 2
 nft delete table ip gg 2>/dev/null
 nft -f - <<N
 table ip gg {
   chain out {
     type nat hook output priority -100;
-    meta skuid $U tcp dport 443 dnat to 10.0.2.2:$UP
+    meta skuid $U ip daddr { $GH_WEB, $GH_API } tcp dport 443 counter dnat to 10.0.2.2:$UP
   }
 }
 N
 python3 -c "import sqlite3; c=sqlite3.connect('$DB'); c.execute(\"insert or ignore into set_elements values ('allow_private4', '$U . 10.0.2.2 . $UP', NULL)\"); c.commit()"
-check "the stub answers the box; agentbox-git's https goes to it (NAT), admitted by its allow_private4 tuple" '$B egress refill >/dev/null && stub state >/dev/null &&
-  nft list table ip gg | grep -q "dnat to 10.0.2.2:$UP" && nft list set inet agentbox allow_private4 | grep -q "10.0.2.2 . $UP"'
+check "the stub answers the box; agentbox-git's https to GitHub's test addresses goes to it (NAT), admitted by its allow_private4 tuple" '$B egress refill >/dev/null && stub state >/dev/null &&
+  resolvectl query -4 api.github.com | grep -q "$GH_API" && nft list table ip gg | grep -q "dnat to 10.0.2.2:$UP" && nft list set inet agentbox allow_private4 | grep -q "10.0.2.2 . $UP"'
 # without the NAT rule, agentbox-git would reach the real GitHub: stop before any GitHub name is allowed
 [ $fails = 0 ] || { echo "fails=$fails"; exit 0; }
 check "service.list names github.com:443 and api.github.com:443 for git" '$B egress allow --svc git --entry github.com:443 >/dev/null &&
@@ -158,8 +169,9 @@ check "#19: approved, repo.push runs through agentbox-git: the stub remote has t
 check "#19: approved, gh.pr.create opens the PR, its body ends with the op marker; GitHub's number and URL are in the result" '[ -n "$P2" ] &&
   $B pending approve --id $P2 | grep -q "\"state\":\"executed\"" && stub state | grep -q "A pull request from the gate.\\\\n<!-- agentbox-op:$P2 -->" &&
   presult $P2 | grep -q "\"number\":1" && presult $P2 | grep -q "https://github.com/acme/app/pull/1"'
-check "#19: rootd resolved GitHub for agentbox-git (git_dst4 has its answers), and the git nft drop counters stay at 0" '
-  nft list set inet agentbox git_dst4 | grep -q "\. 443" && [ "$D0" = 0 ] && [ "$(drops)" = 0 ]'
+check "#19: rootd resolved GitHub for agentbox-git (git_dst4 has its answers), agentbox-git dialed them (the NAT counter), and the git nft drop counters stay at 0" '
+  nft list set inet agentbox git_dst4 | grep -q "$GH_WEB \. 443" && nft list set inet agentbox git_dst4 | grep -q "$GH_API \. 443" &&
+  [ "$(dnats)" -gt 0 ] && [ "$D0" = 0 ] && [ "$(drops)" = 0 ]'
 
 # --- reconcile (#19): rootd killed between a comment POST and its RESULT ---
 script t2 <<'S'
@@ -267,6 +279,10 @@ check "after a git service restart mid-task, the task's push reaches it on the s
 # --- the rest of the box ---
 check "the stub's token is in no audit record and no journal line" '! grep -rqs "$TOKEN" $A && ! journalctl -b --no-pager | grep -q "$TOKEN"'
 check "the git nft drop counters are still 0" '[ "$(drops)" = 0 ]'
+# the counters can rise (#316): agentbox-git, in its unit's sandbox, dials a public address rootd never answered
+check "  ... and a dial by agentbox-git of a public address rootd did not answer is dropped there" '
+  ! systemd-run -q --wait --pipe --collect -p User=agentbox-git -p "InaccessiblePaths=/run/systemd/resolve /run/dbus/system_bus_socket" \
+    curl -s -o /dev/null --connect-timeout 3 https://192.88.96.30/ && echo "drops: $(drops)" && [ "$(drops)" -gt 0 ]'
 check "the audit chain verifies" '$B audit verify'
 check "the box matches the socket inventory" '$B sockets check'
 check "fwcheck passes" '$B fwcheck'

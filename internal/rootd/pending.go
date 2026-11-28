@@ -242,6 +242,14 @@ func (s *server) submit(o ops.Op, r request, args map[string]any, receipt time.T
 	nonce := hex.EncodeToString(nb)
 	h := sha(string(canonJSON(map[string]any{"op": p, "bound": b.bound, "nonce": nonce, "expiresAt": exp})))
 	key := sha(string(canonJSON(map[string]any{"op": o.Name, "args": b.key})))
+	if m := s.indeterminateMarker(r.Task, key); m != "" && strings.HasPrefix(o.Name, "gh.") {
+		// an earlier ask for this write ended indeterminate, so GitHub may hold it: this one keeps its marker, so
+		// reconcile finds that write, and a second one shows the same marker (§5.3, #316)
+		b.bound.Marker = m
+		b.args["body"] = str(args, "body") + git.Marker(m)
+		p.Args = b.args
+		h = sha(string(canonJSON(map[string]any{"op": p, "bound": b.bound, "nonce": nonce, "expiresAt": exp})))
+	}
 	opJSON, boundJSON := canonJSON(p), canonJSON(b.bound)
 
 	tx, err := s.db.Begin()
@@ -310,6 +318,20 @@ func (s *server) submit(o ops.Op, r request, args map[string]any, receipt time.T
 		notified = s.cfg.Alert("agentbox: ask from "+agent, o.Name+" by task "+r.Task+" waits for a human: agentbox approve "+id) == nil
 	}
 	return floorAt(s.needsSig(o.Name, id, tainted, exp, notified, r.Task), receipt)
+}
+
+// indeterminateMarker is the op marker of task's newest ask with match key key that ended indeterminate, or "".
+func (s *server) indeterminateMarker(task, key string) string {
+	var bound string
+	if s.db.QueryRow(`SELECT bound FROM pending WHERE task=? AND match_key=? AND state='indeterminate' ORDER BY created_at DESC LIMIT 1`,
+		task, key).Scan(&bound) != nil {
+		return ""
+	}
+	var b git.Bound
+	if json.Unmarshal([]byte(bound), &b) != nil || !ids.Is(ids.Pending, b.Marker) {
+		return ""
+	}
+	return b.Marker
 }
 
 // needsSig is the NEEDS_SIGNATURE for pending row id (§5.6 Asks).
@@ -567,6 +589,12 @@ func (s *server) execute(id string) reply {
 	if err != nil {
 		// whether the effect ran is unknown: reconcile decides, now and after any restart, and never runs it again
 		log.Printf("pending %s: exec: %v: reconciling", id, err)
+		return s.reconcileRow(id)
+	}
+	if rep["ok"] != true && rep["unknown"] == true {
+		// the request left and GitHub's answer didn't settle it (a timeout, a reset, a 5xx, an unreadable 2xx): it may
+		// have stored the write, so reconcile looks for it by its marker, and never runs it again (§5.3, #316)
+		log.Printf("pending %s: exec: outcome unknown (%v): reconciling", id, trunc(fmt.Sprint(rep["detail"]), 1024))
 		return s.reconcileRow(id)
 	}
 	if rep["ok"] != true {
