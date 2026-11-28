@@ -96,8 +96,10 @@ func TestAlertOutboxRun(t *testing.T) {
 				return nil
 			}}
 			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go o.run(ctx, c.retry)
+			done := make(chan struct{})
+			go func() { defer close(done); o.run(ctx, c.retry) }()
+			// the cases share rootd.db: this run must end before the next case queues, or it can send that alert (#323)
+			defer func() { cancel(); <-done }()
 			if err := o.queue("agentbox: t", c.name); err != nil {
 				t.Fatal(err)
 			}
