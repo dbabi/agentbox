@@ -2,10 +2,12 @@ package rootd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,9 +23,9 @@ func TestSecretSet(t *testing.T) {
 	var recs []map[string]any
 	var enc, restarts []string
 	s := &server{cfg: Config{CredStore: dir,
-		Encrypt: func(name, value, out string) error {
+		Encrypt: func(name, value string) ([]byte, error) {
 			enc = append(enc, name+"="+value)
-			return os.WriteFile(out, []byte("ENC:"+name), 0o644)
+			return []byte("ENC:" + name), nil
 		},
 		Restart: func(unit string, ifRunning bool) error {
 			restarts = append(restarts, unit+" "+map[bool]string{true: "try", false: "now"}[ifRunning])
@@ -39,6 +41,9 @@ func TestSecretSet(t *testing.T) {
 	fi, _ := os.Stat(filepath.Join(dir, "keys", "anthropic-api-key"))
 	if err != nil || string(b) != "ENC:anthropic-api-key" || fi.Mode().Perm() != 0o600 || !slices.Equal(enc, []string{"anthropic-api-key=" + v}) {
 		t.Fatalf("stored %q %v %v %v", b, err, fi.Mode(), enc)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "keys", ".*")); len(left) != 0 {
+		t.Errorf("temp files left: %v", left)
 	}
 	if !slices.Equal(restarts, []string{"agentbox-keys.service try"}) {
 		t.Errorf("restarts %v", restarts)
@@ -81,6 +86,63 @@ func TestSecretSet(t *testing.T) {
 	os.WriteFile(ct, []byte("root UUID=x none luks,discard\n"), 0o644)
 	if a := credKeyArgs(ct); !slices.Equal(a, []string{"--with-key=tpm2", "--tpm2-pcrs="}) {
 		t.Errorf("tpm2 mode: %v", a)
+	}
+	// the value on stdin, the ciphertext on stdout: rootd writes the file itself (#313)
+	if a := encryptArgs("github-token", ct); !slices.Equal(a, []string{"encrypt", "--name=github-token", "--with-key=tpm2", "--tpm2-pcrs=", "-", "-"}) {
+		t.Errorf("argv %q", a)
+	}
+}
+
+// Concurrent secret.set calls for one name run one at a time through their restart (#313): each restart loads the
+// value its own call stored, so every call's ok reply is true of the stored credential, and the last call's value is
+// what stays. Each write goes through its own temp file, so no call fails on another's.
+func TestSecretSetConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	var mu sync.Mutex
+	var events []string // "enc V" and "load V": what each encryption made, and what each restart found stored
+	cred := filepath.Join(dir, "keys", "anthropic-api-key")
+	s := &server{cfg: Config{CredStore: dir,
+		Encrypt: func(name, value string) ([]byte, error) {
+			mu.Lock()
+			events = append(events, "enc "+value)
+			mu.Unlock()
+			time.Sleep(time.Millisecond) // let another call in, if anything lets it
+			return []byte("ENC:" + value), nil
+		},
+		Restart: func(unit string, ifRunning bool) error {
+			b, _ := os.ReadFile(cred)
+			mu.Lock()
+			events = append(events, "load "+strings.TrimPrefix(string(b), "ENC:"))
+			mu.Unlock()
+			return nil
+		}},
+		audit: func(map[string]any) error { return nil }}
+	var wg sync.WaitGroup
+	for i := range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if rep := s.secretSet(request{Op: "secret.set", Name: "anthropic-api-key", Value: ptr(fmt.Sprintf("sk-ant-api03-V%02d", i))}); rep["ok"] != true || rep["restarted"] != true {
+				t.Errorf("call %d: %v", i, rep)
+			}
+		}()
+	}
+	wg.Wait()
+	if len(events) != 32 {
+		t.Fatalf("events %q", events)
+	}
+	for i := 0; i < len(events); i += 2 {
+		v, ok := strings.CutPrefix(events[i], "enc ")
+		if !ok || events[i+1] != "load "+v {
+			t.Fatalf("a restart did not load its own call's value: %q", events)
+		}
+	}
+	b, _ := os.ReadFile(cred)
+	if last := strings.TrimPrefix(events[len(events)-1], "load "); string(b) != "ENC:"+last {
+		t.Errorf("stored %q, the last call stored %q", b, last)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "keys", ".*")); len(left) != 0 {
+		t.Errorf("temp files left: %v", left)
 	}
 }
 

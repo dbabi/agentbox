@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agentbox/internal/ids"
+	"agentbox/internal/rootd/gens"
 )
 
 // The brokers' credentials (#108, ARCHITECTURE.md §4.3): secret.set encrypts each value with systemd-creds into
@@ -47,15 +48,26 @@ func credKeyArgs(crypttab string) []string {
 	return []string{"--with-key=host"}
 }
 
+// encryptArgs is systemd-creds' argv for name: the value comes on stdin and the ciphertext goes to stdout, so rootd
+// stores it itself, durably (writeCred). --name= embeds the name, as an output file name would.
+func encryptArgs(name, crypttab string) []string {
+	return append(append([]string{"encrypt", "--name=" + name}, credKeyArgs(crypttab)...), "-", "-")
+}
+
 // encryptCred is systemd-creds encrypt with the value on stdin, never in argv or the environment (#108).
-func encryptCred(name, value, out string) error {
-	args := append([]string{"encrypt", "--name=" + name}, credKeyArgs("/etc/crypttab")...)
-	cmd := exec.Command("systemd-creds", append(args, "-", out)...)
+func encryptCred(name, value string) ([]byte, error) {
+	cmd := exec.Command("systemd-creds", encryptArgs(name, "/etc/crypttab")...)
 	cmd.Stdin = strings.NewReader(value)
-	if b, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("systemd-creds encrypt %s: %v: %s", name, err, bytes.TrimSpace(b))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err == nil && len(bytes.TrimSpace(out)) == 0 {
+		err = errors.New("no ciphertext")
 	}
-	return nil
+	if err != nil {
+		return nil, fmt.Errorf("systemd-creds encrypt %s: %v: %s", name, err, bytes.TrimSpace(stderr.Bytes()))
+	}
+	return out, nil
 }
 
 func (s *server) credStore() string {
@@ -65,44 +77,34 @@ func (s *server) credStore() string {
 	return CredStore
 }
 
-func (s *server) encrypt(name, value, out string) error {
+func (s *server) encrypt(name, value string) ([]byte, error) {
 	if s.cfg.Encrypt != nil {
-		return s.cfg.Encrypt(name, value, out)
+		return s.cfg.Encrypt(name, value)
 	}
-	return encryptCred(name, value, out)
+	return encryptCred(name, value)
 }
 
-// writeCred stores value for name: encrypted into a temp file in the service's dir, then renamed over the old one, so
-// the unit never loads a half-written credential.
+// writeCred stores value for name, encrypted, with gens.WriteAtomic: a temp file of its own, fsynced, renamed over the
+// old one, then the dir fsynced. So the unit never loads a half-written credential, and a power cut leaves the old
+// one or the new one (btrfs can commit a rename before data nobody synced). The caller holds credMu.
 func (s *server) writeCred(name, value string) error {
 	dir := filepath.Join(s.credStore(), Credentials[name])
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, "."+name+".new")
-	os.Remove(tmp)
-	if err := s.encrypt(name, value, tmp); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, filepath.Join(dir, name)); err != nil {
-		return err
-	}
-	d, err := os.Open(dir)
+	b, err := s.encrypt(name, value)
 	if err != nil {
 		return err
 	}
-	defer d.Close()
-	return d.Sync()
+	return gens.WriteAtomic(filepath.Join(dir, name), b, 0o600)
 }
 
 // ensureCreds gives every credential an encrypted empty value until secret.set stores one, so each broker unit's
 // LoadCredentialEncrypted= finds its file and the unit starts; a broker answers a request that needs the missing
 // value with its own typed denial (keys: KEYS_UPSTREAM{auth}).
 func (s *server) ensureCreds() {
+	s.credMu.Lock()
+	defer s.credMu.Unlock()
 	for _, name := range slices.Sorted(maps.Keys(Credentials)) {
 		if _, err := os.Stat(filepath.Join(s.credStore(), Credentials[name], name)); errors.Is(err, os.ErrNotExist) {
 			if err := s.writeCred(name, ""); err != nil {
@@ -142,12 +144,15 @@ func (s *server) secretSet(r request) reply {
 		"args": map[string]string{"name": r.Name}}); err != nil {
 		return reply{"ok": false, "error": "audit: the INTENT was not ACKed, nothing changed: " + err.Error()}
 	}
+	// one secret.set at a time, through its restart: the unit loads the value this call stored, which its reply reports
+	s.credMu.Lock()
 	err := s.writeCred(r.Name, *r.Value)
 	restarted := false
 	if err == nil {
 		err = s.restartUnit("agentbox-"+svc+".service", true)
 		restarted = err == nil
 	}
+	s.credMu.Unlock()
 	status, detail := "executed", ""
 	if err != nil {
 		status, detail = "failed", err.Error()

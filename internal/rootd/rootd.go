@@ -61,7 +61,7 @@ type Config struct {
 	// the brokers' credentials (#108): the store ("" is CredStore), how a value is encrypted (nil: systemd-creds) and
 	// how a broker unit restarts (nil: systemctl); tests replace them
 	CredStore string
-	Encrypt   func(name, value, out string) error
+	Encrypt   func(name, value string) ([]byte, error) // the ciphertext
 	Restart   func(unit string, ifRunning bool) error
 	Git       GitCall // svc-git.sock; nil: gitCall
 }
@@ -368,7 +368,8 @@ type server struct {
 	recreateCache func(accounts.Agent) error
 	limitCache    func(path string, max uint64) error
 
-	llm llm // llm.recycle (creds.go)
+	llm    llm        // llm.recycle (creds.go)
+	credMu sync.Mutex // secret.set and the placeholders: one credential write and its unit restart at a time
 }
 
 // drainTimeout bounds the wait at stop for requests in flight, below the unit's TimeoutStopSec=90s.
