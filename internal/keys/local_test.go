@@ -113,12 +113,26 @@ func TestLocal(t *testing.T) {
 		_, i := localCall(t, s, tk, `{"messages":[{"role":"user","content":"`+who+`"}]}`)
 		done <- served{who, i}
 	}
+	queued := func(n int) { // n calls wait for the instance: a fixed sleep let a slow runner release it too early
+		for i := 0; ; i++ {
+			l.mu.Lock()
+			k := len(l.waiting)
+			l.mu.Unlock()
+			if k == n {
+				return
+			}
+			if i == 1000 {
+				t.Fatalf("%d calls wait for the instance, want %d", k, n)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 	go call("hold", ta)
 	<-fl.bodies
 	go call("tainted", ta)
-	time.Sleep(500 * time.Millisecond)
+	queued(1)
 	go call("clean", tb)
-	time.Sleep(500 * time.Millisecond)
+	queued(2)
 	close(fl.hold)
 	ran := map[string]int64{}
 	for range 3 {
